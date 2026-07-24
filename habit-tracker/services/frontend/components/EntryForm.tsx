@@ -1,13 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/29-category-page-nav-and-quick-add
-// summary: entry creation modal extracted from app/entries/page.tsx; `lockedCategoryId` pins it to one category for quick-add from the category page
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
+// summary: desktop entry-creation modal; draft state, payload conversion and saving now come from useEntryDraft, so the markup is all that is left here
 
-import { useState } from 'react';
 import { X } from 'lucide-react';
-import { Category, EntryCreate, EntryValueCreate, entriesAPI } from '@/lib/api';
-import { FieldValueInput, entryInputClass } from '@/components/EntryCard';
+import { Category } from '@/lib/api';
+import { FieldValueInput } from '@/components/FieldValueInput';
 import ErrorAlert from '@/components/ErrorAlert';
-import { todayISO } from '@/lib/date';
+import { useEntryDraft } from '@/hooks/useEntryDraft';
+import { entryInputClass } from '@/lib/ui-constants';
 
 export interface EntryFormProps {
   categories: Category[];
@@ -26,45 +26,18 @@ export default function EntryForm({
   lockedCategoryId,
   date,
 }: EntryFormProps) {
-  const [categoryId, setCategoryId] = useState<number>(
-    lockedCategoryId ?? categories[0]?.id ?? 0
-  );
-  const [entryDate, setEntryDate] = useState(date ?? todayISO());
-  const [notes, setNotes] = useState('');
-  const [values, setValues] = useState<Record<number, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const selectedCategory = categories.find((c) => c.id === categoryId);
+  const draft = useEntryDraft({
+    categories,
+    categoryId: lockedCategoryId,
+    date,
+    onSaved: onSuccess,
+  });
+  const selectedCategory = draft.category;
   const categoryLocked = lockedCategoryId !== undefined;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCategory) return;
-
-    setSaving(true);
-    setError(null);
-
-    try {
-      const entryValues: EntryValueCreate[] = selectedCategory.fields.map((field) => ({
-        field_id: field.id,
-        value: values[field.id] || '',
-      }));
-
-      const data: EntryCreate = {
-        category_id: categoryId,
-        entry_date: entryDate,
-        notes: notes || undefined,
-        values: entryValues,
-      };
-
-      await entriesAPI.create(data);
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create entry');
-    } finally {
-      setSaving(false);
-    }
+    void draft.save();
   };
 
   return (
@@ -86,7 +59,7 @@ export default function EntryForm({
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {error && <ErrorAlert message={error} />}
+          {draft.error && <ErrorAlert message={draft.error} onDismiss={draft.dismissError} />}
 
           {!categoryLocked && (
             <div>
@@ -94,11 +67,8 @@ export default function EntryForm({
                 Category *
               </label>
               <select
-                value={categoryId}
-                onChange={(e) => {
-                  setCategoryId(Number(e.target.value));
-                  setValues({});
-                }}
+                value={draft.categoryId}
+                onChange={(e) => draft.setCategoryId(Number(e.target.value))}
                 required
                 className={entryInputClass}
               >
@@ -117,8 +87,8 @@ export default function EntryForm({
             </label>
             <input
               type="date"
-              value={entryDate}
-              onChange={(e) => setEntryDate(e.target.value)}
+              value={draft.entryDate}
+              onChange={(e) => draft.setEntryDate(e.target.value)}
               required
               className={entryInputClass}
             />
@@ -135,8 +105,8 @@ export default function EntryForm({
 
                   <FieldValueInput
                     field={field}
-                    value={values[field.id] || ''}
-                    onChange={(value) => setValues({ ...values, [field.id]: value })}
+                    value={draft.values[field.id] || ''}
+                    onChange={(value) => draft.setValue(field.id, value)}
                   />
                 </div>
               ))}
@@ -148,8 +118,8 @@ export default function EntryForm({
               Notes
             </label>
             <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              value={draft.notes}
+              onChange={(e) => draft.setNotes(e.target.value)}
               rows={3}
               className={entryInputClass}
             />
@@ -165,10 +135,10 @@ export default function EntryForm({
             </button>
             <button
               type="submit"
-              disabled={saving}
+              disabled={draft.saving}
               className="flex-1 px-4 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)] disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
             >
-              {saving ? 'Creating...' : 'Create entry'}
+              {draft.saving ? 'Creating...' : 'Create entry'}
             </button>
           </div>
         </form>

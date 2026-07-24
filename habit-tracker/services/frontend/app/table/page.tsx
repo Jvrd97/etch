@@ -17,6 +17,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import EntryForm from '@/components/EntryForm';
 import { toISODate } from '@/lib/date';
+import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 import { formatSecondsToHM } from '@/lib/duration';
 import { Check, Plus, Save, Table2, Trash2, X } from 'lucide-react';
 
@@ -125,21 +126,8 @@ export default function TablePage() {
   }, [loadData]);
 
   // Installed as a PWA the page is never reloaded: after adding an entry on
-  // /today the table would keep showing the snapshot taken on mount. Refetch
-  // whenever the tab/app becomes visible again.
-  useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState === 'visible') loadData();
-    };
-    document.addEventListener('visibilitychange', refresh);
-    window.addEventListener('focus', refresh);
-    window.addEventListener('pageshow', refresh);
-    return () => {
-      document.removeEventListener('visibilitychange', refresh);
-      window.removeEventListener('focus', refresh);
-      window.removeEventListener('pageshow', refresh);
-    };
-  }, [loadData]);
+  // /today the table would keep showing the snapshot taken on mount.
+  useRefreshOnVisible(loadData);
 
   const cellValue = useCallback(
     (date: string, categoryId: number, fieldId: number): string | null => {

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: bottom tab bar of the mobile shell — pure rendering of MOBILE_TABS from lib/routes, 44pt tap targets
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// summary: bottom tab bar of the mobile shell — pure rendering of MOBILE_TABS from lib/routes, 44pt tap targets; a tab owning nested routes stays highlighted on them
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -19,7 +19,10 @@ export default function TabBar() {
       <ul className="flex items-stretch justify-around">
         {MOBILE_TABS.map((tab) => {
           const Icon = routeIcon(tab.id);
-          const isActive = pathname === tab.href;
+          // A detail screen belongs to the tab that owns it, so /m/categories/12
+          // keeps Categories lit instead of leaving no tab marked at all.
+          const isActive =
+            pathname === tab.href || (tab.nested && pathname.startsWith(`${tab.href}/`));
           return (
             <li key={tab.href} className="flex-1">
               <Link

@@ -1,87 +1,50 @@
 'use client';
-// [review:need-review] PHASE-01/35-category-fields-update-web-ux
-// summary: field ids in update payload, add-field-at-bottom + base field, sticky footer, list view
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// summary: desktop Categories page — list/cards layout and the editor modal unchanged, but all of the state (load, layout preference, delete, form draft with the id-carrying field diff-sync) now comes from hooks/useCategories and the enum labels plus field styling from lib/ui-constants, both shared with /m/categories
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import {
-  categoriesAPI,
-  Category,
-  CategoryCreate,
-  CategoryDisplayMode,
-  CategoryStreakMode,
-  FieldCreate,
+  type Category,
+  type CategoryDisplayMode,
+  type CategoryStreakMode,
+  type FieldCreate,
 } from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
+import {
+  DEFAULT_CATEGORY_COLOR,
+  useCategories,
+  useCategoryDraft,
+} from '@/hooks/useCategories';
+import {
+  DISPLAY_MODE_LABELS,
+  FIELD_TYPE_LABELS,
+  STREAK_MODE_LABELS,
+  compactInputClass,
+  entryInputClass,
+} from '@/lib/ui-constants';
 import { Plus, Pencil, Trash2, FolderKanban, X, LayoutGrid, List } from 'lucide-react';
 
-/** Cards-vs-list layout of this screen — a per-screen preference, unrelated to
- *  the desktop/mobile shell `ViewMode` behind VIEW_MODE_STORAGE_KEY in lib/view-mode. */
-type CategoryLayout = 'cards' | 'list';
-
-const VIEW_STORAGE_KEY = 'habit-tracker:categories-layout';
-
-const DEFAULT_CATEGORY_COLOR = '#B8FF36';
-
-const DISPLAY_MODE_LABELS: Record<CategoryDisplayMode, string> = {
-  form: 'Form',
-  checklist: 'Checklist',
-};
-
-const STREAK_MODE_LABELS: Record<CategoryStreakMode, string> = {
-  build: 'Build habit',
-  avoid: 'Avoid',
-};
-
-const inputClass =
-  'w-full px-4 py-3 bg-surface border border-white/10 rounded-2xl text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25';
-
 export default function CategoriesPage() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { categories, loading, error, setError, layout, setLayout, reload, remove } =
+    useCategories();
   const [showForm, setShowForm] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
-  const [viewMode, setViewMode] = useState<CategoryLayout>('cards');
-
-  useEffect(() => {
-    loadCategories();
-    const saved = localStorage.getItem(VIEW_STORAGE_KEY);
-    if (saved === 'list' || saved === 'cards') setViewMode(saved);
-  }, []);
-
-  const changeView = (mode: CategoryLayout) => {
-    setViewMode(mode);
-    localStorage.setItem(VIEW_STORAGE_KEY, mode);
-  };
 
   const openEdit = (category: Category) => {
     setEditingCategory(category);
     setShowForm(true);
   };
 
-  const loadCategories = async () => {
-    try {
-      setLoading(true);
-      const data = await categoriesAPI.getAll(false); // Get all including inactive
-      setCategories(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load categories');
-    } finally {
-      setLoading(false);
-    }
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingCategory(null);
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure? This will delete all related entries!')) return;
-
-    try {
-      await categoriesAPI.delete(id);
-      await loadCategories();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete category');
-    }
+    await remove(id);
   };
 
   if (loading) return <LoadingSpinner size="lg" />;
@@ -100,11 +63,11 @@ export default function CategoriesPage() {
           {categories.length > 0 && (
             <div className="flex items-center gap-1 p-1 bg-surface border border-white/10 rounded-2xl">
               <button
-                onClick={() => changeView('cards')}
+                onClick={() => setLayout('cards')}
                 aria-label="Card view"
-                aria-pressed={viewMode === 'cards'}
+                aria-pressed={layout === 'cards'}
                 className={`p-2 rounded-xl transition-colors duration-200 ${
-                  viewMode === 'cards'
+                  layout === 'cards'
                     ? 'bg-lime/15 text-lime'
                     : 'text-text-secondary hover:text-text-primary'
                 }`}
@@ -112,11 +75,11 @@ export default function CategoriesPage() {
                 <LayoutGrid className="w-4 h-4" strokeWidth={2} />
               </button>
               <button
-                onClick={() => changeView('list')}
+                onClick={() => setLayout('list')}
                 aria-label="List view"
-                aria-pressed={viewMode === 'list'}
+                aria-pressed={layout === 'list'}
                 className={`p-2 rounded-xl transition-colors duration-200 ${
-                  viewMode === 'list'
+                  layout === 'list'
                     ? 'bg-lime/15 text-lime'
                     : 'text-text-secondary hover:text-text-primary'
                 }`}
@@ -143,15 +106,14 @@ export default function CategoriesPage() {
       {/* Category Form Modal */}
       {showForm && (
         <CategoryForm
+          // Remounting per target keeps the draft trivially correct: a freshly
+          // opened modal never inherits the previous category's values.
+          key={editingCategory?.id ?? 'new'}
           category={editingCategory}
-          onClose={() => {
-            setShowForm(false);
-            setEditingCategory(null);
-          }}
+          onClose={closeForm}
           onSuccess={() => {
-            setShowForm(false);
-            setEditingCategory(null);
-            loadCategories();
+            closeForm();
+            void reload();
           }}
         />
       )}
@@ -171,7 +133,7 @@ export default function CategoriesPage() {
             Create category
           </button>
         </div>
-      ) : viewMode === 'list' ? (
+      ) : layout === 'list' ? (
         <div className="space-y-2">
           {categories.map((category) => (
             <div
@@ -212,7 +174,7 @@ export default function CategoriesPage() {
                   <Pencil className="w-4 h-4" strokeWidth={2} />
                 </button>
                 <button
-                  onClick={() => handleDelete(category.id)}
+                  onClick={() => void handleDelete(category.id)}
                   aria-label="Delete category"
                   className="p-2 rounded-full text-text-secondary hover:text-danger hover:bg-danger/10 transition-colors duration-200"
                 >
@@ -250,17 +212,14 @@ export default function CategoriesPage() {
                 </Link>
                 <div className="flex gap-1 flex-shrink-0">
                   <button
-                    onClick={() => {
-                      setEditingCategory(category);
-                      setShowForm(true);
-                    }}
+                    onClick={() => openEdit(category)}
                     aria-label="Edit category"
                     className="p-2 rounded-full text-text-secondary hover:text-lime hover:bg-lime/10 transition-colors duration-200"
                   >
                     <Pencil className="w-4 h-4" strokeWidth={2} />
                   </button>
                   <button
-                    onClick={() => handleDelete(category.id)}
+                    onClick={() => void handleDelete(category.id)}
                     aria-label="Delete category"
                     className="p-2 rounded-full text-text-secondary hover:text-danger hover:bg-danger/10 transition-colors duration-200"
                   >
@@ -334,79 +293,11 @@ interface CategoryFormProps {
 }
 
 function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
-  const [name, setName] = useState(category?.name || '');
-  const [description, setDescription] = useState(category?.description || '');
-  const [color, setColor] = useState(category?.color || DEFAULT_CATEGORY_COLOR);
-  const [displayMode, setDisplayMode] = useState<CategoryDisplayMode>(
-    category?.display_mode ?? 'form'
-  );
-  const [streakMode, setStreakMode] = useState<CategoryStreakMode>(
-    category?.streak_mode ?? 'build'
-  );
-  const [group, setGroup] = useState(category?.group ?? '');
-  const [isActive, setIsActive] = useState(category?.is_active ?? true);
-  const [fields, setFields] = useState<FieldCreate[]>(
-    category
-      ? category.fields.map((f) => ({
-          id: f.id, // carry id so the backend updates in place, keeping history
-          name: f.name,
-          field_type: f.field_type,
-          is_required: f.is_required,
-          options: f.options,
-          order: f.order,
-        }))
-      : // New category starts with one blank field so there's nothing to add first.
-        [{ name: '', field_type: 'text', is_required: false, order: 0 }]
-  );
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const draft = useCategoryDraft({ category, onSaved: onSuccess });
 
-  const addField = () => {
-    setFields([...fields, { name: '', field_type: 'text', is_required: false, order: fields.length }]);
-  };
-
-  const removeField = (index: number) => {
-    setFields(fields.filter((_, i) => i !== index));
-  };
-
-  const updateField = (index: number, updates: Partial<FieldCreate>) => {
-    const newFields = [...fields];
-    newFields[index] = { ...newFields[index], ...updates };
-    setFields(newFields);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    setError(null);
-
-    try {
-      const data: CategoryCreate = {
-        name,
-        description,
-        color,
-        display_mode: displayMode,
-        streak_mode: streakMode,
-        group: group.trim() || null,
-        is_active: isActive,
-        // Only fields with names; re-index order by position so add/remove stays tidy.
-        fields: fields
-          .filter((f) => f.name.trim())
-          .map((f, i) => ({ ...f, order: i })),
-      };
-
-      if (category) {
-        await categoriesAPI.update(category.id, data);
-      } else {
-        await categoriesAPI.create(data);
-      }
-
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save category');
-    } finally {
-      setSaving(false);
-    }
+    void draft.save();
   };
 
   return (
@@ -426,7 +317,7 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
         </div>
 
         <form id="category-form" onSubmit={handleSubmit} className="p-6 space-y-6">
-          {error && <ErrorAlert message={error} />}
+          {draft.error && <ErrorAlert message={draft.error} onDismiss={draft.dismissError} />}
 
           <div>
             <label className="block text-[13px] font-medium text-text-secondary mb-2">
@@ -434,10 +325,10 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
             </label>
             <input
               type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={draft.name}
+              onChange={(e) => draft.setName(e.target.value)}
               required
-              className={inputClass}
+              className={entryInputClass}
             />
           </div>
 
@@ -446,33 +337,34 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
               Description
             </label>
             <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              value={draft.description}
+              onChange={(e) => draft.setDescription(e.target.value)}
               rows={3}
-              className={inputClass}
+              className={entryInputClass}
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          {/* Two-up only once there is room for it: below `sm` a pair of
+              half-width controls is unusable. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-[13px] font-medium text-text-secondary mb-2">
                 Display mode
               </label>
               <select
-                value={displayMode}
-                onChange={(e) => setDisplayMode(e.target.value as CategoryDisplayMode)}
-                className={inputClass}
+                value={draft.displayMode}
+                onChange={(e) => draft.setDisplayMode(e.target.value as CategoryDisplayMode)}
+                className={entryInputClass}
               >
                 <option value="form">{DISPLAY_MODE_LABELS.form}</option>
                 <option value="checklist">{DISPLAY_MODE_LABELS.checklist}</option>
               </select>
-              {displayMode === 'checklist' &&
-                !fields.some((f) => f.field_type === 'boolean') && (
-                  <p className="text-[13px] text-warning mt-2">
-                    Checklist needs at least one boolean field — add one below or
-                    the save will be rejected.
-                  </p>
-                )}
+              {draft.checklistNeedsBoolean && (
+                <p className="text-[13px] text-warning mt-2">
+                  Checklist needs at least one boolean field — add one below or the save will be
+                  rejected.
+                </p>
+              )}
             </div>
 
             <div>
@@ -480,9 +372,9 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
                 Streak mode
               </label>
               <select
-                value={streakMode}
-                onChange={(e) => setStreakMode(e.target.value as CategoryStreakMode)}
-                className={inputClass}
+                value={draft.streakMode}
+                onChange={(e) => draft.setStreakMode(e.target.value as CategoryStreakMode)}
+                className={entryInputClass}
               >
                 <option value="build">{STREAK_MODE_LABELS.build}</option>
                 <option value="avoid">{STREAK_MODE_LABELS.avoid}</option>
@@ -490,31 +382,29 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[13px] font-medium text-text-secondary mb-2">
-                Group
-              </label>
-              <input
-                type="text"
-                value={group}
-                onChange={(e) => setGroup(e.target.value)}
-                placeholder="e.g. Health"
-                maxLength={100}
-                className={inputClass}
-              />
-            </div>
+          <div>
+            <label className="block text-[13px] font-medium text-text-secondary mb-2">
+              Group
+            </label>
+            <input
+              type="text"
+              value={draft.group}
+              onChange={(e) => draft.setGroup(e.target.value)}
+              placeholder="e.g. Health"
+              maxLength={100}
+              className={entryInputClass}
+            />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-[13px] font-medium text-text-secondary mb-2">
                 Color
               </label>
               <input
                 type="color"
-                value={color}
-                onChange={(e) => setColor(e.target.value)}
+                value={draft.color}
+                onChange={(e) => draft.setColor(e.target.value)}
                 className="w-full h-12 bg-surface border border-white/10 rounded-2xl cursor-pointer p-1.5"
               />
             </div>
@@ -523,8 +413,8 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
               <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={isActive}
-                  onChange={(e) => setIsActive(e.target.checked)}
+                  checked={draft.isActive}
+                  onChange={(e) => draft.setIsActive(e.target.checked)}
                   className="w-4 h-4 accent-[#B8FF36] rounded"
                 />
                 <span className="text-sm font-medium text-text-primary">Active</span>
@@ -539,65 +429,15 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
             </label>
 
             <div className="space-y-4">
-              {fields.map((field, index) => (
-                <div key={index} className="bg-surface border border-white/5 rounded-2xl p-4">
-                  <div className="grid grid-cols-2 gap-3 mb-3">
-                    <input
-                      type="text"
-                      placeholder="Field name"
-                      value={field.name}
-                      onChange={(e) => updateField(index, { name: e.target.value })}
-                      className="px-3 py-2.5 bg-card border border-white/10 rounded-2xl text-sm text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25"
-                    />
-                    <select
-                      value={field.field_type}
-                      onChange={(e) =>
-                        updateField(index, {
-                          field_type: e.target.value as FieldCreate['field_type'],
-                        })
-                      }
-                      className="px-3 py-2.5 bg-card border border-white/10 rounded-2xl text-sm text-text-primary outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25"
-                    >
-                      <option value="text">Text</option>
-                      <option value="number">Number</option>
-                      <option value="boolean">Boolean</option>
-                      <option value="duration">Duration (time spent)</option>
-                      <option value="date">Date</option>
-                      <option value="datetime">DateTime</option>
-                      <option value="time">Time</option>
-                      <option value="select">Select</option>
-                    </select>
-                  </div>
-
-                  {field.field_type === 'select' && (
-                    <input
-                      type="text"
-                      placeholder="Options (comma separated)"
-                      value={field.options || ''}
-                      onChange={(e) => updateField(index, { options: e.target.value })}
-                      className="w-full px-3 py-2.5 bg-card border border-white/10 rounded-2xl text-sm text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25 mb-3"
-                    />
-                  )}
-
-                  <div className="flex justify-between items-center">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={field.is_required}
-                        onChange={(e) => updateField(index, { is_required: e.target.checked })}
-                        className="w-4 h-4 accent-[#B8FF36] rounded"
-                      />
-                      <span className="text-sm text-text-secondary">Required</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => removeField(index)}
-                      className="text-danger hover:text-red-400 text-sm font-medium transition-colors duration-200"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
+              {draft.fields.map((field, index) => (
+                <FieldRow
+                  // Index-keyed on purpose: a new row has no id yet, and the list
+                  // is only ever appended to or filtered, never reordered.
+                  key={index}
+                  field={field}
+                  onChange={(updates) => draft.updateField(index, updates)}
+                  onRemove={() => draft.removeField(index)}
+                />
               ))}
             </div>
 
@@ -605,7 +445,7 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
                 back up to add one more. */}
             <button
               type="button"
-              onClick={addField}
+              onClick={draft.addField}
               className="mt-4 w-full inline-flex items-center justify-center gap-1.5 px-4 py-3 border border-dashed border-white/15 rounded-2xl text-sm text-lime hover:text-green-secondary hover:border-lime/40 font-medium transition-colors duration-200"
             >
               <Plus className="w-4 h-4" strokeWidth={2} />
@@ -626,12 +466,77 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
           <button
             type="submit"
             form="category-form"
-            disabled={saving}
+            disabled={draft.saving}
             className="flex-1 px-4 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)] disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
           >
-            {saving ? 'Saving...' : category ? 'Update' : 'Create'}
+            {draft.saving ? 'Saving...' : category ? 'Update' : 'Create'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface FieldRowProps {
+  field: FieldCreate;
+  onChange: (updates: Partial<FieldCreate>) => void;
+  onRemove: () => void;
+}
+
+/** One field of the category in the desktop modal. */
+function FieldRow({ field, onChange, onRemove }: FieldRowProps) {
+  return (
+    <div className="bg-surface border border-white/5 rounded-2xl p-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <input
+          type="text"
+          placeholder="Field name"
+          value={field.name}
+          onChange={(e) => onChange({ name: e.target.value })}
+          className={compactInputClass}
+        />
+        <select
+          value={field.field_type}
+          onChange={(e) => onChange({ field_type: e.target.value as FieldCreate['field_type'] })}
+          className={compactInputClass}
+        >
+          {/* Driven by the shared label map, so a new field type on the API type
+              shows up here instead of silently missing an option. */}
+          {Object.entries(FIELD_TYPE_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {field.field_type === 'select' && (
+        <input
+          type="text"
+          placeholder="Options (comma separated)"
+          value={field.options || ''}
+          onChange={(e) => onChange({ options: e.target.value })}
+          className={`${compactInputClass} mb-3`}
+        />
+      )}
+
+      <div className="flex justify-between items-center">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={field.is_required ?? false}
+            onChange={(e) => onChange({ is_required: e.target.checked })}
+            className="w-4 h-4 accent-[#B8FF36] rounded"
+          />
+          <span className="text-sm text-text-secondary">Required</span>
+        </label>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-danger hover:text-red-400 text-sm font-medium transition-colors duration-200"
+        >
+          Remove
+        </button>
       </div>
     </div>
   );

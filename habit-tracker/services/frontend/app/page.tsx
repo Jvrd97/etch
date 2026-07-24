@@ -20,6 +20,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
+import { NEW_ENTRY_QUERY } from '@/lib/routes';
 
 const RING_SIZE = 148;
 const RING_STROKE = 8;
@@ -151,7 +152,7 @@ export default function Dashboard() {
 
   const quickActions = [
     { label: 'Add category', href: '/categories?action=new', icon: FolderPlus },
-    { label: 'Log entry', href: '/entries?new=1', icon: Plus },
+    { label: 'Log entry', href: `/entries${NEW_ENTRY_QUERY}`, icon: Plus },
     { label: 'Write journal', href: '/journal?action=new', icon: PenLine },
   ];
 
@@ -188,7 +189,7 @@ export default function Dashboard() {
             today to keep the streak alive.
           </p>
           <Link
-            href="/entries?new=1"
+            href={`/entries${NEW_ENTRY_QUERY}`}
             className="inline-flex items-center gap-2 mt-5 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
           >
             <Plus className="w-4 h-4" strokeWidth={2} />
@@ -334,7 +335,7 @@ export default function Dashboard() {
               </div>
               <p className="text-text-secondary">Nothing here yet</p>
               <Link
-                href="/entries?new=1"
+                href={`/entries${NEW_ENTRY_QUERY}`}
                 className="mt-5 inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
               >
                 Create first entry

@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry plus the persisted user preference
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (now including nested detail routes such as /categories/12) plus the persisted user preference
 
-import { APP_ROUTES, MOBILE_PATH_PREFIX } from './routes';
+import { APP_ROUTES, MOBILE_PATH_PREFIX, isNestedMobileRoute } from './routes';
 
 /** Which shell the user wants: the desktop layout or the `/m/*` mobile instance. */
 export type ViewMode = 'desktop' | 'mobile';
@@ -36,6 +36,39 @@ const RESTORED_MARKER = '1';
 export const MOBILE_ROUTES: readonly string[] = APP_ROUTES.filter(
   (route) => route.hasMobile
 ).map((route) => route.href);
+
+/**
+ * Whitelisted routes whose mobile screen also serves one level below them, so
+ * `/categories/12` maps across as readily as `/categories` does. The nesting
+ * predicate is `lib/routes`' own, so the tab bar and this whitelist cannot
+ * disagree about which screens own their children.
+ */
+const NESTED_MOBILE_ROUTES: readonly string[] = APP_ROUTES.filter(
+  isNestedMobileRoute
+).map((route) => route.href);
+
+/**
+ * True when `desktopPath` is `parent` plus exactly one more segment.
+ *
+ * The mobile detail screens are a single dynamic segment (`/m/categories/[id]`),
+ * so anything deeper has no mobile route at all: a prefix test would map
+ * `/categories/12/anything` onto a 404 instead of leaving the user on the
+ * desktop page that does render it.
+ */
+function isDirectChild(desktopPath: string, parent: string): boolean {
+  if (!desktopPath.startsWith(`${parent}/`)) return false;
+  const rest = desktopPath.slice(parent.length + 1);
+  return rest.length > 0 && !rest.includes('/');
+}
+
+/**
+ * The whitelisted route serving `desktopPath` — itself when it is one, else the
+ * nesting parent that owns it. Null when the mobile shell has no screen for it.
+ */
+function mobileRouteFor(desktopPath: string): string | null {
+  if (MOBILE_ROUTES.includes(desktopPath)) return desktopPath;
+  return NESTED_MOBILE_ROUTES.find((parent) => isDirectChild(desktopPath, parent)) ?? null;
+}
 
 /**
  * Landing screen of the mobile instance — the first registry screen that has a
@@ -82,7 +115,10 @@ export function toDesktopPath(pathname: string): string {
  */
 export function toDesktopEntryPath(pathname: string): string {
   const desktop = toDesktopPath(pathname);
-  return APP_ROUTES.some((route) => route.href === desktop) ? desktop : '/';
+  if (APP_ROUTES.some((route) => route.href === desktop)) return desktop;
+  // A detail route is a real desktop screen too, and dropping its id would land
+  // the user on the dashboard instead of the record they were reading.
+  return mobileRouteFor(desktop) !== null ? desktop : '/';
 }
 
 /**
@@ -97,16 +133,17 @@ export function mobileEntryPath(pathname: string): string {
 
 /** True when the route behind `pathname` has a mobile screen. */
 export function hasMobileVersion(pathname: string): boolean {
-  return MOBILE_ROUTES.includes(toDesktopPath(pathname));
+  return mobileRouteFor(toDesktopPath(pathname)) !== null;
 }
 
 /**
  * The mobile twin of `pathname`, or `null` when that route has no mobile screen
- * yet. Already-mobile paths map to themselves.
+ * yet. Already-mobile paths map to themselves, and a nested route keeps its own
+ * segments — `/categories/12` becomes `/m/categories/12`, not `/m/categories`.
  */
 export function toMobilePath(pathname: string): string | null {
   const desktop = toDesktopPath(pathname);
-  if (!MOBILE_ROUTES.includes(desktop)) return null;
+  if (mobileRouteFor(desktop) === null) return null;
   return `${MOBILE_PATH_PREFIX}${desktop}`;
 }
 
@@ -131,7 +168,7 @@ export function resolvePath(pathname: string, mode: ViewMode): string {
  *
  * Accepted trade-off: the session marker is burned on the first run of the
  * effect, redirect or not. A cold start on a route with no mobile twin
- * (`/entries`, say) with `mode=mobile` stored therefore spends the marker
+ * (`/journal`, say) with `mode=mobile` stored therefore spends the marker
  * without moving anywhere, and the user stays on the desktop shell until the
  * tab session ends — they have to press `Mobile` once. The opposite bias, a
  * marker set only when the redirect actually fires, brings back the loop where

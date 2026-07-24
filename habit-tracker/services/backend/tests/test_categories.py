@@ -5,6 +5,8 @@ Tests for Category CRUD operations.
 # [review:need-review] PHASE-01/35-category-fields-update-web-ux
 # summary: + tests for PATCH field diff-sync (add/rename/remove, history, checklist)
 
+import logging
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -493,6 +495,46 @@ class TestCategoryUpdate:
         )
         assert response.status_code == 200
         assert len(response.json()["fields"]) == 1
+
+    async def test_dropping_a_field_with_history_is_logged(
+        self, client: AsyncClient, caplog: pytest.LogCaptureFixture
+    ):
+        """Cascading a field's entry_values away must leave a trace in the log.
+
+        An id-less PATCH that renames a field reads as "drop the old one, add a
+        new one" — the rename fallback matches on (name, type), so it cannot
+        follow the rename. That path destroys history, so it must not be silent.
+        """
+        create_response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Running",
+                "fields": [{"name": "Distance", "field_type": "number", "order": 0}],
+            },
+        )
+        category = create_response.json()
+        field_id = category["fields"][0]["id"]
+
+        await client.post(
+            "/api/v1/entries",
+            json={
+                "category_id": category["id"],
+                "entry_date": "2024-01-15",
+                "values": [{"field_id": field_id, "value": "5"}],
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.crud.category"):
+            response = await client.patch(
+                f"/api/v1/categories/{category['id']}",
+                json={"fields": [{"name": "Kilometres", "field_type": "number"}]},
+            )
+        assert response.status_code == 200
+
+        dropped = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert dropped, "dropping a field with history must be logged"
+        assert str(field_id) in caplog.text
+        assert "Distance" not in caplog.text, "field name is user data, keep it out"
 
     async def test_patch_to_checklist_with_boolean_field_in_same_call(
         self, client: AsyncClient

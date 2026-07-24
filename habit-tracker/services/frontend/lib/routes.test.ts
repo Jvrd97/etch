@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles
 
 import { describe, expect, it } from 'bun:test';
@@ -26,6 +26,12 @@ describe('APP_ROUTES', () => {
 
   it('describes only desktop hrefs, never the /m twin', () => {
     expect(APP_ROUTES.every((route) => !route.href.startsWith('/m/'))).toBe(true);
+  });
+
+  it('never flags nested mobile routes on a screen without a mobile version', () => {
+    // `hasMobileNested` widens `hasMobile`; on its own it would whitelist
+    // /journal/7 for a mobile shell that has no /m/journal to begin with.
+    expect(APP_ROUTES.every((route) => !route.hasMobileNested || route.hasMobile)).toBe(true);
   });
 });
 
@@ -67,8 +73,21 @@ describe('MOBILE_TABS', () => {
     expect(MOBILE_TABS.find((tab) => tab.name === 'Today')?.href).toBe('/m/today');
   });
 
+  it('points the Entries tab at the mobile screen, not the desktop page', () => {
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Entries')?.href).toBe('/m/entries');
+  });
+
+  it('points the Categories tab at the mobile screen, not the desktop page', () => {
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Categories')?.href).toBe('/m/categories');
+  });
+
+  it('marks the Categories tab as owning the routes nested below it', () => {
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Categories')?.nested).toBe(true);
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Today')?.nested).toBe(false);
+  });
+
   it('keeps a screen without a mobile version on its desktop route', () => {
-    expect(MOBILE_TABS.find((tab) => tab.name === 'Entries')?.href).toBe('/entries');
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Dashboard')?.href).toBe('/');
   });
 
   it('ends on the More screen', () => {
@@ -101,11 +120,27 @@ describe('mobileScreenTitle', () => {
     expect(mobileScreenTitle('/m/today')).toBe('Today');
   });
 
+  it('names the mobile entries screen', () => {
+    expect(mobileScreenTitle('/m/entries')).toBe('Entries');
+  });
+
   it('names the More screen', () => {
     expect(mobileScreenTitle(MORE_PATH)).toBe('More');
   });
 
+  it('names the mobile categories screen', () => {
+    expect(mobileScreenTitle('/m/categories')).toBe('Categories');
+  });
+
+  it('keeps naming the screen on a category detail route', () => {
+    expect(mobileScreenTitle('/m/categories/12')).toBe('Categories');
+  });
+
   it('falls back to the app name on an unknown route', () => {
     expect(mobileScreenTitle('/m/nowhere')).toBe(DEFAULT_SCREEN_TITLE);
+  });
+
+  it('does not name a nested route of a screen that owns no children', () => {
+    expect(mobileScreenTitle('/m/today/12')).toBe(DEFAULT_SCREEN_TITLE);
   });
 });

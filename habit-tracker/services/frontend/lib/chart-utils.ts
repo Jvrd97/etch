@@ -3,6 +3,7 @@
 
 import type { Field, TableDay } from './api';
 import type { ChartPoint } from './chart-data';
+import { toISODate } from './date';
 
 /**
  * Running (prefix) sum for every series key, computed independently per line.
@@ -67,9 +68,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Previous calendar day of an ISO date string (UTC arithmetic). */
 function previousDay(isoDate: string): string {
-  return new Date(Date.parse(`${isoDate}T00:00:00Z`) - MS_PER_DAY)
-    .toISOString()
-    .split('T')[0];
+  return toISODate(new Date(Date.parse(`${isoDate}T00:00:00Z`) - MS_PER_DAY));
 }
 
 /**

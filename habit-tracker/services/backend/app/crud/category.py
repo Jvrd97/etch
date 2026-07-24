@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-01/36-category-update-history-loss
 # summary: field sync matches by id, then by (name, type) — id-less payloads no longer wipe history
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -8,6 +10,8 @@ from app.models import Category, Field
 from app.models.field import FieldType
 from app.schemas import CategoryCreate, CategoryUpdate, FieldCreate
 from app.schemas.category import FieldUpsert
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_field(current: Field, item: FieldUpsert) -> None:
@@ -43,6 +47,22 @@ async def _sync_category_fields(
     которое не сопоставилось ни с чем, удаляется каскадно вместе со своей
     историей — это единственный сценарий потери значений, и он явный
     (поле убрали из желаемого состояния).
+
+    Ограничение compat-shim (проход 2), важное для клиентов без `id`:
+    сопоставление идёт по паре (имя, тип), поэтому **переименование поля в
+    PATCH без `id` не сопоставляется**. Пейлоад `{name: "Вес"}` для поля,
+    которое в БД называется «Масса», прочитается как «поля „Масса“ в желаемом
+    состоянии нет, зато есть новое поле „Вес“»: старое поле удалится каскадно
+    вместе со своими `entry_values`, новое создастся пустым. Смена `field_type`
+    у поля с тем же именем ломает сопоставление ровно так же. То есть для
+    id-less клиента переименование = потеря истории по этому полю. Тихо это не
+    происходит: каждое каскадное удаление пишется в лог `warning`, а каждое
+    срабатывание шима — в `info`, по id (имена полей — пользовательские данные).
+
+    Шим временный: он существует только ради старой сборки фронта на VPS,
+    которая не возит `id` полей. Правильное решение — требовать `id` и убрать
+    fallback по идентичности; это follow-up PHASE-01/57. До него единственная
+    безопасная операция для id-less клиента — не переименовывать поля.
     """
     existing_by_id = {f.id: f for f in db_category.fields}
     seen_ids: set[int] = set()
@@ -71,6 +91,12 @@ async def _sync_category_fields(
         candidates = by_identity.get(_identity_key(item.name, item.field_type))
         if candidates:
             current = candidates.pop(0)
+            logger.info(
+                "field matched by identity fallback (id-less client): "
+                "category_id=%s field_id=%s",
+                db_category.id,
+                current.id,
+            )
             _apply_field(current, item)
             seen_ids.add(current.id)
             continue
@@ -88,6 +114,14 @@ async def _sync_category_fields(
 
     for field_id, field in existing_by_id.items():
         if field_id not in seen_ids:
+            # Cascades the field's entry_values away. Field names are user data,
+            # so only ids go to the log.
+            logger.warning(
+                "dropping field not present in the desired state, "
+                "its entry_values cascade away: category_id=%s field_id=%s",
+                db_category.id,
+                field_id,
+            )
             await db.delete(field)
 
 

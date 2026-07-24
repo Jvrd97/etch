@@ -1,23 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/29-category-page-nav-and-quick-add, PHASE-01/27-streak-mode-endpoint
-// summary: category detail page - chart, entry history, category pager, quick-add; plus streak block for avoid categories
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// summary: desktop category detail — chart, entry history, category pager, quick-add and the avoid-streak block unchanged, with the whole batched load now owned by hooks/useCategoryDetail and shared with /m/categories/[id]
 
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, ArrowRight, Calendar, Plus } from 'lucide-react';
-import {
-  Category,
-  CategoryStreak,
-  Entry,
-  TableDay,
-  categoriesAPI,
-  entriesAPI,
-  tableAPI,
-} from '@/lib/api';
-import { categorySiblings } from '@/lib/category-nav';
-import { chartDateRange } from '@/lib/chart-data';
-import { groupEntriesByDate } from '@/lib/entry-groups';
+import { type Category } from '@/lib/api';
+import { useCategoryDetail } from '@/hooks/useCategoryDetail';
 import CategoryChart from '@/components/CategoryChart';
 import EntryCard from '@/components/EntryCard';
 import EntryForm from '@/components/EntryForm';
@@ -25,64 +15,25 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import StreakCard from '@/components/StreakCard';
 
-/** Full history without pagination (ticket #22: pagination is out of scope). */
-const ENTRIES_FETCH_LIMIT = 1000;
-
 export default function CategoryDetailPage() {
   const params = useParams<{ id: string }>();
   const categoryId = Number(params.id);
-
-  const invalidId = !Number.isInteger(categoryId) || categoryId <= 0;
-
-  const [category, setCategory] = useState<Category | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [days, setDays] = useState<TableDay[] | null>(null);
-  const [entries, setEntries] = useState<Entry[] | null>(null);
-  const [streak, setStreak] = useState<CategoryStreak | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [refreshCounter, setRefreshCounter] = useState(0);
+  const {
+    category,
+    categories,
+    days,
+    entries,
+    entryGroups,
+    streak,
+    invalidId,
+    loaded,
+    error,
+    setError,
+    reload,
+    prev,
+    next,
+  } = useCategoryDetail(categoryId);
   const [showForm, setShowForm] = useState(false);
-
-  useEffect(() => {
-    if (!Number.isInteger(categoryId) || categoryId <= 0) return;
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const { from, to } = chartDateRange(new Date());
-        const [categoryResult, categoriesResult, tableResult, entriesResult, streakResult] =
-          await Promise.all([
-            categoriesAPI.getById(categoryId),
-            categoriesAPI.getAll(),
-            tableAPI.get(from, to),
-            entriesAPI.getAll({ categoryId, limit: ENTRIES_FETCH_LIMIT }),
-            // Secondary widget: a failure here must not blank the whole page,
-            // so it degrades to "no streak block" instead of rejecting the batch.
-            categoriesAPI.getStreak(categoryId).catch(() => null),
-          ]);
-        if (cancelled) return;
-        setCategory(categoryResult);
-        setCategories(categoriesResult);
-        setDays(tableResult.days);
-        setEntries(entriesResult);
-        setStreak(streakResult);
-      } catch (err) {
-        if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : 'Failed to load category');
-        }
-      }
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [categoryId, refreshCounter]);
-
-  const reload = useCallback(() => {
-    setRefreshCounter((n) => n + 1);
-  }, []);
-
-  const loaded = category !== null && days !== null && entries !== null;
-  const { prev, next } = categorySiblings(categories, categoryId);
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -154,17 +105,13 @@ export default function CategoryDetailPage() {
       )}
 
       {invalidId && <ErrorAlert message="Invalid category id" />}
-      {loadError && (
-        <ErrorAlert message={loadError} onDismiss={() => setLoadError(null)} />
-      )}
+      {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
       {invalidId ? null : !loaded ? (
-        !loadError && <LoadingSpinner size="lg" />
+        !error && <LoadingSpinner size="lg" />
       ) : (
         <>
-          {category.streak_mode === 'avoid' && streak !== null && (
-            <StreakCard streak={streak} />
-          )}
+          {category.streak_mode === 'avoid' && streak !== null && <StreakCard streak={streak} />}
 
           <CategoryChart category={category} days={days} />
 
@@ -182,7 +129,7 @@ export default function CategoryDetailPage() {
             </div>
           ) : (
             <div className="space-y-8">
-              {groupEntriesByDate(entries).map(([date, dateEntries]) => (
+              {entryGroups.map(([date, dateEntries]) => (
                 <div key={date}>
                   <div className="flex items-center gap-3 mb-4">
                     <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
@@ -197,7 +144,7 @@ export default function CategoryDetailPage() {
                         entry={entry}
                         category={category}
                         onMutated={reload}
-                        onError={setLoadError}
+                        onError={setError}
                       />
                     ))}
                   </div>

@@ -40,6 +40,13 @@ bun dev
 # http://localhost:3000
 ```
 
+### Tests
+
+```bash
+# Unit tests and hook tests (happy-dom is preloaded via bunfig.toml)
+bun test
+```
+
 ### Production Build
 
 ```bash

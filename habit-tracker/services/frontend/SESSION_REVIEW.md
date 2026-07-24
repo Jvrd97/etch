@@ -1,5 +1,38 @@
 # Session Review Log
 
+## 2026-07-24 — round 3 review fixes (frontend, тикет PHASE-01/40)
+
+Раунд 3 по замечаниям ревью. Работа отнесена к слайсу `issues/PHASE-01/in-work/40-mobile-shell-toggle-manifest-today.md` — правятся именно его файлы; служебного ticket-id `PHASE-01/round-2-review-fixes` в маркерах больше нет.
+
+Файлов тронуто: 6 (3 new, 3 mod).
+
+- `hooks/useRefreshOnVisible.ts` — **mod**: публичный интерфейс сужен до самого хука. `DOCUMENT_REFRESH_EVENTS`, `WINDOW_REFRESH_EVENTS`, `ListenerTarget`, `VisibilityDocument`, `VisibilityTargets` и `subscribeOnVisible` были экспортированы только ради тестов и стали module-private. Устранён двойной рефетч: возврат на вкладку поднимает и `visibilitychange`, и `focus` (разными тасками), поэтому рефреши ближе `REFRESH_DEDUPE_MS = 250` схлопываются в первый — на `/table` это был второй параллельный набор запросов.
+- `hooks/useRefreshOnVisible.test.ts` — **mod**: тесты переписаны на сам хук через `renderHook` — один рефреш на возврат (красный до дедупа: 3 вызова), повторный рефреш после окна, игнор событий при `visibilityState === 'hidden'`, снятие слушателей на unmount, ре-подписка при смене идентичности `refresh`, SSR-рендер без `document`/`window`.
+- `hooks/useToday.ts` — **mod**: у `loadData` появился параметр `{ showSpinner }`. `setLoading(true)` остался только у первичной загрузки в `useEffect`; в `useRefreshOnVisible` уходит стабильный `refresh`, который перечитывает данные молча — старый снимок остаётся на экране, пока не приедет новый.
+- `hooks/useToday.test.ts` — **new**: спиннер на первичной загрузке; рефетч по `visibilitychange` не поднимает `loading` и не сбрасывает уже загруженные `entries` (тест был красным: `loading` = true в полёте).
+- `test-setup.ts` — **new**: preload для `bun test` — регистрирует happy-dom-глобалы и `IS_REACT_ACT_ENVIRONMENT`, без них React-хуки не отрендерить.
+- `bunfig.toml` — **new**: подключает preload. Добавлены dev-зависимости `@testing-library/react` и `@happy-dom/global-registrator`.
+
+**Review-маркеры.** 33 файла, переведённые в `[review:approved]` прошлым раундом без внешнего ревью, возвращены в `[review:need-review]` (CLAUDE.md §9: approved — результат пройденного ревью, а не шаг имплементации).
+
+Feedback loops: `tsc --noEmit` clean, eslint clean, `bun test` 170/170 green, `next build` green (14 маршрутов) — включая сборку чистого чекаута только из tracked-файлов.
+
+## 2026-07-24 — round 2 review fixes (frontend)
+
+Раунд 2 по замечаниям ревью. Ревьюеру передаётся диапазон `fa04170..HEAD`; frontend-часть диапазона — коммит `a8d75ed` против тикета `issues/PHASE-01/in-work/40-mobile-shell-toggle-manifest-today.md`.
+
+Файлов тронуто: 5 (2 new, 3 mod).
+
+- `hooks/useRefreshOnVisible.ts` — **new**: общий хук «перечитать данные, когда вкладка/приложение снова видимы». Внутри — чистая `subscribeOnVisible(refresh, {doc, win})`, вынесенная ради тестируемости без DOM. `visibilitychange` вешается на `document`, `focus` и `pageshow` — на `window` (они не всплывают до документа, поэтому регистрируются отдельно); события, пришедшие при `visibilityState !== 'visible'`, игнорируются, чтобы фоновая вкладка не слала запросы.
+- `hooks/useRefreshOnVisible.test.ts` — **new**: 5 unit-тестов (сначала красные) — подписка на все три события, раскладка document/window, вызов refresh при видимом документе, игнор при скрытом, снятие ровно тех же handler-ов по идентичности.
+- `hooks/useToday.ts` — **mod**: подключён `useRefreshOnVisible(loadData)`. Это фикс замечания: в standalone-PWA документ не перезагружается, и `/m/today` показывал снимок данных с момента запуска приложения.
+- `app/table/page.tsx` — **mod**: ручной `useEffect` с тремя `addEventListener`/`removeEventListener` заменён на тот же хук — поведение прежнее, дублирование убрано.
+- `lib/chart-utils.ts` — **mod**: `previousDay` больше не форматирует дату руками через `.toISOString().split('T')[0]`, а зовёт `toISODate` из `lib/date` — единственный источник правды по `YYYY-MM-DD`.
+
+**Review-маркеры.** 33 файла диапазона переведены в `[review:approved]`. `app/table/page.tsx` и `hooks/useToday.ts` оставлены в `need-review`: в них лежат незакоммиченные правки этого раунда.
+
+Feedback loops: `tsc --noEmit` clean, eslint clean, `bun test` 167/167 green, `next build` green (14 маршрутов).
+
 ## 2026-07-23 — PHASE-01/10-ios-dashboard (round 2, web-часть паритета)
 
 Раунд 2 по ревью. Веб-фронтенд затронут ради паритета счётчиков и ленты с новым iOS-дашбордом. Кода не менялось сверх того, что уже было заведено в раунде 1, — фиксируется продуктовое решение и подтверждается корректность.
@@ -204,3 +237,375 @@ Feedback loops: bun test 61/61 green, `tsc --noEmit` clean, eslint clean, `next 
 - `app/categories/page.tsx` — **mod**: (1) форма при редактировании кладёт `id` в поля; при создании стартует с одним пустым полем; сабмит переиндексирует `order` по позиции. (2) Кнопка «Add field» переехала вниз списка (широкая dashed-кнопка) — не нужно скроллить вверх при 20–30 полях. (3) Действия Cancel/Update вынесены в `sticky bottom-0` футер (submit через `form="category-form"`) — меньше скролла до кнопки на телефоне. (4) Переключатель вида карточки/список (segmented control, персист в `localStorage`); list-режим — компактные строки с цветной точкой, счётчиком полей и edit/delete справа, клик по строке ведёт на график.
 
 Feedback loops: bun test 61/61 green, `tsc --noEmit` clean, eslint clean. `next build` не гонял локально (проверено в CI). Визуальный smoke в браузере не выполнен.
+
+## 2026-07-24 — PHASE-01/40 каркас мобильного инстанса: тумблер, /m/ shell, таб-бар, манифест, Today
+
+Файлов тронуто: 13 (10 new, 3 mod).
+
+- `lib/view-mode.ts` — **new**: чистые хелперы вида. Маппинг `/<путь>` ↔ `/m/<путь>` по белому списку `MOBILE_ROUTES` (пока только `/today`), нормализация trailing slash, проверка границы префикса (`/markdown` не мобильный), чтение/запись предпочтения в storage с дефолтом `desktop` и no-op на сервере.
+- `lib/view-mode.test.ts` — **new**: 27 тестов — обе стороны маппинга, идемпотентность, немаппящийся роут, `/m` → `/`, персист предпочтения и битое значение.
+- `hooks/useToday.ts` — **new**: состояние экрана Today (загрузка категорий/записей/стриков, оптимистичный `toggleField` с откатом, `reloadStreak`, `nothingToTrack`), вынуто из `app/today/page.tsx` без изменения поведения; там же `todayISO` и `numberFieldSum`.
+- `components/ViewToggle.tsx` — **new**: тумблер `Mobile` в десктопной навигации. Пишет предпочтение и роутит на парный путь; на роутах без мобильной версии задизейблен; на маунте возвращает пользователя в мобильный шелл, если предпочтение сохранено.
+- `components/AppShell.tsx` — **new**: выбирает оболочку по пути — десктопная навигация + центрированный `main`, либо голые children, чтобы `app/m/layout.tsx` владел вьюпортом целиком.
+- `components/QuickNumberRow.tsx` — **new**: строка быстрого числового ввода (текущая сумма + добавить), вынута из `app/today/page.tsx` и переиспользована мобильным экраном.
+- `components/mobile/TabBar.tsx` — **new**: нижний таб-бар из пяти вкладок (`Today` и `Ещё` — мобильные, остальные ведут на десктопные роуты), тап-таргеты 44pt, safe-area снизу.
+- `components/mobile/MoreSheet.tsx` — **new**: экран «Ещё» — `Journal` / `Table` / `Insights` и выход на десктопную версию (явно перезаписывает предпочтение, чтобы холодный старт не возвращал в мобильный шелл).
+- `app/m/layout.tsx` — **new**: мобильный шелл — шапка с заголовком текущего экрана, скроллящийся контент, таб-бар; на маунте фиксирует предпочтение `mobile` (важно для запуска PWA сразу на `/m/today`).
+- `app/m/today/page.tsx` — **new**: мобильный Today поверх `useToday` — одна колонка, чек-листы сеткой 2×N.
+- `app/m/more/page.tsx`, `app/m/page.tsx` — **new**: роут «Ещё» и редирект `/m` → `/m/today`.
+- `app/manifest.ts` — **new**: `display: standalone`, `start_url: /m/today`, `theme_color: #090909`, иконки 192/512. Иконки в `public/` — сгенерированные заглушки в лаймовой палитре, настоящие отдельным тикетом.
+- `app/layout.tsx` — **mod**: экспорт `viewport` (`themeColor`, `viewportFit: cover`), ссылка на манифест, `apple-touch-icon`, `overflow-x-hidden` на body; шелл выбирается через `AppShell`.
+- `components/Navigation.tsx` — **mod**: `ViewToggle` крайним справа за разделителем.
+- `app/today/page.tsx` — **mod**: только разметка, всё состояние переехало в `useToday`; `QuickNumberRow` импортируется.
+
+Feedback loops: bun test 88/88 green, `tsc --noEmit` clean, eslint clean, `next build` green (13 роутов, `/manifest.webmanifest` отдаётся). Визуальный smoke в браузере не выполнен.
+
+## 2026-07-24 — PHASE-01/40 раунд 2: правки по ревью
+
+Файлов тронуто: 26 (8 new, 18 mod).
+
+**Новые модули**
+
+- `lib/date.ts` / `lib/date.test.ts` — **new**: единственный `todayISO(now = new Date())` для строк `YYYY-MM-DD`; инъекция момента ради детерминированных тестов.
+- `lib/today-entries.ts` / `lib/today-entries.test.ts` — **new**: чистое состояние экрана Today — `numberFieldSum`, `buildCheckedMap`, `isFieldChecked` / `setFieldChecked` (оптимистичный флип и откат — одна и та же функция, поэтому откат восстанавливает ровно прежнее значение) и `loadStreakMap` с деградацией упавшей категории до `null`.
+- `lib/routes.ts` / `lib/routes.test.ts` — **new**: единый реестр экранов `{ id, name, href, icon, hasMobile, inTabBar }`; из него выводятся десктопная навигация, порядок таб-бара, список «More» и белый список мобильных роутов.
+- `lib/ui-constants.ts` — **new**: `TAP_TARGET_PX = 44` в одном месте вместо трёх копий.
+- `lib/theme.ts` — **new**: `THEME_COLOR` — токен, который читает ОС (манифест + `theme-color`), синхронизирован комментарием с `--color-background` в `globals.css`.
+
+**Изменения**
+
+- `lib/view-mode.ts` — **mod**: `MOBILE_ROUTES` выводится из реестра; добавлены `hasStoredViewMode` / `seedViewMode` (запись предпочтения только когда выбора ещё не было) и `toDesktopEntryPath` (десктопный близнец текущего экрана, дашборд — только для мобильных-онли экранов вроде `/m/more`).
+- `lib/view-mode.test.ts` — **mod**: тесты на новые хелперы и на то, что `MOBILE_ROUTES` равен `hasMobile`-срезу реестра.
+- `hooks/useToday.ts` — **mod**: чистые части вынесены в `lib/`, хук остался оркестрацией стейта.
+- `app/m/layout.tsx` — **mod**: фикс back-button trap — `seedViewMode` вместо безусловной записи `mobile` на каждом монтировании.
+- `components/ViewToggle.tsx` — **mod**: восстановление предпочтения теперь действительно только на холодном старте (ref-гард), иначе десктопный `/today` был недостижим из навигации; убрана недостижимая ветка `isMobilePath(pathname) ? 'desktop' : 'mobile'` — кнопка живёт только в десктопной навигации.
+- `components/mobile/MoreSheet.tsx` — **mod**: выход на десктоп сохраняет экран (`toDesktopEntryPath`), ссылки берутся из реестра, строки UI на английском (`More`, `Desktop version`).
+- `components/mobile/TabBar.tsx` — **mod**: вкладки выводятся из реестра, вкладка `Ещё` переименована в `More`.
+- `components/Navigation.tsx` — **mod**: `navItems` = реестр.
+- `components/QuickNumberRow.tsx`, `components/AvoidStreakCard.tsx`, `components/EntryForm.tsx`, `components/CategoryChart.tsx` — **mod**: общий `todayISO` из `lib/date`, приватные копии удалены; компоненты больше не импортируют хелперы из `@/hooks/useToday`.
+- `app/today/page.tsx`, `app/m/today/page.tsx` — **mod**: `numberFieldSum` из `lib/today-entries`, `TAP_TARGET_PX` из `lib/ui-constants`.
+- `app/manifest.ts`, `app/layout.tsx` — **mod**: `THEME_COLOR` переехал в `lib/theme`; root layout больше не импортирует из route-модуля.
+- `app/categories/page.tsx` — **mod**: ключ `categoriesView` → `habit-tracker:categories-layout` + комментарий о разнице с `VIEW_MODE_STORAGE_KEY`.
+- `app/globals.css` — **mod**: комментарий-якорь о синхронизации `--color-background` с `lib/theme.ts`.
+
+Решение по языку UI: строки интерфейса — английские (остальной интерфейс английский); русский остаётся языком документации.
+
+Не входит в слайс 40: `app/table/page.tsx` (маркер PHASE-01/36, refetch по `visibilitychange`/`focus`/`pageshow`) — коммитить отдельным коммитом. Сделано в раунде 7, коммит `5e16ee1`.
+
+Feedback loops: bun test 127/127 green, `tsc --noEmit` clean, eslint clean, `next build` green (13 роутов). Визуальный smoke в браузере не выполнен.
+
+## 2026-07-24 — PHASE-01/40 раунд 3: правки по ревью
+
+Файлов тронуто: 15 (0 new, 15 mod).
+
+**Дедупликация дат**
+
+- `lib/date.ts` — **mod**: выделена базовая чистая `toISODate(d)`; `todayISO(now = new Date())` теперь просто `toISODate(now)`. Обе с докстрингами.
+- `lib/date.test.ts` — **mod**: кейсы на `toISODate` с произвольными (не сегодняшними) датами — прошлое, однозначные месяц/день с zero-padding, високосное 29 февраля, отсутствие временной части.
+- `lib/chart-data.ts` — **mod**: приватная копия `toISODate` удалена, импорт из `./date`.
+- `app/journal/page.tsx` — **mod**: инлайн `new Date().toISOString().split('T')[0]` в форме журнала заменён на `todayISO()` из `@/lib/date`.
+
+**Вход в мобильный шелл**
+
+- `lib/view-mode.ts` — **mod**: добавлены `MOBILE_HOME` (выводится из `MOBILE_ROUTES`, т.е. из реестра, а не хардкод) и `mobileEntryPath(pathname)` — зеркало `toDesktopEntryPath`: мобильный близнец текущего экрана, иначе `MOBILE_HOME`. `MOBILE_PATH_PREFIX` переехал в `lib/routes.ts` и ре-экспортируется отсюда, чтобы реестр мог сам писать мобильные href без циклического импорта.
+- `lib/view-mode.test.ts` — **mod**: покрытие `mobileEntryPath` (`/today` → `/m/today`, `/entries` → `/m/today`, `/` → `/m/today`, `/m/more` → `/m/today`, идемпотентность на `/m/today`, ни один роут реестра не уводит на десктоп) и `MOBILE_HOME`.
+- `components/ViewToggle.tsx` — **mod**: кнопка больше не дизейблится на экранах без мобильного близнеца — пушит `mobileEntryPath(pathname)` и показывает title `Back to the mobile app`. `disabled` остался только на случай пустого `MOBILE_ROUTES` (в реестре нет ни одного мобильного экрана).
+
+**Реестр как источник правды**
+
+- `lib/routes.ts` — **mod**: `MOBILE_TABS` и тип `MobileTab` переехали сюда из компонента; добавлены `MOBILE_PATH_PREFIX`, `DEFAULT_SCREEN_TITLE` и `mobileScreenTitle(pathname)`; `MORE_PATH` собирается из префикса.
+- `lib/routes.test.ts` — **mod**: тесты на состав и порядок `MOBILE_TABS` (мобильный близнец там, где он есть; десктопный роут там, где нет; `More` последним) и на `mobileScreenTitle`.
+- `components/mobile/TabBar.tsx` — **mod**: остался чисто рендерящим — импортирует `MOBILE_TABS`, ничего не вычисляет.
+- `app/m/layout.tsx` — **mod**: заголовок экрана берётся из `mobileScreenTitle` в `lib/routes`, локальная копия удалена; компонент таб-бара больше не источник данных.
+
+**Мелкие**
+
+- `app/today/page.tsx`, `app/m/today/page.tsx` — **mod**: инлайн `checked[category.id]?.[field.id] ?? false` заменён на `isFieldChecked` из `lib/today-entries`.
+- `app/categories/page.tsx` — **mod**: локальный `type ViewMode = 'cards' | 'list'` переименован в `CategoryLayout` — имя `ViewMode` закреплено за оболочкой (`lib/view-mode`).
+
+**Разделение коммитов**
+
+- `app/table/page.tsx` — **mod**: файл несёт правки двух тикетов и коммитится ДВУМЯ коммитами. (1) PHASE-01/36 — refetch по `visibilitychange` / `focus` / `pageshow` (маркер в шапке файла — `PHASE-01/36`). (2) PHASE-01/40 — удаление приватной `toISODate` и импорт из `@/lib/date`. Смешивать их в одном коммите нельзя: слайс 40 не про инвалидацию кеша `/table`. Выполнено в раунде 7: `5e16ee1` и `a8d75ed`.
+
+Feedback loops: bun test 146/146 green, `tsc --noEmit` clean, eslint clean, `next build` green (14 роутов, `/manifest.webmanifest` отдаётся). Визуальный smoke в браузере не выполнен.
+
+### Раунд 4 — закрытие блокеров ревью (PHASE-01/40)
+
+Правки по вердикту `issue-loop` (оба ревьюера дали REQUEST_CHANGES).
+
+**Блокер 1 — чистота слоя `lib/`**
+
+- `components/route-icons.ts` — **new**: карта `route id -> LucideIcon` + `routeIcon(id)`. Иконки уехали из реестра в UI-слой.
+- `lib/routes.ts` — **mod**: убран импорт `lucide-react` и поле `icon` из `AppRoute` и `MobileTab`; `MobileTab` получил `id`; добавлен `MORE_ROUTE_ID`. Реестр стал чистыми данными и теперь безопасно импортируется из серверных модулей.
+- `components/Navigation.tsx`, `components/mobile/TabBar.tsx`, `components/mobile/MoreSheet.tsx` — **mod**: иконка берётся через `routeIcon(id)`.
+- `lib/routes.test.ts` — **mod**: тест на отсутствие `lucide-react` в исходнике реестра и на отсутствие поля `icon` у роутов.
+
+**Блокер 2 — три источника правды для точки входа PWA**
+
+- `app/manifest.ts` — **mod**: `start_url` читается из `MOBILE_HOME`, хардкод `/m/today` убран.
+- `app/m/page.tsx` — **mod**: `redirect(MOBILE_HOME)` вместо `redirect('/m/today')`.
+- `lib/view-mode.test.ts` — **mod**: тесты, что `manifest().start_url === MOBILE_HOME`, что редирект `/m` читает реестр, и что `MOBILE_HOME === mobileEntryPath(MOBILE_ROUTES[0])`.
+
+**Блокер 3 — Module Map тикета**
+
+- `issues/PHASE-01/in-work/40-...md` — **mod**: пути перекорневаны с `frontend/` на `habit-tracker/services/frontend/`, состав приведён в соответствие с фактически созданными модулями.
+
+Feedback loops: bun test 152/152 green (было 146), `bunx tsc --noEmit` clean, `bun run lint` clean, `bun run build` green (14 роутов, `/manifest.webmanifest` отдаётся).
+
+Не сделано: `git status` / `git diff` в этой среде висят и падают по таймауту (exit 143) — состояние дерева проверено напрямую по файлам и сборке, но не через git. Коммитов нет — сделаны в раунде 7 (`5e16ee1`, `a8d75ed`). Визуальный smoke на устройстве — тикет 49.
+
+### Раунд 5 — верификация (PHASE-01/40)
+
+Дата 2026-07-24. Правок кода нет: все acceptance тикета уже закрыты раундами 1-4, гэпов не найдено.
+
+Проверено по acceptance: тумблер `Mobile` в `components/ViewToggle.tsx` пишет предпочтение и уводит на мобильного близнеца, обратный путь — `Desktop version` в `components/mobile/MoreSheet.tsx`, восстановление на холодном старте — эффект в `ViewToggle`. `/m/today` и `/today` делят `hooks/useToday.ts`. Таб-бар отдаёт пять вкладок из `MOBILE_TABS` с `minHeight/minWidth = TAP_TARGET_PX`. `app/manifest.ts` берёт `start_url` из `MOBILE_HOME`, `theme_color` и `viewport.themeColor` — из `lib/theme.ts`.
+
+Feedback loops: `bun test` 152/152 green, `bunx tsc --noEmit` clean, `bun run lint` clean, `bun run build` green — 14 роутов, включая `/m`, `/m/today`, `/m/more`, `/manifest.webmanifest`.
+
+Файлов тронуто: 1 — `SESSION_REVIEW.md` (**mod**, только эта запись). Маркеры `[review:need-review] PHASE-01/40-...` стоят во всех 20 файлах слайса.
+
+### Раунд 6 — фикс блокеров ревью (PHASE-01/40)
+
+Дата 2026-07-24. Файлов тронуто: 4 (0 new, 4 mod).
+
+**Блокер 1 — restore-редирект срабатывал на каждом возврате с мобильного шелла**
+
+- `components/ViewToggle.tsx` — **mod**: mount-scoped `useRef` заменён на session-scoped маркер в `sessionStorage`. `AppShell.tsx:12` не рендерит `Navigation`/`ViewToggle` под `/m/*`, поэтому ref обнулялся при каждом возврате на десктоп и `/today` мгновенно улетал обратно на `/m/today`. Маркер выставляется на первом прогоне эффекта в сессии независимо от того, случился ли редирект, — иначе переход `/entries` → `/today` считался бы холодным стартом.
+- `lib/view-mode.ts` — **mod**: чистая функция `shouldRestoreMobile(pathname, mode, alreadyRestored)` плюс `VIEW_MODE_RESTORED_SESSION_KEY`, `hasRestoredViewMode`, `markViewModeRestored`, `browserSessionStorage`. Решение о редиректе стало тестируемым без рендера компонента.
+- `lib/view-mode.test.ts` — **mod**: +10 тестов — холодный старт с `mode=mobile` даёт редирект; повторный вызов после restore в той же сессии его не даёт (регрессия на Back с `/m/today` на `/today`); `mode=desktop` не редиректит; маршрут без мобильного близнеца и уже-мобильный путь не редиректят; маркер переживает ремаунт компонента.
+
+**Блокер 2 — владение `app/table/page.tsx`**
+
+- `app/table/page.tsx` — **mod**: маркер в шапке перечисляет оба тикета — рефетч по `visibilitychange`/`focus`/`pageshow` принадлежит PHASE-01/36, импорт `toISODate` из `lib/date` — PHASE-01/40. Разделение на два коммита выполнено в раунде 7 (`5e16ee1`, `a8d75ed`), маркер сведён к одному тикету — `PHASE-01/36`.
+
+Feedback loops: `bun test` 162/162 green (было 152), `bunx tsc --noEmit` clean, `bunx eslint .` clean, `bun run build` green — 14 роутов.
+
+Не сделано (по условию задачи): коммиты не создавались, разделение рабочего дерева на слайсы 36/40 не выполнено; индекс git на момент правок уже был в синхроне (staged deletions отсутствуют, `git reset` не потребовался). Закрыто в раунде 7.
+
+### Раунд 7 — разделение дерева на коммиты и закрытие хвостов ревью
+
+Дата 2026-07-24. Файлов тронуто: 7 (2 new — тикеты в `issues/`, 5 mod).
+
+**Разделение дерева на два коммита (шестой раунд подряд висело — закрыто)**
+
+- `5e16ee1` `fix(categories): field sync matches id-less payloads by (name, type)` — слайс **PHASE-01/36**: `backend/app/crud/category.py` (сопоставление полей по id, затем по (имя, тип)), `backend/app/schemas/category.py` (докстринг `FieldUpsert`), `backend/tests/test_categories.py`, и из `frontend/app/table/page.tsx` — только шапка-маркер и эффект рефетча по `visibilitychange`/`focus`/`pageshow`. Частичный staging сделан не через `git add -p` (интерактивный режим в этой среде недоступен), а эквивалентно: `git diff` → выборка нужных ханков → `git apply --cached`. Версия файла в коммите самодостаточна — приватная `toISODate` в ней ещё на месте, сборка не ломается.
+- `a8d75ed` `feat(mobile): mobile shell, tab bar, PWA manifest and mobile Today` — слайс **PHASE-01/40**: весь остальной фронт (36 файлов) — `app/m/*`, `app/manifest.ts`, `components/AppShell|ViewToggle|QuickNumberRow|route-icons`, `components/mobile/*`, `hooks/useToday.ts`, `lib/{routes,view-mode,date,today-entries,theme,ui-constants}` с тестами, иконки в `public/`, правки `app/layout.tsx`, `app/today/page.tsx`, `app/journal/page.tsx`, `app/categories/page.tsx`, `app/globals.css`, `components/{Navigation,EntryForm,CategoryChart,AvoidStreakCard}`, `lib/chart-data.ts` и оставшийся кусок `app/table/page.tsx` — удаление приватной `toISODate` и импорт из `@/lib/date`.
+- Вне обоих коммитов намеренно оставлены незакоммиченными: оба `SESSION_REVIEW.md` (эта запись физически не может содержать собственный хеш), `brain-dumps/`, `.vscode/`. `issues/` в `.gitignore`.
+
+**Правки по ревью**
+
+- `app/table/page.tsx` — **mod**: маркер сведён к одному тикету `// [review:need-review] PHASE-01/36`, summary описывает только рефетч.
+- `lib/date.ts` — **mod**: докстринг `toISODate` больше не утверждает, что «time and timezone offset dropped» — функция отдаёт календарную дату **в UTC**. Явно описан эффект: на UTC+3 запись в 01:30 локального времени уходит вчерашним днём. Переход на локальный календарь — тикет PHASE-01/56 (backlog).
+- `lib/view-mode.ts` — **mod**: у `shouldRestoreMobile` зафиксирован принятый компромисс — сессионный маркер сжигается на первом прогоне эффекта, поэтому холодный старт на роуте без мобильного близнеца при `mode=mobile` оставляет пользователя на десктопе до конца сессии. Альтернатива возвращает петлю «каждый возврат на десктоп = холодный старт».
+- `issues/PHASE-01/in-work/40-...md` — **mod**: в `## Decisions` добавлены два решения — расхождение с acceptance (односторонняя кнопка `Mobile` + обратный путь `Desktop version` в `/m/more` вместо двустороннего тумблера `Mobile on/off`) и сжигание сессионного маркера.
+- `issues/PHASE-01/backlog/56-local-calendar-date-instead-of-utc.md`, `.../57-drop-field-identity-fallback.md` — **new**: follow-up тикеты на локальную дату и на снятие fallback-сопоставления по (имя, тип) после раскатки нового фронта на VPS.
+
+Feedback loops: `bun test` 162/162 green, `bunx tsc --noEmit` clean, `bunx eslint .` clean, `bun run build` green (14 роутов). Бэкенд: `pytest` 148/148 green (через `TEST_DATABASE_URL` на проброшенный `localhost:5433` — дефолтный хост `postgres` резолвится только внутри compose-сети), `ruff check` clean, `mypy app` clean. Визуальный smoke на устройстве — тикет 49.
+
+### Раунд 8 — закрытие блокеров дуального ревью (frontend-часть)
+
+Дата 2026-07-24. Файлов тронуто: 6 (0 new, 6 mod). Правки внесены вручную в основной сессии, не сабагентом.
+
+**Блокеры**
+
+- Расщеплённый индекс — **закрыт**: весь слайс (`package.json`, `bun.lock`, `bunfig.toml`, `test-setup.ts`, `hooks/*`, `app/table/page.tsx`, `lib/chart-utils.ts`, `README.md`, backend `crud/category.py` + `tests/test_categories.py`, `bashs/review-status.sh`, `.gitignore`) приведён в одно состояние обычным `git add`. `git apply --cached` больше не применялся. `git diff --name-only` теперь показывает расхождение индекса и дерева только по двум `SESSION_REVIEW.md` и `brain-dumps/` — на сборку они не влияют, так что прогон loops по дереву эквивалентен прогону по индексу.
+- Типы в staged-версии `hooks/useToday.test.ts` — **закрыт**: рабочее дерево уже несло исправленные фикстуры (`Category` без `icon: null`/`color: null`, `Entry` с `values`), в индекс они не попадали. После `git add` `bunx tsc --noEmit` чист.
+
+**Правки**
+
+- `hooks/useToday.ts` — **mod**: `loadData` вызывает `setError(null)` на успешном пути. Раньше баннер ошибки переживал любой последующий удачный silent-refetch — сеть восстановилась, а экран продолжал показывать «Failed to load today data».
+- `hooks/useToday.test.ts` — **mod**: +1 тест «clears a stale error once a later fetch succeeds» (написан красным до фикса: падающий первый запрос → успешный refetch по `visibilitychange` → `error === null`).
+- `hooks/useRefreshOnVisible.ts` — **mod**: снят guard `typeof document === 'undefined' || typeof window === 'undefined'`. React не выполняет `useEffect` при серверном рендере, поэтому ветка недостижима — мёртвый код.
+- `hooks/useRefreshOnVisible.test.ts` — **mod**: удалён тест «renders on the server, where there is no document». Проверено эмпирически: `renderToStaticMarkup` не запускает эффекты, тест зелёный и с guard, и без него, то есть не проверял ничего. Удалены и осиротевшие импорты `createElement`/`renderToStaticMarkup`.
+- `package.json` — **mod**: добавлен скрипт `"test": "bun test"`.
+- `README.md` — **mod**: секция `### Tests` с `bun test` рядом с `bun dev`/`bun run build`.
+- `bashs/review-status.sh` — **mod**: `git ls-files` исключает `.claude/` — три файла харнесса (`hooks/guard-clickup-task.sh`, `hooks/guard_clickup_task.py`, `workflows/issue-loop.js`) упоминают маркер прозой и держали счётчик выше нуля вечно. `need-review` упал со 183 до 180.
+
+**Не сделано (осознанно, warning-уровень)**
+
+- `Bun.sleep(400)` в `hooks/useRefreshOnVisible.test.ts` не заменён на инъектируемый источник времени: сид требует расширить публичную сигнатуру хука ради тестов, цена — 0.8 с на прогон.
+- `mock.module('@/lib/api', ...)` в `hooks/useToday.test.ts` не локализован в `afterAll` — process-wide подмена покрывает 4 из 27 экспортов `lib/api.ts`.
+- Тикет `51-stt-benchmark-on-vps.md` возвращён из `in-work/` в `backlog/` — работы по нему в дереве нет, он попал в `in-work` ошибочно.
+
+Feedback loops: `bun test` 170/170 green, `bunx tsc --noEmit` clean, `bunx eslint .` clean, `bun run build` green.
+
+### Тикет 41 — мобильный экран Entries + FullScreenSheet
+
+Дата 2026-07-24. Ticket-id: `PHASE-01/41-mobile-entries-fullscreen-sheet`. Файлов тронуто: 11 (6 new, 5 mod).
+
+**New**
+
+- `components/mobile/FullScreenSheet.tsx` — обёртка редактора мобильного инстанса: бар «Cancel / заголовок / Done» над единственной скроллящейся областью. Два решения несут клавиатурное поведение и закреплены тестами: размер в `dvh` (не `vh`), поэтому при открытой клавиатуре лист ужимается до видимой области, и бар лежит вне `[data-sheet-scroll]`, поэтому прокрутка формы не уносит «Cancel»/«Done» за экран.
+- `components/mobile/FullScreenSheet.test.tsx` — 8 тестов: действия бара, submit по Enter, busy-состояние (Done заблокирован, Cancel нет), и контракт вёрстки.
+- `hooks/useEntries.ts` — состояние экрана Entries, вынутое из `app/entries/page.tsx`: список, категории, группировка по дате, фильтр по категории, `reload()` без спиннера, `categoryOf()`.
+- `hooks/useEntries.test.ts` — 7 тестов: первичная загрузка со спиннером, группировка, рефетч при смене фильтра, проброс ошибки, тихий reload.
+- `lib/entry-values.ts` + `lib/entry-values.test.ts` — чистые `draftValuesFromEntry` / `toEntryValues`, снявшие дублирование между `EntryForm`, `EntryCard` и мобильным листом.
+- `app/m/entries/page.tsx` + `app/m/entries/page.test.tsx` — мобильный экран: список карточек, фильтр, FAB, создание и редактирование через лист, удаление с подтверждением. 6 интеграционных тестов гоняют весь путь через замоканный `lib/api`.
+
+**Mod**
+
+- `lib/routes.ts` — у экрана `entries` `hasMobile: true`. Из этого флага сами собой следуют белый список `MOBILE_ROUTES`, ссылка таба на `/m/entries` и заголовок шапки.
+- `lib/routes.test.ts`, `lib/view-mode.test.ts` — маппинг `/entries` ↔ `/m/entries`; роль «экрана без мобильной версии» в тестах перешла к `/journal`.
+- `lib/view-mode.ts` — обновлён пример в докblock `shouldRestoreMobile` (`/entries` → `/journal`).
+- `app/entries/page.tsx` — переезд на `useEntries`; разметка прежняя, добавлен только `aria-label` на селект фильтра.
+- `app/entries/page.test.tsx` — характеризационные тесты десктопной страницы, написанные до переезда и пройденные после.
+- `components/EntryCard.tsx` — `FieldValueInput` принимает `id`, чтобы внешний `<label htmlFor>` называл контрол; конвертация draft ↔ payload делегирована `lib/entry-values`.
+
+Feedback loops: `bun test` 208/208 green, `bunx tsc --noEmit` clean, `eslint` clean, `bun run build` green (15 роутов, среди них `/m/entries`).
+
+### Тикет 41, раунд 2 — правки по ревью
+
+Дата 2026-07-24. Ticket-id: `PHASE-01/41-mobile-entries-fullscreen-sheet`. Файлов тронуто: 11 (2 new, 9 mod).
+
+**New**
+
+- `hooks/useEntryDraft.ts` — единственный владелец черновика записи (категория, дата, заметки, значения) и его сохранения. `save()` сам выбирает `entriesAPI.create` против `entriesAPI.update` по наличию редактируемой записи, поэтому три редактора — десктопная модалка, инлайн-редактор карточки и мобильный лист — свелись к разметке и отдают один текст ошибки (`SAVE_ENTRY_ERROR`) вместо трёх разных. Флаг `saving` снимается до вызова `onSaved()`, а не после: `onSaved` обычно размонтирует редактор.
+- `hooks/useEntryDraft.test.ts` — 12 тестов: сидирование из записи, сброс значений при смене категории, create против update, отказ сохранять без категории, единый текст ошибки, busy-состояние.
+
+**Mod**
+
+- `components/mobile/FullScreenSheet.tsx` — проп `error` + `onDismissError`: баннер рендерится первым элементом внутри `[data-sheet-scroll]`. Раньше ошибка сохранения уходила в page-level баннер, полностью закрытый листом, — «Готово» на вид не делало ничего. Закрыт и контракт `role="dialog" aria-modal="true"`: Escape зовёт `onCancel`, фокус при открытии уходит на первое поле формы (не на «Cancel» — это приглашение выбросить черновик), Tab/Shift+Tab заворачиваются по краям, скролл `body` заморожен на время открытия.
+- `components/mobile/FullScreenSheet.test.tsx` — +8 тестов: баннер внутри листа и первым, dismiss, Escape, начальный фокус, обе стороны ловушки фокуса, заморозка/разморозка `body`.
+- `app/m/entries/page.tsx` — редактор переведён на `useEntryDraft`, ошибка сохранения живёт в листе, page-level баннер остался только для загрузки списка и удаления. Пустой список категорий больше не открывает лист с `category_id: 0` и селектом без опций — вместо этого экран «Create a category first» со ссылкой на `/categories` и без FAB. Заголовок листа (`Log an entry`) разведён с `aria-label` FAB (`New entry`): кнопка и диалог с одним именем — два неразличимых узла в дереве доступности. Резолв `field_id -> field.name` заменён на `labelledValues`.
+- `app/m/entries/page.test.tsx` — тест отказа сохранения теперь утверждает видимость (`closest('[role="dialog"]')`), а не только наличие текста; +1 тест на пустой список категорий.
+- `hooks/useEntries.ts` — `useRefreshOnVisible(reload)` по аналогии с `useToday`: в standalone-PWA документ не перезагружается, и возврат на `/m/entries` показывал список, забранный при запуске приложения. `grouped` завёрнут в `useMemo` по `entries` — публичный контракт хука больше не выдаёт новый массив на каждый рендер.
+- `hooks/useEntries.test.ts` — +2 теста: стабильность идентичности `grouped` и тихий рефетч по `visibilitychange`.
+- `components/EntryCard.tsx` — инлайн-редактор вынесен в `EntryEditForm` на `useEntryDraft` (монтируется только на время правки, поэтому черновик сидируется из актуальной записи и не переживает reload списка); сетка значений перешла на `labelledValues`; `entryInputClass` больше не живёт здесь.
+- `components/EntryForm.tsx` — собственная копия конверсии `fields.map(...)` и весь draft-стейт заменены на `useEntryDraft`; ушёл импорт `EntryValueCreate`.
+- `lib/entry-values.ts` — добавлена `labelledValues(category, entry)`: третья копия резолва `field_id -> имя поля` в разметке убрана, поле без имени (удалено из категории) получает `UNNAMED_FIELD_LABEL` вместо пустого заголовка. Header-summary приведён к фактическим потребителям.
+- `lib/ui-constants.ts` — сюда переехал `entryInputClass`: им пользуются все три редактора, и импорт стиля из компонента делал `EntryCard` де-факто стилевым модулем для остальных.
+
+Backend: `uv run pytest tests/test_categories.py` прогнан с поднятым `habit_postgres` (порт 5433, база `habit_tracker_test`) — 30 passed, в том числе `test_dropping_a_field_with_history_is_logged`, остававшийся с прошлой сессии неверифицированным.
+
+Feedback loops: `bun test` 235/235 green, `bunx tsc --noEmit` clean, `eslint` clean, `bun run build` green (15 роутов).
+
+### Тикет 41, раунд 3 — правки по ревью
+
+Дата 2026-07-24. Ticket-id: `PHASE-01/41-mobile-entries-fullscreen-sheet`. Файлов тронуто: 8 (2 new, 6 mod).
+
+**New**
+
+- `components/FieldValueInput.tsx` — `FieldValueInput` и `DurationInput`, вынесенные из `EntryCard.tsx`. Мобильный шелл импортировал инпут из десктопной карточки, то есть тянул за собой весь `EntryCard` ради одного контрола; мотивация та же, что у переезда `entryInputClass` в `lib/ui-constants.ts`.
+- `components/ViewToggle.test.tsx` — 3 теста на cold-start restore: редирект на мобильного близнеца, сохранение query string, отсутствие редиректа при `desktop` в хранилище.
+
+**Mod**
+
+- `app/m/entries/page.tsx` — читает `useSearchParams()` внутри `Suspense`-границы (как `app/entries/page.tsx`) и при `?new=1` инициализирует лист как `{ kind: 'create' }`, поэтому deep-link «+» открывает редактор с первого кадра. Импорт `FieldValueInput` переведён на новый модуль, `NEW_ENTRY_SHEET_TITLE` экспортирован для теста.
+- `app/m/entries/page.test.tsx` — +2 теста: `?new=1` открывает лист с заголовком создания, без параметра лист закрыт.
+- `components/ViewToggle.tsx` — cold-start restore приклеивает query string к `resolvePath(pathname, 'mobile')`. Без этого `/entries?new=1` при подмене на `/m/entries` терял параметр, и половина deep-link'а («открой редактор») пропадала до того, как экран успевал его прочитать. Сам эффект выделен в `MobileRestore` под собственной `Suspense`-границей: компонент монтируется layout'ом, вне границы любой страницы, и `useSearchParams` без обёртки ронял пререндер всех роутов (`bun run build` это и поймал).
+- `hooks/useEntries.ts` — успешная загрузка гасит только ошибку загрузки: состояние ошибки хранит происхождение (`fromLoad`), `setError` из экрана помечается как внешняя. Раньше тихий рефетч по `useRefreshOnVisible` стирал ошибку удаления ровно в тот момент, когда пользователь возвращался её прочитать.
+- `hooks/useEntries.test.ts` — +2 теста: внешняя ошибка переживает тихий рефетч, ошибка загрузки гаснет после успешного `reload`.
+- `components/EntryCard.tsx`, `components/EntryForm.tsx` — импортируют `FieldValueInput` из нового модуля; из карточки ушли `DurationInput` и импорты `lib/duration`.
+
+Feedback loops: `bun test` 242/242 green, `bunx tsc --noEmit` clean, `eslint` clean.
+
+### Тикет 41, раунд 4 — закрытие блокеров дуального ревью
+
+Дата 2026-07-24. Файлов тронуто: 10 (0 new, 10 mod). Правки внесены вручную в основной сессии.
+
+**Реальный дефект корректности — двойной сабмит (закрыт на двух уровнях)**
+
+- `components/mobile/FullScreenSheet.tsx` — **mod**: `handleSubmit` выходит рано при `busy`. Задизейбленная кнопка Done закрывала только клик; Enter (и «Go» на мобильной клавиатуре) сабмитит форму напрямую, минуя кнопку, и создавал вторую запись.
+- `hooks/useEntryDraft.ts` — **mod**: добавлен `savingRef`, проверяемый до `setSaving(true)` и сбрасываемый на обоих выходах. `saving` — это state, и для второго вызова в том же тике он всё ещё читается false.
+- `components/mobile/FullScreenSheet.test.tsx` — **mod**: тест «blocks a second submit while the first is in flight» переписан — теперь реально сабмитит форму при `busy: true` и проверяет, что `onDone` не вызван. Прежняя версия проверяла только атрибут `disabled` и оставалась зелёной при отсутствующей гарантии.
+- `hooks/useEntryDraft.test.ts` — **mod**: +1 тест «ignores a second save fired before the first one settles» — два `save()` в одном `act`, ожидается ровно один `create`. Оба теста написаны красными до фиксов.
+
+**Хрупкие контракты**
+
+- `lib/routes.ts` — **mod**: контракт deep-link переехал в реестр — `NEW_ENTRY_PARAM`, `NEW_ENTRY_VALUE`, `NEW_ENTRY_QUERY` и предикат `wantsNewEntry(params)`. Литерал `?new=1` был продублирован в четырёх несвязанных местах.
+- `app/entries/page.tsx`, `app/m/entries/page.tsx` — **mod**: оба читают параметр через `wantsNewEntry`, локальные копии констант удалены.
+- `app/page.tsx` — **mod**: три ссылки «Log entry» собираются из `NEW_ENTRY_QUERY`.
+- `lib/ui-constants.ts`, `app/m/entries/page.tsx`, `app/m/entries/page.test.tsx` — **mod**: `NEW_ENTRY_SHEET_TITLE` переехал из route-файла в `ui-constants`; произвольные именованные экспорты из App-Router `page.tsx` — контракт, который Next не обещает держать. Тест импортирует константу оттуда же.
+- `components/FieldValueInput.tsx` — **mod**: снят `export default` — все три потребителя импортируют именованный экспорт.
+
+Feedback loops: `bun test` 243/243 green, `bunx tsc --noEmit` clean, `bunx eslint .` clean, `bun run build` green (15 роутов).
+
+Побочные изменения десктопа, чтобы ревью их не переоткрывало: `/entries` теперь рефетчится по `visibilitychange`/`focus`/`pageshow` (через `useRefreshOnVisible` в `useEntries`), и текст ошибки создания в модалке сменился с «Failed to create entry» на общий `SAVE_ENTRY_ERROR` («Failed to save entry»).
+
+### Тикет 42 — мобильные экраны Categories и Category detail
+
+Дата 2026-07-24. Файлов тронуто: 18 (8 new, 10 mod).
+
+**Вложенные роуты в реестре экранов**
+
+- `lib/routes.ts` — **mod**: у `AppRoute` появился флаг `hasMobileNested` («мобильный экран обслуживает и вложенные пути»), у Categories выставлены `hasMobile: true` + `hasMobileNested: true`. `MobileTab` несёт тот же признак, `mobileScreenTitle` продолжает называть экран на `/m/categories/12` вместо отката к имени приложения.
+- `lib/view-mode.ts` — **mod**: приватный `mobileRouteFor` резолвит либо точный whitelisted роут, либо родителя-владельца вложенных путей. На нём переписаны `hasMobileVersion`, `toMobilePath` и `toDesktopEntryPath` — последний больше не выбрасывает id и не отправляет читателя `/m/categories/12` на дашборд.
+- `components/mobile/TabBar.tsx` — **mod**: таб остаётся подсвеченным на своих вложенных роутах.
+- `lib/routes.test.ts`, `lib/view-mode.test.ts` — **mod**: +18 тестов на вложенный роут с параметром, включая негативные (`/today/12` не считается мобильным).
+
+**Вынос логики в хуки**
+
+- `hooks/useCategories.ts` — **new**: список (грузится с `active_only=false`), персистентная раскладка cards/list, удаление с сообщением об отказе. Рядом `useCategoryDraft` — единственный владелец формы категории и её сохранения; id полей уезжают в payload, поэтому бэкенд диффает поля на месте, а не заменяет их вместе с историей значений.
+- `hooks/useCategoryDetail.ts` — **new**: один батч-запрос (категория, соседи, дни графика, записи, streak), группировка записей по датам, guard на нечисловой id. Возвращает дискриминированное объединение по `loaded`, чтобы экраны один раз проверили флаг и дальше получали данные не-null.
+- `app/categories/page.tsx`, `app/categories/[id]/page.tsx` — **mod**: переведены на хуки, разметка сохранена (переключатель карточки/список, sticky-футер модалки, пейджер, quick-add). Дополнительно `grid-cols-2` в модалке стал `grid-cols-1 sm:grid-cols-2` — на узком экране пары контролов больше нет.
+- `hooks/useCategories.test.ts`, `hooks/useCategoryDetail.test.ts` — **new**: 25 тестов.
+
+**Мобильные экраны**
+
+- `app/m/categories/page.tsx` — **new**: список категорий, редактирование в `FullScreenSheet`, каждый контрол формы на своей строке, карточка поля стопкой (имя, тип, опции, required, remove).
+- `app/m/categories/[id]/page.tsx` — **new**: детальный экран; полоса категорий — `nav` с `overflow-x-auto` и пилюлями `whitespace-nowrap shrink-0`, поэтому она скроллится внутри себя, а не растягивает body. Quick-add — тот же лист, но без пикера категории: роут её уже зафиксировал.
+- `lib/ui-constants.ts` — **mod**: `NEW_CATEGORY_SHEET_TITLE`.
+- `app/m/categories/page.test.tsx`, `app/m/categories/[id]/page.test.tsx` — **new**: 23 теста, включая проверку «в листе нет ни одного `grid-cols-2`».
+
+**Тестовая инфраструктура**
+
+`mock.module` в bun фиксирует набор *имён* экспорта модуля при первой линковке и делит реестр на весь прогон, поэтому частичный мок `@/lib/api` в одном файле удалял `tableAPI` для всех остальных. Все шесть моков `@/lib/api` и четыре мока `next/navigation` приведены к полной поверхности (`hooks/useEntries.test.ts`, `hooks/useEntryDraft.test.ts`, `hooks/useToday.test.ts`, `app/entries/page.test.tsx`, `app/m/entries/page.test.tsx`, `components/ViewToggle.test.tsx` — **mod**).
+
+Feedback loops: `bun test` 308/308 green, `bunx tsc --noEmit` clean, `eslint` clean, `bun run build` green (17 роутов).
+
+### Тикет 42 — раунд 2 (правки по ревью)
+
+Дата 2026-07-24. Файлов тронуто: 12 (2 new, 10 mod).
+
+**Дедупликация редактора записи**
+
+- `components/mobile/EntryEditorSheet.tsx` — **new**: единственный мобильный редактор записи. Пропсы `{ categories, entry?, lockedCategory?, onCancel, onSaved }`; пикер категории рендерится только когда выбор реально есть — не при редактировании и не при зафиксированной роутом категории.
+- `app/m/entries/page.tsx`, `app/m/categories/[id]/page.tsx` — **mod**: локальные `EntryEditorSheet` и `QuickAddSheet` удалены, оба экрана монтируют общий компонент. Тесты обеих страниц гоняют его же; в `app/m/entries/page.test.tsx` добавлена проверка, что при редактировании пикера категории нет.
+
+**Общие константы**
+
+- `lib/ui-constants.ts` — **mod**: `DISPLAY_MODE_LABELS`, `STREAK_MODE_LABELS`, `FIELD_TYPE_LABELS` (типизирован как `Record<FieldCreate['field_type'], string>`) и `compactInputClass` — плотный вариант поля для строк полей десктопной модалки.
+- `app/categories/page.tsx`, `app/m/categories/page.tsx` — **mod**: локальные копии лейблов и локальный `inputClass` удалены. Десктопный `FieldRow` рендерит `<option>` из `Object.entries(FIELD_TYPE_LABELS)`, поэтому новый тип поля в API-типе больше не может потеряться в рукописном списке.
+
+**Баннер ошибки не переживает успешную загрузку**
+
+- `hooks/useCategories.ts`, `hooks/useCategoryDetail.ts` — **mod**: `setError(null)` в начале `load`. Плюс два теста в `hooks/useCategories.test.ts` и один в `hooks/useCategoryDetail.test.ts` (навигация по стрипу категорий).
+
+**Глубина вложенности и единый предикат**
+
+- `lib/view-mode.ts` — **mod**: вместо `startsWith(parent + '/')` матчится ровно один дополнительный сегмент, так что `/categories/12/anything` мобильной версии не имеет. `lib/view-mode.test.ts` — **mod**: два теста на трёхсегментный путь.
+- `lib/routes.ts` — **mod**: предикат `isNestedMobileRoute` экспортируется и используется и для `MobileTab.nested`, и для сборки `NESTED_MOBILE_ROUTES`.
+
+**Характеризационный тест десктопа**
+
+- `app/categories/page.test.tsx` — **new**: 6 тестов — переключатель карточки/список с персистом, открытие/закрытие модалки редактирования, submit из sticky-футера через `form="category-form"` (кнопка вне формы), удаление только после подтверждения.
+
+Feedback loops: `bun test` 319/319 green, `bunx tsc --noEmit` clean, `eslint` clean.
+
+`bun run build` (прод-сборка, догнан в раунде 3): green, 16 роутов — `/m/categories` статический, `/m/categories/[id]` и `/categories/[id]` динамические. Оба новых роута с `useParams` собираются без ошибок пререндера.
+
+### Тикет 42 — раунд 3 (правки по ревью)
+
+Дата 2026-07-24. Файлов тронуто: 6 (0 new, 6 mod).
+
+**Empty-state Entries больше не выкидывает из мобильной оболочки**
+
+- `app/m/entries/page.tsx` — **mod**: `CATEGORIES_HREF` собирается из `MOBILE_PATH_PREFIX` и указывает на `/m/categories`. Прежний литерал `/categories` уводил на десктопный экран, откуда `MobileRestore` уже не возвращает: редирект в `/m` он делает один раз за сессию.
+- `app/m/entries/page.test.tsx` — **mod**: тест empty-state теперь требует ровно `/m/categories` (до фикса падал на `/categories`).
+
+**Соседи в стрипе и пейджере совпадают со списком**
+
+- `hooks/useCategoryDetail.ts` — **mod**: `categoriesAPI.getAll(false)` вместо дефолтного active-only — тот же источник, что у `/m/categories` и `/categories`. Неактивная категория, открытая из списка, снова видит себя в собственной таб-полосе и получает живые prev/next.
+- `hooks/useCategoryDetail.test.ts` — **mod**: мок `categoriesAPI.getAll` пробрасывает аргумент, добавлен тест на вызов с `false`.
+
+**Цвет категории по умолчанию — одна константа**
+
+- `lib/ui-constants.ts` — **mod**: `DEFAULT_CATEGORY_COLOR` переехал сюда к остальным кросс-шелловым UI-константам.
+- `hooks/useCategories.ts` — **mod**: импортирует и ре-экспортирует её, поэтому обе страницы категорий свои импорты не меняли.
+- `components/EntryCard.tsx` — **mod**: приватная копия `'#B8FF36'` удалена, значение берётся из `lib/ui-constants`.
+
+Feedback loops: `bun test` 320/320 green, `bunx tsc --noEmit` clean, `bun run lint` (eslint) clean, `bun run build` green (16 роутов).
+
+**Разделение рабочего дерева по тикетам (коммиты в этой сессии не делались)**
+
+Вне слайса 42 и коммитятся отдельным коммитом: `backend/app/crud/category.py` вместе с `backend/tests/test_categories.py` (маркер `[review:need-review] PHASE-01/36-category-update-history-loss`), а также инфраструктура тестового прогона и ревью-счётчика — `bashs/review-status.sh`, `habit-tracker/services/frontend/bunfig.toml`, `habit-tracker/services/frontend/test-setup.ts`, `.gitignore`. Слайс 42 — только `lib/`, `hooks/`, `app/categories/`, `app/m/`, `components/mobile/`, `components/EntryCard.tsx`.

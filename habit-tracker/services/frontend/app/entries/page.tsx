@@ -1,15 +1,15 @@
 'use client';
-// [review:need-review] PHASE-01/31-web-quickfixes-md-fab-checklist
-// summary: /entries opens the entry form instantly via ?new=1 (1 tap from Dashboard) and gains an always-visible FAB
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
+// summary: desktop /entries page — data, filter and reload now come from useEntries, shared with /m/entries; markup unchanged apart from a label on the filter
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { entriesAPI, categoriesAPI, Entry, Category } from '@/lib/api';
-import { groupEntriesByDate } from '@/lib/entry-groups';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import EntryCard from '@/components/EntryCard';
 import EntryForm from '@/components/EntryForm';
+import { useEntries } from '@/hooks/useEntries';
+import { wantsNewEntry } from '@/lib/routes';
 import { Plus, Filter, Calendar } from 'lucide-react';
 
 export default function EntriesPage() {
@@ -23,37 +23,21 @@ export default function EntriesPage() {
 
 function EntriesPageContent() {
   const searchParams = useSearchParams();
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(searchParams.get('new') === '1');
-  const [filterCategory, setFilterCategory] = useState<number | null>(null);
-
-  useEffect(() => {
-    loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterCategory]);
-
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      const [entriesData, categoriesData] = await Promise.all([
-        entriesAPI.getAll({ categoryId: filterCategory || undefined, limit: 50 }),
-        categoriesAPI.getAll(),
-      ]);
-      setEntries(entriesData);
-      setCategories(categoriesData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load entries');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const {
+    categories,
+    entries,
+    grouped,
+    loading,
+    error,
+    filterCategory,
+    setFilterCategory,
+    setError,
+    reload,
+    categoryOf,
+  } = useEntries();
+  const [showForm, setShowForm] = useState(wantsNewEntry(searchParams));
 
   if (loading) return <LoadingSpinner size="lg" />;
-
-  const grouped = groupEntriesByDate(entries);
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -83,7 +67,8 @@ function EntriesPageContent() {
             <Filter className="w-4 h-4 text-lime" strokeWidth={2} />
           </div>
           <select
-            value={filterCategory || ''}
+            aria-label="Filter by category"
+            value={filterCategory ?? ''}
             onChange={(e) => setFilterCategory(e.target.value ? Number(e.target.value) : null)}
             className="flex-1 px-4 py-2.5 bg-surface border border-white/10 rounded-2xl text-text-primary outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25"
           >
@@ -104,7 +89,7 @@ function EntriesPageContent() {
           onClose={() => setShowForm(false)}
           onSuccess={() => {
             setShowForm(false);
-            loadData();
+            void reload();
           }}
         />
       )}
@@ -139,8 +124,8 @@ function EntriesPageContent() {
                   <EntryCard
                     key={entry.id}
                     entry={entry}
-                    category={categories.find((c) => c.id === entry.category_id)}
-                    onMutated={loadData}
+                    category={categoryOf(entry)}
+                    onMutated={() => void reload()}
                     onError={setError}
                   />
                 ))}

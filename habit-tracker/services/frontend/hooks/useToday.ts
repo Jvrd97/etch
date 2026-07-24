@@ -3,6 +3,7 @@
 // summary: Today-screen state extracted from app/today/page.tsx so desktop and /m/today render the same data and handlers
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 import { categoriesAPI, entriesAPI, type Category, type Entry } from '@/lib/api';
 import { todayISO } from '@/lib/date';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
@@ -41,9 +42,18 @@ export function useToday(): UseTodayResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
+  /**
+   * Fetch the whole Today snapshot.
+   *
+   * `showSpinner` is the difference between the first load (nothing on screen
+   * yet, so a spinner is the honest state) and a background refetch triggered
+   * by the tab becoming visible again: there the old snapshot stays rendered
+   * until the new one lands, so flipping `loading` would blank a screen the
+   * user is already looking at.
+   */
+  const loadData = useCallback(async ({ showSpinner = false } = {}) => {
     try {
-      setLoading(true);
+      if (showSpinner) setLoading(true);
       const date = todayISO();
       const [categoriesData, entriesData] = await Promise.all([
         categoriesAPI.getAll(),
@@ -57,6 +67,9 @@ export function useToday(): UseTodayResult {
         ({ category }) => category.id
       );
       setStreaks(await loadStreakMap(avoidIds, (id) => categoriesAPI.getStreak(id)));
+      // A silent refetch that succeeds must retire the previous failure, or the
+      // error banner outlives the outage that caused it.
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load today data');
     } finally {
@@ -70,8 +83,16 @@ export function useToday(): UseTodayResult {
   }, []);
 
   useEffect(() => {
-    loadData();
+    loadData({ showSpinner: true });
   }, [loadData]);
+
+  const refresh = useCallback(() => {
+    void loadData();
+  }, [loadData]);
+
+  // Standalone PWA never reloads the document, so /m/today would otherwise keep
+  // rendering the snapshot fetched when the app was launched.
+  useRefreshOnVisible(refresh);
 
   const toggleField = useCallback(
     async (categoryId: number, fieldId: number) => {

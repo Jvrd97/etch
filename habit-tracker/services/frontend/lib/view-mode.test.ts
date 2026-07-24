@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference
 
 import { describe, expect, it } from 'bun:test';
@@ -67,8 +67,31 @@ describe('hasMobileVersion', () => {
     expect(hasMobileVersion('/m/today')).toBe(true);
   });
 
+  it('is true for the entries screen', () => {
+    expect(hasMobileVersion('/entries')).toBe(true);
+  });
+
+  it('is true for the categories screen', () => {
+    expect(hasMobileVersion('/categories')).toBe(true);
+  });
+
+  it('is true for a category detail route', () => {
+    expect(hasMobileVersion('/categories/12')).toBe(true);
+  });
+
   it('is false for a route without a mobile screen yet', () => {
-    expect(hasMobileVersion('/entries')).toBe(false);
+    expect(hasMobileVersion('/journal')).toBe(false);
+  });
+
+  it('does not treat a nested route of a flat screen as mobile', () => {
+    expect(hasMobileVersion('/today/12')).toBe(false);
+  });
+
+  it('stops at one nested segment', () => {
+    // `/m/categories/[id]` is a single dynamic segment; anything deeper is a
+    // mobile route that does not exist, and claiming it does sends the user to
+    // a 404 instead of leaving them on the working desktop page.
+    expect(hasMobileVersion('/categories/12/anything')).toBe(false);
   });
 });
 
@@ -85,8 +108,32 @@ describe('toMobilePath', () => {
     expect(toMobilePath('/today/')).toBe('/m/today');
   });
 
+  it('maps the entries screen to its mobile twin', () => {
+    expect(toMobilePath('/entries')).toBe('/m/entries');
+  });
+
+  it('is idempotent on the mobile entries route', () => {
+    expect(toMobilePath('/m/entries')).toBe('/m/entries');
+  });
+
+  it('carries the id of a category detail route across to mobile', () => {
+    expect(toMobilePath('/categories/12')).toBe('/m/categories/12');
+  });
+
+  it('is idempotent on a mobile category detail route', () => {
+    expect(toMobilePath('/m/categories/12')).toBe('/m/categories/12');
+  });
+
   it('returns null for a route without a mobile version', () => {
-    expect(toMobilePath('/entries')).toBeNull();
+    expect(toMobilePath('/journal')).toBeNull();
+  });
+
+  it('returns null for a nested route of a screen that has no detail version', () => {
+    expect(toMobilePath('/today/12')).toBeNull();
+  });
+
+  it('returns null below the one nested segment the mobile screen serves', () => {
+    expect(toMobilePath('/categories/12/anything')).toBeNull();
   });
 
   it('returns null for the desktop dashboard', () => {
@@ -128,6 +175,16 @@ describe('toDesktopEntryPath', () => {
   it('leaves a desktop route that is already a known screen alone', () => {
     expect(toDesktopEntryPath('/journal')).toBe('/journal');
   });
+
+  it('keeps the user on the same category when leaving the detail screen', () => {
+    // Dropping the id here would send someone reading /m/categories/12 back to
+    // the dashboard instead of the very category they were looking at.
+    expect(toDesktopEntryPath('/m/categories/12')).toBe('/categories/12');
+  });
+
+  it('falls back to the dashboard for a nested route of a flat screen', () => {
+    expect(toDesktopEntryPath('/m/today/12')).toBe('/');
+  });
 });
 
 describe('mobileEntryPath', () => {
@@ -135,8 +192,16 @@ describe('mobileEntryPath', () => {
     expect(mobileEntryPath('/today')).toBe('/m/today');
   });
 
+  it('keeps the user on entries, which now has a mobile screen', () => {
+    expect(mobileEntryPath('/entries')).toBe('/m/entries');
+  });
+
+  it('keeps the id when entering the mobile shell from a category detail page', () => {
+    expect(mobileEntryPath('/categories/12')).toBe('/m/categories/12');
+  });
+
   it('falls back to the mobile home for a screen without a mobile twin', () => {
-    expect(mobileEntryPath('/entries')).toBe('/m/today');
+    expect(mobileEntryPath('/journal')).toBe('/m/today');
   });
 
   it('falls back to the mobile home from the desktop dashboard', () => {
@@ -175,16 +240,32 @@ describe('resolvePath', () => {
     expect(resolvePath('/today', 'mobile')).toBe('/m/today');
   });
 
+  it('sends entries to its mobile twin when mobile is on', () => {
+    expect(resolvePath('/entries', 'mobile')).toBe('/m/entries');
+  });
+
+  it('sends a category detail route to its mobile twin, id and all', () => {
+    expect(resolvePath('/categories/12', 'mobile')).toBe('/m/categories/12');
+  });
+
+  it('sends a mobile category detail route back to desktop when mobile is off', () => {
+    expect(resolvePath('/m/categories/12', 'desktop')).toBe('/categories/12');
+  });
+
   it('keeps an unmapped route on desktop even when mobile is on', () => {
-    expect(resolvePath('/entries', 'mobile')).toBe('/entries');
+    expect(resolvePath('/journal', 'mobile')).toBe('/journal');
   });
 
   it('sends a mobile route back to desktop when mobile is off', () => {
     expect(resolvePath('/m/today', 'desktop')).toBe('/today');
   });
 
+  it('sends the mobile entries screen back to desktop when mobile is off', () => {
+    expect(resolvePath('/m/entries', 'desktop')).toBe('/entries');
+  });
+
   it('leaves a desktop route alone when mobile is off', () => {
-    expect(resolvePath('/entries', 'desktop')).toBe('/entries');
+    expect(resolvePath('/journal', 'desktop')).toBe('/journal');
   });
 });
 
@@ -275,7 +356,7 @@ describe('shouldRestoreMobile', () => {
   });
 
   it('does not redirect when the route has no mobile twin', () => {
-    expect(shouldRestoreMobile('/entries', 'mobile', false)).toBe(false);
+    expect(shouldRestoreMobile('/journal', 'mobile', false)).toBe(false);
   });
 
   it('does not redirect when already on the mobile side', () => {
@@ -322,9 +403,11 @@ describe('MOBILE_ROUTES', () => {
     );
   });
 
-  it('contains /today and nothing that lacks a mobile screen', () => {
+  it('contains the screens that have a mobile version and nothing else', () => {
     expect(MOBILE_ROUTES).toContain('/today');
-    expect(MOBILE_ROUTES).not.toContain('/entries');
+    expect(MOBILE_ROUTES).toContain('/entries');
+    expect(MOBILE_ROUTES).toContain('/categories');
+    expect(MOBILE_ROUTES).not.toContain('/journal');
   });
 });
 

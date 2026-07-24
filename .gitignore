@@ -1,5 +1,8 @@
 issues/
 .DS_Store
+
+# Per-developer editor state — the repo carries no shared VS Code config
+.vscode/
 .claude/settings.local.json
 node_modules/
 .next/
