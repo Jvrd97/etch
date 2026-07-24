@@ -6,10 +6,7 @@ import { useState } from 'react';
 import { AlertCircle, Flame } from 'lucide-react';
 import { Category, CategoryStreak, Field, entriesAPI } from '@/lib/api';
 import { formatCleanDays, formatDays } from '@/lib/streak-format';
-
-function todayISO(): string {
-  return new Date().toISOString().split('T')[0];
-}
+import { todayISO } from '@/lib/date';
 
 interface AvoidStreakCardProps {
   category: Category;

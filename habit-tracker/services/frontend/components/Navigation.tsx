@@ -1,20 +1,15 @@
 'use client';
-// [review:need-review] PHASE-01/25-ai-reports-history
-// summary: added Insights nav item (AI reports history)
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
+// summary: desktop nav — Mobile view toggle added as the rightmost item
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, FolderKanban, CalendarDays, BookOpen, Sun, Table2, Sparkles } from 'lucide-react';
+import ViewToggle from '@/components/ViewToggle';
+import { APP_ROUTES } from '@/lib/routes';
+import { routeIcon } from '@/components/route-icons';
 
-const navItems = [
-  { name: 'Dashboard', href: '/', icon: Home },
-  { name: 'Today', href: '/today', icon: Sun },
-  { name: 'Table', href: '/table', icon: Table2 },
-  { name: 'Categories', href: '/categories', icon: FolderKanban },
-  { name: 'Entries', href: '/entries', icon: CalendarDays },
-  { name: 'Journal', href: '/journal', icon: BookOpen },
-  { name: 'Insights', href: '/insights', icon: Sparkles },
-];
+/** Desktop nav shows every screen, in registry order. */
+const navItems = APP_ROUTES;
 
 export default function Navigation() {
   const pathname = usePathname();
@@ -35,7 +30,7 @@ export default function Navigation() {
 
           <div className="flex items-center gap-1 sm:gap-2">
             {navItems.map((item) => {
-              const Icon = item.icon;
+              const Icon = routeIcon(item.id);
               const isActive = pathname === item.href;
               return (
                 <Link
@@ -53,6 +48,8 @@ export default function Navigation() {
                 </Link>
               );
             })}
+            <span aria-hidden="true" className="w-px h-6 bg-white/10 mx-1" />
+            <ViewToggle />
           </div>
         </div>
       </div>

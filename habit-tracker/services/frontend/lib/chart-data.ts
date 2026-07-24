@@ -2,6 +2,7 @@
 // summary: pure helpers for the category chart - series/axis/unit assignment, cell parsing, per-day points; sliceByPeriod made generic for checklist bar points
 
 import type { Field, TableDay } from './api';
+import { toISODate } from './date';
 
 export type ChartPeriod = '7d' | '30d' | '90d' | 'all';
 
@@ -125,10 +126,6 @@ export function buildChartData(
     }
     return point;
   });
-}
-
-function toISODate(d: Date): string {
-  return d.toISOString().split('T')[0];
 }
 
 /** Widest fetch window: MAX_CHART_DAYS ending today (backend caps ranges at 366 days). */

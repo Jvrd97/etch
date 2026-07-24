@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import { Category, EntryCreate, EntryValueCreate, entriesAPI } from '@/lib/api';
 import { FieldValueInput, entryInputClass } from '@/components/EntryCard';
 import ErrorAlert from '@/components/ErrorAlert';
+import { todayISO } from '@/lib/date';
 
 export interface EntryFormProps {
   categories: Category[];
@@ -28,9 +29,7 @@ export default function EntryForm({
   const [categoryId, setCategoryId] = useState<number>(
     lockedCategoryId ?? categories[0]?.id ?? 0
   );
-  const [entryDate, setEntryDate] = useState(
-    date ?? new Date().toISOString().split('T')[0]
-  );
+  const [entryDate, setEntryDate] = useState(date ?? todayISO());
   const [notes, setNotes] = useState('');
   const [values, setValues] = useState<Record<number, string>>({});
   const [saving, setSaving] = useState(false);

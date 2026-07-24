@@ -16,8 +16,11 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import { Plus, Pencil, Trash2, FolderKanban, X, LayoutGrid, List } from 'lucide-react';
 
-type ViewMode = 'cards' | 'list';
-const VIEW_STORAGE_KEY = 'categoriesView';
+/** Cards-vs-list layout of this screen — a per-screen preference, unrelated to
+ *  the desktop/mobile shell `ViewMode` behind VIEW_MODE_STORAGE_KEY in lib/view-mode. */
+type CategoryLayout = 'cards' | 'list';
+
+const VIEW_STORAGE_KEY = 'habit-tracker:categories-layout';
 
 const DEFAULT_CATEGORY_COLOR = '#B8FF36';
 
@@ -40,7 +43,7 @@ export default function CategoriesPage() {
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<CategoryLayout>('cards');
 
   useEffect(() => {
     loadCategories();
@@ -48,7 +51,7 @@ export default function CategoriesPage() {
     if (saved === 'list' || saved === 'cards') setViewMode(saved);
   }, []);
 
-  const changeView = (mode: ViewMode) => {
+  const changeView = (mode: CategoryLayout) => {
     setViewMode(mode);
     localStorage.setItem(VIEW_STORAGE_KEY, mode);
   };

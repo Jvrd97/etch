@@ -30,6 +30,7 @@ import {
   cumulate,
   currentStreak,
 } from '@/lib/chart-utils';
+import { todayISO } from '@/lib/date';
 
 type ChartMode = 'perDay' | 'cumulative';
 
@@ -102,7 +103,7 @@ function ChecklistCategoryChart({ category, days }: CategoryChartProps) {
       sliceByPeriod(buildChecklistBarData(days, category.id, boolFields), period),
     [days, category.id, boolFields, period]
   );
-  const today = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const today = useMemo(() => todayISO(), []);
   const streaks = useMemo(
     () =>
       boolFields.map((field) => ({

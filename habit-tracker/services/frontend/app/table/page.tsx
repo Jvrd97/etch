@@ -16,6 +16,7 @@ import {
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import EntryForm from '@/components/EntryForm';
+import { toISODate } from '@/lib/date';
 import { formatSecondsToHM } from '@/lib/duration';
 import { Check, Plus, Save, Table2, Trash2, X } from 'lucide-react';
 
@@ -23,10 +24,6 @@ const DAYS_SHOWN = 14;
 const UNGROUPED_TAB = 'Other';
 const TRUE_VALUE = 'true';
 const FALSE_VALUE = 'false';
-
-function toISODate(d: Date): string {
-  return d.toISOString().split('T')[0];
-}
 
 function dateRange(): { from: string; to: string } {
   const to = new Date();

@@ -4,6 +4,8 @@
 @import "tailwindcss";
 
 @theme {
+  /* Keep --color-background in sync with THEME_COLOR in lib/theme.ts, which
+     feeds the PWA manifest and the theme-color meta tag. */
   --color-background: #090909;
   --color-surface: #141414;
   --color-card: #1a1a1a;

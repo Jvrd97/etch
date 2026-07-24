@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { journalAPI, JournalEntry, JournalEntryCreate } from '@/lib/api';
 import Markdown from '@/components/Markdown';
+import { todayISO } from '@/lib/date';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import { Plus, BookOpen, X, Smile, Frown, Meh, Zap, CloudRain, Wind, Pencil, Trash2 } from 'lucide-react';
@@ -196,7 +197,7 @@ function JournalForm({ entry, onClose, onSuccess }: JournalFormProps) {
   const [title, setTitle] = useState(entry?.title || '');
   const [content, setContent] = useState(entry?.content || '');
   const [entryDate, setEntryDate] = useState(
-    entry?.entry_date || new Date().toISOString().split('T')[0]
+    entry?.entry_date || todayISO()
   );
   const [mood, setMood] = useState(entry?.mood || '');
   const [tags, setTags] = useState(entry?.tags || '');

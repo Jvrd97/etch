@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: desktop Today page — markup only, all state moved to hooks/useToday so /m/today shares it
+// summary: mobile Today screen — same data/handlers as the desktop page via useToday, laid out in a single column with 44pt targets
 
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -8,10 +8,22 @@ import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum } from '@/lib/today-entries';
+import { TAP_TARGET_PX } from '@/lib/ui-constants';
 import { useToday } from '@/hooks/useToday';
 import { Check, Sun } from 'lucide-react';
 
-export default function TodayPage() {
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 mb-3">
+      <span className="text-[12px] font-medium uppercase tracking-widest text-lime truncate">
+        {children}
+      </span>
+      <div className="flex-1 h-px bg-white/5" />
+    </div>
+  );
+}
+
+export default function MobileTodayPage() {
   const {
     date,
     entries,
@@ -35,24 +47,18 @@ export default function TodayPage() {
   } = groups;
 
   return (
-    <div className="space-y-8 animate-fade-rise">
-      <div>
-        <h1 className="text-4xl font-bold text-text-primary tracking-tight">
-          Today
-          <span className="text-lime">.</span>
-        </h1>
-        <p className="mt-2 text-text-secondary">{date} — one tap to check things off</p>
-      </div>
+    <div className="space-y-6 animate-fade-rise">
+      <p className="text-sm text-text-secondary">{date}</p>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
       {nothingToTrack ? (
-        <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">
+        <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
           <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
-            <Sun className="w-8 h-8 text-text-disabled" strokeWidth={2} />
+            <Sun className="w-7 h-7 text-text-disabled" strokeWidth={2} />
           </div>
-          <h3 className="text-lg font-medium text-text-primary mb-1">Nothing to track today</h3>
-          <p className="text-text-secondary">
+          <h2 className="text-base font-medium text-text-primary mb-1">Nothing to track today</h2>
+          <p className="text-sm text-text-secondary px-6">
             Create a checklist category or a form category with a number field
           </p>
         </div>
@@ -60,12 +66,7 @@ export default function TodayPage() {
         <>
           {avoidCategories.length > 0 && (
             <section>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
-                  Streaks
-                </span>
-                <div className="flex-1 h-px bg-white/5" />
-              </div>
+              <SectionLabel>Streaks</SectionLabel>
               <div className="space-y-3">
                 {avoidCategories.map(({ category, numberField }) => (
                   <AvoidStreakCard
@@ -83,13 +84,8 @@ export default function TodayPage() {
 
           {checklistCategories.map((category) => (
             <section key={category.id}>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
-                  {category.name}
-                </span>
-                <div className="flex-1 h-px bg-white/5" />
-              </div>
-              <div className="flex flex-wrap gap-3">
+              <SectionLabel>{category.name}</SectionLabel>
+              <div className="grid grid-cols-2 gap-2">
                 {booleanFields(category).map((field) => {
                   const isChecked = isFieldChecked(checked, category.id, field.id);
                   return (
@@ -97,14 +93,15 @@ export default function TodayPage() {
                       key={field.id}
                       onClick={() => toggleField(category.id, field.id)}
                       aria-pressed={isChecked}
-                      className={`inline-flex items-center gap-2 px-5 py-3 rounded-full text-sm font-medium transition-all duration-200 border ${
+                      style={{ minHeight: TAP_TARGET_PX }}
+                      className={`inline-flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-sm font-medium transition-colors duration-200 border ${
                         isChecked
-                          ? 'bg-lime text-background border-lime shadow-[0_0_18px_rgba(184,255,54,0.25)]'
-                          : 'bg-card text-text-secondary border-white/10 hover:text-text-primary hover:bg-white/5'
+                          ? 'bg-lime text-background border-lime'
+                          : 'bg-card text-text-secondary border-white/10'
                       }`}
                     >
-                      {isChecked && <Check className="w-4 h-4" strokeWidth={2.5} />}
-                      {field.name}
+                      {isChecked && <Check className="w-4 h-4 shrink-0" strokeWidth={2.5} />}
+                      <span className="truncate">{field.name}</span>
                     </button>
                   );
                 })}
@@ -114,12 +111,7 @@ export default function TodayPage() {
 
           {quickFormCategories.length > 0 && (
             <section>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
-                  Quick input
-                </span>
-                <div className="flex-1 h-px bg-white/5" />
-              </div>
+              <SectionLabel>Quick input</SectionLabel>
               <div className="space-y-3">
                 {quickFormCategories.map(({ category, numberField }) => (
                   <QuickNumberRow
