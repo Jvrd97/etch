@@ -1,89 +1,19 @@
 'use client';
-// [review:need-review] PHASE-01/36
-// summary: /table page - refetch on tab/app focus so entries added on /today show up without a reload
+// [review:need-review] PHASE-01/45-mobile-table-sticky-date
+// summary: /table desktop page — table state (data load, dynamic columns, tab grouping, checklist toggle) now lives in useTable, shared with /m/table; this page keeps the desktop markup, the day-entries panel and the quick-add flow
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  categoriesAPI,
   entriesAPI,
-  tableAPI,
-  Category,
   Entry,
-  Field,
   TableCategoryMeta,
-  TableResponse,
 } from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import EntryForm from '@/components/EntryForm';
-import { toISODate } from '@/lib/date';
-import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
+import { DAYS_SHOWN, TRUE_VALUE, columnKey, useTable } from '@/hooks/useTable';
 import { formatSecondsToHM } from '@/lib/duration';
 import { Check, Plus, Save, Table2, Trash2, X } from 'lucide-react';
-
-const DAYS_SHOWN = 14;
-const UNGROUPED_TAB = 'Other';
-const TRUE_VALUE = 'true';
-const FALSE_VALUE = 'false';
-
-function dateRange(): { from: string; to: string } {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(to.getDate() - (DAYS_SHOWN - 1));
-  return { from: toISODate(from), to: toISODate(to) };
-}
-
-/** One table column: a form category's primary field, or a checklist boolean field. */
-type TableColumn =
-  | { kind: 'value'; category: TableCategoryMeta; fieldId: number }
-  | { kind: 'check'; category: TableCategoryMeta; fieldId: number; fieldName: string };
-
-function columnKey(column: TableColumn): string {
-  return `${column.category.id}:${column.fieldId}`;
-}
-
-function checklistBooleanFields(
-  category: TableCategoryMeta,
-  fieldsByCategory: Map<number, Field[]>
-): Field[] {
-  return (fieldsByCategory.get(category.id) ?? [])
-    .filter((f) => f.field_type === 'boolean')
-    .sort((a, b) => a.order - b.order);
-}
-
-/** Columns grouped into tabs (null group -> Other): checklist categories expand
- *  into one column per boolean field, form categories keep their primary field. */
-function buildTabs(
-  categories: TableCategoryMeta[],
-  fieldsByCategory: Map<number, Field[]>
-): Map<string, TableColumn[]> {
-  const tabs = new Map<string, TableColumn[]>();
-  const push = (groupKey: string | null, columns: TableColumn[]) => {
-    if (columns.length === 0) return;
-    const key = groupKey ?? UNGROUPED_TAB;
-    tabs.set(key, [...(tabs.get(key) ?? []), ...columns]);
-  };
-  const named = categories.filter((c) => c.group !== null);
-  const ungrouped = categories.filter((c) => c.group === null);
-  for (const category of [...named, ...ungrouped]) {
-    if (category.display_mode === 'checklist') {
-      push(
-        category.group,
-        checklistBooleanFields(category, fieldsByCategory).map((field) => ({
-          kind: 'check' as const,
-          category,
-          fieldId: field.id,
-          fieldName: field.name,
-        }))
-      );
-    } else if (category.primary_field_id !== null) {
-      push(category.group, [
-        { kind: 'value', category, fieldId: category.primary_field_id },
-      ]);
-    }
-  }
-  return tabs;
-}
 
 interface SelectedCell {
   category: TableCategoryMeta;
@@ -91,123 +21,24 @@ interface SelectedCell {
 }
 
 export default function TablePage() {
-  const [data, setData] = useState<TableResponse | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [fieldsByCategory, setFieldsByCategory] = useState<Map<number, Field[]>>(
-    new Map()
-  );
-  const [activeTab, setActiveTab] = useState<string | null>(null);
+  const {
+    loading,
+    error,
+    setError,
+    categories,
+    tabNames,
+    currentTab,
+    setActiveTab,
+    columns,
+    days,
+    cellValue,
+    handleToggle,
+    reload,
+  } = useTable();
   const [selected, setSelected] = useState<SelectedCell | null>(null);
   const [quickAdd, setQuickAdd] = useState<SelectedCell | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadData = useCallback(async () => {
-    try {
-      const { from, to } = dateRange();
-      const [response, categoriesData] = await Promise.all([
-        tableAPI.get(from, to),
-        categoriesAPI.getAll(),
-      ]);
-      setData(response);
-      setCategories(categoriesData);
-      setFieldsByCategory(
-        new Map(categoriesData.map((c: Category) => [c.id, c.fields]))
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load table');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  // Installed as a PWA the page is never reloaded: after adding an entry on
-  // /today the table would keep showing the snapshot taken on mount.
-  useRefreshOnVisible(loadData);
-
-  const cellValue = useCallback(
-    (date: string, categoryId: number, fieldId: number): string | null => {
-      const day = data?.days.find((d) => d.date === date);
-      const cell = day?.cells.find(
-        (c) => c.category_id === categoryId && c.field_id === fieldId
-      );
-      return cell?.aggregated_value ?? null;
-    },
-    [data]
-  );
-
-  /** Local (optimistic) write of one cell's aggregated value. */
-  const setCellChecked = useCallback(
-    (categoryId: number, fieldId: number, date: string, checked: boolean) => {
-      const value = checked ? TRUE_VALUE : FALSE_VALUE;
-      setData((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          days: prev.days.map((day) => {
-            if (day.date !== date) return day;
-            const exists = day.cells.some(
-              (c) => c.category_id === categoryId && c.field_id === fieldId
-            );
-            return {
-              ...day,
-              cells: exists
-                ? day.cells.map((c) =>
-                    c.category_id === categoryId && c.field_id === fieldId
-                      ? { ...c, aggregated_value: value }
-                      : c
-                  )
-                : [
-                    ...day.cells,
-                    {
-                      category_id: categoryId,
-                      field_id: fieldId,
-                      aggregated_value: value,
-                      entry_count: 1,
-                    },
-                  ],
-            };
-          }),
-        };
-      });
-    },
-    []
-  );
-
-  /** Toggle a checklist cell on any day (backfill), optimistic with rollback. */
-  const handleToggle = useCallback(
-    async (categoryId: number, fieldId: number, date: string) => {
-      const current = cellValue(date, categoryId, fieldId) === TRUE_VALUE;
-      const next = !current;
-      setCellChecked(categoryId, fieldId, date, next);
-      try {
-        await entriesAPI.upsertChecklist({
-          category_id: categoryId,
-          entry_date: date,
-          values: { [fieldId]: next },
-        });
-      } catch (err) {
-        setCellChecked(categoryId, fieldId, date, current);
-        setError(err instanceof Error ? err.message : 'Failed to save check');
-      }
-    },
-    [cellValue, setCellChecked]
-  );
 
   if (loading) return <LoadingSpinner size="lg" />;
-
-  const tabs = data
-    ? buildTabs(data.categories, fieldsByCategory)
-    : new Map<string, TableColumn[]>();
-  const tabNames = [...tabs.keys()];
-  const currentTab =
-    activeTab !== null && tabs.has(activeTab) ? activeTab : tabNames[0] ?? null;
-  const columns = currentTab !== null ? tabs.get(currentTab) ?? [] : [];
-  const days = data ? [...data.days].reverse() : [];
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -343,7 +174,7 @@ export default function TablePage() {
             setQuickAdd(selected);
             setSelected(null);
           }}
-          onChanged={loadData}
+          onChanged={reload}
           onError={setError}
         />
       )}
@@ -356,7 +187,7 @@ export default function TablePage() {
           onClose={() => setQuickAdd(null)}
           onSuccess={() => {
             setQuickAdd(null);
-            loadData();
+            void reload();
           }}
         />
       )}

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal
-// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; journal now has a mobile twin, insights is the no-mobile example
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/45-mobile-table-sticky-date
+// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; journal and table now have mobile twins, insights is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
 import { APP_ROUTES } from './routes';
@@ -83,6 +83,10 @@ describe('hasMobileVersion', () => {
     expect(hasMobileVersion('/journal')).toBe(true);
   });
 
+  it('is true for the table screen', () => {
+    expect(hasMobileVersion('/table')).toBe(true);
+  });
+
   it('is false for a route without a mobile screen yet', () => {
     expect(hasMobileVersion('/insights')).toBe(false);
   });
@@ -130,6 +134,10 @@ describe('toMobilePath', () => {
 
   it('maps the journal screen to its mobile twin', () => {
     expect(toMobilePath('/journal')).toBe('/m/journal');
+  });
+
+  it('maps the table screen to its mobile twin', () => {
+    expect(toMobilePath('/table')).toBe('/m/table');
   });
 
   it('returns null for a route without a mobile version', () => {
@@ -296,6 +304,10 @@ describe('resolvePath', () => {
     expect(resolvePath('/journal', 'mobile')).toBe('/m/journal');
   });
 
+  it('sends table to its mobile twin when mobile is on', () => {
+    expect(resolvePath('/table', 'mobile')).toBe('/m/table');
+  });
+
   it('keeps an unmapped route on desktop even when mobile is on', () => {
     expect(resolvePath('/insights', 'mobile')).toBe('/insights');
   });
@@ -456,6 +468,7 @@ describe('MOBILE_ROUTES', () => {
     expect(MOBILE_ROUTES).toContain('/entries');
     expect(MOBILE_ROUTES).toContain('/categories');
     expect(MOBILE_ROUTES).toContain('/journal');
+    expect(MOBILE_ROUTES).toContain('/table');
     expect(MOBILE_ROUTES).not.toContain('/insights');
   });
 });
