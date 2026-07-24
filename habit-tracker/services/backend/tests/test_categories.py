@@ -397,6 +397,84 @@ class TestCategoryUpdate:
         assert values[0]["field_id"] == field_id
         assert values[0]["value"] == "8"
 
+    async def test_update_without_ids_matches_fields_by_name_and_type(
+        self, client: AsyncClient
+    ):
+        """A payload with no field ids must reuse fields, not recreate them.
+
+        Old web builds (and third-party clients) send fields without ids. Before
+        the name/type fallback this deleted every field and cascaded away the
+        entry values — history vanished on a plain category rename.
+        """
+        create_response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Meditation",
+                "fields": [
+                    {"name": "Time", "field_type": "duration", "order": 0},
+                    {"name": "State", "field_type": "number", "order": 1},
+                ],
+            },
+        )
+        category = create_response.json()
+        time_field_id = category["fields"][0]["id"]
+        state_field_id = category["fields"][1]["id"]
+
+        await client.post(
+            "/api/v1/entries",
+            json={
+                "category_id": category["id"],
+                "entry_date": "2024-01-15",
+                "values": [
+                    {"field_id": time_field_id, "value": "600"},
+                    {"field_id": state_field_id, "value": "7"},
+                ],
+            },
+        )
+
+        response = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={
+                "name": "Meditation daily",
+                "fields": [
+                    {"name": "Time", "field_type": "duration", "order": 0},
+                    {"name": "State", "field_type": "number", "order": 1},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["fields"]] == [
+            time_field_id,
+            state_field_id,
+        ]
+
+        entries = await client.get(f"/api/v1/entries?category_id={category['id']}")
+        values = {v["field_id"]: v["value"] for v in entries.json()[0]["values"]}
+        assert values == {time_field_id: "600", state_field_id: "7"}
+
+    async def test_update_without_ids_still_drops_removed_fields(
+        self, client: AsyncClient
+    ):
+        """The name/type fallback must not resurrect fields left out of the payload."""
+        create_response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Sleep",
+                "fields": [
+                    {"name": "Hours", "field_type": "number", "order": 0},
+                    {"name": "Quality", "field_type": "text", "order": 1},
+                ],
+            },
+        )
+        category = create_response.json()
+
+        response = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={"fields": [{"name": "Hours", "field_type": "number", "order": 0}]},
+        )
+        assert response.status_code == 200
+        assert [f["name"] for f in response.json()["fields"]] == ["Hours"]
+
     async def test_update_omitting_fields_leaves_them_untouched(
         self, client: AsyncClient
     ):

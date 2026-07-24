@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/33-table-empty-cell-quick-add
-// summary: /table page - empty form cell opens quick-add EntryForm (category+date); duration cells formatted; checklist toggle cells unchanged
+// [review:need-review] PHASE-01/36
+// summary: /table page - refetch on tab/app focus so entries added on /today show up without a reload
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -125,6 +125,23 @@ export default function TablePage() {
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  // Installed as a PWA the page is never reloaded: after adding an entry on
+  // /today the table would keep showing the snapshot taken on mount. Refetch
+  // whenever the tab/app becomes visible again.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') loadData();
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('pageshow', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('pageshow', refresh);
+    };
   }, [loadData]);
 
   const cellValue = useCallback(

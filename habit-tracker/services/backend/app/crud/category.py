@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/35-category-fields-update-web-ux
-# summary: update_category diff-syncs fields by id (update/add/delete) preserving history
+# [review:need-review] PHASE-01/36-category-update-history-loss
+# summary: field sync matches by id, then by (name, type) — id-less payloads no longer wipe history
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -10,42 +10,81 @@ from app.schemas import CategoryCreate, CategoryUpdate, FieldCreate
 from app.schemas.category import FieldUpsert
 
 
+def _apply_field(current: Field, item: FieldUpsert) -> None:
+    """Обновить существующее поле на месте (id сохраняется → история цела)."""
+    current.name = item.name
+    current.field_type = FieldType(item.field_type)
+    current.is_required = item.is_required
+    current.default_value = item.default_value
+    current.options = item.options
+    current.order = item.order
+
+
+def _identity_key(name: str, field_type: str) -> tuple[str, str]:
+    """Ключ сопоставления поля для клиентов, не присылающих id."""
+    return (name.strip().casefold(), field_type)
+
+
 async def _sync_category_fields(
     db: AsyncSession, db_category: Category, fields: list[FieldUpsert]
 ) -> None:
     """
     Привести поля категории к желаемому состоянию `fields`.
 
-    - поле с существующим id → обновляется на месте (entry_values целы);
-    - поле без id (или с чужим id) → создаётся;
-    - существующее поле, которого нет во входном списке → удаляется
-      каскадно вместе со своей историей.
+    Сопоставление входного элемента с существующим полем — в два прохода:
+
+    1. по `id` — точное совпадение, поле обновляется на месте;
+    2. по паре (имя, тип) среди ещё не занятых полей — страховка для клиентов,
+       которые id не присылают (старая сборка фронта, сторонний клиент).
+       Без неё такой пейлоад пересоздавал бы все поля, а каскад уносил бы
+       entry_values — то есть молча стирал историю записей.
+
+    Не сопоставленный элемент создаётся как новое поле. Существующее поле,
+    которое не сопоставилось ни с чем, удаляется каскадно вместе со своей
+    историей — это единственный сценарий потери значений, и он явный
+    (поле убрали из желаемого состояния).
     """
     existing_by_id = {f.id: f for f in db_category.fields}
     seen_ids: set[int] = set()
 
+    # Проход 1: точное совпадение по id.
+    unmatched: list[FieldUpsert] = []
     for item in fields:
         current = existing_by_id.get(item.id) if item.id is not None else None
-        if current is not None:
-            current.name = item.name
-            current.field_type = FieldType(item.field_type)
-            current.is_required = item.is_required
-            current.default_value = item.default_value
-            current.options = item.options
-            current.order = item.order
+        if current is None:
+            unmatched.append(item)
+            continue
+        _apply_field(current, item)
+        seen_ids.add(current.id)
+
+    # Проход 2: совпадение по (имя, тип) среди незанятых полей.
+    # Временный compat-shim под старую сборку фронта на VPS, которая не возит id
+    # полей. Снимается после раскатки нового фронта — тикет PHASE-01/57.
+    by_identity: dict[tuple[str, str], list[Field]] = {}
+    for field in sorted(db_category.fields, key=lambda f: (f.order, f.id)):
+        if field.id in seen_ids:
+            continue
+        key = _identity_key(field.name, field.field_type.value)
+        by_identity.setdefault(key, []).append(field)
+
+    for item in unmatched:
+        candidates = by_identity.get(_identity_key(item.name, item.field_type))
+        if candidates:
+            current = candidates.pop(0)
+            _apply_field(current, item)
             seen_ids.add(current.id)
-        else:
-            db.add(
-                Field(
-                    category_id=db_category.id,
-                    name=item.name,
-                    field_type=item.field_type,
-                    is_required=item.is_required,
-                    default_value=item.default_value,
-                    options=item.options,
-                    order=item.order,
-                )
+            continue
+        db.add(
+            Field(
+                category_id=db_category.id,
+                name=item.name,
+                field_type=item.field_type,
+                is_required=item.is_required,
+                default_value=item.default_value,
+                options=item.options,
+                order=item.order,
             )
+        )
 
     for field_id, field in existing_by_id.items():
         if field_id not in seen_ids:
