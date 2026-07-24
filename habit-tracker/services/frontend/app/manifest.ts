@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: PWA manifest — standalone display launching straight into /m/today, dark theme colour, placeholder lime icons
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-01/43-mobile-dashboard
+// summary: PWA manifest — standalone display launching into the mobile home (bare /m dashboard), dark theme colour, placeholder lime icons
 
 import type { MetadataRoute } from 'next';
 import { THEME_COLOR } from '@/lib/theme';

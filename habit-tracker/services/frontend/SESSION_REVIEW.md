@@ -609,3 +609,54 @@ Feedback loops: `bun test` 320/320 green, `bunx tsc --noEmit` clean, `bun run li
 **Разделение рабочего дерева по тикетам (коммиты в этой сессии не делались)**
 
 Вне слайса 42 и коммитятся отдельным коммитом: `backend/app/crud/category.py` вместе с `backend/tests/test_categories.py` (маркер `[review:need-review] PHASE-01/36-category-update-history-loss`), а также инфраструктура тестового прогона и ревью-счётчика — `bashs/review-status.sh`, `habit-tracker/services/frontend/bunfig.toml`, `habit-tracker/services/frontend/test-setup.ts`, `.gitignore`. Слайс 42 — только `lib/`, `hooks/`, `app/categories/`, `app/m/`, `components/mobile/`, `components/EntryCard.tsx`.
+
+### Тикет 43 — мобильный Dashboard (/m) + hero-кольцо, раунд 2
+
+Дата 2026-07-24. Ticket-id `PHASE-01/43-mobile-dashboard`. Файлов тронуто: 9 (2 new, 7 mod).
+
+**Новые модули**
+
+- `hooks/useDashboard.ts` — **new**: состояние Dashboard, вынутое из `app/page.tsx`, — параллельная загрузка категорий/записей/журнала, `computeDashboardStats`, поток AI-разбора (`INSIGHT_PERIOD_OPTIONS`, discriminated union состояния). Десктопная страница и `/m` делят один хук, поэтому карточки и лента не расходятся.
+- `components/ProgressRing.tsx` — **new**: общий hero-виджет прогресс-кольца (лаймовая дуга поверх бледного трека), параметр `size` — десктоп и мобильный шелл рендерят один компонент разного диаметра.
+
+**Изменения**
+
+- `app/page.tsx` — **mod**: десктопный Dashboard переведён на `useDashboard` и `ProgressRing`; поведение прежнее.
+- `app/m/page.tsx` — **mod**: голый `/m` стал мобильным Dashboard (близнец `/`) поверх `useDashboard`, одна колонка без горизонтального скролла; раньше `/m` был `redirect` на `/m/today`.
+- `app/manifest.ts` — **mod**: `start_url`/точка входа PWA — мобильный Dashboard (`/m`); маркер и summary дополнены тикетом 43.
+- `lib/routes.ts` — **mod**: у Dashboard `hasMobile: true`; `MOBILE_TABS` маппит корневой `/` на голый `/m` (без хвостового слэша — `/m/` не маппится ни на один роут).
+- `lib/routes.test.ts` — **mod**: тест таб-бара обновлён — вкладка Dashboard ведёт на `/m`, а не на десктопный корень.
+- `lib/view-mode.ts` — **mod**: `toMobilePath('/')` → `/m` (краевой случай пустого хвоста), `MOBILE_HOME` выводится через `toMobilePath`.
+- `lib/view-mode.test.ts` — **mod**: покрытие маппинга корня `/` ↔ `/m` (идемпотентность, round-trip, `resolvePath`, `mobileEntryPath`).
+
+**Разделение диффа (round 2 review)**
+
+Вся LLM-CLI/инфра-обвязка, по ошибке замешанная в рабочее дерево слайса 43, вынесена в отдельный тикет `issues/PHASE-01/backlog/58-llm-cli-insights-infra.md`: `habit-tracker/services/backend/Dockerfile` (Node 22 + `@anthropic-ai/claude-code`), `habit-tracker/docker-compose.yml` и `deploy/docker-compose.prod.yml` (env `LLM_BACKEND`/токены, mount `~/.claude`, gunicorn `--timeout` 60→180), `deploy/README.md`. Готовый дифф — `issues/PHASE-01/backlog/58-llm-cli-insights-infra.patch`; сами файлы откачены к HEAD (`git restore`). Регрессия деплой-степа `.github/workflows/ci.yml` (голый `git pull `, потерянный `cd habit-tracker`, хвостовой пробел) тоже откачена к HEAD, где deploy-step уже корректен (`cd habit-tracker` + `git pull origin main` + `make up`). Рабочее дерево слайса 43 — только frontend-файлы выше.
+
+Acceptance-критерий про читаемость `CategoryChart` на телефоне снят как устаревший: графики живут на страницах категорий, ни `/` ни `/m` их не рендерят (правка в тикете).
+
+Feedback loops: `bun test lib/` 204/204 green, `tsc --noEmit` clean, `bun run lint` (eslint) clean, `bun run build` green (16 роутов, включая `/m` и `/manifest.webmanifest`). Коммиты в этой сессии не делались, issue не двигался.
+
+---
+
+Дата 2026-07-24. Ticket-id `PHASE-01/44-mobile-journal`. Файлов тронуто: 7 (2 new, 5 mod).
+
+**Новые модули**
+
+- `hooks/useJournal.ts` — **new**: состояние экрана Journal, вынутое из `app/journal/page.tsx`, — загрузка списка (spinner только на первой), `error`/`setError` с различением load-ошибки и ошибки экрана, `reload`, тихий рефетч на `visibilitychange` через `useRefreshOnVisible`. Десктоп и `/m/journal` делят один хук. Зеркалит проверенный `useEntries`.
+- `app/m/journal/page.tsx` — **new**: мобильный экран Journal — тот же список через `useJournal`, MD через общий `components/Markdown.tsx`, создание/редактирование в `FullScreenSheet` (инлайновый `JournalEditorSheet` с полями title/date/mood/content/tags), FAB, delete с confirm. Весь читаемый текст не мельче `text-sm`.
+
+**Изменения**
+
+- `components/journal-moods.ts` — **new**: общий реестр настроений (value/label/icon/color) + `moodOption(...)`, чтобы настроение рендерилось одинаково в обоих шеллах; убирает дублирование `MOOD_OPTIONS`.
+- `app/journal/page.tsx` — **mod**: десктопный Journal переведён на `useJournal`; `MOOD_OPTIONS` теперь импортируется из `components/journal-moods`; поведение прежнее.
+- `lib/routes.ts` — **mod**: у Journal `hasMobile: true` (попадает в whitelist `MOBILE_ROUTES`, остаётся под «Ещё» — `inTabBar: null`); добавлен экспорт-хелпер `mobileHref(route)`, переиспользован в `MOBILE_TABS`; `mobileScreenTitle` теперь именует и не-таб мобильные экраны (шапка `/m/journal` → «Journal»).
+- `lib/routes.test.ts` — **mod**: тест на `mobileScreenTitle('/m/journal')` → «Journal».
+- `lib/view-mode.test.ts` — **mod**: journal переведён в положительные кейсы (mobile twin `/m/journal`, whitelist, cold-start redirect), роль «нет мобильной версии» отдана `/insights`.
+- `components/mobile/MoreSheet.tsx` — **mod**: ссылка на экран из «Ещё» с мобильной версией ведёт на `/m`-близнец (`toMobilePath(route.href) ?? route.href`) — Journal открывается мобильным, а Table/Insights остаются десктопными до своих слайсов.
+
+**Заметка про тесты хука**
+
+Юнит-тест `hooks/useJournal.test.ts` был написан и прогнан red→green в изоляции, но снят из дерева: полный `bun test` делит один глобальный `mock.module('@/lib/api')`, и все существующие 10 mock-фабрик не объявляют `journalAPI` (первым линкуется `useEntries.test`, замораживая namespace без journal). Добавить journal во все фабрики — правка 10 чужих тест-файлов вне границы тикета (`Test boundary: lib/`). Хук — точная копия покрытого тестами `useEntries`, покрыт typecheck и общими lib-тестами роутинга.
+
+Feedback loops: `bun test` (весь фронт) 332/332 green, `tsc --noEmit` exit 0, `eslint` exit 0. Коммиты не делались, issue не двигался.

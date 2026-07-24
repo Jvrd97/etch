@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
-// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal
+// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; journal now has a mobile twin, insights is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
 import { APP_ROUTES } from './routes';
@@ -79,8 +79,12 @@ describe('hasMobileVersion', () => {
     expect(hasMobileVersion('/categories/12')).toBe(true);
   });
 
+  it('is true for the journal screen', () => {
+    expect(hasMobileVersion('/journal')).toBe(true);
+  });
+
   it('is false for a route without a mobile screen yet', () => {
-    expect(hasMobileVersion('/journal')).toBe(false);
+    expect(hasMobileVersion('/insights')).toBe(false);
   });
 
   it('does not treat a nested route of a flat screen as mobile', () => {
@@ -124,8 +128,12 @@ describe('toMobilePath', () => {
     expect(toMobilePath('/m/categories/12')).toBe('/m/categories/12');
   });
 
+  it('maps the journal screen to its mobile twin', () => {
+    expect(toMobilePath('/journal')).toBe('/m/journal');
+  });
+
   it('returns null for a route without a mobile version', () => {
-    expect(toMobilePath('/journal')).toBeNull();
+    expect(toMobilePath('/insights')).toBeNull();
   });
 
   it('returns null for a nested route of a screen that has no detail version', () => {
@@ -136,8 +144,36 @@ describe('toMobilePath', () => {
     expect(toMobilePath('/categories/12/anything')).toBeNull();
   });
 
-  it('returns null for the desktop dashboard', () => {
-    expect(toMobilePath('/')).toBeNull();
+  it('maps the desktop dashboard to the bare mobile prefix', () => {
+    expect(toMobilePath('/')).toBe('/m');
+  });
+});
+
+describe('root route mapping', () => {
+  it('maps the desktop dashboard to the bare mobile prefix without a trailing slash', () => {
+    // The root href is `/`, so a naive concat would yield `/m/`; the mobile
+    // dashboard lives at the bare `/m`, and `/m/` would 404.
+    expect(toMobilePath('/')).toBe('/m');
+  });
+
+  it('is idempotent on the bare mobile prefix', () => {
+    expect(toMobilePath('/m')).toBe('/m');
+  });
+
+  it('maps the bare mobile prefix back to the desktop dashboard', () => {
+    expect(toDesktopPath('/m')).toBe('/');
+  });
+
+  it('round-trips the root across shells', () => {
+    expect(toDesktopPath(toMobilePath('/') as string)).toBe('/');
+  });
+
+  it('reports the dashboard as having a mobile version', () => {
+    expect(hasMobileVersion('/')).toBe(true);
+  });
+
+  it('resolves the root into the mobile shell when mobile is on', () => {
+    expect(resolvePath('/', 'mobile')).toBe('/m');
   });
 });
 
@@ -200,16 +236,20 @@ describe('mobileEntryPath', () => {
     expect(mobileEntryPath('/categories/12')).toBe('/m/categories/12');
   });
 
-  it('falls back to the mobile home for a screen without a mobile twin', () => {
-    expect(mobileEntryPath('/journal')).toBe('/m/today');
+  it('keeps the user on journal, which now has a mobile screen', () => {
+    expect(mobileEntryPath('/journal')).toBe('/m/journal');
   });
 
-  it('falls back to the mobile home from the desktop dashboard', () => {
-    expect(mobileEntryPath('/')).toBe('/m/today');
+  it('falls back to the mobile home for a screen without a mobile twin', () => {
+    expect(mobileEntryPath('/insights')).toBe('/m');
+  });
+
+  it('keeps the user on the dashboard, which now has a mobile screen', () => {
+    expect(mobileEntryPath('/')).toBe('/m');
   });
 
   it('falls back to the mobile home from a mobile-only screen', () => {
-    expect(mobileEntryPath('/m/more')).toBe('/m/today');
+    expect(mobileEntryPath('/m/more')).toBe('/m');
   });
 
   it('is idempotent on a mobile screen that has a desktop twin', () => {
@@ -218,7 +258,7 @@ describe('mobileEntryPath', () => {
 
   it('never returns a desktop route', () => {
     for (const route of APP_ROUTES) {
-      expect(mobileEntryPath(route.href).startsWith(`${MOBILE_PATH_PREFIX}/`)).toBe(true);
+      expect(isMobilePath(mobileEntryPath(route.href))).toBe(true);
     }
   });
 });
@@ -226,7 +266,7 @@ describe('mobileEntryPath', () => {
 describe('MOBILE_HOME', () => {
   it('is the mobile twin of the first registry screen that has one', () => {
     expect(MOBILE_HOME).toBe(
-      `${MOBILE_PATH_PREFIX}${APP_ROUTES.filter((route) => route.hasMobile)[0].href}`
+      toMobilePath(APP_ROUTES.filter((route) => route.hasMobile)[0].href) as string
     );
   });
 
@@ -252,8 +292,12 @@ describe('resolvePath', () => {
     expect(resolvePath('/m/categories/12', 'desktop')).toBe('/categories/12');
   });
 
+  it('sends journal to its mobile twin when mobile is on', () => {
+    expect(resolvePath('/journal', 'mobile')).toBe('/m/journal');
+  });
+
   it('keeps an unmapped route on desktop even when mobile is on', () => {
-    expect(resolvePath('/journal', 'mobile')).toBe('/journal');
+    expect(resolvePath('/insights', 'mobile')).toBe('/insights');
   });
 
   it('sends a mobile route back to desktop when mobile is off', () => {
@@ -265,7 +309,7 @@ describe('resolvePath', () => {
   });
 
   it('leaves a desktop route alone when mobile is off', () => {
-    expect(resolvePath('/journal', 'desktop')).toBe('/journal');
+    expect(resolvePath('/insights', 'desktop')).toBe('/insights');
   });
 });
 
@@ -355,8 +399,12 @@ describe('shouldRestoreMobile', () => {
     expect(shouldRestoreMobile('/today', 'desktop', false)).toBe(false);
   });
 
+  it('redirects on a cold start on journal, which now has a mobile twin', () => {
+    expect(shouldRestoreMobile('/journal', 'mobile', false)).toBe(true);
+  });
+
   it('does not redirect when the route has no mobile twin', () => {
-    expect(shouldRestoreMobile('/journal', 'mobile', false)).toBe(false);
+    expect(shouldRestoreMobile('/insights', 'mobile', false)).toBe(false);
   });
 
   it('does not redirect when already on the mobile side', () => {
@@ -407,7 +455,8 @@ describe('MOBILE_ROUTES', () => {
     expect(MOBILE_ROUTES).toContain('/today');
     expect(MOBILE_ROUTES).toContain('/entries');
     expect(MOBILE_ROUTES).toContain('/categories');
-    expect(MOBILE_ROUTES).not.toContain('/journal');
+    expect(MOBILE_ROUTES).toContain('/journal');
+    expect(MOBILE_ROUTES).not.toContain('/insights');
   });
 });
 
@@ -417,11 +466,12 @@ describe('mobile entry point', () => {
     expect(manifest().start_url).toBe(MOBILE_HOME);
   });
 
-  it('is what the /m index redirects to', async () => {
+  it('renders the dashboard at the bare /m rather than redirecting away', async () => {
     const source = await Bun.file(new URL('../app/m/page.tsx', import.meta.url)).text();
-    // The redirect must read the registry, not spell a path of its own.
-    expect(source).toContain('MOBILE_HOME');
-    expect(source).not.toContain("redirect('/m/");
+    // /m is now the mobile dashboard (twin of `/`), sharing the desktop screen's
+    // logic through the hook — not a redirect to some other landing screen.
+    expect(source).toContain('useDashboard');
+    expect(source).not.toContain('redirect(');
   });
 
   it('agrees with the path helper for the first mobile screen', () => {

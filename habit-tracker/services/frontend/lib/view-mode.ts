@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (now including nested detail routes such as /categories/12) plus the persisted user preference
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal
+// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (nested detail routes, plus the root `/` ↔ bare `/m` dashboard twin) and the persisted user preference
 
 import { APP_ROUTES, MOBILE_PATH_PREFIX, isNestedMobileRoute } from './routes';
 
@@ -78,7 +78,7 @@ function mobileRouteFor(desktopPath: string): string | null {
  */
 export const MOBILE_HOME: string =
   MOBILE_ROUTES.length > 0
-    ? `${MOBILE_PATH_PREFIX}${MOBILE_ROUTES[0]}`
+    ? (toMobilePath(MOBILE_ROUTES[0]) ?? MOBILE_PATH_PREFIX)
     : MOBILE_PATH_PREFIX;
 
 /** Minimal slice of the Web Storage API these helpers need. */
@@ -144,7 +144,10 @@ export function hasMobileVersion(pathname: string): boolean {
 export function toMobilePath(pathname: string): string | null {
   const desktop = toDesktopPath(pathname);
   if (mobileRouteFor(desktop) === null) return null;
-  return `${MOBILE_PATH_PREFIX}${desktop}`;
+  // The dashboard's desktop route is `/`, whose mobile twin is the bare `/m`.
+  // Concatenating naively would yield `/m/`, a path the mobile shell has no
+  // screen for; every other route keeps its own segments appended.
+  return desktop === '/' ? MOBILE_PATH_PREFIX : `${MOBILE_PATH_PREFIX}${desktop}`;
 }
 
 /**
@@ -168,7 +171,7 @@ export function resolvePath(pathname: string, mode: ViewMode): string {
  *
  * Accepted trade-off: the session marker is burned on the first run of the
  * effect, redirect or not. A cold start on a route with no mobile twin
- * (`/journal`, say) with `mode=mobile` stored therefore spends the marker
+ * (`/insights`, say) with `mode=mobile` stored therefore spends the marker
  * without moving anywhere, and the user stays on the desktop shell until the
  * tab session ends — they have to press `Mobile` once. The opposite bias, a
  * marker set only when the redirect actually fires, brings back the loop where

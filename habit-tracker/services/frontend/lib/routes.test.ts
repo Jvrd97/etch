@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
-// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/44-mobile-journal
+// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal names its More-only mobile screen)
 
 import { describe, expect, it } from 'bun:test';
 import {
@@ -86,8 +86,8 @@ describe('MOBILE_TABS', () => {
     expect(MOBILE_TABS.find((tab) => tab.name === 'Today')?.nested).toBe(false);
   });
 
-  it('keeps a screen without a mobile version on its desktop route', () => {
-    expect(MOBILE_TABS.find((tab) => tab.name === 'Dashboard')?.href).toBe('/');
+  it('points the Dashboard tab at the bare /m mobile twin, not the desktop root', () => {
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Dashboard')?.href).toBe('/m');
   });
 
   it('ends on the More screen', () => {
@@ -130,6 +130,10 @@ describe('mobileScreenTitle', () => {
 
   it('names the mobile categories screen', () => {
     expect(mobileScreenTitle('/m/categories')).toBe('Categories');
+  });
+
+  it('names the mobile journal screen, though it lives under More', () => {
+    expect(mobileScreenTitle('/m/journal')).toBe('Journal');
   });
 
   it('keeps naming the screen on a category detail route', () => {

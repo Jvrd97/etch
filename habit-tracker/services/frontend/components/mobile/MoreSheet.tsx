@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: "More" screen of the mobile shell — links to the screens missing from the tab bar plus an escape hatch to the desktop version of the current screen
+// [review:need-review] PHASE-01/44-mobile-journal
+// summary: "More" screen of the mobile shell — links to the screens missing from the tab bar (a screen with a mobile version opens its /m twin, e.g. Journal) plus an escape hatch to the desktop version of the current screen
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -8,7 +8,7 @@ import { ChevronRight, Monitor } from 'lucide-react';
 import { MORE_ROUTES } from '@/lib/routes';
 import { routeIcon } from '@/components/route-icons';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
-import { browserStorage, toDesktopEntryPath, writeViewMode } from '@/lib/view-mode';
+import { browserStorage, toDesktopEntryPath, toMobilePath, writeViewMode } from '@/lib/view-mode';
 
 const ROW_CLASS =
   'flex items-center gap-3 w-full px-4 py-3 bg-card border border-white/5 rounded-2xl text-text-primary transition-colors duration-200 active:bg-white/5';
@@ -30,10 +30,14 @@ export default function MoreSheet() {
     <div className="space-y-3">
       {MORE_ROUTES.map((route) => {
         const Icon = routeIcon(route.id);
+        // A "More" screen that already has a mobile version (Journal) opens its
+        // /m twin so the user stays in the mobile shell; the ones still without
+        // one keep pointing at their desktop route until their slice lands.
+        const href = toMobilePath(route.href) ?? route.href;
         return (
           <Link
             key={route.href}
-            href={route.href}
+            href={href}
             style={{ minHeight: TAP_TARGET_PX }}
             className={ROW_CLASS}
           >

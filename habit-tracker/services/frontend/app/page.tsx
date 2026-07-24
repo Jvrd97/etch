@@ -1,10 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/31-web-quickfixes-md-fab-checklist, PHASE-01/10-ios-dashboard
-// summary: Dashboard — shared Markdown renderer for AI разбор; Log entry links open /entries?new=1; Entries KPI now shows real total (fixed limit:5 cap) via computeDashboardStats, parity with iOS
+// [review:need-review] PHASE-01/43-mobile-dashboard
+// summary: desktop Dashboard — markup only, all data/insight state moved to hooks/useDashboard so /m shares it; shared Markdown renderer for AI разбор, Log entry links open /entries?new=1
 
-import { useEffect, useState } from 'react';
-import { categoriesAPI, entriesAPI, insightsAPI, journalAPI, AIReport, Entry } from '@/lib/api';
-import { computeDashboardStats } from '@/lib/dashboard-stats';
+import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
+import ProgressRing from '@/components/ProgressRing';
 import Markdown from '@/components/Markdown';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -22,112 +21,21 @@ import {
 import Link from 'next/link';
 import { NEW_ENTRY_QUERY } from '@/lib/routes';
 
-const RING_SIZE = 148;
-const RING_STROKE = 8;
-const RING_TARGET_ENTRIES = 10;
-
-function ProgressRing({ progress }: { progress: number }) {
-  const radius = (RING_SIZE - RING_STROKE) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - Math.min(Math.max(progress, 0), 1));
-
-  return (
-    <svg
-      width={RING_SIZE}
-      height={RING_SIZE}
-      viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`}
-      className="-rotate-90"
-      aria-hidden="true"
-    >
-      <circle
-        cx={RING_SIZE / 2}
-        cy={RING_SIZE / 2}
-        r={radius}
-        fill="none"
-        stroke="rgba(255,255,255,0.06)"
-        strokeWidth={RING_STROKE}
-      />
-      <circle
-        cx={RING_SIZE / 2}
-        cy={RING_SIZE / 2}
-        r={radius}
-        fill="none"
-        stroke="#B8FF36"
-        strokeWidth={RING_STROKE}
-        strokeLinecap="round"
-        strokeDasharray={circumference}
-        strokeDashoffset={offset}
-        className="animate-ring-draw drop-shadow-[0_0_8px_rgba(184,255,54,0.45)]"
-        style={{ '--ring-circumference': circumference } as React.CSSProperties}
-      />
-    </svg>
-  );
-}
-
-const INSIGHT_PERIOD_OPTIONS = [7, 30, 90] as const;
-type InsightPeriod = (typeof INSIGHT_PERIOD_OPTIONS)[number];
-
-type InsightState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'ready'; report: AIReport };
-
 export default function Dashboard() {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [insight, setInsight] = useState<InsightState>({ status: 'idle' });
-  const [insightPeriod, setInsightPeriod] = useState<InsightPeriod>(30);
-  const [stats, setStats] = useState({
-    categoriesCount: 0,
-    entriesCount: 0,
-    journalCount: 0,
-    recentEntries: [] as Entry[],
-  });
-
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
-
-  const loadDashboardData = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      // Fetch the full entries list (backend default limit) so the Entries KPI
-      // reflects the real total; the recent-activity feed is sliced client-side.
-      // journal.total is the backend total regardless of the fetch limit.
-      const [categories, entries, journal] = await Promise.all([
-        categoriesAPI.getAll(),
-        entriesAPI.getAll(),
-        journalAPI.getAll({ limit: 5 }),
-      ]);
-
-      setStats(computeDashboardStats(categories.length, entries, journal.total));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const generateInsight = async () => {
-    setInsight({ status: 'loading' });
-    try {
-      const report = await insightsAPI.create(insightPeriod);
-      setInsight({ status: 'ready', report });
-    } catch (err) {
-      setInsight({
-        status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to generate insight',
-      });
-    }
-  };
+  const {
+    stats,
+    ringProgress,
+    loading,
+    error,
+    insight,
+    insightPeriod,
+    setError,
+    setInsightPeriod,
+    generateInsight,
+  } = useDashboard();
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error) return <ErrorAlert message={error} onDismiss={() => setError(null)} />;
-
-  const ringProgress = stats.entriesCount / RING_TARGET_ENTRIES;
 
   const kpis = [
     {

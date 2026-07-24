@@ -1,55 +1,30 @@
 'use client';
-// [review:need-review] PHASE-01/31-web-quickfixes-md-fab-checklist
-// summary: Journal entry content now rendered through the shared Markdown component (headings/lists/bold)
+// [review:need-review] PHASE-01/44-mobile-journal
+// summary: desktop /journal page — entries, loading, error and reload now come from useJournal, shared with /m/journal; markup unchanged
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { journalAPI, JournalEntry, JournalEntryCreate } from '@/lib/api';
+import { useJournal } from '@/hooks/useJournal';
 import Markdown from '@/components/Markdown';
 import { todayISO } from '@/lib/date';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
-import { Plus, BookOpen, X, Smile, Frown, Meh, Zap, CloudRain, Wind, Pencil, Trash2 } from 'lucide-react';
-
-const MOOD_OPTIONS = [
-  { value: 'happy', label: 'Happy', icon: Smile, color: 'text-warning' },
-  { value: 'sad', label: 'Sad', icon: Frown, color: 'text-info' },
-  { value: 'neutral', label: 'Neutral', icon: Meh, color: 'text-text-secondary' },
-  { value: 'excited', label: 'Excited', icon: Zap, color: 'text-lime' },
-  { value: 'anxious', label: 'Anxious', icon: CloudRain, color: 'text-danger' },
-  { value: 'calm', label: 'Calm', icon: Wind, color: 'text-green-secondary' },
-];
+import { Plus, BookOpen, X, Pencil, Trash2 } from 'lucide-react';
+import { MOOD_OPTIONS } from '@/components/journal-moods';
 
 const inputClass =
   'w-full px-4 py-3 bg-surface border border-white/10 rounded-2xl text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25';
 
 export default function JournalPage() {
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { entries, loading, error, setError, reload } = useJournal();
   const [showForm, setShowForm] = useState(false);
   const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null);
-
-  useEffect(() => {
-    loadEntries();
-  }, []);
-
-  const loadEntries = async () => {
-    try {
-      setLoading(true);
-      const data = await journalAPI.getAll({ limit: 50 });
-      setEntries(data.items);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load journal');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this journal entry?')) return;
     try {
       await journalAPI.delete(id);
-      await loadEntries();
+      await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete journal entry');
     }
@@ -92,7 +67,7 @@ export default function JournalPage() {
           onSuccess={() => {
             setShowForm(false);
             setEditingEntry(null);
-            loadEntries();
+            void reload();
           }}
         />
       )}

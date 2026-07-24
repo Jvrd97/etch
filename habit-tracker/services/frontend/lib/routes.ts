@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; Categories now has a mobile screen that also owns its nested detail route
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; Dashboard now has a mobile screen at the bare /m, Categories owns its nested detail route, Journal has a mobile screen reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -48,7 +48,7 @@ export const APP_ROUTES: readonly AppRoute[] = [
     id: 'dashboard',
     name: 'Dashboard',
     href: '/',
-    hasMobile: false,
+    hasMobile: true,
     hasMobileNested: false,
     inTabBar: 2,
   },
@@ -88,7 +88,7 @@ export const APP_ROUTES: readonly AppRoute[] = [
     id: 'journal',
     name: 'Journal',
     href: '/journal',
-    hasMobile: false,
+    hasMobile: true,
     hasMobileNested: false,
     inTabBar: null,
   },
@@ -113,6 +113,15 @@ export const APP_ROUTES: readonly AppRoute[] = [
  */
 export function isNestedMobileRoute(route: AppRoute): boolean {
   return route.hasMobile && route.hasMobileNested;
+}
+
+/**
+ * The `/m` twin of a screen's desktop href. The root `/` maps to the bare `/m`,
+ * not `/m/`: a plain concat would leave a trailing slash that maps onto no
+ * route. Only meaningful for a route whose `hasMobile` is true.
+ */
+export function mobileHref(route: AppRoute): string {
+  return `${MOBILE_PATH_PREFIX}${route.href === '/' ? '' : route.href}`;
 }
 
 /** Tab-bar screens in tab order; the mobile-only "More" tab is appended by the bar itself. */
@@ -143,7 +152,9 @@ export const MOBILE_TABS: readonly MobileTab[] = [
   ...TAB_BAR_ROUTES.map((route) => ({
     id: route.id,
     name: route.name,
-    href: route.hasMobile ? `${MOBILE_PATH_PREFIX}${route.href}` : route.href,
+    // A tab-bar screen without a mobile version yet points at its desktop route
+    // (cramped but working); one with a mobile version points at its `/m` twin.
+    href: route.hasMobile ? mobileHref(route) : route.href,
     nested: isNestedMobileRoute(route),
   })),
   { id: MORE_ROUTE_ID, name: 'More', href: MORE_PATH, nested: false },
@@ -181,5 +192,9 @@ export function mobileScreenTitle(pathname: string): string {
     MOBILE_TABS.find(
       (candidate) => candidate.nested && pathname.startsWith(`${candidate.href}/`)
     );
-  return tab?.name ?? DEFAULT_SCREEN_TITLE;
+  if (tab) return tab.name;
+  // A mobile screen reachable only through "More" (Journal) has no tab, so its
+  // header would otherwise drop to the app name. Name it from the registry.
+  const screen = APP_ROUTES.find((route) => route.hasMobile && mobileHref(route) === pathname);
+  return screen?.name ?? DEFAULT_SCREEN_TITLE;
 }
