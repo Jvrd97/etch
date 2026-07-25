@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-01/43-mobile-dashboard
-// summary: PWA manifest — standalone display launching into the mobile home (bare /m dashboard), dark theme colour, placeholder lime icons
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-01/43-mobile-dashboard, PHASE-01/47-app-icon-source
+// summary: PWA manifest — standalone display launching into the mobile home (bare /m dashboard), dark theme colour, lime check-in-ring icons (any + maskable)
 
 import type { MetadataRoute } from 'next';
 import { THEME_COLOR } from '@/lib/theme';
@@ -17,8 +17,13 @@ export default function manifest(): MetadataRoute.Manifest {
     background_color: THEME_COLOR,
     theme_color: THEME_COLOR,
     icons: [
-      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-      { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+      // `any` for the launcher, `maskable` so Android can crop to its own mask
+      // (circle, squircle, ...) without clipping the glyph — the maskable art
+      // keeps the icon inside the safe zone, the `any` art fills more of the tile.
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/icon-maskable-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+      { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
   };
 }
