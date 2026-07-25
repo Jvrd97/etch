@@ -1,11 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: quick number input row for Today (running total + add), extracted from app/today/page.tsx so /m/today reuses it
+// [review:need-review] PHASE-01/60-quick-plus-tap-adds-one
+// summary: quick number input row for Today (running total + add); the "+" now logs 1 on an empty field and never disables itself
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { entriesAPI, type Category, type Field } from '@/lib/api';
 import { todayISO } from '@/lib/date';
+import { quickAddAmount } from '@/lib/quick-add';
 
 interface QuickNumberRowProps {
   category: Category;
@@ -27,26 +28,34 @@ export default function QuickNumberRow({
   onError,
 }: QuickNumberRowProps) {
   const [value, setValue] = useState('');
-  const [saving, setSaving] = useState(false);
   const [total, setTotal] = useState(initialTotal);
+  // Read at submit time rather than mirrored into state: `badInput` is the DOM's
+  // own verdict on the text it refused to parse, and a control left in that
+  // state fires no further change event to sync from.
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * One tap, one entry. No in-flight lock and no Idempotency-Key: five taps in a
+   * row are five deliberate increments, not a double click to be swallowed.
+   */
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amount = Number(value);
-    if (!value || !Number.isFinite(amount)) return;
-    setSaving(true);
+    const amount = quickAddAmount(value, {
+      hasBadInput: inputRef.current?.validity.badInput ?? false,
+    });
+    if (amount === null) return;
     try {
       await entriesAPI.create({
         category_id: category.id,
         entry_date: todayISO(),
-        values: [{ field_id: numberField.id, value }],
+        values: [{ field_id: numberField.id, value: String(amount) }],
       });
       setTotal((current) => current + amount);
+      // The step is not remembered: once it is banked, the next tap is a 1 again.
+      // A failed save keeps the number so the retry is a tap, not retyping it.
       setValue('');
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed to save entry');
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -68,6 +77,7 @@ export default function QuickNumberRow({
         </span>
       </div>
       <input
+        ref={inputRef}
         type="number"
         step="any"
         inputMode="decimal"
@@ -79,9 +89,8 @@ export default function QuickNumberRow({
       />
       <button
         type="submit"
-        disabled={saving || !value}
         aria-label={`Add to ${category.name}`}
-        className="p-2.5 bg-lime text-background rounded-full transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_18px_rgba(184,255,54,0.35)] disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
+        className="p-2.5 bg-lime text-background rounded-full transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_18px_rgba(184,255,54,0.35)]"
       >
         <Plus className="w-4 h-4" strokeWidth={2.5} />
       </button>
