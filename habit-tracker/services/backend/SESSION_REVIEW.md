@@ -316,3 +316,18 @@ Feedback loops (`TEST_DATABASE_URL=postgresql+asyncpg://habit_user:habit_pass@lo
 Расхождение с формулировкой ревью: ревьюер просил логировать `field.name`. Не сделано намеренно — §6 запрещает PII в логах, а имя поля вводит пользователь. Диагностическая ценность сохранена: `category_id` + `field_id` однозначно идентифицируют запись.
 
 Feedback loops (`TEST_DATABASE_URL=postgresql+asyncpg://habit_user:habit_pass@localhost:5433/habit_tracker_test`): pytest 149/149 green, `ruff check app tests` clean, `mypy app` clean (39 файлов).
+
+## 2026-07-25 — PHASE-01/52 text→additive-only category plan (LangChain, ADR-0006)
+
+Первый вертикальный срез голосового конструктора без голоса: вставил текст — увидел валидированный additive-only план того, что будет создано (не персистится).
+
+- `app/llm/client.py` — **mod**: нейтральный `LLMClient.generate(prompt) -> str` над обоими бэкендами (API + CLI), по ADR-0006.
+- `app/llm/cli.py` — **mod**: CLI-бэкенд под нейтральный интерфейс.
+- `app/llm/onboarding.py` — **new**: промпт с контекстом существующих категорий, JSON-парсинг, семантическая валидация, один ремонтный заход, флаги конфликта имён.
+- `app/schemas/onboarding.py`, `app/api/onboarding.py` — **new**: `POST /api/v1/onboarding/draft`. 503/502/200. Транскрипт и текст ошибки валидации в логи не попадают.
+- `app/crud/category.py` — **mod**: вынесен чистый предикат `checklist_has_boolean_field`, общий для categories API и onboarding-валидации.
+- `tests/test_onboarding.py` — **new**: parse/validate/conflict + API (503/200/repair/502/conflict/нет-транскрипта-в-логах).
+
+Довод вручную после APPROVE: закрыт warning — `LLMError` в endpoint утекал как 500, добавлена ветка `except LLMError -> 502` (как в `insights.py`), тест написан красным. Scope-creep #53 (claude CLI в Dockerfile/compose, удаление deploy job в ci.yml) откачен к HEAD.
+
+Feedback loops: pytest 166/166, ruff/mypy clean (42 файла); frontend bun test 345/345, tsc/eslint clean.

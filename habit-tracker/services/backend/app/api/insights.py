@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/25-ai-reports-history
-# summary: + GET /insights (history list with previews) and GET /insights/{id} (full report, 404)
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: insight framing (system prompt) moved here after LLM client went neutral
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.crud import insight as insight_crud
 from app.llm.client import InsightsClient, LLMError, resolve_insights_client
 from app.llm.context import build_period_context
+from app.llm.prompts import INSIGHTS_SYSTEM_PROMPT
 from app.models import AIReport
 from app.schemas import InsightListItem, InsightRequest, InsightResponse
 from app.schemas.insight import PREVIEW_MAX_CHARS
@@ -77,9 +78,12 @@ async def create_insight(
 
     request = payload if payload is not None else InsightRequest()
     context = await build_period_context(db, period_days=request.period_days)
+    # The client is now neutral (prompt in, text out): the insight framing
+    # lives here, not in the backend.
+    prompt = f"{INSIGHTS_SYSTEM_PROMPT}\n\n{context}"
 
     try:
-        content = await llm.generate(context)
+        content = await llm.generate(prompt)
     except LLMError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

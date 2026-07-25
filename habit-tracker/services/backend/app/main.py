@@ -1,9 +1,9 @@
-# [review:need-review] PHASE-01/24-ai-insights-endpoint-button
-# summary: registered insights router under API-key auth
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: registered onboarding router (POST /onboarding/draft) under API-key auth
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import categories, entries, insights, journal, table
+from app.api import categories, entries, insights, journal, onboarding, table
 from app.core.auth import require_api_key
 from app.core.config import settings
 
@@ -69,6 +69,9 @@ app.include_router(
 )
 app.include_router(
     insights.router, prefix=settings.API_V1_PREFIX, dependencies=API_KEY_DEPENDENCIES
+)
+app.include_router(
+    onboarding.router, prefix=settings.API_V1_PREFIX, dependencies=API_KEY_DEPENDENCIES
 )
 
 

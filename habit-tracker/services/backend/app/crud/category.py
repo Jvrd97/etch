@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/36-category-update-history-loss
-# summary: field sync matches by id, then by (name, type) — id-less payloads no longer wipe history
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: + checklist_has_boolean_field pure predicate, shared by categories API and onboarding validation
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,13 @@ from app.schemas import CategoryCreate, CategoryUpdate, FieldCreate
 from app.schemas.category import FieldUpsert
 
 logger = logging.getLogger(__name__)
+
+BOOLEAN_FIELD_TYPE = "boolean"
+
+
+def checklist_has_boolean_field(field_types: list[str]) -> bool:
+    """A checklist category needs at least one boolean field to tick off."""
+    return BOOLEAN_FIELD_TYPE in field_types
 
 
 def _apply_field(current: Field, item: FieldUpsert) -> None:

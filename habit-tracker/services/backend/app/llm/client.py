@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/26-llm-cli-backend
-# summary: anthropic SDK client wrapper + resolve_insights_client backend selection (cli/api/auto)
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: neutral LLMClient.generate(prompt) — no baked system prompt; InsightsClient kept as alias, both backends preserved
 from __future__ import annotations
 
 import shutil
@@ -7,13 +7,12 @@ import shutil
 import anthropic
 
 from app.core.config import settings
-from app.llm.prompts import INSIGHTS_SYSTEM_PROMPT
 
 INSIGHTS_MODEL = "claude-sonnet-5"
-# Generous timeout: report generation over a month of data is a long request.
+# Generous timeout: a month-of-data report or an onboarding plan is a long request.
 LLM_TIMEOUT_SECONDS = 120.0
 # Total output budget (Sonnet 5 runs adaptive thinking by default,
-# which shares this budget with the visible report text).
+# which shares this budget with the visible output text).
 MAX_REPORT_TOKENS = 8192
 
 
@@ -21,39 +20,48 @@ class LLMError(Exception):
     """LLM call failed: upstream API error, timeout, or empty response."""
 
 
-class InsightsClient:
+class LLMClient:
     """
-    Interface for insight generation.
+    Neutral text-in/text-out LLM interface.
 
-    Tests mock at this boundary (see tests/test_insights.py); the real
-    implementation is AnthropicInsightsClient below.
+    `generate` takes a fully-formed prompt (the caller bakes in any system
+    instructions it needs) and returns the raw response text. Callers that
+    need domain framing — insight reports, onboarding plans — assemble their
+    own prompt and parse the result themselves.
+
+    Tests mock at this boundary; the real implementations are
+    AnthropicInsightsClient (API) and CliInsightsClient (claude CLI).
     """
 
     model: str = INSIGHTS_MODEL
 
-    async def generate(self, context: str) -> str:
-        """Generate a markdown insight report for the given period context."""
+    async def generate(self, prompt: str) -> str:
+        """Send the prompt to the backend and return the response text."""
         raise NotImplementedError
 
 
-class AnthropicInsightsClient(InsightsClient):
-    """Insight generation backed by the Anthropic Messages API."""
+# Backward-compatible alias: the class was insight-specific before it was
+# generalised. Existing insight code and tests keep the old name.
+InsightsClient = LLMClient
+
+
+class AnthropicInsightsClient(LLMClient):
+    """Text generation backed by the Anthropic Messages API."""
 
     def __init__(self, api_key: str) -> None:
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key, timeout=LLM_TIMEOUT_SECONDS
         )
 
-    async def generate(self, context: str) -> str:
+    async def generate(self, prompt: str) -> str:
         try:
             response = await self._client.messages.create(
                 model=INSIGHTS_MODEL,
                 max_tokens=MAX_REPORT_TOKENS,
-                system=INSIGHTS_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": context}],
+                messages=[{"role": "user", "content": prompt}],
             )
         except anthropic.APIError as exc:
-            # Only the exception class name is propagated: no prompt/report
+            # Only the exception class name is propagated: no prompt/response
             # content and no API key ever reach logs or error messages.
             raise LLMError(f"anthropic API error: {type(exc).__name__}") from exc
 
@@ -63,7 +71,7 @@ class AnthropicInsightsClient(InsightsClient):
         return text
 
 
-def resolve_insights_client() -> InsightsClient | None:
+def resolve_insights_client() -> LLMClient | None:
     """
     Pick the LLM backend from settings; None = feature disabled (503).
 
@@ -87,3 +95,7 @@ def resolve_insights_client() -> InsightsClient | None:
     if not settings.ANTHROPIC_API_KEY:
         return None
     return AnthropicInsightsClient(api_key=settings.ANTHROPIC_API_KEY)
+
+
+# Neutral name for the same backend selection, used by non-insight callers.
+resolve_llm_client = resolve_insights_client

@@ -7,6 +7,9 @@ from typing import Literal
 CategoryDisplayMode = Literal["form", "checklist"]
 CategoryStreakMode = Literal["build", "avoid"]
 
+# Hex colour #RRGGBB — shared by category and onboarding-plan schemas.
+COLOR_PATTERN = r"^#[0-9A-Fa-f]{6}$"
+
 
 class FieldBase(BaseModel):
     """Базовая схема для поля"""
@@ -80,7 +83,7 @@ class CategoryBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str | None = None
     icon: str | None = Field(None, max_length=50)
-    color: str | None = Field(None, max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
+    color: str | None = Field(None, max_length=7, pattern=COLOR_PATTERN)
     display_mode: CategoryDisplayMode = "form"
     streak_mode: CategoryStreakMode = "build"
     group: str | None = Field(None, max_length=100)
@@ -101,7 +104,7 @@ class CategoryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = None
     icon: str | None = Field(None, max_length=50)
-    color: str | None = Field(None, max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
+    color: str | None = Field(None, max_length=7, pattern=COLOR_PATTERN)
     is_active: bool | None = None
     display_mode: CategoryDisplayMode | None = None
     streak_mode: CategoryStreakMode | None = None

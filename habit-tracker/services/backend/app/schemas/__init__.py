@@ -28,6 +28,13 @@ from app.schemas.insight import (
     InsightRequest,
     InsightResponse,
 )
+from app.schemas.onboarding import (
+    AddFieldOp,
+    CreateCategoryOp,
+    OnboardingDraftRequest,
+    OnboardingPlan,
+    PlanField,
+)
 from app.schemas.streak import StreakResponse
 from app.schemas.table import (
     TableCategoryMeta,
@@ -57,6 +64,11 @@ __all__ = [
     "InsightListItem",
     "InsightRequest",
     "InsightResponse",
+    "AddFieldOp",
+    "CreateCategoryOp",
+    "OnboardingDraftRequest",
+    "OnboardingPlan",
+    "PlanField",
     "StreakResponse",
     "TableCategoryMeta",
     "TableCell",

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/35-category-fields-update-web-ux
-# summary: PATCH checklist validation uses incoming fields; fields synced via crud
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: checklist boolean check now delegates to crud.checklist_has_boolean_field (shared with onboarding)
 from typing import cast, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,7 +24,6 @@ router = APIRouter(prefix="/categories", tags=["categories"])
 # Single source of truth for the allowed modes: the response Literal itself.
 STREAK_MODES: frozenset[str] = frozenset(get_args(CategoryStreakMode))
 
-BOOLEAN_FIELD_TYPE = "boolean"
 CHECKLIST_DISPLAY_MODE = "checklist"
 CHECKLIST_NEEDS_BOOLEAN_DETAIL = (
     "display_mode='checklist' requires at least one field with "
@@ -34,7 +33,7 @@ CHECKLIST_NEEDS_BOOLEAN_DETAIL = (
 
 def _ensure_checklist_has_boolean_field(field_types: list[str]) -> None:
     """Raise 422 when a checklist category would end up with no boolean field."""
-    if BOOLEAN_FIELD_TYPE not in field_types:
+    if not category_crud.checklist_has_boolean_field(field_types):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=CHECKLIST_NEEDS_BOOLEAN_DETAIL,

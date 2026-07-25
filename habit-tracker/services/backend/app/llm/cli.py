@@ -1,20 +1,19 @@
-# [review:need-review] PHASE-01/26-llm-cli-backend
-# summary: CLI insights backend: `claude -p` via asyncio.subprocess, timeout, errors mapped to LLMError
+# [review:need-review] PHASE-01/52-text-to-category-plan
+# summary: CLI backend now pipes the caller's prompt verbatim (no baked insights system prompt)
 from __future__ import annotations
 
 import asyncio
 
-from app.llm.client import LLM_TIMEOUT_SECONDS, InsightsClient, LLMError
-from app.llm.prompts import INSIGHTS_SYSTEM_PROMPT
+from app.llm.client import LLM_TIMEOUT_SECONDS, LLMClient, LLMError
 
 CLI_BINARY = "claude"
 # Recorded as AIReport.model: the CLI decides the actual model itself.
 CLI_MODEL_LABEL = "claude-cli"
 
 
-class CliInsightsClient(InsightsClient):
+class CliInsightsClient(LLMClient):
     """
-    Insight generation backed by a logged-in `claude` CLI binary.
+    Text generation backed by a logged-in `claude` CLI binary.
 
     Runs `claude -p --output-format text` with the prompt piped to stdin
     (avoids argv size limits) without blocking the event loop. Any failure
@@ -30,8 +29,7 @@ class CliInsightsClient(InsightsClient):
         self._binary = binary
         self._timeout = timeout
 
-    async def generate(self, context: str) -> str:
-        prompt = f"{INSIGHTS_SYSTEM_PROMPT}\n\n{context}"
+    async def generate(self, prompt: str) -> str:
         try:
             process = await asyncio.create_subprocess_exec(
                 self._binary,

@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/30-lan-api-proxy-rewrite
-// summary: + streak_mode on Category/CategoryCreate, CategoryStreak type, categoriesAPI.getStreak; API_BASE_URL defaults to the same-origin /api/v1 proxy
+// [review:need-review] PHASE-01/52-text-to-category-plan
+// summary: + onboardingAPI.draft and additive-only OnboardingPlan types (create_category / add_field)
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -166,6 +166,16 @@ export const insightsAPI = {
 
   getById: async (id: number) => {
     return fetcher<AIReport>(`/insights/${id}`);
+  },
+};
+
+// Onboarding API
+export const onboardingAPI = {
+  draft: async (transcript: string) => {
+    return fetcher<OnboardingPlan>('/onboarding/draft', {
+      method: 'POST',
+      body: JSON.stringify({ transcript }),
+    });
   },
 };
 
@@ -349,6 +359,40 @@ export interface JournalEntryCreate {
 export interface JournalListResponse {
   total: number;
   items: JournalEntry[];
+}
+
+// Onboarding: additive-only category plan (preview only, never persisted).
+export interface PlanField {
+  name: string;
+  field_type: FieldType;
+  is_required: boolean;
+  options?: string | null;
+  order: number;
+}
+
+export interface CreateCategoryOp {
+  op: 'create_category';
+  name: string;
+  description?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  display_mode: CategoryDisplayMode;
+  streak_mode: CategoryStreakMode;
+  group?: string | null;
+  fields: PlanField[];
+  name_conflict: boolean;
+}
+
+export interface AddFieldOp {
+  op: 'add_field';
+  category_id: number;
+  field: PlanField;
+}
+
+export type PlanOperation = CreateCategoryOp | AddFieldOp;
+
+export interface OnboardingPlan {
+  operations: PlanOperation[];
 }
 
 export interface AIReport {
