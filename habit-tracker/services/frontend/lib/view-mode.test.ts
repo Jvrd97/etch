@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/45-mobile-table-sticky-date
-// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; journal and table now have mobile twins, insights is the no-mobile example
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/45-mobile-table-sticky-date, PHASE-01/46-mobile-insights
+// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen now has a mobile twin (insights was the last), a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
 import { APP_ROUTES } from './routes';
@@ -87,8 +87,8 @@ describe('hasMobileVersion', () => {
     expect(hasMobileVersion('/table')).toBe(true);
   });
 
-  it('is false for a route without a mobile screen yet', () => {
-    expect(hasMobileVersion('/insights')).toBe(false);
+  it('is true for the insights screen', () => {
+    expect(hasMobileVersion('/insights')).toBe(true);
   });
 
   it('does not treat a nested route of a flat screen as mobile', () => {
@@ -140,8 +140,8 @@ describe('toMobilePath', () => {
     expect(toMobilePath('/table')).toBe('/m/table');
   });
 
-  it('returns null for a route without a mobile version', () => {
-    expect(toMobilePath('/insights')).toBeNull();
+  it('maps the insights screen to its mobile twin', () => {
+    expect(toMobilePath('/insights')).toBe('/m/insights');
   });
 
   it('returns null for a nested route of a screen that has no detail version', () => {
@@ -248,8 +248,8 @@ describe('mobileEntryPath', () => {
     expect(mobileEntryPath('/journal')).toBe('/m/journal');
   });
 
-  it('falls back to the mobile home for a screen without a mobile twin', () => {
-    expect(mobileEntryPath('/insights')).toBe('/m');
+  it('keeps the user on insights, which now has a mobile screen', () => {
+    expect(mobileEntryPath('/insights')).toBe('/m/insights');
   });
 
   it('keeps the user on the dashboard, which now has a mobile screen', () => {
@@ -308,8 +308,12 @@ describe('resolvePath', () => {
     expect(resolvePath('/table', 'mobile')).toBe('/m/table');
   });
 
-  it('keeps an unmapped route on desktop even when mobile is on', () => {
-    expect(resolvePath('/insights', 'mobile')).toBe('/insights');
+  it('sends insights to its mobile twin when mobile is on', () => {
+    expect(resolvePath('/insights', 'mobile')).toBe('/m/insights');
+  });
+
+  it('keeps an unmapped nested route on desktop even when mobile is on', () => {
+    expect(resolvePath('/today/12', 'mobile')).toBe('/today/12');
   });
 
   it('sends a mobile route back to desktop when mobile is off', () => {
@@ -320,8 +324,8 @@ describe('resolvePath', () => {
     expect(resolvePath('/m/entries', 'desktop')).toBe('/entries');
   });
 
-  it('leaves a desktop route alone when mobile is off', () => {
-    expect(resolvePath('/insights', 'desktop')).toBe('/insights');
+  it('sends the mobile insights screen back to desktop when mobile is off', () => {
+    expect(resolvePath('/m/insights', 'desktop')).toBe('/insights');
   });
 });
 
@@ -415,8 +419,14 @@ describe('shouldRestoreMobile', () => {
     expect(shouldRestoreMobile('/journal', 'mobile', false)).toBe(true);
   });
 
+  it('redirects on a cold start on insights, which now has a mobile twin', () => {
+    expect(shouldRestoreMobile('/insights', 'mobile', false)).toBe(true);
+  });
+
   it('does not redirect when the route has no mobile twin', () => {
-    expect(shouldRestoreMobile('/insights', 'mobile', false)).toBe(false);
+    // A nested route of a flat screen has no mobile version, so mobile mode
+    // leaves it on desktop instead of bouncing it to a /m route that 404s.
+    expect(shouldRestoreMobile('/today/12', 'mobile', false)).toBe(false);
   });
 
   it('does not redirect when already on the mobile side', () => {
@@ -463,13 +473,20 @@ describe('MOBILE_ROUTES', () => {
     );
   });
 
-  it('contains the screens that have a mobile version and nothing else', () => {
+  it('contains every screen that has a mobile version', () => {
     expect(MOBILE_ROUTES).toContain('/today');
     expect(MOBILE_ROUTES).toContain('/entries');
     expect(MOBILE_ROUTES).toContain('/categories');
     expect(MOBILE_ROUTES).toContain('/journal');
     expect(MOBILE_ROUTES).toContain('/table');
-    expect(MOBILE_ROUTES).not.toContain('/insights');
+    expect(MOBILE_ROUTES).toContain('/insights');
+  });
+
+  it('now covers every screen in the registry — the mobile port is complete', () => {
+    // The final slice (insights) lands here: no desktop screen is left without
+    // a mobile twin, so the view-mode toggle maps every registry route across.
+    expect([...MOBILE_ROUTES]).toEqual(APP_ROUTES.map((route) => route.href));
+    expect(APP_ROUTES.every((route) => hasMobileVersion(route.href))).toBe(true);
   });
 });
 

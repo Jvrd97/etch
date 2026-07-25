@@ -48,6 +48,11 @@ let deleteCategory: ReturnType<typeof mock>;
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete `tableAPI` for whichever file loads later.
 mock.module('@/lib/api', () => ({
+  insightsAPI: {
+    getAll: () => Promise.resolve([]),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   categoriesAPI: {
     getAll: (activeOnly?: boolean) => getAllCategories(activeOnly),
     getById: () => Promise.resolve(CATEGORY),

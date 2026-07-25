@@ -3,34 +3,28 @@
 // summary: Dashboard state extracted from app/page.tsx so the desktop page and /m share the same data load, KPI stats and AI-insight flow
 
 import { useCallback, useEffect, useState } from 'react';
-import {
-  categoriesAPI,
-  entriesAPI,
-  insightsAPI,
-  journalAPI,
-  type AIReport,
-} from '@/lib/api';
+import { categoriesAPI, entriesAPI, journalAPI } from '@/lib/api';
 import { computeDashboardStats, type DashboardStats } from '@/lib/dashboard-stats';
+import {
+  INSIGHT_PERIOD_OPTIONS,
+  useInsightRun,
+  type InsightPeriod,
+  type InsightRunState,
+} from './useInsightRun';
+
+// Re-exported so screens keep importing the analysis-window vocabulary from the
+// Dashboard hook they already depend on; the definitions live in useInsightRun.
+export { INSIGHT_PERIOD_OPTIONS };
+export type { InsightPeriod };
+
+/** Discriminated state of the on-demand AI insight panel. */
+export type InsightState = InsightRunState;
 
 /** How many journal notes the dashboard total is computed from. */
 const JOURNAL_TOTAL_LIMIT = 5;
 
 /** Entries that fill the hero progress ring completely. */
 const RING_TARGET_ENTRIES = 10;
-
-/** Selectable analysis windows for the AI insight, in days. */
-export const INSIGHT_PERIOD_OPTIONS = [7, 30, 90] as const;
-export type InsightPeriod = (typeof INSIGHT_PERIOD_OPTIONS)[number];
-
-/** Default analysis window offered when the screen first mounts. */
-const DEFAULT_INSIGHT_PERIOD: InsightPeriod = 30;
-
-/** Discriminated state of the on-demand AI insight panel. */
-export type InsightState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'ready'; report: AIReport };
 
 /** Everything a Dashboard screen needs; the two shells differ only in markup. */
 export interface UseDashboardResult {
@@ -57,9 +51,16 @@ const EMPTY_STATS: DashboardStats = {
 export function useDashboard(): UseDashboardResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [insight, setInsight] = useState<InsightState>({ status: 'idle' });
-  const [insightPeriod, setInsightPeriod] = useState<InsightPeriod>(DEFAULT_INSIGHT_PERIOD);
   const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
+
+  // No onReady handler: the panel renders the fresh report inline, so the run
+  // parks on `ready` rather than being consumed elsewhere.
+  const {
+    period: insightPeriod,
+    setPeriod: setInsightPeriod,
+    state: insight,
+    generate: generateInsight,
+  } = useInsightRun();
 
   const loadDashboardData = useCallback(async () => {
     try {
@@ -86,19 +87,6 @@ export function useDashboard(): UseDashboardResult {
   useEffect(() => {
     void loadDashboardData();
   }, [loadDashboardData]);
-
-  const generateInsight = useCallback(async () => {
-    setInsight({ status: 'loading' });
-    try {
-      const report = await insightsAPI.create(insightPeriod);
-      setInsight({ status: 'ready', report });
-    } catch (err) {
-      setInsight({
-        status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to generate insight',
-      });
-    }
-  }, [insightPeriod]);
 
   return {
     stats,

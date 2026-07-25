@@ -1,70 +1,16 @@
 'use client';
-// [review:need-review] PHASE-01/31-web-quickfixes-md-fab-checklist
-// summary: /insights page — switched to shared Markdown renderer (bold/lists/headings now parsed)
+// [review:need-review] PHASE-01/46-mobile-insights
+// summary: /insights page — report list, open/close/load flow and reload now come from useInsights, shared with /m/insights; markup unchanged
 
-import { useEffect, useState } from 'react';
-import { insightsAPI, AIReport, AIReportListItem } from '@/lib/api';
 import Markdown from '@/components/Markdown';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 import Link from 'next/link';
-
-type ReportView =
-  | { status: 'closed' }
-  | { status: 'loading'; id: number }
-  | { status: 'error'; id: number; message: string }
-  | { status: 'open'; id: number; report: AIReport };
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+import { formatReportDate, useInsights } from '@/hooks/useInsights';
 
 export default function InsightsPage() {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reports, setReports] = useState<AIReportListItem[]>([]);
-  const [view, setView] = useState<ReportView>({ status: 'closed' });
-
-  useEffect(() => {
-    loadReports();
-  }, []);
-
-  const loadReports = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      setReports(await insightsAPI.getAll());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load reports');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const openReport = async (id: number) => {
-    if (view.status === 'open' && view.id === id) {
-      setView({ status: 'closed' });
-      return;
-    }
-    setView({ status: 'loading', id });
-    try {
-      const report = await insightsAPI.getById(id);
-      setView({ status: 'open', id, report });
-    } catch (err) {
-      setView({
-        status: 'error',
-        id,
-        message: err instanceof Error ? err.message : 'Failed to load report',
-      });
-    }
-  };
+  const { reports, loading, error, view, setError, openReport } = useInsights();
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error) return <ErrorAlert message={error} onDismiss={() => setError(null)} />;
@@ -121,7 +67,7 @@ export default function InsightsPage() {
                         Разбор за {item.period_days} дн.
                       </p>
                       <p className="text-[13px] text-text-secondary mt-0.5">
-                        {formatDate(item.created_at)} · {item.model}
+                        {formatReportDate(item.created_at)} · {item.model}
                       </p>
                       {!isOpen && (
                         <p className="text-sm text-text-disabled mt-2 line-clamp-2">

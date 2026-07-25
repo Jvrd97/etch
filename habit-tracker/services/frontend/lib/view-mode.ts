@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/46-mobile-insights
 // summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (nested detail routes, plus the root `/` ↔ bare `/m` dashboard twin) and the persisted user preference
 
 import { APP_ROUTES, MOBILE_PATH_PREFIX, isNestedMobileRoute } from './routes';
@@ -171,8 +171,8 @@ export function resolvePath(pathname: string, mode: ViewMode): string {
  *
  * Accepted trade-off: the session marker is burned on the first run of the
  * effect, redirect or not. A cold start on a route with no mobile twin
- * (`/insights`, say) with `mode=mobile` stored therefore spends the marker
- * without moving anywhere, and the user stays on the desktop shell until the
+ * (a nested route of a flat screen, say) with `mode=mobile` stored therefore
+ * spends the marker without moving anywhere, and the user stays on the desktop shell until the
  * tab session ends — they have to press `Mobile` once. The opposite bias, a
  * marker set only when the redirect actually fires, brings back the loop where
  * every return to the desktop layout counts as a cold start and bounces the

@@ -660,3 +660,41 @@ Feedback loops: `bun test lib/` 204/204 green, `tsc --noEmit` clean, `bun run li
 Юнит-тест `hooks/useJournal.test.ts` был написан и прогнан red→green в изоляции, но снят из дерева: полный `bun test` делит один глобальный `mock.module('@/lib/api')`, и все существующие 10 mock-фабрик не объявляют `journalAPI` (первым линкуется `useEntries.test`, замораживая namespace без journal). Добавить journal во все фабрики — правка 10 чужих тест-файлов вне границы тикета (`Test boundary: lib/`). Хук — точная копия покрытого тестами `useEntries`, покрыт typecheck и общими lib-тестами роутинга.
 
 Feedback loops: `bun test` (весь фронт) 332/332 green, `tsc --noEmit` exit 0, `eslint` exit 0. Коммиты не делались, issue не двигался.
+
+---
+
+## 2026-07-25 — PHASE-01/46-mobile-insights
+
+Финальный слайс мобильного порта: у Insights появляется `/m`-версия, whitelist покрывает все экраны реестра.
+
+**Новые модули**
+
+- `hooks/useInsights.ts` — **new**: состояние экрана Insights, вынутое из `app/insights/page.tsx` — список отчётов (`reports`, `loading`, `error`/`setError`), `ReportView` (закрыт/грузится/ошибка/открыт), `openReport` (второй тап по открытому сворачивает), `reload`. Плюс экспорт чистого `formatReportDate` — единый форматтер даты для обоих шеллов.
+- `app/m/insights/page.tsx` — **new**: мобильный Insights — тот же список через `useInsights`, одна колонка карточек, разворачивающихся в отчёт с MD через `components/Markdown.tsx`; кнопка «Запустить разбор» шириной в экран + выбор периода (7/30/90) из `INSIGHT_PERIOD_OPTIONS`; после генерации список перечитывается и новый отчёт сразу открывается. Весь читаемый текст не мельче `text-sm`.
+
+**Изменения**
+
+- `app/insights/page.tsx` — **mod**: десктопный Insights переведён на `useInsights` (список/открытие/reload), локальный `formatDate` заменён на `formatReportDate`; разметка прежняя.
+- `lib/routes.ts` — **mod**: у Insights `hasMobile: true` (попадает в whitelist `MOBILE_ROUTES`, остаётся под «Ещё» — `inTabBar: null`); шапка `/m/insights` → «Insights» через существующий `mobileScreenTitle`.
+- `lib/view-mode.ts` — **mod**: только комментарии — insights больше не «пример без мобильной версии»; логика без изменений.
+- `lib/view-mode.test.ts` — **mod**: insights переведён в положительные кейсы (mobile twin `/m/insights`, whitelist, cold-start redirect, resolvePath в обе стороны); роль «нет мобильной версии» отдана вложенному роуту плоского экрана `/today/12`; добавлен тест «реестр покрыт целиком» — `MOBILE_ROUTES` равен всем `APP_ROUTES.href`.
+
+`components/mobile/MoreSheet.tsx` не менялся: ссылка на Insights ведёт на `/m/insights` автоматически через `toMobilePath(route.href) ?? route.href`, как только у экрана `hasMobile: true`.
+
+Feedback loops: `bun test` (весь фронт) 338/338 green, `tsc --noEmit` exit 0, `eslint` exit 0. Коммиты не делались, issue не двигался.
+
+### Тикет 46 — мобильный Insights, закрытие блокера (раунд 2 доведён вручную)
+
+Дата 2026-07-25. Раунд 2 workflow применил рефактор, но упал на сетевой ошибке до финального отчёта и до прогона loops. Довёл вручную.
+
+**Блокер дуального ревью (закрыт)**: run-логика разбора (period-state, state-машина, `generate`) была инлайн в `app/m/insights/page.tsx` и дублировала `useDashboard`. Вынесена в общий примитив `hooks/useInsightRun.ts` (idle/loading/error/ready, выбор периода, `insightsAPI.create`); и `useInsights`, и `useDashboard` теперь висят на нём. Страница `/m/insights` — markup-only.
+
+**Файлы (new)**: `hooks/useInsightRun.ts`, `hooks/useInsightRun.test.ts`, `hooks/useInsights.ts`, `hooks/useInsights.test.ts`, `app/m/insights/page.tsx`.
+**Файлы (mod)**: `hooks/useDashboard.ts` (переезд на примитив), `app/insights/page.tsx` (markup-only на `useInsights`), `lib/routes.ts` (`hasMobile:true` для insights — реестр теперь полностью покрыт мобильными близнецами), `lib/view-mode.test.ts`, плюс 10 тест-файлов с `mock.module('@/lib/api')`.
+
+**Довод вручную после падения раунда 2**:
+- Тесты падали с `Export named 'insightsAPI' not found`: bun делит реестр `mock.module('@/lib/api')` на весь прогон, и 10 фабрик не объявляли `insightsAPI` — при первой линковке имя выпадало. Добавил no-op заглушку `insightsAPI` в каждую из 10 фабрик.
+- eslint error `Cannot access refs during render` в `useInsightRun.ts:57`: запись `onReadyRef.current` перенесена из тела рендера в `useEffect`.
+- Почищены две unused-var warning в новом `useInsightRun.test.ts`.
+
+Feedback loops: `bun test` 345/345 green, `bunx tsc --noEmit` clean, `bunx eslint .` 0 problems, `bun run build` green.

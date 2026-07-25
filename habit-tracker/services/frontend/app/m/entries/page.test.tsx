@@ -61,6 +61,11 @@ mock.module('next/navigation', () => ({
 // that registry across the run, so a partial mock here would delete `tableAPI`
 // for whichever file loads later.
 mock.module('@/lib/api', () => ({
+  insightsAPI: {
+    getAll: () => Promise.resolve([]),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   categoriesAPI: {
     getAll: () => getAllCategories(),
     getById: () => Promise.resolve(CATEGORY),

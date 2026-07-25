@@ -71,6 +71,11 @@ mock.module('next/navigation', () => ({
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  insightsAPI: {
+    getAll: () => Promise.resolve([]),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   categoriesAPI: {
     getById: (id: number) => getCategory(id),
     getAll: () => getAllCategories(),
