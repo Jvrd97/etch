@@ -1,20 +1,23 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: single source of truth for the `YYYY-MM-DD` date strings the API speaks
+// [review:need-review] PHASE-01/56-local-calendar-date-instead-of-utc
+// summary: single source of truth for the `YYYY-MM-DD` date strings the API speaks — local calendar date
+
+const ISO_DATE_PAD = 2;
 
 /**
  * `d` rendered as the `YYYY-MM-DD` string the API expects — the calendar date
- * **in UTC**, not in the user's timezone: the instant is converted to UTC first
- * and only then truncated. Zero-padding comes from the ISO representation
- * itself, so single-digit months and days stay two chars.
+ * **in the user's local timezone**. The year/month/day are read off the local
+ * calendar and zero-padded to two chars, so an instant is dated by the day the
+ * user was living, not by its UTC projection.
  *
- * Consequence, deliberately kept for now: east of Greenwich the early hours of
- * the day still map to yesterday. At UTC+3, 2026-07-24T01:30 local is
- * 2026-07-23T22:30Z and yields `2026-07-23`, so an entry logged after midnight
- * lands on the previous day. Switching to the local calendar date is tracked in
- * PHASE-01/56 — it changes what every screen writes, so it is its own slice.
+ * This matters east of Greenwich: at UTC+3, 2026-07-24T00:30 local is
+ * 2026-07-23T21:30Z, yet it is still the 24th for the user, so it yields
+ * `2026-07-24` — an entry logged just after midnight stays on the current day.
  */
 export function toISODate(d: Date): string {
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(ISO_DATE_PAD, '0');
+  const day = String(d.getDate()).padStart(ISO_DATE_PAD, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**

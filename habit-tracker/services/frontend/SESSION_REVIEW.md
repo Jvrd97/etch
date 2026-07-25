@@ -698,3 +698,11 @@ Feedback loops: `bun test` (весь фронт) 338/338 green, `tsc --noEmit` e
 - Почищены две unused-var warning в новом `useInsightRun.test.ts`.
 
 Feedback loops: `bun test` 345/345 green, `bunx tsc --noEmit` clean, `bunx eslint .` 0 problems, `bun run build` green.
+
+### Тикет 56 — календарная дата по локальной зоне вместо UTC
+
+Дата 2026-07-25. `toISODate` в `lib/date.ts` строила `YYYY-MM-DD` через `d.toISOString()`, то есть отдавала календарную дату в UTC. На UTC+3 запись, сделанная в 00:30, уходила вчерашним днём. Переведена на локальный календарь (`getFullYear`/`getMonth`/`getDate` с zero-padding через `padStart`); `todayISO` наследует поведение без изменений. Докстринг про UTC-эффект снят. Downstream-экраны (`app/today`, `app/m/today`, `app/journal`, `app/table`, `lib/chart-data.ts`) не менялись — они висят на едином `toISODate` и наследуют исправление.
+
+**Файлы (mod)**: `lib/date.ts` (локальный календарь), `lib/date.test.ts` (кейсы под явной `TZ=Europe/Moscow`: полночь → сегодня, 23:59, високосное 29 февраля, zero-pad).
+
+Feedback loops: `bun test` (весь фронт) 348/348 green, `bunx tsc --noEmit` clean, `eslint` exit 0. Коммиты не делались, issue не двигался.
