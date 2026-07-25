@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: + checklist_has_boolean_field pure predicate, shared by categories API and onboarding validation
+# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
+# summary: + apply_category_batch — all-or-nothing plan apply (create_category / add_field) with CategoryBatchError + rollback
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +9,35 @@ from sqlalchemy.orm import selectinload
 from app.models import Category, Field
 from app.models.field import FieldType
 from app.schemas import CategoryCreate, CategoryUpdate, FieldCreate
-from app.schemas.category import FieldUpsert
+from app.schemas.category import (
+    BatchAddFieldOp,
+    BatchCreateCategoryOp,
+    CategoryBatchRequest,
+    CategoryBatchResponse,
+    CategoryResponse,
+    FieldResponse,
+    FieldUpsert,
+)
 
 logger = logging.getLogger(__name__)
 
 BOOLEAN_FIELD_TYPE = "boolean"
+
+CHECKLIST_DISPLAY_MODE = "checklist"
+
+
+class CategoryBatchError(Exception):
+    """Плановая операция отвергнута; несёт HTTP-статус и текст для API-слоя.
+
+    Транзакционность батча — причина существования этого исключения: любой
+    отказ откатывает уже накопленные во flush изменения, поэтому частично
+    применённого плана не бывает.
+    """
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
 
 
 def checklist_has_boolean_field(field_types: list[str]) -> bool:
@@ -258,6 +282,115 @@ async def delete_category(db: AsyncSession, category_id: int) -> bool:
     await db.delete(db_category)
     await db.commit()
     return True
+
+
+CHECKLIST_NEEDS_BOOLEAN_DETAIL = (
+    "display_mode='checklist' requires at least one field with "
+    "field_type='boolean'; add a boolean field or keep display_mode='form'"
+)
+
+
+def _build_field(category_id: int, field: FieldCreate) -> Field:
+    return Field(
+        category_id=category_id,
+        name=field.name,
+        field_type=field.field_type,
+        is_required=field.is_required,
+        default_value=field.default_value,
+        options=field.options,
+        order=field.order,
+    )
+
+
+async def _apply_create_category(
+    db: AsyncSession, op: BatchCreateCategoryOp, seen_names: set[str]
+) -> int:
+    """Создать категорию с полями внутри батч-транзакции; вернуть её id.
+
+    Валидации те же, что у одиночного POST /categories: checklist без boolean
+    отвергается 422, дубль имени (в БД или внутри самого плана) — 400. Ничего
+    не коммитит: только flush, чтобы получить id.
+    """
+    if op.display_mode == CHECKLIST_DISPLAY_MODE and not checklist_has_boolean_field(
+        [field.field_type for field in op.fields]
+    ):
+        raise CategoryBatchError(422, CHECKLIST_NEEDS_BOOLEAN_DETAIL)
+
+    if op.name in seen_names or await get_category_by_name(db, op.name) is not None:
+        raise CategoryBatchError(400, f"Category with name '{op.name}' already exists")
+    seen_names.add(op.name)
+
+    db_category = Category(
+        name=op.name,
+        description=op.description,
+        icon=op.icon,
+        color=op.color,
+        display_mode=op.display_mode,
+        streak_mode=op.streak_mode,
+        group=op.group,
+    )
+    db.add(db_category)
+    await db.flush()
+
+    for field in op.fields:
+        db.add(_build_field(db_category.id, field))
+    await db.flush()
+    return db_category.id
+
+
+async def _apply_add_field(db: AsyncSession, op: BatchAddFieldOp) -> int:
+    """Добавить поле к существующей категории; вернуть id нового поля."""
+    category = await get_category(db, op.category_id)
+    if category is None:
+        raise CategoryBatchError(400, f"Category with id {op.category_id} not found")
+    db_field = _build_field(op.category_id, op.field)
+    db.add(db_field)
+    await db.flush()
+    return db_field.id
+
+
+async def apply_category_batch(
+    db: AsyncSession, request: CategoryBatchRequest
+) -> CategoryBatchResponse:
+    """Применить план категорий одной транзакцией: всё-или-ничего.
+
+    Пять отдельных POST /categories дают ровно ту проблему, от которой уходим:
+    падение на любой операции здесь откатывает весь план, частичного результата
+    не остаётся. На успехе коммитит и возвращает созданное.
+    """
+    created_category_ids: list[int] = []
+    created_field_ids: list[int] = []
+    seen_names: set[str] = set()
+
+    try:
+        for op in request.operations:
+            if isinstance(op, BatchCreateCategoryOp):
+                created_category_ids.append(
+                    await _apply_create_category(db, op, seen_names)
+                )
+            else:
+                created_field_ids.append(await _apply_add_field(db, op))
+        await db.commit()
+    except CategoryBatchError:
+        # Откат обязателен: flush уже записал строки в транзакцию, а session,
+        # прокинутая из override_get_db в тестах, сама по себе не откатывается.
+        await db.rollback()
+        raise
+
+    categories: list[CategoryResponse] = []
+    for category_id in created_category_ids:
+        db_category = await get_category(db, category_id)
+        if db_category is not None:
+            categories.append(CategoryResponse.model_validate(db_category))
+
+    fields: list[FieldResponse] = []
+    if created_field_ids:
+        result = await db.execute(select(Field).where(Field.id.in_(created_field_ids)))
+        fields = [
+            FieldResponse.model_validate(field) for field in result.scalars().all()
+        ]
+
+    return CategoryBatchResponse(categories=categories, fields=fields)
 
 
 async def add_field_to_category(

@@ -28,6 +28,7 @@ let getInsightById: ReturnType<typeof mock>;
 // The whole module is replaced process-wide, so members other suites reach for
 // stay present even though this suite only exercises insightsAPI.
 mock.module('@/lib/api', () => ({
+  onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   categoriesAPI: {
     getAll: () => Promise.resolve([]),
     getById: () => Promise.resolve(null),

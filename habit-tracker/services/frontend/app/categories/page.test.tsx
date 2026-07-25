@@ -38,6 +38,7 @@ let deleteCategory: ReturnType<typeof mock>;
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
     getAll: () => Promise.resolve([]),
     getById: () => Promise.resolve(null),

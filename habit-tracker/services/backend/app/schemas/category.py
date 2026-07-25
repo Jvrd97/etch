@@ -1,8 +1,8 @@
-# [review:need-review] PHASE-01/35-category-fields-update-web-ux
-# summary: CategoryUpdate.fields (FieldUpsert with optional id) for field diff-sync
+# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
+# summary: + CategoryBatch* DTOs (discriminated create_category / add_field ops, request + response)
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, Union
 
 CategoryDisplayMode = Literal["form", "checklist"]
 CategoryStreakMode = Literal["build", "avoid"]
@@ -125,3 +125,38 @@ class CategoryResponse(CategoryBase):
 
     class Config:
         from_attributes = True
+
+
+class BatchCreateCategoryOp(CategoryBase):
+    """Создать новую категорию (вместе с полями) в рамках batch-плана."""
+
+    op: Literal["create_category"] = "create_category"
+    fields: list[FieldCreate] = Field(default_factory=list)
+
+
+class BatchAddFieldOp(BaseModel):
+    """Добавить поле к существующей категории в рамках batch-плана."""
+
+    op: Literal["add_field"] = "add_field"
+    category_id: int
+    field: FieldCreate
+
+
+# Generic список операций: ручка про онбординг ничего не знает, только про
+# домен категорий. Дискриминатор `op` разводит два additive-only варианта.
+CategoryBatchOperation = Annotated[
+    Union[BatchCreateCategoryOp, BatchAddFieldOp], Field(discriminator="op")
+]
+
+
+class CategoryBatchRequest(BaseModel):
+    """Список операций, применяемых одной транзакцией (всё-или-ничего)."""
+
+    operations: list[CategoryBatchOperation] = Field(default_factory=list)
+
+
+class CategoryBatchResponse(BaseModel):
+    """Созданное планом: новые категории и добавленные к существующим поля."""
+
+    categories: list[CategoryResponse] = []
+    fields: list[FieldResponse] = []

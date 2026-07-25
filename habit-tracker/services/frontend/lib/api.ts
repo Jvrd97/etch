@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/52-text-to-category-plan
-// summary: + onboardingAPI.draft and additive-only OnboardingPlan types (create_category / add_field)
+// [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
+// summary: + categoriesAPI.applyBatch (transactional plan apply) and CategoryBatchResponse type
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -81,6 +81,15 @@ export const categoriesAPI = {
     return fetcher<Field>(`/categories/${categoryId}/fields`, {
       method: 'POST',
       body: JSON.stringify(field),
+    });
+  },
+
+  // Apply an additive-only plan transactionally: every op lands in one commit
+  // or none do. Used by onboarding to turn a preview into real categories.
+  applyBatch: async (operations: PlanOperation[]) => {
+    return fetcher<CategoryBatchResponse>('/categories/batch', {
+      method: 'POST',
+      body: JSON.stringify({ operations }),
     });
   },
 };
@@ -393,6 +402,13 @@ export type PlanOperation = CreateCategoryOp | AddFieldOp;
 
 export interface OnboardingPlan {
   operations: PlanOperation[];
+}
+
+// What POST /categories/batch returns: the categories it created and the fields
+// it appended to existing ones.
+export interface CategoryBatchResponse {
+  categories: Category[];
+  fields: Field[];
 }
 
 export interface AIReport {

@@ -46,6 +46,7 @@ let searchParams: URLSearchParams;
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one never calls them.
 mock.module('@/lib/api', () => ({
+  onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
     getAll: () => Promise.resolve([]),
     getById: () => Promise.resolve(null),

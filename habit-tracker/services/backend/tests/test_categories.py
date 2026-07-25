@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] PHASE-01/35-category-fields-update-web-ux
-# summary: + tests for PATCH field diff-sync (add/rename/remove, history, checklist)
+# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
+# summary: + TestCategoryBatch — atomicity, duplicate name, add_field to missing category, checklist guard
 
 import logging
 
@@ -626,6 +626,154 @@ class TestCategoryFields:
             json={"name": "Test", "field_type": "text"},
         )
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestCategoryBatch:
+    """Tests for the transactional POST /categories/batch endpoint."""
+
+    async def test_apply_plan_creates_categories_and_fields(self, client: AsyncClient):
+        """A plan of three categories and two fields applies in one request."""
+        # Pre-existing category the add_field ops target.
+        sport = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Sport",
+                "fields": [{"name": "Reps", "field_type": "number"}],
+            },
+        )
+        sport_id = sport.json()["id"]
+
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {
+                        "op": "create_category",
+                        "name": "Sleep",
+                        "fields": [
+                            {"name": "Hours", "field_type": "number"},
+                            {"name": "Quality", "field_type": "select"},
+                        ],
+                    },
+                    {"op": "create_category", "name": "Water"},
+                    {"op": "create_category", "name": "Meditation"},
+                    {
+                        "op": "add_field",
+                        "category_id": sport_id,
+                        "field": {"name": "Pulse", "field_type": "number"},
+                    },
+                    {
+                        "op": "add_field",
+                        "category_id": sport_id,
+                        "field": {"name": "Duration", "field_type": "duration"},
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert {c["name"] for c in body["categories"]} == {
+            "Sleep",
+            "Water",
+            "Meditation",
+        }
+        assert {f["name"] for f in body["fields"]} == {"Pulse", "Duration"}
+
+        listing = await client.get("/api/v1/categories")
+        names = {c["name"] for c in listing.json()}
+        assert {"Sleep", "Water", "Meditation", "Sport"} <= names
+
+    async def test_failure_on_second_op_leaves_no_records(self, client: AsyncClient):
+        """An add_field to a missing category rolls back the whole plan."""
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {"op": "create_category", "name": "Sleep"},
+                    {
+                        "op": "add_field",
+                        "category_id": 9999,
+                        "field": {"name": "Pulse", "field_type": "number"},
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 400
+
+        listing = await client.get("/api/v1/categories")
+        assert [c for c in listing.json() if c["name"] == "Sleep"] == []
+
+    async def test_duplicate_name_rejected(self, client: AsyncClient):
+        """A create_category name that already exists returns 400, DB unchanged."""
+        await client.post("/api/v1/categories", json={"name": "Sleep"})
+
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {"op": "create_category", "name": "Water"},
+                    {"op": "create_category", "name": "Sleep"},
+                ]
+            },
+        )
+        assert response.status_code == 400
+
+        listing = await client.get("/api/v1/categories")
+        assert [c for c in listing.json() if c["name"] == "Water"] == []
+
+    async def test_duplicate_name_within_batch_rejected(self, client: AsyncClient):
+        """Two create_category ops with the same name in one plan return 400."""
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {"op": "create_category", "name": "Sleep"},
+                    {"op": "create_category", "name": "Sleep"},
+                ]
+            },
+        )
+        assert response.status_code == 400
+
+        listing = await client.get("/api/v1/categories")
+        assert [c for c in listing.json() if c["name"] == "Sleep"] == []
+
+    async def test_add_field_to_missing_category_rejected(self, client: AsyncClient):
+        """add_field with an unknown category_id returns 400."""
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {
+                        "op": "add_field",
+                        "category_id": 9999,
+                        "field": {"name": "Pulse", "field_type": "number"},
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 400
+
+    async def test_checklist_without_boolean_field_rejected(self, client: AsyncClient):
+        """A checklist create_category with no boolean field is rejected with 422."""
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {
+                        "op": "create_category",
+                        "name": "Vitamins",
+                        "display_mode": "checklist",
+                        "fields": [{"name": "Cups", "field_type": "number"}],
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 422
+        assert "boolean" in response.json()["detail"].lower()
+
+        listing = await client.get("/api/v1/categories")
+        assert [c for c in listing.json() if c["name"] == "Vitamins"] == []
 
 
 @pytest.mark.asyncio

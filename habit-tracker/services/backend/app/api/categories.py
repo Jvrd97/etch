@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: checklist boolean check now delegates to crud.checklist_has_boolean_field (shared with onboarding)
+# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
+# summary: + POST /categories/batch — transactional apply of an additive-only plan (create_category / add_field), CategoryBatchError -> HTTP
 from typing import cast, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +9,11 @@ from app.core.database import get_db
 from app.crud import category as category_crud
 from app.crud import streak as streak_crud
 from app.models import Category, Field
+from app.crud.category import (
+    CHECKLIST_DISPLAY_MODE,
+    CHECKLIST_NEEDS_BOOLEAN_DETAIL,
+    CategoryBatchError,
+)
 from app.schemas import (
     CategoryCreate,
     CategoryUpdate,
@@ -17,18 +22,16 @@ from app.schemas import (
     FieldResponse,
     StreakResponse,
 )
-from app.schemas.category import CategoryStreakMode
+from app.schemas.category import (
+    CategoryBatchRequest,
+    CategoryBatchResponse,
+    CategoryStreakMode,
+)
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 
 # Single source of truth for the allowed modes: the response Literal itself.
 STREAK_MODES: frozenset[str] = frozenset(get_args(CategoryStreakMode))
-
-CHECKLIST_DISPLAY_MODE = "checklist"
-CHECKLIST_NEEDS_BOOLEAN_DETAIL = (
-    "display_mode='checklist' requires at least one field with "
-    "field_type='boolean'; add a boolean field or keep display_mode='form'"
-)
 
 
 def _ensure_checklist_has_boolean_field(field_types: list[str]) -> None:
@@ -167,6 +170,33 @@ async def create_category(
         )
 
     return await category_crud.create_category(db, category)
+
+
+@router.post(
+    "/batch",
+    response_model=CategoryBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def apply_category_batch(
+    request: CategoryBatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CategoryBatchResponse:
+    """
+    Применить план категорий одной транзакцией: всё-или-ничего.
+
+    Generic-ручка: принимает список additive-only операций (`create_category`,
+    `add_field`) и применяет их в общем коммите. Падение на любой операции не
+    оставляет в БД ни одной записи из плана — частично применённого плана не
+    бывает. Возвращает созданное: новые категории и добавленные поля.
+
+    Ошибки: дубль имени (в БД или внутри плана) -> 400; `add_field` в
+    несуществующую категорию -> 400; checklist без boolean-поля -> 422 (та же
+    проверка, что и в обычном POST /categories).
+    """
+    try:
+        return await category_crud.apply_category_batch(db, request)
+    except CategoryBatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.patch("/{category_id}", response_model=CategoryResponse)

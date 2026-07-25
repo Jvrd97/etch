@@ -1,5 +1,25 @@
 # Session Review Log
 
+## 2026-07-25 — PHASE-01/53 apply-plan batch endpoint
+
+Транзакционный `POST /api/v1/categories/batch`: additive-only план (`create_category` / `add_field`) применяется одной транзакцией, всё-или-ничего. UI онбординга получил чекбоксы и редактирование имени, кнопку «создать» и переход на `/categories`.
+
+Backend (все **mod**, кроме нового кода внутри):
+
+- `app/schemas/category.py` — **mod**: `BatchCreateCategoryOp` / `BatchAddFieldOp` (дискриминатор `op`), `CategoryBatchRequest`, `CategoryBatchResponse`.
+- `app/crud/category.py` — **mod**: `apply_category_batch` + `CategoryBatchError`; на отказе явный `rollback`, checklist-guard и дубль-имени как у одиночного POST.
+- `app/api/categories.py` — **mod**: ручка `POST /categories/batch`, `CategoryBatchError` -> HTTPException (400/422). Константы checklist перенесены в crud (single source), API их импортирует.
+- `tests/test_categories.py` — **mod**: `TestCategoryBatch` (6 тестов: атомарность, дубль имени в БД и внутри плана, add_field в несуществующую категорию, checklist без boolean).
+
+Frontend:
+
+- `frontend/lib/api.ts` — **mod**: `categoriesAPI.applyBatch`, `CategoryBatchResponse`.
+- `frontend/app/onboarding/page.tsx` — **mod**: интерактивный предпросмотр (чекбоксы, редактирование имени, apply + redirect); create включён по умолчанию, add_field и конфликты — выключены.
+- `frontend/app/onboarding/page.test.tsx` — **new**: дефолты чекбоксов и что снятые операции не уходят на бэкенд.
+- 12 sibling test-файлов (`app/**/*.test.tsx`, `hooks/*.test.ts`) — **mod**: в mock `@/lib/api` добавлен `onboardingAPI`, чтобы общий реестр export-имён bun (фиксируется при первом линке) всегда содержал имя; иначе новый линк онбординг-страницы падал в полном прогоне.
+
+Feedback loops: backend `ruff`/`mypy --strict`/`pytest` (172) — green; frontend `tsc`/`eslint`/`bun test` (348) — green, детерминированно на 3 прогонах.
+
 ## 2026-07-24 — round 3 review fixes (маркеры + счётчик ревью)
 
 Раунд 3 по замечаниям ревью. Кода backend не менялось, менялись маркеры и репо-скрипт.
