@@ -33,10 +33,22 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       API_KEY: ${API_KEY:-}
+      # cli | api | empty (auto). cli shells out to the `claude` binary
+      # baked into the image and uses the mounted host login below.
+      LLM_BACKEND: ${LLM_BACKEND:-cli}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Preferred auth on a headless server: `claude setup-token` on the
+      # host, then export the long-lived token. Falls back to the mounted
+      # ~/.claude login below when unset.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
       - ./services/backend:/app
+      # claude CLI login from the host (run `claude` once there to log in).
+      # Writable: the CLI refreshes tokens and updates its config in place.
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:

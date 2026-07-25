@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-01/13-backend-uv-mypy-ruff
-# summary: image built with uv (uv.lock, no requirements.txt); venv outside /app to survive the compose bind mount
+# summary: image built with uv (uv.lock, no requirements.txt); venv outside /app to survive the compose bind mount; + node & claude CLI for the cli insights backend
 FROM python:3.10-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /bin/
@@ -9,6 +9,19 @@ WORKDIR /app
 # System dependencies
 RUN apt-get update && apt-get install -y \
     postgresql-client \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node + claude CLI: LLM_BACKEND=cli shells out to `claude -p`, and
+# resolve_insights_client() disables insights (503) when the binary is
+# absent. Credentials are not baked in — the host's ~/.claude is mounted
+# by docker-compose at runtime.
+ENV NODE_MAJOR=22
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep the venv outside /app: docker-compose bind-mounts the source dir

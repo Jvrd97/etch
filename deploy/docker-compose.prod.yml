@@ -9,10 +9,21 @@ services:
 
   backend:
     restart: always
-    command: gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 50 --graceful-timeout 30 --timeout 60 --access-logfile - --error-logfile -
+    # --timeout must stay above LLM_TIMEOUT_SECONDS (120s in app/llm/client.py):
+    # a month-long insights report is one long synchronous request, and a
+    # shorter worker timeout would kill it before the CLI returns.
+    command: gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 50 --graceful-timeout 30 --timeout 180 --access-logfile - --error-logfile -
     environment:
       API_KEY: ${API_KEY:-}
-    volumes: []  # run from the image, no live-reload bind mount
+      LLM_BACKEND: ${LLM_BACKEND:-cli}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    # The claude CLI login has to come from the host: the binary is baked
+    # into the image, the credentials never are. Note that compose merges
+    # volume lists by target, so the base file's /app bind mount stays —
+    # an empty list here never removed it.
+    volumes:
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
 
   frontend:
     restart: always
