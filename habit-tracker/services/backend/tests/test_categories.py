@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-# summary: + TestCategoryBatch — atomicity, duplicate name, add_field to missing category, checklist guard
+# [review:need-review] PHASE-01/57-drop-field-identity-fallback
+# summary: id-less field payload creates a new field (identity-fallback tests replaced)
 
 import logging
 
@@ -399,14 +399,14 @@ class TestCategoryUpdate:
         assert values[0]["field_id"] == field_id
         assert values[0]["value"] == "8"
 
-    async def test_update_without_ids_matches_fields_by_name_and_type(
-        self, client: AsyncClient
-    ):
-        """A payload with no field ids must reuse fields, not recreate them.
+    async def test_update_without_ids_creates_new_fields(self, client: AsyncClient):
+        """A field payload without an id is always treated as a new field.
 
-        Old web builds (and third-party clients) send fields without ids. Before
-        the name/type fallback this deleted every field and cascaded away the
-        entry values — history vanished on a plain category rename.
+        The identity fallback (matching id-less fields by name/type) is gone: the
+        only way to update a field in place is to send its id. An id-less item —
+        even one whose name and type match an existing field — creates a fresh
+        field and drops the unmatched existing one. Behaviour is now predictable,
+        no longer dependent on a name/type coincidence.
         """
         create_response = await client.post(
             "/api/v1/categories",
@@ -414,50 +414,30 @@ class TestCategoryUpdate:
                 "name": "Meditation",
                 "fields": [
                     {"name": "Time", "field_type": "duration", "order": 0},
-                    {"name": "State", "field_type": "number", "order": 1},
                 ],
             },
         )
         category = create_response.json()
-        time_field_id = category["fields"][0]["id"]
-        state_field_id = category["fields"][1]["id"]
-
-        await client.post(
-            "/api/v1/entries",
-            json={
-                "category_id": category["id"],
-                "entry_date": "2024-01-15",
-                "values": [
-                    {"field_id": time_field_id, "value": "600"},
-                    {"field_id": state_field_id, "value": "7"},
-                ],
-            },
-        )
+        old_field_id = category["fields"][0]["id"]
 
         response = await client.patch(
             f"/api/v1/categories/{category['id']}",
             json={
-                "name": "Meditation daily",
                 "fields": [
                     {"name": "Time", "field_type": "duration", "order": 0},
-                    {"name": "State", "field_type": "number", "order": 1},
                 ],
             },
         )
         assert response.status_code == 200
-        assert [f["id"] for f in response.json()["fields"]] == [
-            time_field_id,
-            state_field_id,
-        ]
-
-        entries = await client.get(f"/api/v1/entries?category_id={category['id']}")
-        values = {v["field_id"]: v["value"] for v in entries.json()[0]["values"]}
-        assert values == {time_field_id: "600", state_field_id: "7"}
+        result_fields = response.json()["fields"]
+        assert len(result_fields) == 1
+        assert result_fields[0]["name"] == "Time"
+        assert result_fields[0]["id"] != old_field_id
 
     async def test_update_without_ids_still_drops_removed_fields(
         self, client: AsyncClient
     ):
-        """The name/type fallback must not resurrect fields left out of the payload."""
+        """Fields left out of an id-less payload are dropped, not resurrected."""
         create_response = await client.post(
             "/api/v1/categories",
             json={
@@ -501,9 +481,9 @@ class TestCategoryUpdate:
     ):
         """Cascading a field's entry_values away must leave a trace in the log.
 
-        An id-less PATCH that renames a field reads as "drop the old one, add a
-        new one" — the rename fallback matches on (name, type), so it cannot
-        follow the rename. That path destroys history, so it must not be silent.
+        An id-less PATCH reads every item as a new field, so an existing field
+        absent from the payload is dropped and its entry_values cascade away.
+        That path destroys history, so it must not be silent.
         """
         create_response = await client.post(
             "/api/v1/categories",

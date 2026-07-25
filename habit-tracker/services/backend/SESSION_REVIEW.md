@@ -351,3 +351,13 @@ Feedback loops (`TEST_DATABASE_URL=postgresql+asyncpg://habit_user:habit_pass@lo
 Довод вручную после APPROVE: закрыт warning — `LLMError` в endpoint утекал как 500, добавлена ветка `except LLMError -> 502` (как в `insights.py`), тест написан красным. Scope-creep #53 (claude CLI в Dockerfile/compose, удаление deploy job в ci.yml) откачен к HEAD.
 
 Feedback loops: pytest 166/166, ruff/mypy clean (42 файла); frontend bun test 345/345, tsc/eslint clean.
+
+## 2026-07-25 — PHASE-01/57 снят fallback-сопоставление полей по (имя, тип)
+
+Убран compat-shim из `_sync_category_fields`: id-less клиент раскатан на VPS (тикет 48), сопоставление полей теперь только по `id`. Поведение предсказуемо — элемент без `id` всегда создаётся как новое поле, никаких неявных match-ей по имени.
+
+- `app/crud/category.py` — **mod**: удалён второй проход и `_identity_key`, докстринг `_sync_category_fields` переписан под id-only.
+- `app/schemas/category.py` — **mod**: докстринг `FieldUpsert` очищен от упоминания fallback.
+- `tests/test_categories.py` — **mod**: fallback-тест заменён на `test_update_without_ids_creates_new_fields` (id-less пейлоад создаёт новое поле, новый id); тест сохранения истории при пейлоаде с `id` остался.
+
+Feedback loops: pytest test_categories 36/36, ruff clean, mypy clean.

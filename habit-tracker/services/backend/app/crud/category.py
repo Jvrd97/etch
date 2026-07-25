@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-# summary: + apply_category_batch — all-or-nothing plan apply (create_category / add_field) with CategoryBatchError + rollback
+# [review:need-review] PHASE-01/57-drop-field-identity-fallback
+# summary: _sync_category_fields matches fields by id only (identity fallback dropped)
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,93 +55,42 @@ def _apply_field(current: Field, item: FieldUpsert) -> None:
     current.order = item.order
 
 
-def _identity_key(name: str, field_type: str) -> tuple[str, str]:
-    """Ключ сопоставления поля для клиентов, не присылающих id."""
-    return (name.strip().casefold(), field_type)
-
-
 async def _sync_category_fields(
     db: AsyncSession, db_category: Category, fields: list[FieldUpsert]
 ) -> None:
     """
     Привести поля категории к желаемому состоянию `fields`.
 
-    Сопоставление входного элемента с существующим полем — в два прохода:
+    Сопоставление входного элемента с существующим полем — исключительно по
+    `id`: совпал — поле обновляется на месте (история в entry_values цела).
+    Элемент без `id` (или с `id`, которого нет в категории) всегда создаётся
+    как новое поле.
 
-    1. по `id` — точное совпадение, поле обновляется на месте;
-    2. по паре (имя, тип) среди ещё не занятых полей — страховка для клиентов,
-       которые id не присылают (старая сборка фронта, сторонний клиент).
-       Без неё такой пейлоад пересоздавал бы все поля, а каскад уносил бы
-       entry_values — то есть молча стирал историю записей.
-
-    Не сопоставленный элемент создаётся как новое поле. Существующее поле,
-    которое не сопоставилось ни с чем, удаляется каскадно вместе со своей
-    историей — это единственный сценарий потери значений, и он явный
-    (поле убрали из желаемого состояния).
-
-    Ограничение compat-shim (проход 2), важное для клиентов без `id`:
-    сопоставление идёт по паре (имя, тип), поэтому **переименование поля в
-    PATCH без `id` не сопоставляется**. Пейлоад `{name: "Вес"}` для поля,
-    которое в БД называется «Масса», прочитается как «поля „Масса“ в желаемом
-    состоянии нет, зато есть новое поле „Вес“»: старое поле удалится каскадно
-    вместе со своими `entry_values`, новое создастся пустым. Смена `field_type`
-    у поля с тем же именем ломает сопоставление ровно так же. То есть для
-    id-less клиента переименование = потеря истории по этому полю. Тихо это не
-    происходит: каждое каскадное удаление пишется в лог `warning`, а каждое
-    срабатывание шима — в `info`, по id (имена полей — пользовательские данные).
-
-    Шим временный: он существует только ради старой сборки фронта на VPS,
-    которая не возит `id` полей. Правильное решение — требовать `id` и убрать
-    fallback по идентичности; это follow-up PHASE-01/57. До него единственная
-    безопасная операция для id-less клиента — не переименовывать поля.
+    Существующее поле, которого нет в желаемом состоянии, удаляется каскадно
+    вместе со своей историей — это единственный сценарий потери значений, и он
+    явный (поле убрали из списка). Каждое такое удаление пишется в лог `warning`
+    по id (имена полей — пользовательские данные).
     """
     existing_by_id = {f.id: f for f in db_category.fields}
     seen_ids: set[int] = set()
 
-    # Проход 1: точное совпадение по id.
-    unmatched: list[FieldUpsert] = []
     for item in fields:
         current = existing_by_id.get(item.id) if item.id is not None else None
         if current is None:
-            unmatched.append(item)
+            db.add(
+                Field(
+                    category_id=db_category.id,
+                    name=item.name,
+                    field_type=item.field_type,
+                    is_required=item.is_required,
+                    default_value=item.default_value,
+                    options=item.options,
+                    order=item.order,
+                )
+            )
             continue
         _apply_field(current, item)
         seen_ids.add(current.id)
-
-    # Проход 2: совпадение по (имя, тип) среди незанятых полей.
-    # Временный compat-shim под старую сборку фронта на VPS, которая не возит id
-    # полей. Снимается после раскатки нового фронта — тикет PHASE-01/57.
-    by_identity: dict[tuple[str, str], list[Field]] = {}
-    for field in sorted(db_category.fields, key=lambda f: (f.order, f.id)):
-        if field.id in seen_ids:
-            continue
-        key = _identity_key(field.name, field.field_type.value)
-        by_identity.setdefault(key, []).append(field)
-
-    for item in unmatched:
-        candidates = by_identity.get(_identity_key(item.name, item.field_type))
-        if candidates:
-            current = candidates.pop(0)
-            logger.info(
-                "field matched by identity fallback (id-less client): "
-                "category_id=%s field_id=%s",
-                db_category.id,
-                current.id,
-            )
-            _apply_field(current, item)
-            seen_ids.add(current.id)
-            continue
-        db.add(
-            Field(
-                category_id=db_category.id,
-                name=item.name,
-                field_type=item.field_type,
-                is_required=item.is_required,
-                default_value=item.default_value,
-                options=item.options,
-                order=item.order,
-            )
-        )
 
     for field_id, field in existing_by_id.items():
         if field_id not in seen_ids:

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-# summary: + CategoryBatch* DTOs (discriminated create_category / add_field ops, request + response)
+# [review:need-review] PHASE-01/57-drop-field-identity-fallback
+# summary: FieldUpsert docstring — id-only matching, identity fallback removed
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Annotated, Literal, Union
@@ -39,14 +39,7 @@ class FieldUpsert(FieldBase):
     Поле в пейлоаде обновления категории.
 
     Существующие поля несут `id` — по нему бэкенд обновляет строку на месте
-    (сохраняя историю в entry_values).
-
-    Поле без `id` сначала пробуют сопоставить с ещё не занятым существующим
-    полем по паре (имя без регистра/пробелов, тип); совпало — строка тоже
-    обновляется на месте и история цела. Новое поле создаётся только когда
-    сопоставить не с чем. Это сопоставление — временный compat-shim для
-    клиентов, которые id не присылают (старая сборка фронта на VPS); после
-    раскатки нового фронта оно снимается, см. PHASE-01/57.
+    (сохраняя историю в entry_values). Поле без `id` всегда создаётся как новое.
 
     Поля, отсутствующие в списке, удаляются вместе со своей историей.
     """
