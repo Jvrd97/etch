@@ -720,3 +720,16 @@ Feedback loops: `bun test` (весь фронт) 348/348 green, `bunx tsc --noEm
 - Review-маркер в `QuickNumberRow.tsx` приведён к формату §9 (один ticket-id вместо списка через запятую).
 
 Feedback loops: `bun test` (весь фронт) 364/364 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `bun run build` green.
+
+### Тикет 49 — плюс в шапке и клавиатура в полноэкранном листе
+
+Дата 2026-07-26. Два дефекта, найденных на реальном iPhone.
+
+Плавающий FAB (`fixed bottom-20 right-5`) на всех четырёх мобильных экранах садился ровно на кнопки редактирования и удаления последней карточки. Плюс переехал в шапку `/m`: экран по-прежнему владеет действием, но рисует его через портал в слот `#mobile-header-action`, который выдаёт layout. Слот читается через `useSyncExternalStore` (сервер и гидрация — `null`, клиент — узел или `false`), а не копированием DOM в state из эффекта: так нет ни рассинхрона гидрации, ни кадра, в котором кнопка мигает посреди страницы. Без слота (страница отрендерена вне мобильной оболочки — как в тестах) кнопка остаётся на месте, а не исчезает.
+
+`FullScreenSheet` под открытой клавиатурой уводил бар с «Отмена»/«Готово» за верхний край: iOS не сжимает layout viewport под клавиатуру, он сжимает visual viewport и скроллит страницу внутри него, поэтому `100dvh` держал лист выше видимой области. Лист теперь следит за `window.visualViewport` (`height` + `offsetTop` → инлайновые `height`/`top`/`bottom:auto`), `100dvh` остаётся стартовым размером до первого скрипта. Второй симптом — «первый тап по Готово ничего не делает»: нажатие на бар уводило фокус из поля, клавиатура закрывалась, layout перекладывался под пальцем и click не долетал. Обе кнопки бара гасят `mousedown` (`preventDefault`), фокус остаётся в поле, клавиатура не закрывается, click приходит с первого раза.
+
+**Файлы (new)**: `components/mobile/HeaderAction.tsx`, `components/mobile/HeaderAction.test.tsx`.
+**Файлы (mod)**: `components/mobile/FullScreenSheet.tsx` (слежение за visual viewport, `mousedown`-гашение), `components/mobile/FullScreenSheet.test.tsx` (фейковый `visualViewport`, снятие подписки, гашение `mousedown`), `app/m/layout.tsx` (слот в шапке), `app/m/entries/page.tsx`, `app/m/categories/page.tsx`, `app/m/categories/[id]/page.tsx`, `app/m/journal/page.tsx` (FAB → `MobileHeaderAction`, текст пустых состояний про плюс в шапке).
+
+Feedback loops: `bun test` 372/372 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `bun run build` green. Проверка на устройстве — за пользователем.

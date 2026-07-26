@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
 // summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, and each field card stacked instead of the desktop's two-up grid
 
 import { useState } from 'react';
@@ -8,6 +8,7 @@ import { ChevronRight, FolderKanban, Pencil, Plus, Trash2 } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
+import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import {
   DEFAULT_CATEGORY_COLOR,
   useCategories,
@@ -103,14 +104,10 @@ export default function MobileCategoriesPage() {
         />
       ))}
 
-      <button
+      <MobileHeaderAction
+        label={NEW_CATEGORY_BUTTON_LABEL}
         onClick={() => setSheet({ kind: 'create' })}
-        aria-label={NEW_CATEGORY_BUTTON_LABEL}
-        style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
-        className="fixed bottom-20 right-5 z-40 p-4 bg-lime text-background rounded-full shadow-[0_8px_24px_rgba(0,0,0,0.45)] transition-transform duration-200 active:scale-95"
-      >
-        <Plus className="w-6 h-6" strokeWidth={2.5} />
-      </button>
+      />
 
       {editor}
     </div>

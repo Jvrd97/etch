@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: mobile shell — screen-title header, scrollable content column, bottom tab bar; seeds the mobile preference on a first visit only
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-01/49-device-acceptance-checklist
+// summary: mobile shell — screen-title header carrying the screen's own action, scrollable content column, bottom tab bar; seeds the mobile preference on a first visit only
 
 import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
+import { MobileHeaderActionSlot } from '@/components/mobile/HeaderAction';
 import TabBar from '@/components/mobile/TabBar';
 import { mobileScreenTitle } from '@/lib/routes';
 import { browserStorage, seedViewMode } from '@/lib/view-mode';
@@ -30,6 +31,7 @@ export default function MobileLayout({ children }: { children: React.ReactNode }
             aria-hidden="true"
             className="w-2 h-2 rounded-full bg-lime shadow-[0_0_10px_rgba(184,255,54,0.8)]"
           />
+          <MobileHeaderActionSlot />
         </div>
       </header>
 

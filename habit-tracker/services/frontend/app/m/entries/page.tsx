@@ -1,14 +1,15 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
 // summary: mobile Entries screen — same data as the desktop page via useEntries, creation and editing done in the shared EntryEditorSheet, ?new=1 opening the editor on mount, with a dedicated empty state when no category exists yet
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Calendar, FolderPlus, Pencil, Plus, X } from 'lucide-react';
+import { Calendar, FolderPlus, Pencil, X } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import EntryEditorSheet, { UNKNOWN_CATEGORY_NAME } from '@/components/mobile/EntryEditorSheet';
+import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useEntries } from '@/hooks/useEntries';
 import { entriesAPI, type Category, type Entry } from '@/lib/api';
 import { labelledValues } from '@/lib/entry-values';
@@ -19,7 +20,7 @@ import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 type SheetState = { kind: 'create' } | { kind: 'edit'; entry: Entry };
 
 /**
- * Accessible name of the FAB and title of the sheet it opens.
+ * Accessible name of the header action and title of the sheet it opens.
  *
  * Deliberately different strings: a button and a dialog carrying the same name
  * are two indistinguishable nodes in the accessibility tree, and "New entry"
@@ -135,7 +136,7 @@ function MobileEntriesPageContent() {
           </div>
           <h2 className="text-base font-medium text-text-primary mb-1">Nothing here yet</h2>
           <p className="text-sm text-text-secondary px-6">
-            Tap the plus button to log your first entry
+            Tap the plus in the header to log your first entry
           </p>
         </div>
       ) : (
@@ -162,14 +163,10 @@ function MobileEntriesPageContent() {
         ))
       )}
 
-      <button
+      <MobileHeaderAction
+        label={NEW_ENTRY_BUTTON_LABEL}
         onClick={() => setSheet({ kind: 'create' })}
-        aria-label={NEW_ENTRY_BUTTON_LABEL}
-        style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
-        className="fixed bottom-20 right-5 z-40 p-4 bg-lime text-background rounded-full shadow-[0_8px_24px_rgba(0,0,0,0.45)] transition-transform duration-200 active:scale-95"
-      >
-        <Plus className="w-6 h-6" strokeWidth={2.5} />
-      </button>
+      />
 
       {sheet && (
         <EntryEditorSheet

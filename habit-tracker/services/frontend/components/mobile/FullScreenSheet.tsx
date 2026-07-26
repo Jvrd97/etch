@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
-// summary: full-screen editor sheet of the mobile shell — Cancel / title / Done bar pinned above a single scrolling content column (sized in dvh so an open keyboard never moves the bar), an in-sheet error banner, and the modal contract its role promises: Escape, initial focus, focus trap, frozen page behind
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/49-device-acceptance-checklist
+// summary: full-screen editor sheet of the mobile shell — Cancel / title / Done bar pinned above a single scrolling content column (sized to the visual viewport so an open keyboard never moves the bar out of reach), an in-sheet error banner, and the modal contract its role promises: Escape, initial focus, focus trap, frozen page behind
 
 import { useCallback, useEffect, useRef } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -42,6 +42,17 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/**
+ * Suppresses the focus change a press on a bar action would cause, keeping the
+ * on-screen keyboard open until the click has been delivered.
+ *
+ * The button still activates: only the default focus move is cancelled, and
+ * `click` follows the press regardless.
+ */
+function keepFocusInField(event: React.MouseEvent) {
+  event.preventDefault();
+}
+
 function focusablesIn(scope: Element | null): HTMLElement[] {
   if (!scope) return [];
   return Array.from(scope.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
@@ -51,12 +62,14 @@ function focusablesIn(scope: Element | null): HTMLElement[] {
  * The mobile instance's editor chrome: a sheet that owns the whole viewport,
  * with the bar above and the form below.
  *
- * Two layout decisions carry the keyboard behaviour, and both are asserted by
- * the tests rather than left to CSS folklore. The sheet is sized in `dvh`, so
- * the browser shrinks it to the area the keyboard leaves visible instead of
- * keeping a `vh` box whose bottom is hidden. And the bar sits outside the
- * scrolling region — the flex column scrolls its content only — so scrolling a
- * long form under an open keyboard can never carry Cancel or Done off-screen.
+ * Three decisions carry the keyboard behaviour, and all three are asserted by
+ * the tests rather than left to CSS folklore. `100dvh` sizes the sheet before
+ * any script runs; from then on it follows `visualViewport`, because iOS keeps
+ * the layout viewport at full height under an open keyboard and scrolls the
+ * page inside it. The bar sits outside the scrolling region — the flex column
+ * scrolls its content only — so a long form cannot carry Cancel or Done off
+ * screen. And pressing either action does not move focus, so the keyboard does
+ * not close underneath the finger before the click lands.
  *
  * `role="dialog" aria-modal="true"` is a promise to assistive tech, and the
  * effects below are what make it true: focus starts in the form, Tab cannot
@@ -89,6 +102,35 @@ export default function FullScreenSheet({
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  // `100dvh` is the right size only while no keyboard is open. iOS does not
+  // shrink the layout viewport for the keyboard: it shrinks the visual viewport
+  // and scrolls the page inside it, which slides the bar — Cancel and Done —
+  // above the top edge of the screen with no way to scroll it back. Tracking
+  // `visualViewport` pins the sheet to the part of the screen that is actually
+  // visible, so the bar stays put whether the keyboard is up or down.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const follow = () => {
+      const sheet = sheetRef.current;
+      if (!sheet) return;
+      sheet.style.height = `${viewport.height}px`;
+      sheet.style.top = `${viewport.offsetTop}px`;
+      // `inset-0` also pins the bottom; with an explicit height the two
+      // disagree, and the browser is free to resolve that either way.
+      sheet.style.bottom = 'auto';
+    };
+
+    follow();
+    viewport.addEventListener('resize', follow);
+    viewport.addEventListener('scroll', follow);
+    return () => {
+      viewport.removeEventListener('resize', follow);
+      viewport.removeEventListener('scroll', follow);
     };
   }, []);
 
@@ -145,6 +187,10 @@ export default function FullScreenSheet({
           <button
             type="button"
             onClick={onCancel}
+            // Tapping a bar action must not move focus out of the field first:
+            // that closes the keyboard, the layout reflows under the finger and
+            // the click never lands on the button the user aimed at.
+            onMouseDown={keepFocusInField}
             style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
             className="px-2 text-[15px] font-medium text-text-secondary transition-colors duration-200 hover:text-text-primary"
           >
@@ -156,6 +202,7 @@ export default function FullScreenSheet({
           <button
             type="submit"
             disabled={busy}
+            onMouseDown={keepFocusInField}
             style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
             className="px-2 text-[15px] font-semibold text-lime transition-opacity duration-200 disabled:opacity-50"
           >

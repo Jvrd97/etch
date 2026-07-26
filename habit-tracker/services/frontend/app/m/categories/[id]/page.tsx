@@ -1,17 +1,18 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
 // summary: mobile category detail — same data as the desktop page via useCategoryDetail, links kept inside the /m shell, the category strip scrolling inside itself instead of widening the page, and quick-add through the shared EntryEditorSheet locked to this category
 
 import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, ArrowRight, Calendar, Plus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Calendar } from 'lucide-react';
 import CategoryChart from '@/components/CategoryChart';
 import EntryCard from '@/components/EntryCard';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import StreakCard from '@/components/StreakCard';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
+import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useCategoryDetail } from '@/hooks/useCategoryDetail';
 import type { Category } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
@@ -121,7 +122,7 @@ export default function MobileCategoryDetailPage() {
               </div>
               <h2 className="text-base font-medium text-text-primary mb-1">No entries yet</h2>
               <p className="text-sm text-text-secondary px-6">
-                Tap the plus button to log your first one
+                Tap the plus in the header to log your first one
               </p>
             </div>
           ) : (
@@ -150,14 +151,7 @@ export default function MobileCategoryDetailPage() {
             </div>
           )}
 
-          <button
-            onClick={() => setSheetOpen(true)}
-            aria-label={NEW_ENTRY_BUTTON_LABEL}
-            style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
-            className="fixed bottom-20 right-5 z-40 p-4 bg-lime text-background rounded-full shadow-[0_8px_24px_rgba(0,0,0,0.45)] transition-transform duration-200 active:scale-95"
-          >
-            <Plus className="w-6 h-6" strokeWidth={2.5} />
-          </button>
+          <MobileHeaderAction label={NEW_ENTRY_BUTTON_LABEL} onClick={() => setSheetOpen(true)} />
 
           {sheetOpen && (
             <EntryEditorSheet

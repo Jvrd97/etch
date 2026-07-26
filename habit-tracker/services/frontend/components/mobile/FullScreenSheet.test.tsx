@@ -7,7 +7,39 @@ import FullScreenSheet from './FullScreenSheet';
 
 afterEach(() => {
   cleanup();
+  restoreVisualViewport();
 });
+
+const originalVisualViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+
+function restoreVisualViewport() {
+  if (originalVisualViewport) {
+    Object.defineProperty(window, 'visualViewport', originalVisualViewport);
+  } else {
+    delete (window as unknown as Record<string, unknown>).visualViewport;
+  }
+}
+
+/**
+ * Stands in for `window.visualViewport`, which happy-dom does not implement and
+ * no test environment can shrink with a real on-screen keyboard anyway.
+ */
+function fakeVisualViewport(initial: { height: number; offsetTop: number }) {
+  const listeners = new Set<() => void>();
+  const viewport = {
+    ...initial,
+    addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+  };
+  Object.defineProperty(window, 'visualViewport', { value: viewport, configurable: true });
+  return {
+    emit(next: { height: number; offsetTop: number }) {
+      Object.assign(viewport, next);
+      for (const listener of listeners) listener();
+    },
+    listenerCount: () => listeners.size,
+  };
+}
 
 function renderSheet(props: Partial<React.ComponentProps<typeof FullScreenSheet>> = {}) {
   const onCancel = props.onCancel ?? mock(() => {});
@@ -73,6 +105,42 @@ describe('FullScreenSheet', () => {
     // dvh, not vh: with vh the sheet stays taller than the visible area once the
     // on-screen keyboard opens and the bar is pushed off-screen.
     expect(dialog.className).toContain('h-[100dvh]');
+  });
+
+  it('follows the visual viewport, so an open keyboard cannot hide the bar', () => {
+    const viewport = fakeVisualViewport({ height: 780, offsetTop: 0 });
+    renderSheet();
+    const dialog = screen.getByRole('dialog');
+
+    // Closed keyboard: the sheet is the whole visible area.
+    expect(dialog.style.height).toBe('780px');
+    expect(dialog.style.top).toBe('0px');
+
+    // iOS does not shrink the layout viewport for the keyboard — it shrinks the
+    // visual one and scrolls the page under it, which is exactly how Done ends
+    // up above the top edge of the screen. Following the visual viewport is the
+    // only thing that keeps the bar where the user can tap it.
+    viewport.emit({ height: 420, offsetTop: 160 });
+    expect(dialog.style.height).toBe('420px');
+    expect(dialog.style.top).toBe('160px');
+  });
+
+  it('stops listening to the viewport once it closes', () => {
+    const viewport = fakeVisualViewport({ height: 780, offsetTop: 0 });
+    const { view } = renderSheet();
+    view.unmount();
+    expect(viewport.listenerCount()).toBe(0);
+  });
+
+  it('does not let a tap on the bar dismiss the keyboard first', () => {
+    renderSheet();
+    // A tap that moves focus off the field closes the iOS keyboard, and the
+    // layout reflow that follows swallows the click: the user taps Done, the
+    // keyboard goes away and nothing is saved.
+    for (const name of ['Cancel', 'Done']) {
+      const notPrevented = fireEvent.mouseDown(screen.getByRole('button', { name }));
+      expect(notPrevented).toBe(false);
+    }
   });
 
   it('scrolls only the content, keeping both bar actions on screen', () => {
