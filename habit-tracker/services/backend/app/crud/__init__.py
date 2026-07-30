@@ -1,5 +1,21 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
-# summary: re-export the streak crud module
-from app.crud import category, entry, journal, streak, table
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: re-export the daily_summary and transcript crud modules
+from app.crud import (
+    category,
+    daily_summary,
+    entry,
+    journal,
+    streak,
+    table,
+    transcript,
+)
 
-__all__ = ["category", "entry", "journal", "streak", "table"]
+__all__ = [
+    "category",
+    "daily_summary",
+    "entry",
+    "journal",
+    "streak",
+    "table",
+    "transcript",
+]

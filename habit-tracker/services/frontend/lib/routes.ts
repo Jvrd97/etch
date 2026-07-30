@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen now has a mobile twin (insights was the last), Categories owns its nested detail route, Journal/Table/Insights/Onboarding reached through "More"
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Journal/Table/Insights/Onboarding reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -59,6 +59,16 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 0,
+  },
+  {
+    id: 'daily-summary',
+    name: 'Day summary',
+    href: '/daily-summary',
+    hasMobile: true,
+    hasMobileNested: false,
+    // First of the "More" screens: telling the app about your day is a daily
+    // act, but the tab bar's five slots are already spoken for.
+    inTabBar: null,
   },
   {
     id: 'table',

@@ -55,6 +55,10 @@ let updateEntry: ReturnType<typeof mock>;
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one only drives create/update.
 mock.module('@/lib/api', () => ({
+  dailySummaryAPI: {
+    draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
+    apply: () => Promise.resolve({ entry_ids: [] }),
+  },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
     getAll: () => Promise.resolve([]),

@@ -49,6 +49,10 @@ let pushRoute: ReturnType<typeof mock>;
 // first time anything links against it and shares that registry across the run,
 // so a partial mock would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  dailySummaryAPI: {
+    draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
+    apply: () => Promise.resolve({ entry_ids: [] }),
+  },
   insightsAPI: {
     getAll: () => Promise.resolve([]),
     getById: () => Promise.resolve(null),

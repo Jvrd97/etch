@@ -1,13 +1,10 @@
 # [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: onboarding orchestration — prompt (with existing categories), JSON parse, semantic validation, one repair pass, conflict flags
+# summary: onboarding orchestration — prompt (with existing categories), semantic validation, conflict flags; JSON parse and the repair pass come from app.llm.plan_flow
 from __future__ import annotations
-
-import json
-
-from pydantic import ValidationError
 
 from app.crud.category import checklist_has_boolean_field
 from app.llm.client import LLMClient
+from app.llm.plan_flow import PlanError, generate_with_repair, parse_json_plan
 from app.models.category import Category
 from app.models.field import FieldType
 from app.schemas.onboarding import (
@@ -65,7 +62,7 @@ Rules:
 - Output must be valid JSON and nothing else."""
 
 
-class OnboardingPlanError(Exception):
+class OnboardingPlanError(PlanError):
     """The model output could not be parsed or failed semantic validation."""
 
 
@@ -95,43 +92,9 @@ def build_prompt(transcript: str, categories: list[Category]) -> str:
     )
 
 
-def build_repair_prompt(base_prompt: str, previous: str, error: str) -> str:
-    """Ask the model to fix its previous output given the validation error."""
-    return (
-        f"{base_prompt}\n\n"
-        f"## Your previous answer was rejected\n{previous}\n\n"
-        f"## Reason\n{error}\n\n"
-        "Return a corrected JSON object that fixes the problem. JSON only."
-    )
-
-
-def _extract_json(text: str) -> str:
-    """Pull the JSON object out of a response that may wrap it in prose/fences."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        # Drop the opening fence line (``` or ```json) and the closing fence.
-        without_open = stripped.split("\n", 1)[1] if "\n" in stripped else ""
-        stripped = without_open.rsplit("```", 1)[0].strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise OnboardingPlanError("no JSON object found in the response")
-    return stripped[start : end + 1]
-
-
 def parse_plan(text: str) -> OnboardingPlan:
     """Parse the raw model text into an OnboardingPlan (form validation only)."""
-    payload = _extract_json(text)
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise OnboardingPlanError(f"invalid JSON: {exc.msg}") from exc
-    try:
-        return OnboardingPlan.model_validate(data)
-    except ValidationError as exc:
-        raise OnboardingPlanError(
-            f"plan does not match schema: {exc.errors()}"
-        ) from exc
+    return parse_json_plan(text, OnboardingPlan, OnboardingPlanError)
 
 
 def _validate_field(field: PlanField, errors: list[str]) -> None:
@@ -187,34 +150,29 @@ def annotate_conflicts(plan: OnboardingPlan, categories: list[Category]) -> None
             op.name_conflict = op.name.strip().casefold() in existing_names
 
 
-def _parse_and_validate(text: str, categories: list[Category]) -> OnboardingPlan:
-    plan = parse_plan(text)
-    validate_plan(plan, categories)
-    return plan
-
-
 async def generate_onboarding_plan(
     llm: LLMClient, categories: list[Category], transcript: str
 ) -> OnboardingPlan:
     """
     Turn a transcript into a validated additive-only plan.
 
-    One repair pass: if the first answer fails to parse or validate, the model
-    is asked once more with the failure reason attached. A second failure
-    raises OnboardingPlanError (the endpoint maps that to 502).
+    One repair pass, shared with the day summary: if the first answer fails to
+    parse or validate, the model is asked once more with the failure reason
+    attached. A second failure raises OnboardingPlanError (the endpoint maps
+    that to 502).
 
-    The transcript and the raw model output stay inside this function — they
+    The transcript and the raw model output never leave this call chain — they
     are never logged, and neither is the validation-error text (it can echo
     transcript content back).
     """
-    base_prompt = build_prompt(transcript, categories)
-    raw = await llm.generate(base_prompt)
-    try:
-        plan = _parse_and_validate(raw, categories)
-    except OnboardingPlanError as first_error:
-        repair_prompt = build_repair_prompt(base_prompt, raw, str(first_error))
-        repaired = await llm.generate(repair_prompt)
-        plan = _parse_and_validate(repaired, categories)
 
+    def parse_and_validate(text: str) -> OnboardingPlan:
+        plan = parse_plan(text)
+        validate_plan(plan, categories)
+        return plan
+
+    plan = await generate_with_repair(
+        llm, build_prompt(transcript, categories), parse_and_validate
+    )
     annotate_conflicts(plan, categories)
     return plan

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: route id -> lucide icon map — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+// summary: route id -> lucide icon map (+ the Day summary glyph) — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
 
 import {
   BookOpen,
@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Home,
   MoreHorizontal,
+  NotebookPen,
   Sparkles,
   Sun,
   Table2,
@@ -23,6 +24,7 @@ import { MORE_ROUTE_ID } from '@/lib/routes';
 const ROUTE_ICONS: Record<string, LucideIcon> = {
   dashboard: Home,
   today: Sun,
+  'daily-summary': NotebookPen,
   table: Table2,
   categories: FolderKanban,
   entries: CalendarDays,

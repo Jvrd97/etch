@@ -1,5 +1,13 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
-# summary: re-export StreakResponse
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: re-export the day-plan schemas
+from app.schemas.daily_summary import (
+    DailySummaryApplyRequest,
+    DailySummaryApplyResponse,
+    DailySummaryDraftRequest,
+    DailySummaryPlan,
+    LogMetricOp,
+    UnresolvedMetric,
+)
 from app.schemas.category import (
     CategoryCreate,
     CategoryUpdate,
@@ -44,6 +52,12 @@ from app.schemas.table import (
 )
 
 __all__ = [
+    "DailySummaryApplyRequest",
+    "DailySummaryApplyResponse",
+    "DailySummaryDraftRequest",
+    "DailySummaryPlan",
+    "LogMetricOp",
+    "UnresolvedMetric",
     "CategoryCreate",
     "CategoryUpdate",
     "CategoryResponse",

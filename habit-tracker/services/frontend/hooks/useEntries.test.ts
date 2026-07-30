@@ -44,6 +44,10 @@ let getAllCategories: ReturnType<typeof mock>;
 // even the parts this file never calls — otherwise whichever file happens to
 // load first decides that `tableAPI` does not exist.
 mock.module('@/lib/api', () => ({
+  dailySummaryAPI: {
+    draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
+    apply: () => Promise.resolve({ entry_ids: [] }),
+  },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
     getAll: () => Promise.resolve([]),

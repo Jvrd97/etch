@@ -1,13 +1,14 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: POST /onboarding/draft — transcript -> validated additive-only plan; 503 no backend, 502 on double failure
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: get_llm_client moved to app.api.deps and is re-exported here (both LLM endpoints share one provider)
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_llm_client
 from app.core.database import get_db
 from app.crud import category as category_crud
-from app.llm.client import LLMClient, LLMError, resolve_llm_client
+from app.llm.client import LLMClient, LLMError
 from app.llm.onboarding import OnboardingPlanError, generate_onboarding_plan
 from app.schemas.onboarding import OnboardingDraftRequest, OnboardingPlan
 
@@ -15,14 +16,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
-
-def get_llm_client() -> LLMClient | None:
-    """
-    LLM client dependency; None when no backend is available.
-
-    Tests override this dependency to mock at the app/llm boundary.
-    """
-    return resolve_llm_client()
+# Re-exported so `app.api.onboarding.get_llm_client` keeps naming the same
+# object the router depends on: the provider moved to app.api.deps when the
+# day-summary endpoints started needing it too.
+__all__ = ["router", "get_llm_client"]
 
 
 @router.post("/draft", response_model=OnboardingPlan)

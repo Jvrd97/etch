@@ -53,6 +53,7 @@ describe('TAB_BAR_ROUTES', () => {
 describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
+      'daily-summary',
       'table',
       'journal',
       'insights',
@@ -139,6 +140,10 @@ describe('mobileScreenTitle', () => {
 
   it('names the mobile journal screen, though it lives under More', () => {
     expect(mobileScreenTitle('/m/journal')).toBe('Journal');
+  });
+
+  it('names the mobile day-summary screen, though it lives under More', () => {
+    expect(mobileScreenTitle('/m/daily-summary')).toBe('Day summary');
   });
 
   it('names the mobile onboarding screen, though it lives under More', () => {

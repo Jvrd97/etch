@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-// summary: + categoriesAPI.applyBatch (transactional plan apply) and CategoryBatchResponse type
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+// summary: + dailySummaryAPI (draft/apply) and the write-only day-plan types
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -184,6 +184,24 @@ export const onboardingAPI = {
     return fetcher<OnboardingPlan>('/onboarding/draft', {
       method: 'POST',
       body: JSON.stringify({ transcript }),
+    });
+  },
+};
+
+// Daily summary API: a day told in text becomes a plan of numeric records, and
+// the checked part of that plan is written in one transaction.
+export const dailySummaryAPI = {
+  draft: async (transcript: string, entryDate: string) => {
+    return fetcher<DailySummaryPlan>('/daily-summary/draft', {
+      method: 'POST',
+      body: JSON.stringify({ transcript, entry_date: entryDate }),
+    });
+  },
+
+  apply: async (entryDate: string, metrics: LogMetricOp[]) => {
+    return fetcher<DailySummaryApplyResponse>('/daily-summary/apply', {
+      method: 'POST',
+      body: JSON.stringify({ entry_date: entryDate, metrics }),
     });
   },
 };
@@ -409,6 +427,38 @@ export type PlanOperation = CreateCategoryOp | AddFieldOp;
 
 export interface OnboardingPlan {
   operations: PlanOperation[];
+}
+
+// Daily summary: a write-only plan for one day. There is no operation for
+// deleting, renaming or retyping anything — the shape itself forbids it.
+export interface LogMetricOp {
+  op: 'log_metric';
+  /** Resolution is by id alone; names never take part (see #57). */
+  category_id: number;
+  field_id: number;
+  value: number;
+  /** The wording the number was read from, shown next to its checkbox. */
+  source_text: string;
+  /** The model placed it without confidence — the row arrives unchecked. */
+  uncertain: boolean;
+  /** The number itself looks wrong — the row arrives unchecked. */
+  implausible: boolean;
+}
+
+/** Something numeric the model heard but could not place. Creates nothing. */
+export interface UnresolvedMetric {
+  text: string;
+  reason?: string | null;
+}
+
+export interface DailySummaryPlan {
+  metrics: LogMetricOp[];
+  unresolved: UnresolvedMetric[];
+}
+
+/** What an apply created: one entry per category the day touched. */
+export interface DailySummaryApplyResponse {
+  entry_ids: number[];
 }
 
 // What POST /categories/batch returns: the categories it created and the fields

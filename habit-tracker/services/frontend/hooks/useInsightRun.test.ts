@@ -18,6 +18,10 @@ let createInsight: ReturnType<typeof mock>;
 // The whole module is replaced process-wide, so members other suites reach for
 // stay present even though this suite only exercises insightsAPI.create.
 mock.module('@/lib/api', () => ({
+  dailySummaryAPI: {
+    draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
+    apply: () => Promise.resolve({ entry_ids: [] }),
+  },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   categoriesAPI: {
     getAll: () => Promise.resolve([]),

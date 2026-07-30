@@ -32,6 +32,10 @@ let applyBatch: ReturnType<typeof mock>;
 // names on first link and shares them across the run; a partial mock here would
 // delete the other APIs for whichever file loads later.
 mock.module('@/lib/api', () => ({
+  dailySummaryAPI: {
+    draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
+    apply: () => Promise.resolve({ entry_ids: [] }),
+  },
   onboardingAPI: { draft: (text: string) => draft(text) },
   categoriesAPI: {
     getAll: () => Promise.resolve([]),

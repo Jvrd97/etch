@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/34-duration-field-type
-# summary: table view aggregation; DURATION sums like NUMBER (elapsed seconds)
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: table view aggregation; DURATION sums like NUMBER (elapsed seconds), the sum is rendered by the shared format_number
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import cast
@@ -8,7 +8,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import category as category_crud
-from app.crud.values import is_true_value, parse_number
+from app.crud.values import format_number, is_true_value, parse_number
 from app.models import Category, Entry, EntryValue, Field
 from app.models.field import FieldType
 from app.schemas.category import CategoryDisplayMode
@@ -46,9 +46,7 @@ class _CellAccumulator:
         if self.field_type in (FieldType.NUMBER, FieldType.DURATION):
             if not self.has_number:
                 return None
-            if self.number_sum.is_integer():
-                return str(int(self.number_sum))
-            return str(self.number_sum)
+            return format_number(self.number_sum)
         if self.field_type == FieldType.BOOLEAN:
             return "true" if self.any_true else "false"
         return self.last_value

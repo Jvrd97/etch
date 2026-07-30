@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
-# summary: shared interpretation of EAV text values (boolean truthiness, number parsing)
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: shared interpretation of EAV text values (boolean truthiness, number parsing) and the one way a number is rendered back into that column
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,3 +37,21 @@ def parse_number(
             extra={"field_id": field_id, "entry_id": entry_id},
         )
         return None
+
+
+def format_number(value: float) -> str:
+    """
+    Render a number back into the EAV text column the way the entry form would.
+
+    A whole number loses its decimal tail, so a day-plan "30", a table
+    aggregate of 30.0 and a hand-typed "30" are one and the same string and no
+    reader can tell them apart. Fractions go through `str`, not `repr`: on a
+    float those agree in modern Python, and `str` is the one that stays a
+    rendering rather than a debug representation if the input type ever widens.
+
+    The single home of the rule: every writer of a numeric value calls this, so
+    "how a number looks in the database" is decided in one place.
+    """
+    if value.is_integer():
+        return str(int(value))
+    return str(value)

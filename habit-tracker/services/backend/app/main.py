@@ -1,9 +1,17 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: registered onboarding router (POST /onboarding/draft) under API-key auth
+# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+# summary: registered daily-summary router (draft/apply) under API-key auth
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import categories, entries, insights, journal, onboarding, table
+from app.api import (
+    categories,
+    daily_summary,
+    entries,
+    insights,
+    journal,
+    onboarding,
+    table,
+)
 from app.core.auth import require_api_key
 from app.core.config import settings
 
@@ -72,6 +80,11 @@ app.include_router(
 )
 app.include_router(
     onboarding.router, prefix=settings.API_V1_PREFIX, dependencies=API_KEY_DEPENDENCIES
+)
+app.include_router(
+    daily_summary.router,
+    prefix=settings.API_V1_PREFIX,
+    dependencies=API_KEY_DEPENDENCIES,
 )
 
 
