@@ -1,13 +1,16 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: mobile Today screen — same data/handlers as the desktop page via useToday, including the quick-input total and its optimistic increment
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor for today's record in that category
 
+import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import { booleanFields } from '@/lib/today-categories';
-import { isFieldChecked, numberFieldSum } from '@/lib/today-entries';
+import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
+import type { Category } from '@/lib/api';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 import { useToday } from '@/hooks/useToday';
 import { Check, Sun } from 'lucide-react';
@@ -37,7 +40,11 @@ export default function MobileTodayPage() {
     toggleField,
     addNumber,
     reloadStreak,
+    reload,
   } = useToday();
+  // The category whose full editor is open, or null. Held here rather than in
+  // the card so only one sheet can ever be up.
+  const [editing, setEditing] = useState<Category | null>(null);
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -119,14 +126,36 @@ export default function MobileTodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
-                    total={numberFieldSum(entries, category.id, numberField.id)}
-                    onAdd={(amount) => addNumber(category.id, numberField.id, amount)}
+                    total={
+                      numberField ? numberFieldSum(entries, category.id, numberField.id) : 0
+                    }
+                    onAdd={(amount) =>
+                      numberField
+                        ? addNumber(category.id, numberField.id, amount)
+                        : Promise.resolve(false)
+                    }
+                    onOpenEditor={() => setEditing(category)}
                   />
                 ))}
               </div>
             </section>
           )}
         </>
+      )}
+
+      {editing && (
+        <EntryEditorSheet
+          // Editing today's entry when there is one, creating otherwise: a day
+          // of taps should deepen one record, not scatter a dozen.
+          entry={todayEntryForCategory(entries, editing.id) ?? null}
+          categories={[editing]}
+          lockedCategory={editing}
+          onCancel={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void reload();
+          }}
+        />
       )}
     </div>
   );

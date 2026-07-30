@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, and each field card stacked instead of the desktop's two-up grid
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-01/63-today-card-tap-and-visibility
+// summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, each field card stacked instead of the desktop's two-up grid, and the Today-visibility choice
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -20,9 +20,14 @@ import {
   DISPLAY_MODE_LABELS,
   FIELD_TYPE_LABELS,
   NEW_CATEGORY_SHEET_TITLE,
+  SHOW_IN_TODAY_LABEL,
+  SHOW_IN_TODAY_LABELS,
   STREAK_MODE_LABELS,
   TAP_TARGET_PX,
   entryInputClass,
+  showInTodayChoice,
+  showInTodayValue,
+  type ShowInTodayChoice,
 } from '@/lib/ui-constants';
 
 /** What the editor sheet is currently doing; closed when null. */
@@ -287,6 +292,31 @@ function CategoryEditorSheet({ state, onCancel, onSaved }: CategoryEditorSheetPr
           <option value="build">{STREAK_MODE_LABELS.build}</option>
           <option value="avoid">{STREAK_MODE_LABELS.avoid}</option>
         </select>
+      </div>
+
+      <div>
+        <label
+          htmlFor="category-show-in-today"
+          className="block text-[13px] font-medium text-text-secondary mb-2"
+        >
+          {SHOW_IN_TODAY_LABEL}
+        </label>
+        <select
+          id="category-show-in-today"
+          value={showInTodayChoice(draft.showInToday)}
+          onChange={(e) =>
+            draft.setShowInToday(showInTodayValue(e.target.value as ShowInTodayChoice))
+          }
+          style={{ minHeight: TAP_TARGET_PX }}
+          className={entryInputClass}
+        >
+          <option value="auto">{SHOW_IN_TODAY_LABELS.auto}</option>
+          <option value="always">{SHOW_IN_TODAY_LABELS.always}</option>
+          <option value="never">{SHOW_IN_TODAY_LABELS.never}</option>
+        </select>
+        <p className="text-[13px] text-text-disabled mt-2">
+          Automatic shows the category when it has a number field to log against.
+        </p>
       </div>
 
       <div>

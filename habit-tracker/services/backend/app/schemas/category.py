@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/57-drop-field-identity-fallback
-# summary: FieldUpsert docstring — id-only matching, identity fallback removed
+# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+# summary: + show_in_today on category base/update (tri-state override of the Today heuristic)
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Annotated, Literal, Union
@@ -80,6 +80,14 @@ class CategoryBase(BaseModel):
     display_mode: CategoryDisplayMode = "form"
     streak_mode: CategoryStreakMode = "build"
     group: str | None = Field(None, max_length=100)
+    show_in_today: bool | None = Field(
+        None,
+        description=(
+            "Показывать ли категорию на Today. None — решает эвристика "
+            "(есть числовое поле, не avoid, не чек-лист); true/false — явный "
+            "выбор пользователя, который эвристику перекрывает."
+        ),
+    )
 
 
 class CategoryCreate(CategoryBase):
@@ -102,6 +110,10 @@ class CategoryUpdate(BaseModel):
     display_mode: CategoryDisplayMode | None = None
     streak_mode: CategoryStreakMode | None = None
     group: str | None = Field(None, max_length=100)
+    # Тройственное поле, поэтому здесь важен exclude_unset, а не `is None`:
+    # присланный явно `null` возвращает категорию под эвристику, а не значит
+    # «не трогай». Ровно это и делает update_category, патчащий по exclude_unset.
+    show_in_today: bool | None = None
     # None (поле не прислано) — поля не трогаем. Список (в т.ч. пустой) —
     # полный desired-state: синхронизируем существующие/новые/удалённые.
     fields: list[FieldUpsert] | None = None

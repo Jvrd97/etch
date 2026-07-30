@@ -23,10 +23,16 @@ export interface AvoidItem {
   numberField: Field | undefined;
 }
 
-/** A quick-input category paired with the number field it increments. */
+/**
+ * A card on the Today screen, with the number field its quick input increments.
+ *
+ * `numberField` is undefined only for a category the user pinned by hand that
+ * has nothing to increment: it still gets a card, because the card is also the
+ * way into the full entry editor.
+ */
 export interface QuickFormItem {
   category: Category;
-  numberField: Field;
+  numberField: Field | undefined;
 }
 
 /** Today-page categories split by how they should be rendered. */
@@ -37,11 +43,22 @@ export interface TodayGroups {
 }
 
 /**
- * Route each category to its Today-page renderer. Avoid-streak categories win
- * first (they show a streak card, never a quick input), then checklist
- * categories with boolean fields, then number categories as quick inputs. A
- * checklist saved before boolean fields were required falls through to
- * quick-form, matching the legacy fallback the page relied on.
+ * Route each category to its Today-screen renderer.
+ *
+ * `show_in_today` decides *whether* the category is on the screen; the rules
+ * below decide *how* it is drawn, and the user does not get to override that.
+ * Pinning an avoid category still yields a streak card, and pinning a checklist
+ * still yields its boolean row — asking to see something is not asking to see
+ * it as a different kind of thing.
+ *
+ * `false` removes the category from every group without touching `is_active`:
+ * off the screen, still tracked everywhere else.
+ *
+ * Absent or `null` falls through to the heuristic this screen has always used:
+ * avoid-streak categories first (a streak card, never a quick input), then
+ * checklist categories with boolean fields, then categories with a number field
+ * as quick inputs. A checklist saved before boolean fields were required falls
+ * through to quick-form, matching the legacy fallback the page relied on.
  */
 export function partitionTodayCategories(categories: Category[]): TodayGroups {
   const avoid: AvoidItem[] = [];
@@ -49,6 +66,9 @@ export function partitionTodayCategories(categories: Category[]): TodayGroups {
   const quickForm: QuickFormItem[] = [];
 
   for (const category of categories) {
+    if (category.show_in_today === false) continue;
+    const pinned = category.show_in_today === true;
+
     if (category.streak_mode === 'avoid') {
       avoid.push({ category, numberField: firstNumberField(category) });
       continue;
@@ -60,10 +80,12 @@ export function partitionTodayCategories(categories: Category[]): TodayGroups {
     }
 
     const numberField = firstNumberField(category);
-    if (
-      numberField &&
-      (category.display_mode === 'form' || booleanFields(category).length === 0)
-    ) {
+    const byHeuristic =
+      numberField !== undefined &&
+      (category.display_mode === 'form' || booleanFields(category).length === 0);
+    // A pinned category earns a card even with nothing to increment: the card
+    // opens the full editor, which is the whole point of pinning one.
+    if (pinned || byHeuristic) {
       quickForm.push({ category, numberField });
     }
   }

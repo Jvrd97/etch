@@ -1,13 +1,16 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: desktop Today page — markup only; the quick-input total comes from useToday's entries and the tap goes back to the hook
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category
 
+import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import EntryForm from '@/components/EntryForm';
 import { booleanFields } from '@/lib/today-categories';
-import { isFieldChecked, numberFieldSum } from '@/lib/today-entries';
+import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
+import type { Category } from '@/lib/api';
 import { useToday } from '@/hooks/useToday';
 import { Check, Sun } from 'lucide-react';
 
@@ -25,7 +28,11 @@ export default function TodayPage() {
     toggleField,
     addNumber,
     reloadStreak,
+    reload,
   } = useToday();
+  // The category whose full editor is open, or null. Held here rather than in
+  // the card so only one editor can ever be up.
+  const [editing, setEditing] = useState<Category | null>(null);
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -127,14 +134,37 @@ export default function TodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
-                    total={numberFieldSum(entries, category.id, numberField.id)}
-                    onAdd={(amount) => addNumber(category.id, numberField.id, amount)}
+                    total={
+                      numberField ? numberFieldSum(entries, category.id, numberField.id) : 0
+                    }
+                    onAdd={(amount) =>
+                      numberField
+                        ? addNumber(category.id, numberField.id, amount)
+                        : Promise.resolve(false)
+                    }
+                    onOpenEditor={() => setEditing(category)}
                   />
                 ))}
               </div>
             </section>
           )}
         </>
+      )}
+
+      {editing && (
+        <EntryForm
+          // Editing today's entry when there is one, creating otherwise: a day
+          // of taps should deepen one record, not scatter a dozen.
+          entry={todayEntryForCategory(entries, editing.id) ?? null}
+          categories={[editing]}
+          lockedCategoryId={editing.id}
+          date={date}
+          onClose={() => setEditing(null)}
+          onSuccess={() => {
+            setEditing(null);
+            void reload();
+          }}
+        />
       )}
     </div>
   );

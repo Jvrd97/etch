@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
 // summary: shared UI constants used by both shells — touch target size, the editor field styling, the human labels of the category enums and the accessible names of the mobile editor sheets
 
 import type {
@@ -61,6 +61,39 @@ export const STREAK_MODE_LABELS: Record<CategoryStreakMode, string> = {
   build: 'Build habit',
   avoid: 'Avoid',
 };
+
+/**
+ * The `show_in_today` tri-state as a `<select>` speaks it.
+ *
+ * A select rather than a checkbox because the field has three states, and the
+ * third one — "let the app decide" — is the default a checkbox has nowhere to
+ * put. Encoded as strings so the option values survive the DOM round-trip that
+ * would turn `null` into the string "null" anyway.
+ */
+export type ShowInTodayChoice = 'auto' | 'always' | 'never';
+
+export const SHOW_IN_TODAY_LABELS: Record<ShowInTodayChoice, string> = {
+  auto: 'Automatic',
+  always: 'Always show',
+  never: 'Never show',
+};
+
+/** Label of the visibility control, spelled once so both shells agree. */
+export const SHOW_IN_TODAY_LABEL = 'Show on Today';
+
+/** The stored tri-state as the select's current choice. */
+export function showInTodayChoice(value: boolean | null | undefined): ShowInTodayChoice {
+  if (value === true) return 'always';
+  if (value === false) return 'never';
+  return 'auto';
+}
+
+/** The select's choice as the stored tri-state. */
+export function showInTodayValue(choice: ShowInTodayChoice): boolean | null {
+  if (choice === 'always') return true;
+  if (choice === 'never') return false;
+  return null;
+}
 
 export const FIELD_TYPE_LABELS: Record<FieldCreate['field_type'], string> = {
   text: 'Text',

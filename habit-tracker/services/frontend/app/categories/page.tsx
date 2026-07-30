@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
 // summary: desktop Categories page — list/cards layout and the editor modal unchanged, but all of the state (load, layout preference, delete, form draft with the id-carrying field diff-sync) now comes from hooks/useCategories and the enum labels plus field styling from lib/ui-constants, both shared with /m/categories
 
 import { useState } from 'react';
@@ -20,9 +20,14 @@ import {
 import {
   DISPLAY_MODE_LABELS,
   FIELD_TYPE_LABELS,
+  SHOW_IN_TODAY_LABEL,
+  SHOW_IN_TODAY_LABELS,
   STREAK_MODE_LABELS,
   compactInputClass,
   entryInputClass,
+  showInTodayChoice,
+  showInTodayValue,
+  type ShowInTodayChoice,
 } from '@/lib/ui-constants';
 import { Plus, Pencil, Trash2, FolderKanban, X, LayoutGrid, List } from 'lucide-react';
 
@@ -394,6 +399,30 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
               maxLength={100}
               className={entryInputClass}
             />
+          </div>
+
+          <div>
+            <label
+              htmlFor="category-show-in-today"
+              className="block text-[13px] font-medium text-text-secondary mb-2"
+            >
+              {SHOW_IN_TODAY_LABEL}
+            </label>
+            <select
+              id="category-show-in-today"
+              value={showInTodayChoice(draft.showInToday)}
+              onChange={(e) =>
+                draft.setShowInToday(showInTodayValue(e.target.value as ShowInTodayChoice))
+              }
+              className={entryInputClass}
+            >
+              <option value="auto">{SHOW_IN_TODAY_LABELS.auto}</option>
+              <option value="always">{SHOW_IN_TODAY_LABELS.always}</option>
+              <option value="never">{SHOW_IN_TODAY_LABELS.never}</option>
+            </select>
+            <p className="text-[13px] text-text-disabled mt-2">
+              Automatic shows the category when it has a number field to log against.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

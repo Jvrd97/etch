@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: tests for QuickNumberRow — it reports the amount to add and renders the total it is given, holding no total of its own
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: tests for QuickNumberRow — the amount it reports, the total it is given, the card tap that opens the editor while the quick controls do not, and the no-number-field card
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -32,6 +32,7 @@ const CATEGORY: Category = {
 const { default: QuickNumberRow } = await import('./QuickNumberRow');
 
 let onAdd: ReturnType<typeof mock>;
+let onOpenEditor: ReturnType<typeof mock>;
 
 function renderRow(total = 0) {
   const view = render(
@@ -40,12 +41,14 @@ function renderRow(total = 0) {
       numberField={GLASSES_FIELD}
       total={total}
       onAdd={(amount: number) => onAdd(amount)}
+      onOpenEditor={() => onOpenEditor()}
     />
   );
   return {
     view,
     input: screen.getByLabelText('Water: add Glasses') as HTMLInputElement,
     plus: screen.getByRole('button', { name: 'Add to Water' }),
+    card: screen.getByRole('button', { name: "Open today's Water entry" }),
   };
 }
 
@@ -56,6 +59,7 @@ function addedAmount(call: number): number {
 
 beforeEach(() => {
   onAdd = mock(() => Promise.resolve(true));
+  onOpenEditor = mock(() => {});
 });
 
 afterEach(() => {
@@ -100,6 +104,7 @@ describe('QuickNumberRow', () => {
         numberField={GLASSES_FIELD}
         total={9}
         onAdd={(amount: number) => onAdd(amount)}
+        onOpenEditor={() => onOpenEditor()}
       />
     );
 
@@ -118,6 +123,7 @@ describe('QuickNumberRow', () => {
         numberField={GLASSES_FIELD}
         total={5}
         onAdd={(amount: number) => onAdd(amount)}
+        onOpenEditor={() => onOpenEditor()}
       />
     );
 
@@ -188,5 +194,51 @@ describe('QuickNumberRow', () => {
 
     await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(1));
     expect(input.value).toBe('250');
+  });
+});
+
+describe('QuickNumberRow: the card tap', () => {
+  it('opens the editor when the card itself is tapped', () => {
+    const { card } = renderRow(3);
+
+    fireEvent.click(card);
+
+    expect(onOpenEditor).toHaveBeenCalledTimes(1);
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it('does not open the editor on the "+"', async () => {
+    const { plus } = renderRow();
+
+    fireEvent.click(plus);
+
+    await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(1));
+    expect(onOpenEditor).not.toHaveBeenCalled();
+  });
+
+  it('does not open the editor on the number input', () => {
+    const { input } = renderRow();
+
+    fireEvent.click(input);
+    fireEvent.change(input, { target: { value: '2' } });
+
+    expect(onOpenEditor).not.toHaveBeenCalled();
+  });
+
+  it('is the whole card for a pinned category with nothing to increment', () => {
+    render(
+      <QuickNumberRow
+        category={CATEGORY}
+        numberField={undefined}
+        total={0}
+        onAdd={(amount: number) => onAdd(amount)}
+        onOpenEditor={() => onOpenEditor()}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: 'Add to Water' })).toBeNull();
+    expect(screen.queryByLabelText('Water: add Glasses')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Water entry" }));
+    expect(onOpenEditor).toHaveBeenCalledTimes(1);
   });
 });

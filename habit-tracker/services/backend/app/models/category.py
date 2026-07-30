@@ -1,11 +1,11 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
-# summary: added streak_mode (build|avoid, default build) alongside display_mode/group
+# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+# summary: + show_in_today (tri-state: NULL = decide by heuristic, true/false = user override)
 from __future__ import annotations
 
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -37,6 +37,11 @@ class Category(Base):
     streak_mode: Mapped[str] = mapped_column(
         String(20), default="build", server_default="build"
     )
+    # Явное решение пользователя, показывать ли категорию на Today.
+    # NULL — «решай эвристикой» (нет числового поля -> не показываем и т.д.),
+    # и это дефолт: иначе каждую новую категорию пришлось бы включать руками,
+    # а все заведённые до этой миграции разом исчезли бы с экрана.
+    show_in_today: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     group: Mapped[str | None] = mapped_column(String(100))
 
     created_at: Mapped[datetime] = mapped_column(

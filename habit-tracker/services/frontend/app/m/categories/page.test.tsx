@@ -232,6 +232,35 @@ describe('/m/categories', () => {
     expect(screen.getByRole('dialog', { name: NEW_CATEGORY_SHEET_TITLE })).toBeDefined();
   });
 
+  it('pins a category to Today from the editor sheet', async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+    fireEvent.change(screen.getByLabelText('Show on Today'), {
+      target: { value: 'always' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ show_in_today: true });
+  });
+
+  it('removes a category from Today without deactivating it', async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+    fireEvent.change(screen.getByLabelText('Show on Today'), {
+      target: { value: 'never' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({
+      show_in_today: false,
+      is_active: true,
+    });
+  });
+
   it('offers the builder alongside the form when there is no category yet', async () => {
     getAllCategories = mock(() => Promise.resolve([]));
     render(<MobileCategoriesPage />);

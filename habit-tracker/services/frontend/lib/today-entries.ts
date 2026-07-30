@@ -70,6 +70,26 @@ export function mergeOptimisticEntries(fetched: Entry[], optimistic: Entry[]): E
   return [...fetched, ...optimistic.filter((entry) => !known.has(entry.id))];
 }
 
+/**
+ * Today's entry for a category, for the editor a card tap opens.
+ *
+ * The oldest saved entry wins, so repeated taps keep landing on the same record
+ * instead of scattering the day across several. Optimistic entries are skipped
+ * by their negative id: they have no row on the server yet, and editing one
+ * would `PUT` to an id the backend has never issued.
+ */
+export function todayEntryForCategory(
+  entries: Entry[],
+  categoryId: number
+): Entry | undefined {
+  return entries
+    .filter((entry) => entry.category_id === categoryId && entry.id > 0)
+    .reduce<Entry | undefined>(
+      (oldest, entry) => (oldest === undefined || entry.id < oldest.id ? entry : oldest),
+      undefined
+    );
+}
+
 /** Checked-state for every boolean field of every checklist category. */
 export function buildCheckedMap(categories: Category[], entries: Entry[]): CheckedMap {
   const map: CheckedMap = {};

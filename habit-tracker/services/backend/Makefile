@@ -3,6 +3,9 @@
 
 # Postgres runs in docker published on host 5433 (5432 is taken by another dev instance)
 DB_ENV = POSTGRES_HOST=localhost POSTGRES_PORT=5433
+# conftest defaults to the docker-network host ("postgres"), which does not
+# resolve from the host shell this Makefile runs in.
+TEST_DB_ENV = $(DB_ENV) TEST_DATABASE_URL=postgresql+asyncpg://habit_user:habit_pass@localhost:5433/habit_tracker_test
 WORKERS ?= 4
 PORT ?= 8000
 PID_FILE = .gunicorn.pid
@@ -34,7 +37,7 @@ dev: migrate
 	$(DB_ENV) uv run uvicorn app.main:app --reload --port $(PORT)
 
 test: db
-	$(DB_ENV) uv run pytest tests/ -q
+	$(TEST_DB_ENV) uv run pytest tests/ -q
 
 lint:
 	uv run ruff check app tests && uv run ruff format --check app tests

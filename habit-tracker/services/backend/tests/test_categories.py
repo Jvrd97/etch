@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] PHASE-01/57-drop-field-identity-fallback
-# summary: id-less field payload creates a new field (identity-fallback tests replaced)
+# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+# summary: + show_in_today tri-state coverage (default null, explicit pin/hide, explicit null returns to the heuristic, untouched by unrelated patches)
 
 import logging
 
@@ -100,6 +100,26 @@ class TestCategoryCreate:
         data = response.json()
         assert data["display_mode"] == "checklist"
         assert data["group"] == "Health"
+
+    async def test_create_category_defaults_show_in_today_to_null(
+        self, client: AsyncClient
+    ):
+        """Без явного выбора категория остаётся под эвристикой Today."""
+        response = await client.post("/api/v1/categories", json={"name": "Sleep"})
+        assert response.status_code == 201
+        assert response.json()["show_in_today"] is None
+
+    @pytest.mark.parametrize("wanted", [True, False])
+    async def test_create_category_with_explicit_show_in_today(
+        self, client: AsyncClient, wanted: bool
+    ):
+        """Явный выбор пользователя сохраняется как есть, в обе стороны."""
+        response = await client.post(
+            "/api/v1/categories",
+            json={"name": f"Sleep-{wanted}", "show_in_today": wanted},
+        )
+        assert response.status_code == 201
+        assert response.json()["show_in_today"] is wanted
 
     async def test_create_category_invalid_display_mode(self, client: AsyncClient):
         """Garbage display_mode is rejected with 422."""
@@ -254,6 +274,70 @@ class TestCategoryUpdate:
         assert data["display_mode"] == "checklist"
         assert data["group"] == "Health"
         assert data["name"] == "Vitamins"  # unchanged
+
+    async def test_update_pins_category_to_today(self, client: AsyncClient):
+        """Категорию без числового поля можно вручную вывести на Today."""
+        created = await client.post(
+            "/api/v1/categories",
+            json={"name": "Mood", "fields": [{"name": "Note", "field_type": "text"}]},
+        )
+        category_id = created.json()["id"]
+
+        response = await client.patch(
+            f"/api/v1/categories/{category_id}", json={"show_in_today": True}
+        )
+        assert response.status_code == 200
+        assert response.json()["show_in_today"] is True
+
+    async def test_update_hides_category_from_today_without_deleting_it(
+        self, client: AsyncClient
+    ):
+        """Убрать с Today — не то же самое, что удалить или деактивировать."""
+        created = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Steps",
+                "fields": [{"name": "Count", "field_type": "number"}],
+            },
+        )
+        category_id = created.json()["id"]
+
+        response = await client.patch(
+            f"/api/v1/categories/{category_id}", json={"show_in_today": False}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["show_in_today"] is False
+        assert data["is_active"] is True
+        assert len(data["fields"]) == 1
+
+    async def test_update_returns_category_to_the_heuristic(self, client: AsyncClient):
+        """Явно присланный null снимает переопределение, а не игнорируется."""
+        created = await client.post(
+            "/api/v1/categories", json={"name": "Water", "show_in_today": False}
+        )
+        category_id = created.json()["id"]
+
+        response = await client.patch(
+            f"/api/v1/categories/{category_id}", json={"show_in_today": None}
+        )
+        assert response.status_code == 200
+        assert response.json()["show_in_today"] is None
+
+    async def test_update_without_show_in_today_leaves_the_choice_alone(
+        self, client: AsyncClient
+    ):
+        """Патч других полей не должен молча сбрасывать выбор пользователя."""
+        created = await client.post(
+            "/api/v1/categories", json={"name": "Reading", "show_in_today": True}
+        )
+        category_id = created.json()["id"]
+
+        response = await client.patch(
+            f"/api/v1/categories/{category_id}", json={"group": "Habits"}
+        )
+        assert response.status_code == 200
+        assert response.json()["show_in_today"] is True
 
     async def test_update_category_invalid_display_mode(self, client: AsyncClient):
         """Garbage display_mode in PATCH is rejected with 422."""

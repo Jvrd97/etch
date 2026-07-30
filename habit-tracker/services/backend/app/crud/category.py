@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/57-drop-field-identity-fallback
-# summary: _sync_category_fields matches fields by id only (identity fallback dropped)
+# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+# summary: _sync_category_fields matches fields by id only; create paths carry show_in_today through
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,6 +157,7 @@ async def create_category(db: AsyncSession, category: CategoryCreate) -> Categor
         display_mode=category.display_mode,
         streak_mode=category.streak_mode,
         group=category.group,
+        show_in_today=category.show_in_today,
     )
     db.add(db_category)
     await db.flush()  # Получаем ID категории
@@ -277,6 +278,7 @@ async def _apply_create_category(
         display_mode=op.display_mode,
         streak_mode=op.streak_mode,
         group=op.group,
+        show_in_today=op.show_in_today,
     )
     db.add(db_category)
     await db.flush()

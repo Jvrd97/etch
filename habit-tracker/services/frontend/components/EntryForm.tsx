@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
-// summary: desktop entry-creation modal; draft state, payload conversion and saving now come from useEntryDraft, so the markup is all that is left here
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: desktop entry modal — markup over useEntryDraft; now edits an existing entry as well as creating one, which is what a Today card tap opens
 
 import { X } from 'lucide-react';
-import { Category } from '@/lib/api';
+import { Category, Entry } from '@/lib/api';
 import { FieldValueInput } from '@/components/FieldValueInput';
 import ErrorAlert from '@/components/ErrorAlert';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
@@ -11,6 +11,11 @@ import { entryInputClass } from '@/lib/ui-constants';
 
 export interface EntryFormProps {
   categories: Category[];
+  /**
+   * Entry to edit. Absent (or null) creates a new one — the modal's original
+   * and still most common job.
+   */
+  entry?: Entry | null;
   onClose: () => void;
   onSuccess: () => void;
   /** Pin the form to one category and hide the picker (quick-add from a category page). */
@@ -21,6 +26,7 @@ export interface EntryFormProps {
 
 export default function EntryForm({
   categories,
+  entry = null,
   onClose,
   onSuccess,
   lockedCategoryId,
@@ -28,6 +34,7 @@ export default function EntryForm({
 }: EntryFormProps) {
   const draft = useEntryDraft({
     categories,
+    entry,
     categoryId: lockedCategoryId,
     date,
     onSaved: onSuccess,
@@ -45,9 +52,11 @@ export default function EntryForm({
       <div className="bg-card border border-white/10 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-fade-rise">
         <div className="sticky top-0 bg-card border-b border-white/5 px-6 py-5 flex justify-between items-center rounded-t-3xl">
           <h2 className="text-[22px] font-semibold text-text-primary">
-            {categoryLocked && selectedCategory
-              ? `New ${selectedCategory.name} entry`
-              : 'New entry'}
+            {entry
+              ? `Edit ${selectedCategory?.name ?? 'entry'}`
+              : categoryLocked && selectedCategory
+                ? `New ${selectedCategory.name} entry`
+                : 'New entry'}
           </h2>
           <button
             onClick={onClose}
@@ -138,7 +147,13 @@ export default function EntryForm({
               disabled={draft.saving}
               className="flex-1 px-4 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)] disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
             >
-              {draft.saving ? 'Creating...' : 'Create entry'}
+              {entry
+                ? draft.saving
+                  ? 'Saving...'
+                  : 'Save entry'
+                : draft.saving
+                  ? 'Creating...'
+                  : 'Create entry'}
             </button>
           </div>
         </form>

@@ -40,6 +40,11 @@ export interface UseTodayResult {
   addNumber: (categoryId: number, fieldId: number, amount: number) => Promise<boolean>;
   /** Re-fetch one avoid category's streak, e.g. after a relapse was logged. */
   reloadStreak: (categoryId: number) => Promise<void>;
+  /**
+   * Re-fetch the whole snapshot without blanking the screen — what a full entry
+   * editor calls once it has saved, since its edit can touch any field.
+   */
+  reload: () => Promise<void>;
 }
 
 export function useToday(): UseTodayResult {
@@ -93,6 +98,10 @@ export function useToday(): UseTodayResult {
       setLoading(false);
     }
   }, []);
+
+  const reload = useCallback(async () => {
+    await loadData();
+  }, [loadData]);
 
   const reloadStreak = useCallback(async (categoryId: number) => {
     const streak = await categoriesAPI.getStreak(categoryId).catch(() => null);
@@ -186,5 +195,6 @@ export function useToday(): UseTodayResult {
     toggleField,
     addNumber,
     reloadStreak,
+    reload,
   };
 }

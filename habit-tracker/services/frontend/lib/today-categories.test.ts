@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/28-today-avoid-card
-// summary: unit tests for Today category partitioning (avoid vs checklist vs quick-form)
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: unit tests for Today category partitioning — avoid vs checklist vs quick-form, plus the show_in_today override that pins or hides a category
 
 import { describe, expect, it } from 'bun:test';
 import type { Category, Field } from './api';
@@ -61,7 +61,7 @@ describe('partitionTodayCategories', () => {
 
     expect(groups.quickForm).toHaveLength(1);
     expect(groups.quickForm[0].category.id).toBe(20);
-    expect(groups.quickForm[0].numberField.id).toBe(200);
+    expect(groups.quickForm[0].numberField?.id).toBe(200);
     expect(groups.avoid).toHaveLength(0);
   });
 
@@ -101,5 +101,126 @@ describe('partitionTodayCategories', () => {
     const groups = partitionTodayCategories([avoid]);
 
     expect(groups.avoid[0].numberField).toBeUndefined();
+  });
+});
+
+describe('partitionTodayCategories with an explicit show_in_today', () => {
+  it('treats an absent flag exactly as before, so old categories do not move', () => {
+    const legacy = category({
+      id: 60,
+      fields: [field({ id: 600, field_type: 'number', name: 'Cups' })],
+    });
+
+    // `undefined`, not `null`: a category stored before the column existed
+    // deserializes without the key at all.
+    expect(legacy.show_in_today).toBeUndefined();
+    expect(partitionTodayCategories([legacy]).quickForm.map((q) => q.category.id)).toEqual([
+      60,
+    ]);
+  });
+
+  it('keeps null under the heuristic — that is what null means', () => {
+    const auto = category({
+      id: 61,
+      show_in_today: null,
+      fields: [field({ id: 610, field_type: 'number' })],
+    });
+
+    expect(partitionTodayCategories([auto]).quickForm).toHaveLength(1);
+  });
+
+  it('shows a category with no number field once it is pinned', () => {
+    const pinned = category({
+      id: 62,
+      show_in_today: true,
+      fields: [field({ id: 620, field_type: 'text', name: 'Note' })],
+    });
+
+    const groups = partitionTodayCategories([pinned]);
+
+    // It earns a card, just one without the quick input: there is no number to
+    // increment, and the card itself is the way into the full editor.
+    expect(groups.quickForm).toHaveLength(1);
+    expect(groups.quickForm[0].category.id).toBe(62);
+    expect(groups.quickForm[0].numberField).toBeUndefined();
+  });
+
+  it('keeps the quick input on a pinned category that does have a number field', () => {
+    const pinned = category({
+      id: 63,
+      show_in_today: true,
+      fields: [
+        field({ id: 630, field_type: 'text', order: 0 }),
+        field({ id: 631, field_type: 'number', order: 1 }),
+      ],
+    });
+
+    expect(partitionTodayCategories([pinned]).quickForm[0].numberField?.id).toBe(631);
+  });
+
+  it('brings a checklist category onto the quick-input side when it is pinned', () => {
+    const pinned = category({
+      id: 64,
+      display_mode: 'checklist',
+      show_in_today: true,
+      fields: [field({ id: 640, field_type: 'boolean', name: 'Done' })],
+    });
+
+    const groups = partitionTodayCategories([pinned]);
+
+    // Pinning is about the card, not about retyping the category: the checklist
+    // section is still where its boolean fields belong.
+    expect(groups.checklist.map((c) => c.id)).toEqual([64]);
+    expect(groups.quickForm).toHaveLength(0);
+  });
+
+  it('hides a number category the user switched off', () => {
+    const hidden = category({
+      id: 65,
+      show_in_today: false,
+      fields: [field({ id: 650, field_type: 'number' })],
+    });
+
+    const groups = partitionTodayCategories([hidden]);
+
+    expect(groups.quickForm).toHaveLength(0);
+    expect(groups.checklist).toHaveLength(0);
+    expect(groups.avoid).toHaveLength(0);
+  });
+
+  it('hides a checklist category the user switched off', () => {
+    const hidden = category({
+      id: 66,
+      display_mode: 'checklist',
+      show_in_today: false,
+      fields: [field({ id: 660, field_type: 'boolean' })],
+    });
+
+    expect(partitionTodayCategories([hidden]).checklist).toHaveLength(0);
+  });
+
+  it('hides an avoid category the user switched off, streak card and all', () => {
+    const hidden = category({
+      id: 67,
+      streak_mode: 'avoid',
+      show_in_today: false,
+      fields: [field({ id: 670, field_type: 'number' })],
+    });
+
+    expect(partitionTodayCategories([hidden]).avoid).toHaveLength(0);
+  });
+
+  it('gives a pinned avoid category its streak card, not a quick input', () => {
+    const pinned = category({
+      id: 68,
+      streak_mode: 'avoid',
+      show_in_today: true,
+      fields: [field({ id: 680, field_type: 'number' })],
+    });
+
+    const groups = partitionTodayCategories([pinned]);
+
+    expect(groups.avoid.map((a) => a.category.id)).toEqual([68]);
+    expect(groups.quickForm).toHaveLength(0);
   });
 });

@@ -259,6 +259,12 @@ export interface Category {
   display_mode: CategoryDisplayMode;
   streak_mode: CategoryStreakMode;
   group?: string | null;
+  /**
+   * Whether the category is on the Today screen. `null` (and, on rows written
+   * before the column existed, absent) means "decide by the heuristic";
+   * `true`/`false` is the user's own choice and overrides it.
+   */
+  show_in_today?: boolean | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -273,6 +279,7 @@ export interface CategoryCreate {
   display_mode?: CategoryDisplayMode;
   streak_mode?: CategoryStreakMode;
   group?: string | null;
+  show_in_today?: boolean | null;
   is_active?: boolean;
   fields?: FieldCreate[];
 }

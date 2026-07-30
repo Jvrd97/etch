@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: unit tests for Today entry state — number totals, checked map, optimistic flip + rollback, streak degradation to null
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// summary: unit tests for Today entry state — number totals, optimistic merge, today's entry lookup for the card-tap editor, checked map, optimistic flip + rollback, streak degradation to null
 
 import { describe, expect, it } from 'bun:test';
 import type { Category, CategoryStreak, Entry, Field } from './api';
@@ -9,6 +9,7 @@ import {
   loadStreakMap,
   numberFieldSum,
   setFieldChecked,
+  todayEntryForCategory,
   type CheckedMap,
 } from './today-entries';
 
@@ -94,6 +95,35 @@ describe('numberFieldSum', () => {
 
   it('is zero when the field never appears', () => {
     expect(numberFieldSum([entry(1, [{ field_id: 99, value: '7' }])], 1, 10)).toBe(0);
+  });
+});
+
+describe('todayEntryForCategory', () => {
+  /** A saved (positive id) or optimistic (negative id) entry of `categoryId`. */
+  function withId(id: number, categoryId: number): Entry {
+    return { ...entry(categoryId, []), id };
+  }
+
+  it('finds nothing when the category has not been logged today', () => {
+    expect(todayEntryForCategory([withId(5, 2)], 1)).toBeUndefined();
+  });
+
+  it('returns the category own entry', () => {
+    expect(todayEntryForCategory([withId(5, 2), withId(6, 1)], 1)?.id).toBe(6);
+  });
+
+  it('keeps landing on the same record when the day has several', () => {
+    // Otherwise a second tap would open a different entry than the first, and
+    // the day would end as a pile of half-filled records.
+    const entries = [withId(9, 1), withId(4, 1), withId(7, 1)];
+    expect(todayEntryForCategory(entries, 1)?.id).toBe(4);
+  });
+
+  it('ignores optimistic entries, which the server has never heard of', () => {
+    // A negative id is this session own placeholder; editing it would PUT to an
+    // id the backend never issued.
+    expect(todayEntryForCategory([withId(-1, 1)], 1)).toBeUndefined();
+    expect(todayEntryForCategory([withId(-1, 1), withId(8, 1)], 1)?.id).toBe(8);
   });
 });
 

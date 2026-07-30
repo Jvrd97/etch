@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
 // summary: tests for useCategories and useCategoryDraft — list load, layout preference, delete, and the draft that carries field ids into the update payload so the backend diff-syncs instead of replacing
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -224,6 +224,51 @@ describe('useCategoryDraft', () => {
     expect(result.current.name).toBe('Sleep');
     expect(result.current.group).toBe('Health');
     expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+  });
+
+  it('starts a new category under the Today heuristic, not switched on by hand', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: null, onSaved: noop })
+    );
+
+    expect(result.current.showInToday).toBeNull();
+  });
+
+  it('reads a category written before the column existed as "automatic"', () => {
+    // Such a row deserializes without the key at all, which must land on the
+    // same choice an explicit null does.
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    expect(CATEGORY.show_in_today).toBeUndefined();
+    expect(result.current.showInToday).toBeNull();
+  });
+
+  it('sends the Today choice with the save, in all three states', async () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    act(() => result.current.setShowInToday(true));
+    await act(async () => {
+      await result.current.save();
+    });
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ show_in_today: true });
+
+    act(() => result.current.setShowInToday(false));
+    await act(async () => {
+      await result.current.save();
+    });
+    expect(updateCategory.mock.calls[1][1]).toMatchObject({ show_in_today: false });
+
+    // Explicitly null, not omitted: that is what returns the category to the
+    // heuristic instead of leaving the old override in place.
+    act(() => result.current.setShowInToday(null));
+    await act(async () => {
+      await result.current.save();
+    });
+    expect(updateCategory.mock.calls[2][1]).toMatchObject({ show_in_today: null });
   });
 
   it('adds a field at the bottom and removes one by position', () => {

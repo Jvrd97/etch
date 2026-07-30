@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
 // summary: Categories-screen state extracted from app/categories/page.tsx — the list with its layout preference and delete, plus useCategoryDraft, the single owner of the category editor form and of the diff-syncing save both shells post
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -138,6 +138,13 @@ export interface UseCategoryDraftResult {
   setStreakMode: (mode: CategoryStreakMode) => void;
   group: string;
   setGroup: (group: string) => void;
+  /**
+   * Whether the category shows on Today: `null` leaves it to the heuristic,
+   * `true`/`false` is the user overriding it. Tri-state rather than a boolean
+   * so a new category does not have to be switched on by hand.
+   */
+  showInToday: boolean | null;
+  setShowInToday: (showInToday: boolean | null) => void;
   isActive: boolean;
   setIsActive: (isActive: boolean) => void;
   /** The draft's fields in display order; existing ones keep their id. */
@@ -187,6 +194,12 @@ export function useCategoryDraft({
     editing?.streak_mode ?? 'build'
   );
   const [group, setGroup] = useState(editing?.group ?? '');
+  // `?? null` collapses the two "no choice yet" shapes — an absent key on a row
+  // written before the column existed, and an explicit null — into the one the
+  // rest of the editor speaks.
+  const [showInToday, setShowInToday] = useState<boolean | null>(
+    editing?.show_in_today ?? null
+  );
   const [isActive, setIsActive] = useState(editing?.is_active ?? true);
   const [fields, setFields] = useState<FieldCreate[]>(() =>
     editing
@@ -243,6 +256,7 @@ export function useCategoryDraft({
       display_mode: displayMode,
       streak_mode: streakMode,
       group: group.trim() || null,
+      show_in_today: showInToday,
       is_active: isActive,
       // Unnamed rows are the placeholder the editor hands out, not fields the
       // user filled in; `order` is re-derived from position so add and remove
@@ -277,6 +291,7 @@ export function useCategoryDraft({
     isActive,
     name,
     onSaved,
+    showInToday,
     streakMode,
   ]);
 
@@ -293,6 +308,8 @@ export function useCategoryDraft({
     setStreakMode,
     group,
     setGroup,
+    showInToday,
+    setShowInToday,
     isActive,
     setIsActive,
     fields,
