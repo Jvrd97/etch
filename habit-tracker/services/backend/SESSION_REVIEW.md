@@ -392,3 +392,71 @@ Feedback loops (`TEST_DATABASE_URL=...@localhost:5433/habit_tracker_test`): pyte
 - `app/api/onboarding.py` — **mod**: убран дублирующийся review-заголовок (два маркера считались `review-status.sh` дважды).
 
 **Принятый риск.** `POST /daily-summary/apply` не принимает `Idempotency-Key`, в отличие от `POST /entries` (#39). Повтор после ошибки безопасен — транзакция всё-или-ничего, ничего не записано. Повтор после **успеха** (двойной клик, ретрай по таймауту, возврат на экран с тем же планом) создаёт вторые записи за ту же дату, и table их суммирует. Риск принят на этом срезе, цена — ручное удаление лишних записей через Entries; закрытие внесено в acceptance #74 отдельным пунктом.
+
+## Тикет 74 — журнальная запись дня и идемпотентный apply
+
+Дата 2026-07-30. У разобранного дня появился текст, и он едет той же транзакцией, что и метрики. Главное здесь не генерация, а коллизия: `GET /journal/date/{entry_date}` уже подразумевает «запись дня», но ничто не мешало создать вторую.
+
+**Кто решает коллизию.** Не модель: есть ли запись за дату — факт базы, а не пересказа. `POST /daily-summary/draft` смотрит на дату сам и отдаёт клиенту готовую операцию — `mode="append"` с id найденной записи или `mode="create"`. Режим `replace` драфт не выдаёт никогда: это единственный путь, теряющий написанное, и включает его только пользователь.
+
+**Что делает apply.** `write_day_journal` трактует `mode` как намерение, а не команду, потому что между предпросмотром и кнопкой день мог измениться: записи нет — создаём (в том числе для `append`); есть и `replace` — заменяем; есть в любом другом режиме — дописываем через `DAY_JOURNAL_SEPARATOR`. Поэтому `create` по устаревшему предпросмотру второй записи за день не создаёт. Заголовок при дописывании не трогаем, настроение и теги заполняем только пустые — иначе проставленное руками молча стёрлось бы.
+
+**Атомарность.** Журнал пишется последним и в той же транзакции; `except` в `apply_daily_summary` расширен с `DailySummaryApplyError` до любого исключения — иначе падение на журнале оставило бы записанные метрики без текста дня. Исключение пробрасывается как есть.
+
+**Идемпотентность (закрывает принятый риск #73).** `POST /daily-summary/apply` принимает `Idempotency-Key`. Схема не менялась, поэтому ключ раскладывается по уже существующей уникальной колонке `entries.idempotency_key`: на запись категории ложится `"<key>:<category_id>"`, и повтор с тем же телом вычисляет тот же набор ключей, находит записи и отвечает 200 исходным результатом, ничего не записывая — в том числе не дописывая пересказ второй раз. Слепая зона названа в докстринге `find_applied_summary`: apply одного лишь журнала (без метрик) ключом не дедуплицируется, его страхует только коллизия за дату.
+
+- `app/schemas/daily_summary.py` — **mod**: `JournalDraft` (то, что пишет модель), `JournalOp` (+ `mode`/`existing_entry_id`), `DailySummaryDraftResponse`; `metrics` в apply перестал быть обязательным, вместо `min_length=1` — валидатор «хоть что-то одно»; в ответе появился `journal_entry_id`.
+- `app/crud/journal.py` — **mod**: `get_day_journal_entry` (самая ранняя запись за дату — это утренние заметки) и `write_day_journal` без коммита, транзакцией владеет вызывающий.
+- `app/crud/daily_summary.py` — **mod**: запись журнала внутри транзакции, `entry_idempotency_key`, `find_applied_summary`, откат на любом исключении.
+- `app/api/daily_summary.py` — **mod**: draft достраивает журнальную операцию до коллизии, apply принимает заголовок и отвечает 200 на повтор (включая гонку через `IntegrityError`).
+- `app/llm/daily_summary.py` — **mod**: в промпте объект `journal` (Markdown-проза) и правило «журнал пересказывает, а не додумывает»; неправдоподобное пишется как сказано и помечается.
+- `tests/test_daily_summary.py` — **mod**: дописывание/создание/замена, отсутствие второй записи за день, откат метрик при падении журнала, режим в драфте, повтор по ключу.
+
+Feedback loops: `pytest` 225/225 green, `ruff check` clean, `mypy` — новых ошибок нет (остаются прежние в `seed_data.py` и старых тест-файлах).
+
+## 2026-07-30 — PHASE-01/74 раунд 2: правки по ревью
+
+Ревью завернуло первый заход двумя блокерами. Поведение изменилось в одном месте — идемпотентность теперь покрывает apply без метрик, — остальное про то, где живёт логика.
+
+**Отступление от тикета.** Пункт «Schema: без изменений» нарушен осознанно: без носителя ключа acceptance «повторное применение не создаёт вторых записей» невыполним для apply одного лишь журнала. Добавлена обратимая миграция `e5a7b9c1d3f6` с таблицей `applied_daily_summaries`.
+
+**Блокер 1 — идемпотентность journal-only apply.** Ключ переехал с созданных записей на сам факт применения дня.
+
+- `app/models/applied_daily_summary.py` — **new**: `AppliedDailySummary` (`idempotency_key` UNIQUE NOT NULL, `entry_date`, сохранённый ответ `entry_ids`/`journal_entry_id`, `created_at`). У `journal_entry_id` нет FK намеренно: удаление записи журнала не должно стирать факт применения, иначе ключ станет переиспользуемым и пересказ запишется второй раз.
+- `alembic/versions/2026_07_30_1800-e5a7b9c1d3f6_applied_daily_summaries.py` — **new**: обратимая миграция; `upgrade`/`downgrade`/`upgrade` прогнаны на локальной БД.
+- `app/crud/daily_summary.py` — **mod**: строка-квитанция пишется в той же транзакции, что метрики и журнал; `find_applied_summary` ищет по `applied_daily_summaries`, а не по `Entry.idempotency_key.in_(...)`, и при `metrics == []` возвращает прежний результат **до** вызова `write_day_journal`. Ответ отдаётся из сохранённых полей, поэтому исходные `entry_ids` и их порядок совпадают байт-в-байт.
+- `tests/test_daily_summary.py` — **mod**: `TestJournalOnlyIdempotency` — два apply с `metrics=[]` и одним ключом, режимы `create` и `append`; проверяется 200 с теми же id, одна запись в журнале, `DAY_JOURNAL_SEPARATOR` не появился (create) / встретился ровно один раз (append).
+
+**Блокер 2 — инверсия зависимостей.** `app/crud/journal.py` — **mod**: импорт `from app.schemas.daily_summary import JournalOp` удалён, нижний слой больше не знает про DTO фичи. Сигнатура — `write_day_journal(db, entry_date, *, mode, title, content, mood, tags)`. Распаковка `JournalOp` и выбор режима переехали в `app/crud/daily_summary.py::resolve_journal_mode` (там же правило «`create` при существующей записи = `append`»). `DAY_JOURNAL_SEPARATOR` остался в `journal.py`: им пользуется нейтральный `_appended`.
+
+**Warnings.**
+
+- Полнота набора ключей. `find_applied_summary` сверяет метрики повтора с тем, что записал оригинал. Повтор с добавленной метрикой — не повтор, а новое намерение, и раньше он отдавал 200, теряя метрику навсегда. Теперь 409 с перечнем `category_id` (текст из одних id).
+- Ветка `except IntegrityError` в `app/api/daily_summary.py` покрыта тестом: первый lookup «ослеплён» (ровно то, что видит проигравший гонку), запись натыкается на уникальный ключ, роутер перечитывает и отдаёт 200 результатом победителя.
+- `frontend/lib/api.ts` — **mod**: `idempotencyKey` у `apply()` стал обязательным. Забыть его было бесшумно: вызов проходит, день молча удваивается.
+- `app/schemas/daily_summary.py` — **mod**: `existing_entry_id` убран из apply-DTO. `JournalOp` — контракт apply (сервер поле не читал), `JournalOpPreview` — контракт draft. Apply-DTO переведён на `extra="ignore"`, чтобы клиент, возвращающий полученный объект целиком, не получал 422; LLM-facing схемы остались на `extra="forbid"`.
+- `tests/test_daily_summary.py` — **mod**: `DAY_TEXT`/`MORNING_TEXT` подняты в шапку модуля, до `_plan_json`, который их использует.
+- `app/api/daily_summary.py` — **mod**: в докстринге `apply_plan` записано, что откат делает `apply_daily_summary` (в отличие от `app/api/entries.py`, где `rollback()` в роутере) — чтобы следующая правка не добавила второй.
+
+Feedback loops: pytest 229/229 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (51 файл); frontend — `tsc --noEmit` clean, `eslint` clean, `bun test` 474/474 green.
+
+## 2026-07-30 — PHASE-01/74 раунд 3: правки по ревью
+
+Второй заход завернули на асимметрии идемпотентности и дублировании правила о режимах журнала. Поведение изменилось только в сторону отказа: то, что раньше молча отвечало 200 и теряло написанное, теперь отвечает 409.
+
+**Идемпотентность стала симметричной.** `app/crud/daily_summary.py` — **mod**: `find_applied_summary` сверяет с квитанцией не только метрики.
+
+- Другая дата под тем же ключом -> 409 (`this Idempotency-Key already applied another date; use a new key`). Проверка идёт до сверки метрик: ключи записей строятся из ключа и `category_id`, дата в них не участвует, поэтому «тот же ключ, следующий день» до этого выглядел безупречным повтором и второй день не записывался никогда.
+- Журнал там, где оригинал его не писал (`request.journal is not None`, `row.journal_entry_id is None`) -> 409. Зеркало случая с добавленной метрикой; текст дня в сообщение не попадает, оно строится из одних фактов.
+- `tests/test_daily_summary.py` — **mod**: `test_a_key_reused_with_an_added_journal_is_a_conflict` (записей журнала за дату по-прежнему нет), `test_a_key_reused_for_another_date_is_a_conflict` (на вторую дату не записано ничего).
+
+**409 из ветки гонки больше не 500.** `app/api/daily_summary.py` — **mod**: повторный `find_applied_summary` внутри `except IntegrityError` обёрнут своим `try/except DailySummaryApplyError` — соседний обработчик к этому моменту уже пройден, и отказ перечитывания уходил наружу как 500. `tests/test_daily_summary.py` — **mod**: `test_a_lost_race_with_an_extra_metric_answers_409_not_500` — проигравший гонку с расширенным набором метрик получает 409.
+
+**Правило о режимах живёт в одном месте.** `app/crud/daily_summary.py` — **mod**: `resolve_journal_mode` и предварительный `journal_crud.get_day_journal_entry` удалены, `op_journal.mode` уходит в `write_day_journal` как есть. Правило «`create` на непустом дне = `append`» там уже реализовано, так что копия наверху стоила лишнего round-trip к БД и второго места, где её пришлось бы править.
+
+- `tests/test_journal.py` — **mod**: `TestWriteDayJournal` — режимы проверяются на своём уровне (create на непустом дне дописывает, append, replace, append на пустом дне создаёт, mood/tags заполняются только пустые).
+- `tests/test_daily_summary.py` — **mod**: четыре API-теста режимов заменены одним `test_the_requested_mode_reaches_the_journal_layer` — с уровня apply проверяется только то, что режим доходит до журнала.
+
+**Вторая линия обороны на фронте.** `frontend/hooks/useDailySummary.ts` — **mod**: `setEntryDate` при смене даты выпускает новый `applyKey` — смена дня это новая попытка. Проверка на бэкенде обязательна и остаётся: ключ приходит с клиента, а клиент может быть любым. `hooks/useDailySummary.test.ts` — **mod**: смена даты меняет ключ и дату в вызове apply.
+
+Feedback loops: pytest 234/234 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (51 файл); frontend — `tsc --noEmit` clean, `eslint` clean, `bun test` 475/475 green.

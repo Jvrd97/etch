@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: tests for useDailySummary — the single owner of text/date -> plan -> checkbox edits -> transactional apply for both day-summary screens
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: tests for useDailySummary — text/date -> plan -> checkbox edits -> the journal op (append by default, replace opt-in) -> one idempotent apply
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, DailySummaryPlan, LogMetricOp } from '@/lib/api';
+import type { Category, DailySummaryPlan, JournalOp, LogMetricOp } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -42,7 +42,20 @@ function metric(overrides: Partial<LogMetricOp> = {}): LogMetricOp {
   };
 }
 
-const PLAN: DailySummaryPlan = { metrics: [metric()], unresolved: [] };
+function journalOp(overrides: Partial<JournalOp> = {}): JournalOp {
+  return {
+    op: 'write_journal',
+    title: 'Разбор дня',
+    content: '## Спорт\n\nОтжался 30 раз.',
+    mood: null,
+    tags: null,
+    mode: 'create',
+    existing_entry_id: null,
+    ...overrides,
+  };
+}
+
+const PLAN: DailySummaryPlan = { metrics: [metric()], unresolved: [], journal: null };
 
 const TODAY = '2026-07-30';
 
@@ -56,7 +69,12 @@ let getCategories: ReturnType<typeof mock>;
 mock.module('@/lib/api', () => ({
   dailySummaryAPI: {
     draft: (transcript: string, entryDate: string) => draft(transcript, entryDate),
-    apply: (entryDate: string, metrics: LogMetricOp[]) => applyPlan(entryDate, metrics),
+    apply: (
+      entryDate: string,
+      metrics: LogMetricOp[],
+      journal: JournalOp | null,
+      idempotencyKey: string
+    ) => applyPlan(entryDate, metrics, journal, idempotencyKey),
   },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   categoriesAPI: {
@@ -300,6 +318,134 @@ describe('useDailySummary', () => {
       categoryName: 'категория #1',
       fieldName: 'поле #2',
     });
+  });
+
+  it('brings the day text in checked, with replacement offered but off', async () => {
+    const journal = journalOp({ mode: 'append', existing_entry_id: 7 });
+    const { result } = await renderWithPlan({ ...PLAN, journal });
+
+    expect(result.current.journal).toEqual(journal);
+    expect(result.current.journalEnabled).toBe(true);
+    expect(result.current.journalReplace).toBe(false);
+    expect(result.current.canReplaceJournal).toBe(true);
+  });
+
+  it('offers no replacement when the day has nothing to replace', async () => {
+    const { result } = await renderWithPlan({ ...PLAN, journal: journalOp() });
+
+    expect(result.current.canReplaceJournal).toBe(false);
+  });
+
+  it('appends the day text by default', async () => {
+    const journal = journalOp({ mode: 'append', existing_entry_id: 7 });
+    const { result } = await renderWithPlan({ ...PLAN, journal });
+
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    const sent = applyPlan.mock.calls[0][2] as JournalOp;
+    expect(sent.mode).toBe('append');
+    expect(sent.existing_entry_id).toBe(7);
+  });
+
+  it('turns the operation into a replacement only when asked', async () => {
+    const journal = journalOp({ mode: 'append', existing_entry_id: 7 });
+    const { result } = await renderWithPlan({ ...PLAN, journal });
+
+    act(() => result.current.setJournalReplace(true));
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect((applyPlan.mock.calls[0][2] as JournalOp).mode).toBe('replace');
+  });
+
+  it('sends no journal at all once it is unchecked', async () => {
+    const { result } = await renderWithPlan({ ...PLAN, journal: journalOp() });
+
+    act(() => result.current.setJournalEnabled(false));
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect(applyPlan.mock.calls[0][2]).toBeNull();
+  });
+
+  it('writes the day text even when every metric is left out', async () => {
+    const { result } = await renderWithPlan({
+      metrics: [metric({ uncertain: true })],
+      unresolved: [],
+      journal: journalOp(),
+    });
+
+    expect(result.current.canApply).toBe(true);
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect(applyPlan).toHaveBeenCalledTimes(1);
+    expect(applyPlan.mock.calls[0][1]).toEqual([]);
+  });
+
+  it('has nothing to apply once both halves are switched off', async () => {
+    const { result } = await renderWithPlan({
+      metrics: [metric({ uncertain: true })],
+      unresolved: [],
+      journal: journalOp(),
+    });
+
+    act(() => result.current.setJournalEnabled(false));
+    expect(result.current.canApply).toBe(false);
+
+    await act(async () => {
+      await result.current.apply();
+    });
+    expect(applyPlan).not.toHaveBeenCalled();
+  });
+
+  it('retries one plan under one idempotency key, and a new plan under a new one', async () => {
+    applyPlan = mock(() => Promise.reject(new Error('boom')));
+    const { result } = await renderWithPlan(PLAN);
+
+    await act(async () => {
+      await result.current.apply();
+    });
+    await act(async () => {
+      await result.current.apply();
+    });
+    const firstKey = applyPlan.mock.calls[0][3] as string;
+    expect(firstKey).toBeTruthy();
+    expect(applyPlan.mock.calls[1][3]).toBe(firstKey);
+
+    await act(async () => {
+      await result.current.generate();
+    });
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect(applyPlan.mock.calls[2][3]).not.toBe(firstKey);
+  });
+
+  it('mints a new idempotency key when the date is changed', async () => {
+    applyPlan = mock(() => Promise.reject(new Error('boom')));
+    const { result } = await renderWithPlan(PLAN);
+
+    await act(async () => {
+      await result.current.apply();
+    });
+    const firstKey = applyPlan.mock.calls[0][3] as string;
+
+    await act(() => {
+      result.current.setEntryDate('2026-07-31');
+    });
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect(applyPlan.mock.calls[1][0]).toBe('2026-07-31');
+    expect(applyPlan.mock.calls[1][3]).not.toBe(firstKey);
   });
 
   it('clears a stale apply error when a new plan is generated', async () => {

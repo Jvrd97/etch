@@ -1,18 +1,20 @@
 'use client';
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: desktop day-summary screen — markup only; the text/date/plan/apply flow lives in useDailySummary, which /m/daily-summary renders with its own layout
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: desktop day-summary screen — markup only; the text/date/plan/journal/apply flow lives in useDailySummary, which /m/daily-summary renders with its own layout
 
 import { useRouter } from 'next/navigation';
 import { HelpCircle, Sparkles } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import {
+  JOURNAL_REPLACE_LABEL,
   UNRESOLVED_TITLE,
+  journalCheckboxLabel,
   metricCheckboxLabel,
   useDailySummary,
   type MetricLabel,
 } from '@/hooks/useDailySummary';
-import type { LogMetricOp, UnresolvedMetric } from '@/lib/api';
+import type { JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
 
 function MetricRow({
   metric,
@@ -79,6 +81,74 @@ function UnresolvedSection({ items }: { items: UnresolvedMetric[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+interface JournalSectionProps {
+  journal: JournalOp;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  replace: boolean;
+  onToggleReplace: (replace: boolean) => void;
+  canReplace: boolean;
+}
+
+/**
+ * The day's text, with the collision stated rather than implied.
+ *
+ * The heading says which of the two things will happen — append or create — so
+ * the checkbox is an approval of a known outcome. Replacement sits next to it,
+ * unchecked, and is named a replacement: "обновить" would read as harmless and
+ * this is the one control on the screen that deletes what the user wrote.
+ */
+function JournalSection({
+  journal,
+  enabled,
+  onToggle,
+  replace,
+  onToggleReplace,
+  canReplace,
+}: JournalSectionProps) {
+  return (
+    <div className="bg-card border border-white/5 rounded-3xl px-6 py-5 space-y-3">
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          aria-label={journalCheckboxLabel(journal)}
+          className="mt-1.5 h-4 w-4 accent-lime shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <p className="text-base font-semibold text-text-primary">
+            {journalCheckboxLabel(journal)}
+          </p>
+          <p className="text-[13px] text-text-disabled mt-1">
+            {journal.mode === 'create'
+              ? 'За эту дату записи ещё нет — текст дня станет новой записью.'
+              : 'Текст дня допишется в конец существующей записи, ничего не пропадёт.'}
+          </p>
+          <p className="text-sm text-text-secondary mt-3 whitespace-pre-wrap break-words">
+            {journal.content}
+          </p>
+        </div>
+      </label>
+
+      {canReplace && (
+        <label className="flex items-center gap-3 cursor-pointer pl-7">
+          <input
+            type="checkbox"
+            checked={replace}
+            onChange={(e) => onToggleReplace(e.target.checked)}
+            aria-label={JOURNAL_REPLACE_LABEL}
+            className="h-4 w-4 accent-danger shrink-0"
+          />
+          <span className="text-[13px] text-text-secondary">
+            {JOURNAL_REPLACE_LABEL} — старая запись за эту дату будет перезаписана
+          </span>
+        </label>
+      )}
     </div>
   );
 }
@@ -150,7 +220,9 @@ export default function DailySummaryPage() {
 
       {day.draft.status === 'done' && (
         <div className="space-y-5">
-          {day.draft.plan.metrics.length === 0 && day.unresolved.length === 0 ? (
+          {day.draft.plan.metrics.length === 0 &&
+          day.unresolved.length === 0 &&
+          day.journal === null ? (
             <p className="text-text-secondary">
               Модель не нашла в тексте чисел для записи. Попробуйте рассказать
               подробнее.
@@ -169,19 +241,28 @@ export default function DailySummaryPage() {
                 />
               ))}
 
+              {day.journal !== null && (
+                <JournalSection
+                  journal={day.journal}
+                  enabled={day.journalEnabled}
+                  onToggle={day.setJournalEnabled}
+                  replace={day.journalReplace}
+                  onToggleReplace={day.setJournalReplace}
+                  canReplace={day.canReplaceJournal}
+                />
+              )}
+
               <UnresolvedSection items={day.unresolved} />
 
               {day.applyState.status === 'error' && (
                 <ErrorAlert message={day.applyState.message} />
               )}
 
-              {day.draft.plan.metrics.length > 0 && (
+              {(day.draft.plan.metrics.length > 0 || day.journal !== null) && (
                 <button
                   type="button"
                   onClick={() => void day.apply()}
-                  disabled={
-                    day.applyState.status === 'applying' || day.enabledCount === 0
-                  }
+                  disabled={day.applyState.status === 'applying' || !day.canApply}
                   className="inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0"
                 >
                   {day.applyState.status === 'applying'

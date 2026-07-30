@@ -1,18 +1,20 @@
 'use client';
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: mobile day-summary screen — same useDailySummary flow as the desktop page, laid out for a 375pt screen: every control on its own 44pt row, one card per metric
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: mobile day-summary screen — same useDailySummary flow as the desktop page (metrics + the day's journal text), laid out for a 375pt screen: every control on its own 44pt row, one card per operation
 
 import { useRouter } from 'next/navigation';
 import { HelpCircle, Sparkles } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import {
+  JOURNAL_REPLACE_LABEL,
   UNRESOLVED_TITLE,
+  journalCheckboxLabel,
   metricCheckboxLabel,
   useDailySummary,
   type MetricLabel,
 } from '@/hooks/useDailySummary';
-import type { LogMetricOp, UnresolvedMetric } from '@/lib/api';
+import type { JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
 import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 
@@ -92,6 +94,80 @@ function UnresolvedSection({ items }: { items: UnresolvedMetric[] }) {
   );
 }
 
+interface JournalCardProps {
+  journal: JournalOp;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  replace: boolean;
+  onToggleReplace: (replace: boolean) => void;
+  canReplace: boolean;
+}
+
+/**
+ * The day's text as a card: what will happen to it, then the text itself.
+ *
+ * Same two controls as the desktop section, each on its own tap row, and the
+ * generated text is clamped: at 375pt a full day of Markdown would push the
+ * write button off the screen, and the point of the preview is the decision
+ * above it, not proofreading.
+ */
+function JournalCard({
+  journal,
+  enabled,
+  onToggle,
+  replace,
+  onToggleReplace,
+  canReplace,
+}: JournalCardProps) {
+  return (
+    <div className="bg-card border border-white/5 rounded-3xl p-4 space-y-2">
+      <label
+        style={{ minHeight: TAP_TARGET_PX }}
+        className="flex items-center gap-3 cursor-pointer"
+      >
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          aria-label={journalCheckboxLabel(journal)}
+          className="w-5 h-5 accent-lime rounded shrink-0"
+        />
+        <span className="min-w-0 text-sm font-medium text-text-primary">
+          {journalCheckboxLabel(journal)}
+        </span>
+      </label>
+
+      <p className="text-[13px] text-text-disabled break-words">
+        {journal.mode === 'create'
+          ? 'За эту дату записи ещё нет — текст дня станет новой записью.'
+          : 'Текст допишется в конец записи, ничего не пропадёт.'}
+      </p>
+
+      <p className="text-[13px] text-text-secondary whitespace-pre-wrap break-words line-clamp-6">
+        {journal.content}
+      </p>
+
+      {canReplace && (
+        <label
+          style={{ minHeight: TAP_TARGET_PX }}
+          className="flex items-center gap-3 cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            checked={replace}
+            onChange={(e) => onToggleReplace(e.target.checked)}
+            aria-label={JOURNAL_REPLACE_LABEL}
+            className="w-5 h-5 accent-danger rounded shrink-0"
+          />
+          <span className="min-w-0 text-[13px] text-text-secondary break-words">
+            {JOURNAL_REPLACE_LABEL} — старая запись будет перезаписана
+          </span>
+        </label>
+      )}
+    </div>
+  );
+}
+
 export default function MobileDailySummaryPage() {
   const router = useRouter();
   const day = useDailySummary({
@@ -152,7 +228,9 @@ export default function MobileDailySummaryPage() {
       )}
 
       {day.draft.status === 'done' &&
-        (day.draft.plan.metrics.length === 0 && day.unresolved.length === 0 ? (
+        (day.draft.plan.metrics.length === 0 &&
+        day.unresolved.length === 0 &&
+        day.journal === null ? (
           <p className="text-sm text-text-secondary">
             Модель не нашла в тексте чисел для записи. Попробуйте рассказать подробнее.
           </p>
@@ -170,17 +248,28 @@ export default function MobileDailySummaryPage() {
               />
             ))}
 
+            {day.journal !== null && (
+              <JournalCard
+                journal={day.journal}
+                enabled={day.journalEnabled}
+                onToggle={day.setJournalEnabled}
+                replace={day.journalReplace}
+                onToggleReplace={day.setJournalReplace}
+                canReplace={day.canReplaceJournal}
+              />
+            )}
+
             <UnresolvedSection items={day.unresolved} />
 
             {day.applyState.status === 'error' && (
               <ErrorAlert message={day.applyState.message} />
             )}
 
-            {day.draft.plan.metrics.length > 0 && (
+            {(day.draft.plan.metrics.length > 0 || day.journal !== null) && (
               <button
                 type="button"
                 onClick={() => void day.apply()}
-                disabled={day.applyState.status === 'applying' || day.enabledCount === 0}
+                disabled={day.applyState.status === 'applying' || !day.canApply}
                 style={{ minHeight: TAP_TARGET_PX }}
                 className={PRIMARY_BUTTON_CLASS}
               >

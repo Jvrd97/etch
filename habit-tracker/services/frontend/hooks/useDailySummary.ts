@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric opt-in, and the transactional apply; both day-summary screens differ only in markup and in where they navigate afterwards
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric opt-in, the day's journal text (append by default, replace opt-in) and one idempotent transactional apply
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -8,6 +8,7 @@ import {
   dailySummaryAPI,
   type Category,
   type DailySummaryPlan,
+  type JournalOp,
   type LogMetricOp,
 } from '@/lib/api';
 import { todayISO } from '@/lib/date';
@@ -22,6 +23,23 @@ export const APPLY_ERROR = 'Не удалось записать день';
  * wording lives beside the flow that produces it rather than in either page.
  */
 export const UNRESOLVED_TITLE = 'Не нашлось категории';
+
+/**
+ * Accessible name of the journal checkbox — the day's text as an opt-in.
+ *
+ * Named per mode rather than "Записать текст дня" for both, because the two
+ * outcomes are genuinely different promises: one keeps what the morning left
+ * behind, the other starts the day's page. Lives here so both screens and their
+ * tests read the same wording.
+ */
+export function journalCheckboxLabel(journal: JournalOp): string {
+  return journal.mode === 'create'
+    ? 'Создать запись дня'
+    : 'Дополнить запись дня';
+}
+
+/** Accessible name of the opt-in that turns an append into a replacement. */
+export const JOURNAL_REPLACE_LABEL = 'Заменить текст';
 
 /**
  * Accessible name of a metric's checkbox: what the model heard, verbatim.
@@ -84,6 +102,7 @@ export interface UseDailySummaryResult {
   setTranscript: (text: string) => void;
   /** `YYYY-MM-DD` the day is filed under; defaults to today's local date. */
   entryDate: string;
+  /** Refiles the plan under another day, minting a fresh idempotency key with it. */
   setEntryDate: (date: string) => void;
   draft: DraftState;
   applyState: ApplyState;
@@ -91,8 +110,20 @@ export interface UseDailySummaryResult {
   metricStates: MetricState[];
   /** What the model heard but could not place. Read-only: it creates nothing. */
   unresolved: DailySummaryPlan['unresolved'];
-  /** How many metrics would be written right now; also the apply button's guard. */
+  /** How many metrics would be written right now. */
   enabledCount: number;
+  /** The day's text as the backend resolved it, or null when there is none. */
+  journal: JournalOp | null;
+  /** Whether the day's text ships. On by default: appending loses nothing. */
+  journalEnabled: boolean;
+  setJournalEnabled: (enabled: boolean) => void;
+  /** Whether the append is turned into a replacement. Off unless asked for. */
+  journalReplace: boolean;
+  setJournalReplace: (replace: boolean) => void;
+  /** True when there is existing text a replacement could actually drop. */
+  canReplaceJournal: boolean;
+  /** Whether the apply would write anything — the apply button's guard. */
+  canApply: boolean;
   /** False while the text is blank or a draft is already in flight. */
   canGenerate: boolean;
   /** Ask the LLM for a plan. A blank text is a no-op, not a request. */
@@ -135,16 +166,32 @@ function selectedMetrics(plan: DailySummaryPlan, states: MetricState[]): LogMetr
   return plan.metrics.filter((_, i) => states[i]?.enabled);
 }
 
+/**
+ * A key that identifies one attempt to write one day.
+ *
+ * Minted per plan, not per click: every click on "Записать" — including the
+ * retry after a network timeout, where the write may well have landed — carries
+ * the same key, which is exactly what lets the server recognise the second one
+ * as a replay. A fresh draft is a new intent and gets a new key.
+ */
+function newApplyKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ?? `day-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function useDailySummary({
   onApplied,
   today,
 }: UseDailySummaryOptions): UseDailySummaryResult {
   const [transcript, setTranscript] = useState('');
-  const [entryDate, setEntryDate] = useState(today ?? todayISO());
+  const [entryDate, setEntryDateState] = useState(today ?? todayISO());
   const [draft, setDraft] = useState<DraftState>({ status: 'idle' });
   const [metricStates, setMetricStates] = useState<MetricState[]>([]);
   const [applyState, setApplyState] = useState<ApplyState>({ status: 'idle' });
   const [categories, setCategories] = useState<Category[]>([]);
+  const [journalEnabled, setJournalEnabled] = useState(true);
+  const [journalReplace, setJournalReplace] = useState(false);
+  const [applyKey, setApplyKey] = useState(newApplyKey);
 
   // The catalogue is fetched for display only, so a failure is swallowed rather
   // than banner-ed: the plan is still valid, the preview still applies, and the
@@ -204,6 +251,13 @@ export function useDailySummary({
     try {
       const plan = await dailySummaryAPI.draft(text, entryDate);
       setMetricStates(initialMetricStates(plan));
+      // A new plan is a new day-writing intent: it must not inherit the key of
+      // the previous one, or the server would answer the fresh plan with the
+      // stale plan's result. Replacement goes back off with it — it is a choice
+      // about a text that no longer exists.
+      setApplyKey(newApplyKey());
+      setJournalEnabled(true);
+      setJournalReplace(false);
       setDraft({ status: 'done', plan });
     } catch (err) {
       // The text stays in state on purpose: retelling the day because the
@@ -215,17 +269,54 @@ export function useDailySummary({
     }
   }, [transcript, entryDate]);
 
+  /**
+   * Move the plan to another day, under a key of its own.
+   *
+   * A key belongs to one day: reusing it for the next one would ask the server
+   * to write a day it has already written under that key. The server rejects
+   * that with a 409 and must keep doing so — this is the second line, which
+   * turns a rejection the user would have to decipher into a normal apply.
+   */
+  const setEntryDate = useCallback(
+    (date: string) => {
+      if (date === entryDate) return;
+      setEntryDateState(date);
+      setApplyKey(newApplyKey());
+    },
+    [entryDate]
+  );
+
   const toggleMetric = useCallback((index: number, enabled: boolean) => {
     setMetricStates((prev) => prev.map((s, i) => (i === index ? { enabled } : s)));
   }, []);
 
+  const journal = draft.status === 'done' ? (draft.plan.journal ?? null) : null;
+  const canReplaceJournal = journal !== null && journal.existing_entry_id !== null;
+
+  /**
+   * The journal operation as it would be sent, or null when it is switched off.
+   *
+   * Replacement is applied here rather than stored in state so an operation can
+   * never carry `replace` without the checkbox being on: the mode is derived
+   * from the toggle every time, and a toggle the day cannot honour (no existing
+   * text) changes nothing.
+   */
+  const journalToSend = useMemo<JournalOp | null>(() => {
+    if (journal === null || !journalEnabled) return null;
+    if (journalReplace && canReplaceJournal) return { ...journal, mode: 'replace' };
+    return journal;
+  }, [journal, journalEnabled, journalReplace, canReplaceJournal]);
+
+  const enabledCount = metricStates.filter((s) => s.enabled).length;
+  const canApply = enabledCount > 0 || journalToSend !== null;
+
   const apply = useCallback(async () => {
     if (draft.status !== 'done') return;
     const metrics = selectedMetrics(draft.plan, metricStates);
-    if (metrics.length === 0) return;
+    if (metrics.length === 0 && journalToSend === null) return;
     setApplyState({ status: 'applying' });
     try {
-      await dailySummaryAPI.apply(entryDate, metrics);
+      await dailySummaryAPI.apply(entryDate, metrics, journalToSend, applyKey);
       onApplied();
     } catch (err) {
       // Plan and text both survive: the apply is all-or-nothing server-side, so
@@ -235,7 +326,7 @@ export function useDailySummary({
         message: err instanceof Error ? err.message : APPLY_ERROR,
       });
     }
-  }, [draft, metricStates, entryDate, onApplied]);
+  }, [draft, metricStates, entryDate, journalToSend, applyKey, onApplied]);
 
   return {
     transcript,
@@ -246,7 +337,14 @@ export function useDailySummary({
     applyState,
     metricStates,
     unresolved: draft.status === 'done' ? draft.plan.unresolved : [],
-    enabledCount: metricStates.filter((s) => s.enabled).length,
+    enabledCount,
+    journal,
+    journalEnabled,
+    setJournalEnabled,
+    journalReplace,
+    setJournalReplace,
+    canReplaceJournal,
+    canApply,
     canGenerate: transcript.trim().length > 0 && draft.status !== 'loading',
     generate,
     resolveLabel,

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-# summary: day-text orchestration — id-bearing category catalogue, prompt, semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
+# [review:need-review] PHASE-01/74-daily-summary-journal
+# summary: day-text orchestration — id-bearing category catalogue, prompt (metrics + the day's Markdown journal), semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
 from __future__ import annotations
 
 from datetime import date
@@ -28,7 +28,13 @@ You emit ONLY a JSON object, no prose, no markdown fences, of the shape:
   ],
   "unresolved": [
     { "text": "<the words>", "reason": "<why it fits no category>" }
-  ]
+  ],
+  "journal": {
+    "title": "<short title for the day, or null>",
+    "content": "<the day written out as Markdown>",
+    "mood": null,
+    "tags": null
+  }
 }
 
 Rules:
@@ -51,6 +57,14 @@ Rules:
   wording. Never invent a category or a field for it — you cannot create either.
 - Only recording values exists. There is no way to delete, rename or retype
   anything, so do not try.
+- `journal` is the same day written out as Markdown prose for the user to read
+  later: short headings and plain sentences, no tables, no JSON inside it. Set
+  the whole `journal` to null when the retelling holds nothing worth reading
+  back — a bare "отжался 30 раз" is already fully captured by the metric.
+- The journal retells; it does not embellish. Every fact in it must be traceable
+  to a sentence of the retelling. Do not add a mood, a reason, a conclusion or a
+  number that was not said. Something said but implausible is written down as it
+  was said and marked as doubtful in the text, not corrected and not dropped.
 - Output must be valid JSON and nothing else."""
 
 

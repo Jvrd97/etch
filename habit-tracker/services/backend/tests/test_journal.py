@@ -2,9 +2,20 @@
 Tests for Journal Entry CRUD operations.
 """
 
+# [review:need-review] PHASE-01/74-daily-summary-journal
+# summary: journal API CRUD tests + TestWriteDayJournal, where the day's single entry and the append/create/replace modes are checked at the layer that owns them
+
 import pytest
 from httpx import AsyncClient
 from datetime import date
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.crud.journal import (
+    DAY_JOURNAL_SEPARATOR,
+    write_day_journal,
+)
+from app.models import JournalEntry
 
 
 @pytest.mark.asyncio
@@ -423,3 +434,118 @@ class TestJournalDelete:
         """Test deleting nonexistent journal entry returns 404."""
         response = await client.delete("/api/v1/journal/9999")
         assert response.status_code == 404
+
+
+DAY = date(2026, 7, 30)
+MORNING_TEXT = "Проснулся разбитым, но встал."
+DAY_TEXT = "## Спорт\n\nОтжался 30 раз."
+
+
+async def _entries_for_the_day(db: AsyncSession) -> list[JournalEntry]:
+    rows = await db.execute(
+        select(JournalEntry)
+        .where(JournalEntry.entry_date == DAY)
+        .order_by(JournalEntry.id)
+    )
+    return list(rows.scalars().all())
+
+
+async def _seed_morning_entry(db: AsyncSession) -> JournalEntry:
+    entry = JournalEntry(title="Утро", content=MORNING_TEXT, entry_date=DAY)
+    db.add(entry)
+    await db.flush()
+    return entry
+
+
+@pytest.mark.asyncio
+class TestWriteDayJournal:
+    """The three write modes against the one entry a day is allowed to have.
+
+    The rule lives here rather than in the caller: whoever writes a day's text
+    gets the same resolution, and nothing above has to re-read the day to pick
+    a mode.
+    """
+
+    async def test_create_on_a_day_that_has_text_appends_instead(
+        self, db_session: AsyncSession
+    ):
+        """A day that gained text after the preview must not be split in two."""
+        existing = await _seed_morning_entry(db_session)
+
+        written = await write_day_journal(
+            db_session,
+            DAY,
+            mode="create",
+            title="Разбор дня",
+            content=DAY_TEXT,
+        )
+
+        assert written.id == existing.id
+        assert written.content == f"{MORNING_TEXT}{DAY_JOURNAL_SEPARATOR}{DAY_TEXT}"
+        assert len(await _entries_for_the_day(db_session)) == 1
+
+    async def test_append_adds_to_the_existing_text(self, db_session: AsyncSession):
+        existing = await _seed_morning_entry(db_session)
+
+        written = await write_day_journal(
+            db_session,
+            DAY,
+            mode="append",
+            title="Разбор дня",
+            content=DAY_TEXT,
+        )
+
+        assert written.id == existing.id
+        assert written.content == f"{MORNING_TEXT}{DAY_JOURNAL_SEPARATOR}{DAY_TEXT}"
+        assert written.title == "Утро"
+
+    async def test_replace_drops_the_previous_text(self, db_session: AsyncSession):
+        existing = await _seed_morning_entry(db_session)
+
+        written = await write_day_journal(
+            db_session,
+            DAY,
+            mode="replace",
+            title="Разбор дня",
+            content=DAY_TEXT,
+        )
+
+        assert written.id == existing.id
+        assert written.content == DAY_TEXT
+        assert MORNING_TEXT not in written.content
+
+    async def test_append_with_no_entry_for_the_day_creates_one(
+        self, db_session: AsyncSession
+    ):
+        """The day may have been emptied between the preview and the apply."""
+        written = await write_day_journal(
+            db_session,
+            DAY,
+            mode="append",
+            title="Разбор дня",
+            content=DAY_TEXT,
+        )
+
+        assert written.content == DAY_TEXT
+        assert written.title == "Разбор дня"
+        assert len(await _entries_for_the_day(db_session)) == 1
+
+    async def test_mood_and_tags_fill_gaps_but_never_overwrite(
+        self, db_session: AsyncSession
+    ):
+        existing = await _seed_morning_entry(db_session)
+        existing.mood = "good"
+        await db_session.flush()
+
+        written = await write_day_journal(
+            db_session,
+            DAY,
+            mode="append",
+            title=None,
+            content=DAY_TEXT,
+            mood="bad",
+            tags="спорт",
+        )
+
+        assert written.mood == "good"
+        assert written.tags == "спорт"

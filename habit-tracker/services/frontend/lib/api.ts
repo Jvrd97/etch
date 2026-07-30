@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: + dailySummaryAPI (draft/apply) and the write-only day-plan types
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: dailySummaryAPI (draft/apply) + the write-only day-plan types, the journal op with its append/create/replace mode, and the apply's Idempotency-Key
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -198,10 +198,25 @@ export const dailySummaryAPI = {
     });
   },
 
-  apply: async (entryDate: string, metrics: LogMetricOp[]) => {
+  /**
+   * Write the day in one transaction.
+   *
+   * `idempotencyKey` is what makes a second click harmless: the server
+   * recognises the replay, answers with the first result and writes nothing —
+   * neither second entries nor a second copy of the text appended to itself.
+   * It is required rather than optional precisely because forgetting it is
+   * silent: the call still succeeds, and the day quietly doubles.
+   */
+  apply: async (
+    entryDate: string,
+    metrics: LogMetricOp[],
+    journal: JournalOp | null,
+    idempotencyKey: string
+  ) => {
     return fetcher<DailySummaryApplyResponse>('/daily-summary/apply', {
       method: 'POST',
-      body: JSON.stringify({ entry_date: entryDate, metrics }),
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ entry_date: entryDate, metrics, journal }),
     });
   },
 };
@@ -451,14 +466,38 @@ export interface UnresolvedMetric {
   reason?: string | null;
 }
 
+/**
+ * How the day's text meets whatever the date already holds.
+ *
+ * `append` and `create` are the same intent — keep what is there — and differ
+ * only in whether anything is there. `replace` is the one mode that loses text,
+ * so the draft never proposes it: it exists because the user may ask for it.
+ */
+export type JournalMode = 'append' | 'create' | 'replace';
+
+/** The day written out, plus what the backend found at that date. */
+export interface JournalOp {
+  op: 'write_journal';
+  title: string | null;
+  content: string;
+  mood: string | null;
+  tags: string | null;
+  mode: JournalMode;
+  /** The entry the text would join, when the day already has one. */
+  existing_entry_id: number | null;
+}
+
 export interface DailySummaryPlan {
   metrics: LogMetricOp[];
   unresolved: UnresolvedMetric[];
+  /** Null when the retelling held nothing worth reading back later. */
+  journal?: JournalOp | null;
 }
 
-/** What an apply created: one entry per category the day touched. */
+/** What an apply wrote: one entry per category the day touched, plus its text. */
 export interface DailySummaryApplyResponse {
   entry_ids: number[];
+  journal_entry_id?: number | null;
 }
 
 // What POST /categories/batch returns: the categories it created and the fields

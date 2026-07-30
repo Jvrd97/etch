@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-// summary: desktop day-summary tests — the full path text -> plan -> unchecked rows -> apply -> redirect, the unresolved section, and the LLM error with Retry
+// [review:need-review] PHASE-01/74-daily-summary-journal
+// summary: desktop day-summary tests — text -> plan -> unchecked rows -> apply -> redirect, the journal op (append checked, replace offered and off), the unresolved section, and the LLM error with Retry
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
@@ -10,7 +10,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import type { Category, DailySummaryPlan, LogMetricOp } from '@/lib/api';
+import type { Category, DailySummaryPlan, JournalOp, LogMetricOp } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -69,6 +69,17 @@ const PLAN: DailySummaryPlan = {
     },
   ],
   unresolved: [{ text: 'погулял с собакой', reason: 'нет категории' }],
+  journal: null,
+};
+
+const JOURNAL: JournalOp = {
+  op: 'write_journal',
+  title: 'Разбор дня',
+  content: '## Спорт\n\nОтжался 30 раз.',
+  mood: null,
+  tags: null,
+  mode: 'append',
+  existing_entry_id: 7,
 };
 
 let draft: ReturnType<typeof mock>;
@@ -82,7 +93,12 @@ let getCategories: ReturnType<typeof mock>;
 mock.module('@/lib/api', () => ({
   dailySummaryAPI: {
     draft: (transcript: string, entryDate: string) => draft(transcript, entryDate),
-    apply: (entryDate: string, metrics: LogMetricOp[]) => applyPlan(entryDate, metrics),
+    apply: (
+      entryDate: string,
+      metrics: LogMetricOp[],
+      journal: JournalOp | null,
+      idempotencyKey: string
+    ) => applyPlan(entryDate, metrics, journal, idempotencyKey),
   },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
@@ -192,6 +208,59 @@ describe('/daily-summary', () => {
     expect(metrics).toHaveLength(1);
     expect(metrics[0].field_id).toBe(3);
     await waitFor(() => expect(pushRoute).toHaveBeenCalledWith('/entries'));
+  });
+
+  it('offers to append the day text, with replacement present and off', async () => {
+    draft = mock(() => Promise.resolve({ ...PLAN, journal: JOURNAL }));
+    await renderWithPlan();
+
+    const append = screen.getByLabelText('Дополнить запись дня') as HTMLInputElement;
+    const replace = screen.getByLabelText('Заменить текст') as HTMLInputElement;
+    expect(append.checked).toBe(true);
+    expect(replace.checked).toBe(false);
+    expect(replace.disabled).toBe(false);
+  });
+
+  it('sends the day text with the metrics, as an append by default', async () => {
+    draft = mock(() => Promise.resolve({ ...PLAN, journal: JOURNAL }));
+    await renderWithPlan();
+
+    fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
+
+    await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
+    const journal = applyPlan.mock.calls[0][2] as JournalOp;
+    expect(journal.mode).toBe('append');
+    expect(journal.content).toBe(JOURNAL.content);
+  });
+
+  it('replaces the day text only after the user checks it', async () => {
+    draft = mock(() => Promise.resolve({ ...PLAN, journal: JOURNAL }));
+    await renderWithPlan();
+
+    fireEvent.click(screen.getByLabelText('Заменить текст'));
+    fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
+
+    await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
+    expect((applyPlan.mock.calls[0][2] as JournalOp).mode).toBe('replace');
+  });
+
+  it('keeps the write available when only the day text is checked', async () => {
+    draft = mock(() =>
+      Promise.resolve({ metrics: [], unresolved: [], journal: JOURNAL })
+    );
+    render(<DailySummaryPage />);
+    fireEvent.change(screen.getByLabelText('Как прошёл день'), {
+      target: { value: 'день был длинный' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Разобрать день/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Дополнить запись дня')).toBeDefined()
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
+
+    await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
+    expect(applyPlan.mock.calls[0][1]).toEqual([]);
   });
 
   it('offers a retry and keeps the text when the model is unreachable', async () => {
