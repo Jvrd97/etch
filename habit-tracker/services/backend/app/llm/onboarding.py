@@ -2,7 +2,7 @@
 # summary: onboarding orchestration — prompt (with existing categories), semantic validation, conflict flags; JSON parse and the repair pass come from app.llm.plan_flow
 from __future__ import annotations
 
-from app.crud.category import checklist_has_boolean_field
+from app.crud.category import CHECKLIST_DISPLAY_MODE, checklist_has_boolean_field
 from app.llm.client import LLMClient
 from app.llm.plan_flow import PlanError, generate_with_repair, parse_json_plan
 from app.models.category import Category
@@ -16,8 +16,6 @@ from app.schemas.onboarding import (
 
 # Valid field-type strings, straight from the domain enum.
 VALID_FIELD_TYPES: frozenset[str] = frozenset(ft.value for ft in FieldType)
-
-CHECKLIST_DISPLAY_MODE = "checklist"
 
 ONBOARDING_SYSTEM_PROMPT = """\
 You design a habit-tracker structure from a free-text description.

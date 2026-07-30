@@ -1,13 +1,19 @@
-# [review:need-review] PHASE-01/74-daily-summary-journal
-# summary: day-text orchestration — id-bearing category catalogue, prompt (metrics + the day's Markdown journal), semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
+# [review:need-review] PHASE-01/75-daily-summary-checklist
+# summary: day-text orchestration — id-bearing catalogues for metrics and checklist boxes, prompt (metrics + ticks + the day's Markdown journal), semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
 from __future__ import annotations
 
 from datetime import date
 
-from app.crud.daily_summary import NUMERIC_FIELD_TYPES, validate_metric_ops
+from app.crud.category import CHECKLIST_DISPLAY_MODE
+from app.crud.daily_summary import (
+    NUMERIC_FIELD_TYPES,
+    validate_check_ops,
+    validate_metric_ops,
+)
 from app.llm.client import LLMClient
 from app.llm.plan_flow import PlanError, generate_with_repair, parse_json_plan
 from app.models.category import Category
+from app.models.field import FieldType
 from app.schemas.daily_summary import DailySummaryPlan
 
 DAILY_SUMMARY_SYSTEM_PROMPT = """\
@@ -24,6 +30,15 @@ You emit ONLY a JSON object, no prose, no markdown fences, of the shape:
       "source_text": "<the words this number was read from>",
       "uncertain": false,
       "implausible": false
+    }
+  ],
+  "checklist": [
+    {
+      "op": "check",
+      "category_id": <id from the checklist catalogue>,
+      "field_id": <id of a box of THAT category>,
+      "source_text": "<the words this tick was read from>",
+      "uncertain": false
     }
   ],
   "unresolved": [
@@ -55,6 +70,12 @@ Rules:
   wrong for what it measures.
 - Anything numeric that fits no category goes to `unresolved` with the original
   wording. Never invent a category or a field for it — you cannot create either.
+- A `checklist` entry ticks one box for the day. Use it only for boxes from the
+  checklist catalogue below, and only when the retelling says the thing was
+  done. A box is ticked, never unticked: there is no field for `false` and no
+  other way to say it, because the user may have ticked a box by hand this
+  morning and simply not mentioned it. Not saying something is not saying no.
+- Set `uncertain` to true on a tick you are not confident the retelling meant.
 - Only recording values exists. There is no way to delete, rename or retype
   anything, so do not try.
 - `journal` is the same day written out as Markdown prose for the user to read
@@ -95,6 +116,30 @@ def build_catalog(categories: list[Category]) -> str:
     return "\n".join(lines) if lines else "(no categories with numeric fields yet)"
 
 
+def build_checklist_catalog(categories: list[Category]) -> str:
+    """
+    The boxes the model may tick, each with the ids it must answer with.
+
+    Kept apart from `build_catalog` rather than merged into it, because the two
+    are different offers: a numeric field asks "how much", a box asks "did you".
+    Only boolean fields of `display_mode='checklist'` categories appear — the
+    same pair the apply validates, so anything listed here can actually be
+    written and anything writable is listed.
+    """
+    lines: list[str] = []
+    for category in categories:
+        if category.display_mode != CHECKLIST_DISPLAY_MODE:
+            continue
+        boxes = [f for f in category.fields if f.field_type is FieldType.BOOLEAN]
+        if not boxes:
+            continue
+        fields = ", ".join(f"field_id={f.id} name={f.name!r}" for f in boxes)
+        lines.append(
+            f"- category_id={category.id} name={category.name!r} boxes=[{fields}]"
+        )
+    return "\n".join(lines) if lines else "(no checklist categories yet)"
+
+
 def build_prompt(transcript: str, categories: list[Category], entry_date: date) -> str:
     """
     Assemble the day-parsing prompt from the transcript, the catalogue and the date.
@@ -107,6 +152,7 @@ def build_prompt(transcript: str, categories: list[Category], entry_date: date) 
     return (
         f"{DAILY_SUMMARY_SYSTEM_PROMPT}\n\n"
         f"## Categories you may write into\n{build_catalog(categories)}\n\n"
+        f"## Checklist boxes you may tick\n{build_checklist_catalog(categories)}\n\n"
         f"## The date this day is filed under\n{entry_date.isoformat()}\n\n"
         f"## The day\n{transcript}"
     )
@@ -119,7 +165,9 @@ def parse_plan(text: str) -> DailySummaryPlan:
 
 def validate_plan(plan: DailySummaryPlan, categories: list[Category]) -> None:
     """Semantic check on top of the Pydantic form check; raises with every problem."""
-    errors = validate_metric_ops(plan.metrics, categories)
+    errors = validate_metric_ops(plan.metrics, categories) + validate_check_ops(
+        plan.checklist, categories
+    )
     if errors:
         raise DailySummaryPlanError("; ".join(errors))
 

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/74-daily-summary-journal
-# summary: write-only day-plan DTOs — numeric metrics resolved by id, the day's journal text with its append/create collision mode (JournalOp for apply, JournalOpPreview for draft), draft/apply requests
+# [review:need-review] PHASE-01/75-daily-summary-checklist
+# summary: write-only day-plan DTOs — numeric metrics resolved by id, tick-only checklist ops (no value field, so an untick is unrepresentable), the day's journal text with its append/create collision mode, draft/apply requests
 from __future__ import annotations
 
 from datetime import date
@@ -32,6 +32,31 @@ class LogMetricOp(BaseModel):
     uncertain: bool = False
     # Set by the model when the value itself looks wrong (300 push-ups).
     implausible: bool = False
+
+
+class CheckOp(BaseModel):
+    """
+    One checklist box the day-plan proposes to tick.
+
+    There is no `value` here, and that absence is the feature. `PUT
+    /entries/checklist` takes the day's full map, so a plan able to say `false`
+    would let a retelling that never mentioned the vitamins untick the box the
+    user ticked at breakfast. Silence in a retelling means "не сказал", never
+    "не сделал" — and the difference cannot be left to a prompt, which any
+    model is free to answer past. Here it is a property of the shape: the word
+    for unticking does not exist, so it cannot be said.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["check"] = "check"
+    category_id: int
+    field_id: int
+    # The wording this tick was read from, shown next to the checkbox.
+    source_text: str = Field(..., min_length=1)
+    # Set by the model when it is not confident the retelling meant this box;
+    # the UI brings such a row in unchecked, as it does for a metric.
+    uncertain: bool = False
 
 
 class UnresolvedMetric(BaseModel):
@@ -109,13 +134,15 @@ class DailySummaryPlan(BaseModel):
     The schema is write-only by construction: there is no operation for
     deleting, renaming or retyping anything, so the plan cannot instruct a
     destructive change however the prompt is answered. Metrics the model could
-    not place land in `unresolved` and create nothing. The journal text is the
-    one free-form thing here, and it too can only be added.
+    not place land in `unresolved` and create nothing. Checklist boxes can only
+    go up (see `CheckOp`). The journal text is the one free-form thing here,
+    and it too can only be added.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     metrics: list[LogMetricOp] = Field(default_factory=list)
+    checklist: list[CheckOp] = Field(default_factory=list)
     unresolved: list[UnresolvedMetric] = Field(default_factory=list)
     journal: JournalDraft | None = None
 
@@ -130,6 +157,7 @@ class DailySummaryDraftResponse(BaseModel):
     """
 
     metrics: list[LogMetricOp] = Field(default_factory=list)
+    checklist: list[CheckOp] = Field(default_factory=list)
     unresolved: list[UnresolvedMetric] = Field(default_factory=list)
     journal: JournalOpPreview | None = None
 
@@ -153,18 +181,22 @@ class DailySummaryApplyRequest(BaseModel):
 
     entry_date: date
     metrics: list[LogMetricOp] = Field(default_factory=list)
+    checklist: list[CheckOp] = Field(default_factory=list)
     journal: JournalOp | None = None
 
     @model_validator(mode="after")
     def _must_write_something(self) -> DailySummaryApplyRequest:
         """An apply that writes nothing is a mistake on the client, not a no-op.
 
-        Either half may be empty on its own — a day of numbers without a text, a
-        text without a number both happen — but an empty request means the
-        screen let a dead button through, and answering 201 would hide it.
+        Any one part may be empty on its own — a day of numbers without a text,
+        a text without a number, a day that was nothing but two ticked boxes all
+        happen — but a request with none of the three means the screen let a
+        dead button through, and answering 201 would hide it.
         """
-        if not self.metrics and self.journal is None:
-            raise ValueError("apply needs at least one metric or a journal operation")
+        if not self.metrics and not self.checklist and self.journal is None:
+            raise ValueError(
+                "apply needs at least one metric, checklist mark or journal operation"
+            )
         return self
 
 

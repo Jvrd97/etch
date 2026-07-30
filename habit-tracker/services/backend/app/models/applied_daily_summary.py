@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/74-daily-summary-journal
-# summary: applied_daily_summaries — one row per successfully applied day, keyed by Idempotency-Key, carrying the response the original apply returned
+# [review:need-review] PHASE-01/75-daily-summary-checklist
+# summary: applied_daily_summaries — one row per successfully applied day, keyed by Idempotency-Key, carrying the response the original apply returned plus the (category_id, field_id) metric pairs it actually wrote
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -30,6 +30,15 @@ class AppliedDailySummary(Base):
     be deleted later through the journal API, and that must not erase the fact
     that the day was applied — it would make the key reusable and let the
     retelling be written a second time.
+
+    `metric_pairs` is the same kind of statement for the metrics: the exact
+    `(category_id, field_id)` pairs this key wrote. It cannot be recomputed from
+    the entries, because an apply may reuse a checklist category's existing
+    entry for the day, and that entry holds values written by hand or by an
+    earlier apply just as happily as the ones this key put there. Without the
+    stored list, a replay carrying a *new* metric into a field somebody had
+    already filled would look like an exact repeat and answer 200 while writing
+    nothing.
     """
 
     __tablename__ = "applied_daily_summaries"
@@ -46,6 +55,12 @@ class AppliedDailySummary(Base):
     # The ids the original apply returned, in the order it returned them.
     entry_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     journal_entry_id: Mapped[int | None] = mapped_column(Integer)
+
+    # The metrics this key wrote, as `[[category_id, field_id], ...]`. JSON has
+    # no tuples, so the pairs come back as two-element lists.
+    metric_pairs: Mapped[list[list[int]]] = mapped_column(
+        JSON, default=list, server_default="[]"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

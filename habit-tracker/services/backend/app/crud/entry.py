@@ -1,12 +1,22 @@
-# [review:need-review] PHASE-01/39-server-idempotency-key-entries
-# summary: create_entry persists optional idempotency_key + get_entry_by_idempotency_key lookup
+# [review:need-review] PHASE-01/75-daily-summary-checklist
+# summary: entry CRUD — idempotency-key lookup, plus the checklist trio: checklist_entry_id (the one rule for "the day's entry"), get_checklist_state reading that entry's ticks and the transaction-free upsert_checklist_values the day-summary apply reuses
 from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
-from app.models import Entry, EntryValue
+from app.crud.values import is_true_value
+from app.models import Entry, EntryValue, Field, FieldType
 from app.schemas import EntryCreate, EntryUpdate
+
+# How this module *writes* a box into `entry_values.value`, which is text for
+# every field type. Reading is not the mirror of it: `POST /entries` stores the
+# string it is handed, so a box may already say "1" or "yes". What counts as
+# ticked is `app.crud.values.is_true_value`, the one rule streaks and the table
+# have always used — comparing against CHECKED_VALUE here would make those
+# spellings read as empty and let a merge write "false" over a real tick.
+CHECKED_VALUE = "true"
+UNCHECKED_VALUE = "false"
 
 
 async def get_entry(db: AsyncSession, entry_id: int) -> Entry | None:
@@ -158,39 +168,114 @@ async def delete_entry(db: AsyncSession, entry_id: int) -> bool:
     return True
 
 
-async def upsert_checklist_entry(
+async def checklist_entry_id(
+    db: AsyncSession, category_id: int, entry_date: date
+) -> int | None:
+    """
+    id канонической записи `(category_id, entry_date)` или None, если её нет.
+
+    Одна запись на категорию за дату — это инвариант, а не ограничение БД:
+    строки за ту же дату могли появиться до его введения или из формы. Правило
+    «какая из них и есть день» живёт здесь одно на всех — читатель галок,
+    писатель галок и запись метрик в checklist-категорию обязаны выбирать одну
+    и ту же строку, иначе галка, поставленная в одну, читалась бы из другой.
+    Сортировка по id не оптимизация: без неё выбор был бы произвольным и два
+    вызова подряд могли бы разойтись.
+    """
+    result = await db.execute(
+        select(Entry.id)
+        .where(and_(Entry.category_id == category_id, Entry.entry_date == entry_date))
+        .order_by(Entry.id)
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def get_checklist_state(
+    db: AsyncSession, category_id: int, entry_date: date
+) -> dict[int, bool]:
+    """
+    Состояние галок категории за дату: `{field_id: checked}`, пустое — если записи нет.
+
+    Читается ровно та запись, в которую пишет `upsert_checklist_values`
+    (`checklist_entry_id`), а не все записи за дату. Посторонняя строка за ту
+    же дату — из формы или доставшаяся от времён без инварианта — содержит своё
+    значение того же поля, и объединение по дате давало результат, зависящий от
+    порядка строк в выдаче: галка, стоящая в записи дня, могла прочитаться как
+    снятая.
+
+    Возвращаются только boolean-поля, даже если у категории есть и другие.
+    Карта из этого чтения уходит обратно в `upsert_checklist_values`, который
+    пишет каждое значение как "true"/"false"; попади сюда числовое поле, разбор
+    дня переписал бы 30 отжиманий в "false".
+    """
+    entry_id = await checklist_entry_id(db, category_id, entry_date)
+    if entry_id is None:
+        return {}
+
+    result = await db.execute(
+        select(EntryValue.field_id, EntryValue.value)
+        .join(Field, EntryValue.field_id == Field.id)
+        .where(
+            and_(
+                EntryValue.entry_id == entry_id,
+                Field.field_type == FieldType.BOOLEAN,
+            )
+        )
+    )
+    return {field_id: is_true_value(value) for field_id, value in result.all()}
+
+
+async def upsert_checklist_values(
     db: AsyncSession, category_id: int, entry_date: date, values: dict[int, bool]
 ) -> Entry:
     """
-    Идемпотентный upsert записи checklist-категории.
+    Записать карту галок за дату, не закрывая транзакцию.
 
     Гарантирует одну запись на (category_id, entry_date): существующая
-    запись переиспользуется, boolean-значения обновляются на месте
-    (без дублей EntryValue при повторных вызовах).
-    """
-    result = await db.execute(
-        select(Entry)
-        .options(selectinload(Entry.values))
-        .where(and_(Entry.category_id == category_id, Entry.entry_date == entry_date))
-    )
-    db_entry = result.scalars().first()
+    запись (`checklist_entry_id` — тот же выбор, что делает чтение)
+    переиспользуется, boolean-значения обновляются на месте (без дублей
+    EntryValue при повторных вызовах).
 
-    if db_entry is None:
+    Коммита здесь нет намеренно: разбор дня применяет галки в одной транзакции
+    с метриками и текстом дня, и промежуточный коммит сделал бы частично
+    применённый день достижимым состоянием. Транзакцией владеет вызывающий —
+    `upsert_checklist_entry` для ручки `PUT /entries/checklist`, apply разбора
+    дня для всего остального.
+    """
+    entry_id = await checklist_entry_id(db, category_id, entry_date)
+
+    if entry_id is None:
         db_entry = Entry(category_id=category_id, entry_date=entry_date)
         db.add(db_entry)
         await db.flush()
         existing_values: dict[int, EntryValue] = {}
     else:
+        result = await db.execute(
+            select(Entry)
+            .options(selectinload(Entry.values))
+            .where(Entry.id == entry_id)
+        )
+        db_entry = result.scalars().one()
         existing_values = {v.field_id: v for v in db_entry.values}
 
     for field_id, checked in values.items():
-        str_value = "true" if checked else "false"
+        str_value = CHECKED_VALUE if checked else UNCHECKED_VALUE
         existing = existing_values.get(field_id)
         if existing is not None:
             existing.value = str_value
         else:
             db.add(EntryValue(entry_id=db_entry.id, field_id=field_id, value=str_value))
 
+    await db.flush()
+    return db_entry
+
+
+async def upsert_checklist_entry(
+    db: AsyncSession, category_id: int, entry_date: date, values: dict[int, bool]
+) -> Entry:
+    """Идемпотентный upsert записи checklist-категории с коммитом."""
+    db_entry = await upsert_checklist_values(db, category_id, entry_date, values)
     await db.commit()
 
     result = await db.execute(

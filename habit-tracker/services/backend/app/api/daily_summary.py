@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/74-daily-summary-journal
-# summary: POST /daily-summary/draft (text -> validated metric plan + journal op with its append/create mode) and /apply (one transaction, Idempotency-Key aware via applied_daily_summaries; 409 on a key reused with a new metric, a new journal or another date, including on the loser of a race)
+# [review:need-review] PHASE-01/75-daily-summary-checklist
+# summary: POST /daily-summary/draft (text -> validated metric plan + checklist ticks + journal op with its append/create mode) and /apply (one transaction, Idempotency-Key aware via applied_daily_summaries; 422 on a tick that is not a checklist box, 409 on a key reused with a new metric, a new journal or another date)
 import logging
 from datetime import date
 
@@ -108,6 +108,7 @@ async def draft_plan(
 
     return DailySummaryDraftResponse(
         metrics=plan.metrics,
+        checklist=plan.checklist,
         unresolved=plan.unresolved,
         journal=await _resolve_journal_op(db, plan, payload.entry_date),
     )
@@ -117,6 +118,29 @@ async def draft_plan(
     "/apply",
     response_model=DailySummaryApplyResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: {"description": "Повтор с тем же Idempotency-Key: ничего не записано"},
+        400: {
+            "description": (
+                "Метрика неприменима: нет такой категории, поле чужое или "
+                "нечисловое. 400, а не 422, потому что это единственная ручка, "
+                "которая пишет метрики планом — своего прототипа у неё нет"
+            )
+        },
+        409: {
+            "description": (
+                "Idempotency-Key уже применён к другой дате или к дню без "
+                "этой метрики, галки или журнала"
+            )
+        },
+        422: {
+            "description": (
+                "Галка неприменима: категория не checklist, поле чужое или не "
+                "boolean. 422 повторяет PUT /entries/checklist — та же ошибка, "
+                "пришедшая через план, не становится другой ошибкой"
+            )
+        },
+    },
 )
 async def apply_plan(
     payload: DailySummaryApplyRequest,
@@ -142,13 +166,24 @@ async def apply_plan(
 
     Повтор с тем же ключом, но с чем-то сверх записанного — не повтор:
     пользователь отметил ещё одну галочку, включил журнал или перешёл на
-    следующую дату. Добавленная метрика, журнал там, где исходное применение
-    его не писало, и другая дата дают 409, иначе добавленное молча пропало бы
-    навсегда — тем же ключом его уже не записать.
+    следующую дату. Добавленная метрика, галка, которой за эту дату не стоит,
+    журнал там, где исходное применение его не писало, и другая дата дают 409,
+    иначе добавленное молча пропало бы навсегда — тем же ключом его уже не
+    записать.
 
     Ids проверяются заново, а не принимаются на веру: план приходит с клиента, и
     между предпросмотром и применением категория могла измениться. Несуществующая
     категория, чужое поле или нечисловой тип -> 400 с текстом из одних id.
+
+    Почему у метрики 400, а у галки 422 — это не разнобой, а совместимость.
+    Галку умеет ставить не только эта ручка: `PUT /entries/checklist`
+    существует раньше и на не-checklist категорию, чужое или не-boolean поле
+    отвечает 422. Та же самая ошибка, пришедшая через план дня, не становится
+    другой ошибкой, и клиент, который уже умеет разбирать 422 от checklist-ручки,
+    не должен учить второй код для того же случая. У метрик прототипа нет:
+    `POST /entries` пишет запись целиком, а не операцию плана, поэтому семантика
+    отказа выбрана здесь — 400 «клиент прислал план, который нельзя применить».
+    Оба кода одинаково откатывают весь apply; различается только номер.
 
     Откат при сбое делает сам `apply_daily_summary` — в отличие от
     `app/api/entries.py`, где `rollback()` живёт в роутере. Второй здесь не

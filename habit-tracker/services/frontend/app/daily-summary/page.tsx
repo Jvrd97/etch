@@ -1,20 +1,22 @@
 'use client';
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: desktop day-summary screen — markup only; the text/date/plan/journal/apply flow lives in useDailySummary, which /m/daily-summary renders with its own layout
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: desktop day-summary screen — markup only; the text/date/plan/checklist/journal/apply flow lives in useDailySummary, which /m/daily-summary renders with its own layout
 
 import { useRouter } from 'next/navigation';
-import { HelpCircle, Sparkles } from 'lucide-react';
+import { CheckSquare, HelpCircle, Sparkles } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import {
+  CHECKLIST_TITLE,
   JOURNAL_REPLACE_LABEL,
   UNRESOLVED_TITLE,
+  checkCheckboxLabel,
   journalCheckboxLabel,
   metricCheckboxLabel,
   useDailySummary,
   type MetricLabel,
 } from '@/hooks/useDailySummary';
-import type { JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
+import type { CheckOp, JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
 
 function MetricRow({
   metric,
@@ -54,6 +56,71 @@ function MetricRow({
           )}
         </div>
       </label>
+    </div>
+  );
+}
+
+interface ChecklistSectionProps {
+  items: CheckOp[];
+  states: { enabled: boolean }[];
+  labels: MetricLabel[];
+  onToggle: (index: number, enabled: boolean) => void;
+}
+
+/**
+ * The boxes the retelling would tick, as their own section.
+ *
+ * Kept apart from the metric rows because the promise is different: a metric
+ * writes a new number, a tick lands on the same day-map the Today screen edits
+ * by hand. The category name is on every row for that reason — "B12" alone
+ * does not say which checklist is about to change.
+ *
+ * Nothing here can untick anything: the plan has no way to say it, so the
+ * section is a list of additions and reads as one.
+ */
+function ChecklistSection({
+  items,
+  states,
+  labels,
+  onToggle,
+}: ChecklistSectionProps) {
+  if (items.length === 0) return null;
+  return (
+    <div className="bg-card border border-white/5 rounded-3xl px-6 py-5">
+      <p className="flex items-center gap-2 text-sm font-semibold text-text-secondary">
+        <CheckSquare className="w-4 h-4" strokeWidth={2} />
+        {CHECKLIST_TITLE}
+      </p>
+      <ul aria-label={CHECKLIST_TITLE} className="mt-3 space-y-3">
+        {items.map((check, i) => (
+          // Index-keyed: a plan op has no id, and the whole list is replaced by
+          // the next draft rather than reordered.
+          <li key={i}>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={states[i]?.enabled ?? false}
+                onChange={(e) => onToggle(i, e.target.checked)}
+                aria-label={checkCheckboxLabel(check)}
+                className="mt-1.5 h-4 w-4 accent-lime shrink-0"
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-base font-semibold text-text-primary break-words">
+                  {check.source_text}
+                </p>
+                <p className="text-[13px] text-text-disabled mt-1">
+                  {labels[i].categoryName} · {labels[i].fieldName}
+                </p>
+                {check.uncertain && (
+                  <p className="text-[13px] text-danger mt-1">
+                    модель не уверена, что речь про эту галочку
+                  </p>
+                )}
+              </div>
+            </label>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -221,6 +288,7 @@ export default function DailySummaryPage() {
       {day.draft.status === 'done' && (
         <div className="space-y-5">
           {day.draft.plan.metrics.length === 0 &&
+          day.checklist.length === 0 &&
           day.unresolved.length === 0 &&
           day.journal === null ? (
             <p className="text-text-secondary">
@@ -241,6 +309,13 @@ export default function DailySummaryPage() {
                 />
               ))}
 
+              <ChecklistSection
+                items={day.checklist}
+                states={day.checkStates}
+                labels={day.checklist.map(day.resolveLabel)}
+                onToggle={day.toggleCheck}
+              />
+
               {day.journal !== null && (
                 <JournalSection
                   journal={day.journal}
@@ -258,7 +333,9 @@ export default function DailySummaryPage() {
                 <ErrorAlert message={day.applyState.message} />
               )}
 
-              {(day.draft.plan.metrics.length > 0 || day.journal !== null) && (
+              {(day.draft.plan.metrics.length > 0 ||
+                day.checklist.length > 0 ||
+                day.journal !== null) && (
                 <button
                   type="button"
                   onClick={() => void day.apply()}

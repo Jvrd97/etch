@@ -785,3 +785,21 @@ Feedback loops: `bun test` 452/452 green, `bunx tsc --noEmit` clean, `bun run li
 **Файлы (mod)**: `hooks/useDailySummary.ts` (журнальная операция, `journalEnabled`/`journalReplace`/`canReplaceJournal`/`canApply`, ключ на план) и его тест; `lib/api.ts` (типы `JournalMode`/`JournalOp`, `apply` шлёт журнал и заголовок `Idempotency-Key`); `app/daily-summary/page.tsx` и `app/m/daily-summary/page.tsx` (секция/карточка текста дня) и их тесты.
 
 Feedback loops: `bun test` 474/474 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems.
+
+## PHASE-01/75 — отметки чек-листа в предпросмотре дня
+
+Дата 2026-07-30. В плане появились отметки чек-листов, и на обоих экранах они живут своей секцией — не среди метрик. Обещание разное: метрика пишет новое число, галка ложится на ту же карту дня, которую руками правит Today. Поэтому на каждой строке стоит название категории: «B12» само по себе не говорит, какой чек-лист сейчас изменится.
+
+Снять галку из предпросмотра нельзя, и это не запрет в UI, а форма данных: у `CheckOp` нет поля значения, отправляется только список того, что ставим. Пустой список — «не упомянуто», единственное прочтение, которое ничего не снимает. Слияние с текущим состоянием дня делает бэкенд внутри транзакции: клиент состояние не знает и знать не должен, иначе гонка между открытым предпросмотром и щелчком на Today стирала бы отметку.
+
+Уверенная отметка приходит включённой, помеченная моделью как сомнительная — выключенной, как и у метрик. `enabledCount` считает метрики и галки одним числом: пользователь читает «Записать выбранное (2)» и не различает, что из этого число, а что галка.
+
+**Файлы (mod)**: `lib/api.ts` (тип `CheckOp`, необязательный `checklist` в плане, `checklist` третьим аргументом `apply`); `hooks/useDailySummary.ts` (`checklist`/`checkStates`/`toggleCheck`, `checkCheckboxLabel`, `CHECKLIST_TITLE`, `resolveLabel` по паре id) и его тест; `app/daily-summary/page.tsx`, `app/m/daily-summary/page.tsx` и их тесты.
+
+Feedback loops: `bun test` 494/494 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems.
+
+### Раунд 3 (правки по ревью)
+
+- `lib/api.ts` — **mod**: комментарий про необязательные `checklist?`/`journal?` в `DailySummaryPlan` теперь ссылается на заведённый тикет — `issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md` (#83). TODO без issue reference нарушал CLAUDE.md §3; сам `?` снимается после выкатки, в которой бэкенд и фронтенд уходят вместе.
+
+Feedback loops раунда 3: `bun test` 494/494 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems.

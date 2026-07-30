@@ -460,3 +460,76 @@ Feedback loops: pytest 229/229 green, `ruff check` clean, `ruff format --check` 
 **Вторая линия обороны на фронте.** `frontend/hooks/useDailySummary.ts` — **mod**: `setEntryDate` при смене даты выпускает новый `applyKey` — смена дня это новая попытка. Проверка на бэкенде обязательна и остаётся: ключ приходит с клиента, а клиент может быть любым. `hooks/useDailySummary.test.ts` — **mod**: смена даты меняет ключ и дату в вызове apply.
 
 Feedback loops: pytest 234/234 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (51 файл); frontend — `tsc --noEmit` clean, `eslint` clean, `bun test` 475/475 green.
+
+## 2026-07-30 — PHASE-01/75: разбор дня ставит галки в чек-листах
+
+Третий срез фичи. Пересказ дня теперь может отметить пункт чек-листа — витамины, привычки, что угодно boolean. Опасность среза не в объёме, а в том, что `PUT /entries/checklist` принимает **полную карту** `{field_id: bool}`: план, которому дали её заполнять, снял бы утреннюю галку за то, что про витамины не было сказано ни слова. Молчание — «не сказал», а не «не сделал».
+
+**Снять галку невозможно, и это свойство схемы, а не промпта.** `app/schemas/daily_summary.py` — **mod**: `CheckOp` без поля `value` вообще, `extra="forbid"`. Значения `false` в плане не существует как слова, поэтому его нельзя сказать ни при какой формулировке промпта. `checklist: list[CheckOp]` добавлен в `DailySummaryPlan`, `DailySummaryDraftResponse` и `DailySummaryApplyRequest`; `_must_write_something` теперь считает пустым запрос без всех трёх частей — день из одних галок применяется наравне с остальными.
+
+**Слияние на сервере, чистой функцией.** `app/crud/daily_summary.py` — **mod**: `merge_checklist_marks(current, marked_field_ids)` берёт текущее состояние дня за базу и умеет только поднимать значения — результат отличается от `current` в одну сторону. Тестируется отдельно, потому что именно здесь была бы потеря данных. `validate_check_ops` / `_validate_one_check` повторяют три проверки ручки чек-листа в том же порядке (категория существует, её `display_mode` — `checklist`, поле её собственное и boolean), сообщения из одних id. `_checks_by_category` группирует отметки по категории: две галки одной категории обязаны встретиться в одной карте до записи, иначе вторая запись строилась бы на состоянии, прочитанном до первой.
+
+**Одна транзакция на весь день.** `app/crud/entry.py` — **mod**: `upsert_checklist_entry` разделён на `upsert_checklist_values` (без коммита, транзакцией владеет вызывающий) и тонкую обёртку с коммитом для ручки. Добавлен `get_checklist_state` — состояние галок за дату, **только boolean-поля**: карта из этого чтения уходит обратно в запись как "true"/"false", и попади в неё числовое поле, разбор дня переписал бы 30 отжиманий в "false". Текущее состояние читает бэкенд внутри транзакции, а не клиент: предпросмотр мог висеть открытым час, пока галку ставили руками на Today.
+
+**Отказ — 422, как у ручки.** Небулево поле или поле не-checklist категории отвергается 422 (а не 400, как метрики): ровно этим статусом `PUT /entries/checklist` уже отвечает на ту же ошибку, и через разбор дня она не становится другой ошибкой.
+
+Тронутые файлы:
+
+- `app/schemas/daily_summary.py` — **mod**: `CheckOp`, `checklist` в трёх DTO, обновлённый `_must_write_something`.
+- `app/crud/daily_summary.py` — **mod**: `validate_check_ops`, `merge_checklist_marks`, `_checks_by_category`, применение отметок внутри общей транзакции, дедуп `entry_ids`.
+- `app/crud/entry.py` — **mod**: `get_checklist_state`, `upsert_checklist_values` (без коммита), константы `CHECKED_VALUE`/`UNCHECKED_VALUE`.
+- `app/llm/daily_summary.py` — **mod**: `build_checklist_catalog` (отдельный каталог: числовое поле спрашивает «сколько», галка — «делал ли»), блок `checklist` в схеме ответа промпта, правило «галку только ставят», валидация плана через `validate_check_ops`.
+- `app/api/daily_summary.py` — **mod**: `checklist` прокинут в draft-ответ.
+- `tests/test_daily_summary_checklist.py` — **new**: схема (галку нельзя снять, `value` в `CheckOp` нет), валидация, чистое слияние, API (упомянутое ставится, отмеченное руками переживает пересказ без него, план без чек-листа не трогает день, 422, откат отметок при отвергнутой метрике, повтор по ключу ничего не переписывает).
+
+Frontend:
+
+- `lib/api.ts` — **mod**: тип `CheckOp`, необязательный `checklist` в `DailySummaryPlan` (фронт впереди бэкенда читает старый draft как «галок нет»), `apply()` принимает `checklist` третьим аргументом.
+- `hooks/useDailySummary.ts` — **mod**: `checklist`/`checkStates`/`toggleCheck`, `checkCheckboxLabel`, `CHECKLIST_TITLE`; `enabledCount` считает метрики и галки вместе; `resolveLabel` принимает `OpTarget` (пара id), а не только метрику.
+- `app/daily-summary/page.tsx`, `app/m/daily-summary/page.tsx` — **mod**: секция отметок с чекбоксами и названием категории на каждой строке — «B12» само по себе не говорит, какой чек-лист меняется.
+- `hooks/useDailySummary.test.ts`, `app/daily-summary/page.test.tsx`, `app/m/daily-summary/page.test.tsx` — **mod**: покрытие секции + сдвиг позиционных аргументов `apply` в существующих проверках.
+
+Feedback loops: pytest 260/260 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (51 файл); frontend — `tsc --noEmit` clean, `eslint` clean, `bun test` 494/494 green.
+
+## 2026-07-30 — PHASE-01/75 раунд 3: правки по ревью
+
+Ревью завернуло срез на трёх дублированиях одного правила и одной дыре в гварде идемпотентности. Поведение изменилось в двух местах: чтение галок перестало смешивать записи за дату, а повтор ключа с метрикой в переиспользованную запись теперь 409 вместо 200.
+
+**«Какая запись и есть день» — одно правило на всех.** `app/crud/entry.py` — **mod**: `_checklist_entry_id(db, category_id, entry_date)` — минимальный `id` среди записей за дату. Раньше тот же `order_by(Entry.id).limit(1)` стоял тремя копиями: в `upsert_checklist_values`, в `_entry_for_metrics` и (неявно, через join по дате) в `get_checklist_state`.
+
+- `get_checklist_state` читает `EntryValue` **только** этой записи, а не всех строк за дату. Посторонняя запись той же категории за ту же дату (из формы или доставшаяся от времён до инварианта) содержит своё значение того же поля, и результат чтения зависел от порядка строк в выдаче: галка, стоящая в записи дня, могла прочитаться как снятая — и тут же быть записана обратно как `false`.
+- `upsert_checklist_values` и `app/crud/daily_summary.py::_entry_for_metrics` резолвят запись тем же вызовом.
+- `tests/test_daily_summary_checklist.py` — **mod**: `test_a_stray_entry_cannot_untick_the_day` — галка стоит в записи с меньшим id, посторонняя запись несёт `"false"` того же поля; apply, не упоминающий это поле, обязан оставить галку. Проверено падающим до правки (`assert {b12: False, d3: True} == {b12: True, d3: True}`).
+
+**Квитанция помнит, что записала.** Отступление от «Schema: без изменений» — второе в этой фиче и вынужденное. `_assert_metrics_already_written` выводил «что записал ключ» из содержимого записей, перечисленных в квитанции. Для checklist-категории эта запись переиспользуется, и значение, набранное руками **до** apply, было неотличимо от записанного этим ключом: повтор с новой метрикой в такое поле выглядел точным повтором и отвечал 200, не записав ничего и никогда уже не сумев записать.
+
+- `app/models/applied_daily_summary.py` — **mod**: колонка `metric_pairs` — явный список пар `(category_id, field_id)`, записанных этим ключом. Пересчитать её задним числом нельзя, поэтому она собирается по ходу apply.
+- `alembic/versions/2026_07_30_2200-f6b8c0d2e4a7_applied_daily_summaries_metric_pairs.py` — **new**: обратимая миграция; `upgrade`/`downgrade`/`upgrade` прогнаны на чистой БД. Квитанции старше колонки получают `[]` — повтор такого ключа с метриками отвечает 409. Направление выбрано осознанно: «возьмите новый ключ» дешевле молча потерянной метрики.
+- `app/crud/daily_summary.py` — **mod**: `_assert_metrics_already_written` стал синхронным (к БД ходить незачем) и сверяет повтор с `row.metric_pairs`; докстринг переписан под новый источник доказательств.
+- `tests/test_daily_summary_checklist.py` — **mod**: `test_a_key_reused_with_a_metric_into_a_prefilled_field_is_a_conflict` — число проставлено руками до apply, ключ пишет только галки, повтор с метрикой в это поле обязан дать 409. Проверено падающим до правки (`assert 200 == 409`).
+
+**Продуктовое решение зафиксировано ADR.** `docs/PHASE-01/ADRs/done/ADR-0007-checklist-day-entry-reuse.md` — **new**: почему метрика в checklist-категорию пишется в запись дня, а не в новую (инвариант «одна запись дня» против «каждый apply — новая запись»), и почему из этого следует изменение контракта идемпотентности метрик (#39): переиспользованная запись не является доказательством авторства значения.
+
+**N+1 в гварде галок свёрнут.** `app/crud/daily_summary.py` — **mod**: `_ticked_boxes` — один запрос вместо вызова `get_checklist_state` в цикле по категориям (`Entry.id.in_(<подзапрос min(id) по категориям>)`, фильтр по boolean-типу и `value = 'true'`). Подзапрос выбирает ту же строку, что `_checklist_entry_id`: `min(id)` — это `order_by(id).limit(1)`, сказанное множественно.
+
+**Недостающий откат покрыт.** `tests/test_daily_summary_checklist.py` — **mod**: `test_a_rejected_tick_takes_a_written_metric_back_out` — цикл метрик выполняется раньше `_checks_by_category`, поэтому к моменту отказа по галке числа уже во flush. Обратное направление (отвергнутая метрика откатывает галки) было покрыто, это — нет.
+
+**Докстринг `_validate_one_check` приведён к фактам.** Утверждение «те же три проверки, что делает `PUT /entries/checklist`, в том же порядке» не соответствовало `app/api/entries.py`: ручка проверяет только `display_mode` и отвечает 404 на неизвестную категорию. Теперь в докстринге записано, что общая — одна проверка из трёх, и почему план строже (ids приходят от модели, а не из UI, который умеет предложить только реальные галки) и почему 422 вместо 404.
+
+**Одна константа `CHECKLIST_DISPLAY_MODE`.** `app/api/entries.py`, `app/llm/onboarding.py` — **mod**: свои литералы удалены, обе импортируют объявление из `app/crud/category.py` (как уже делали `app/api/categories.py`, `app/crud/daily_summary.py`, `app/llm/daily_summary.py`).
+
+**TODO без issue reference закрыт.** `frontend/lib/api.ts` — **mod**: комментарий про необязательные `checklist?`/`journal?` в `DailySummaryPlan` ссылается на заведённый `issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md` (#83) — снять `?` после выкатки, в которой бэкенд и фронтенд уходят вместе.
+
+Тронутые файлы:
+
+- `app/crud/entry.py` — **mod**: `_checklist_entry_id`, переписанные `get_checklist_state` и `upsert_checklist_values`.
+- `app/crud/daily_summary.py` — **mod**: `_ticked_boxes`, синхронный `_assert_metrics_already_written` на `metric_pairs`, `_entry_for_metrics` через общий хелпер, сбор `metric_pairs` в apply, докстринг `_validate_one_check`.
+- `app/models/applied_daily_summary.py` — **mod**: колонка `metric_pairs`.
+- `alembic/versions/2026_07_30_2200-f6b8c0d2e4a7_applied_daily_summaries_metric_pairs.py` — **new**.
+- `app/api/entries.py`, `app/llm/onboarding.py` — **mod**: импорт общей константы.
+- `tests/test_daily_summary_checklist.py` — **mod**: три новых теста (посторонняя запись, откат метрики по отвергнутой галке, повтор с метрикой в предзаполненное поле).
+- `docs/PHASE-01/ADRs/done/ADR-0007-checklist-day-entry-reuse.md` — **new**.
+- `issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md` — **new**.
+- `frontend/lib/api.ts` — **mod**: комментарий со ссылкой на #83.
+
+Feedback loops: pytest 263/263 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (51 файл); миграция прогнана `upgrade`/`downgrade`/`upgrade`; frontend — `tsc --noEmit` clean, `eslint` clean, `bun test` 494/494 green.

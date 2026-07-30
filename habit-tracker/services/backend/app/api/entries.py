@@ -9,10 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.crud import category as category_crud
 from app.crud import entry as entry_crud
+from app.crud.category import CHECKLIST_DISPLAY_MODE
 from app.models import Entry
 from app.schemas import ChecklistUpsertRequest, EntryCreate, EntryUpdate, EntryResponse
-
-CHECKLIST_DISPLAY_MODE = "checklist"
 
 router = APIRouter(prefix="/entries", tags=["entries"])
 

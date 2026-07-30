@@ -1,9 +1,15 @@
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: tests for useDailySummary — text/date -> plan -> checkbox edits -> the journal op (append by default, replace opt-in) -> one idempotent apply
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: tests for useDailySummary — text/date -> plan -> checkbox edits (metrics and checklist ticks) -> the journal op (append by default, replace opt-in) -> one idempotent apply
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, DailySummaryPlan, JournalOp, LogMetricOp } from '@/lib/api';
+import type {
+  Category,
+  CheckOp,
+  DailySummaryPlan,
+  JournalOp,
+  LogMetricOp,
+} from '@/lib/api';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -42,6 +48,39 @@ function metric(overrides: Partial<LogMetricOp> = {}): LogMetricOp {
   };
 }
 
+const VITAMINS: Category = {
+  id: 4,
+  name: 'Витамины',
+  display_mode: 'checklist',
+  streak_mode: 'build',
+  is_active: true,
+  created_at: TIMESTAMP,
+  updated_at: TIMESTAMP,
+  fields: [
+    {
+      id: 9,
+      category_id: 4,
+      name: 'B12',
+      field_type: 'boolean',
+      is_required: false,
+      order: 0,
+      created_at: TIMESTAMP,
+      updated_at: TIMESTAMP,
+    },
+  ],
+};
+
+function check(overrides: Partial<CheckOp> = {}): CheckOp {
+  return {
+    op: 'check',
+    category_id: 4,
+    field_id: 9,
+    source_text: 'выпил B12',
+    uncertain: false,
+    ...overrides,
+  };
+}
+
 function journalOp(overrides: Partial<JournalOp> = {}): JournalOp {
   return {
     op: 'write_journal',
@@ -72,9 +111,10 @@ mock.module('@/lib/api', () => ({
     apply: (
       entryDate: string,
       metrics: LogMetricOp[],
+      checklist: CheckOp[],
       journal: JournalOp | null,
       idempotencyKey: string
-    ) => applyPlan(entryDate, metrics, journal, idempotencyKey),
+    ) => applyPlan(entryDate, metrics, checklist, journal, idempotencyKey),
   },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   categoriesAPI: {
@@ -344,7 +384,7 @@ describe('useDailySummary', () => {
       await result.current.apply();
     });
 
-    const sent = applyPlan.mock.calls[0][2] as JournalOp;
+    const sent = applyPlan.mock.calls[0][3] as JournalOp;
     expect(sent.mode).toBe('append');
     expect(sent.existing_entry_id).toBe(7);
   });
@@ -358,7 +398,7 @@ describe('useDailySummary', () => {
       await result.current.apply();
     });
 
-    expect((applyPlan.mock.calls[0][2] as JournalOp).mode).toBe('replace');
+    expect((applyPlan.mock.calls[0][3] as JournalOp).mode).toBe('replace');
   });
 
   it('sends no journal at all once it is unchecked', async () => {
@@ -369,7 +409,7 @@ describe('useDailySummary', () => {
       await result.current.apply();
     });
 
-    expect(applyPlan.mock.calls[0][2]).toBeNull();
+    expect(applyPlan.mock.calls[0][3]).toBeNull();
   });
 
   it('writes the day text even when every metric is left out', async () => {
@@ -414,9 +454,9 @@ describe('useDailySummary', () => {
     await act(async () => {
       await result.current.apply();
     });
-    const firstKey = applyPlan.mock.calls[0][3] as string;
+    const firstKey = applyPlan.mock.calls[0][4] as string;
     expect(firstKey).toBeTruthy();
-    expect(applyPlan.mock.calls[1][3]).toBe(firstKey);
+    expect(applyPlan.mock.calls[1][4]).toBe(firstKey);
 
     await act(async () => {
       await result.current.generate();
@@ -425,7 +465,7 @@ describe('useDailySummary', () => {
       await result.current.apply();
     });
 
-    expect(applyPlan.mock.calls[2][3]).not.toBe(firstKey);
+    expect(applyPlan.mock.calls[2][4]).not.toBe(firstKey);
   });
 
   it('mints a new idempotency key when the date is changed', async () => {
@@ -435,7 +475,7 @@ describe('useDailySummary', () => {
     await act(async () => {
       await result.current.apply();
     });
-    const firstKey = applyPlan.mock.calls[0][3] as string;
+    const firstKey = applyPlan.mock.calls[0][4] as string;
 
     await act(() => {
       result.current.setEntryDate('2026-07-31');
@@ -445,7 +485,7 @@ describe('useDailySummary', () => {
     });
 
     expect(applyPlan.mock.calls[1][0]).toBe('2026-07-31');
-    expect(applyPlan.mock.calls[1][3]).not.toBe(firstKey);
+    expect(applyPlan.mock.calls[1][4]).not.toBe(firstKey);
   });
 
   it('clears a stale apply error when a new plan is generated', async () => {
@@ -462,5 +502,88 @@ describe('useDailySummary', () => {
     });
 
     expect(result.current.applyState).toEqual({ status: 'idle' });
+  });
+});
+
+describe('useDailySummary checklist', () => {
+  it('opts a confident tick in and counts it alongside the metrics', async () => {
+    const { result } = await renderWithPlan({ ...PLAN, checklist: [check()] });
+
+    expect(result.current.checklist).toHaveLength(1);
+    expect(result.current.checkStates[0].enabled).toBe(true);
+    expect(result.current.enabledCount).toBe(2);
+  });
+
+  it('leaves an uncertain tick out', async () => {
+    const { result } = await renderWithPlan({
+      metrics: [],
+      unresolved: [],
+      checklist: [check({ uncertain: true })],
+    });
+
+    expect(result.current.checkStates[0].enabled).toBe(false);
+    expect(result.current.canApply).toBe(false);
+  });
+
+  it('sends only the ticks left checked', async () => {
+    const { result } = await renderWithPlan({
+      metrics: [],
+      unresolved: [],
+      checklist: [check(), check({ field_id: 10, source_text: 'выпил D3' })],
+    });
+
+    act(() => result.current.toggleCheck(1, false));
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    const sent = applyPlan.mock.calls[0][2] as CheckOp[];
+    expect(sent).toHaveLength(1);
+    expect(sent[0].field_id).toBe(9);
+  });
+
+  it('applies a day that is nothing but a tick', async () => {
+    const { result, onApplied } = await renderWithPlan({
+      metrics: [],
+      unresolved: [],
+      checklist: [check()],
+    });
+
+    expect(result.current.canApply).toBe(true);
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    expect(applyPlan).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+  });
+
+  it('sends an empty checklist for a plan that ticks nothing', async () => {
+    const { result } = await renderWithPlan(PLAN);
+
+    await act(async () => {
+      await result.current.apply();
+    });
+
+    // Empty, never a map of falses: an absent box must reach the server as
+    // "not mentioned", which is the only reading that cannot untick anything.
+    expect(applyPlan.mock.calls[0][2]).toEqual([]);
+  });
+
+  it('names the category and box behind a tick', async () => {
+    getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
+    const { result } = await renderWithPlan({ ...PLAN, checklist: [check()] });
+
+    await waitFor(() =>
+      expect(result.current.resolveLabel(check()).categoryName).toBe('Витамины')
+    );
+    expect(result.current.resolveLabel(check()).fieldName).toBe('B12');
+  });
+
+  it('reads a draft without a checklist as no ticks at all', async () => {
+    const { result } = await renderWithPlan(PLAN);
+
+    expect(result.current.checklist).toEqual([]);
+    expect(result.current.checkStates).toEqual([]);
   });
 });

@@ -1,12 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric opt-in, the day's journal text (append by default, replace opt-in) and one idempotent transactional apply
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric and per-checkbox opt-in, the day's journal text (append by default, replace opt-in) and one idempotent transactional apply
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   categoriesAPI,
   dailySummaryAPI,
   type Category,
+  type CheckOp,
   type DailySummaryPlan,
   type JournalOp,
   type LogMetricOp,
@@ -52,8 +53,22 @@ export function metricCheckboxLabel(metric: LogMetricOp): string {
   return `Записать ${metric.source_text}`;
 }
 
+/** Heading and accessible name of the checklist section of the preview. */
+export const CHECKLIST_TITLE = 'Отметки в чек-листах';
+
 /**
- * What a metric's ids mean, in words the user recognises.
+ * Accessible name of a tick's checkbox.
+ *
+ * "Отметить", not "Записать": what happens to a box is not what happens to a
+ * number, and a preview whose rows all promise the same verb hides that a tick
+ * lands on a shared day-map rather than in a new record of its own.
+ */
+export function checkCheckboxLabel(check: CheckOp): string {
+  return `Отметить ${check.source_text}`;
+}
+
+/**
+ * What an op's ids mean, in words the user recognises.
  *
  * The plan resolves by id and only by id (#57), so the ids are the truth and
  * this is a display layer over them: a preview that reads "категория #4 · поле
@@ -79,9 +94,22 @@ function unknownFieldName(id: number): string {
   return `поле #${id}`;
 }
 
-/** Per-metric editable state in the preview: whether it ships. */
-export interface MetricState {
+/**
+ * Per-operation editable state in the preview: whether that op ships.
+ *
+ * Named for what it holds rather than for metrics, because both lists use it
+ * and a tick is not a metric: `MetricState` on `checkStates` read as if a
+ * `CheckOp` were a kind of `LogMetricOp`, which is exactly the confusion this
+ * slice exists to prevent.
+ */
+export interface OpEnabledState {
   enabled: boolean;
+}
+
+/** The pair of ids any plan operation resolves by — all `resolveLabel` needs. */
+export interface OpTarget {
+  category_id: number;
+  field_id: number;
 }
 
 /** Where the plan request stands. The plan itself only exists in `done`. */
@@ -107,10 +135,14 @@ export interface UseDailySummaryResult {
   draft: DraftState;
   applyState: ApplyState;
   /** One entry per metric of the current plan, index-aligned with it. */
-  metricStates: MetricState[];
+  metricStates: OpEnabledState[];
+  /** The boxes the retelling ticks. Never a full map: absence changes nothing. */
+  checklist: CheckOp[];
+  /** One entry per checklist op of the current plan, index-aligned with it. */
+  checkStates: OpEnabledState[];
   /** What the model heard but could not place. Read-only: it creates nothing. */
   unresolved: DailySummaryPlan['unresolved'];
-  /** How many metrics would be written right now. */
+  /** How many operations — metrics and ticks together — would be written now. */
   enabledCount: number;
   /** The day's text as the backend resolved it, or null when there is none. */
   journal: JournalOp | null;
@@ -128,10 +160,12 @@ export interface UseDailySummaryResult {
   canGenerate: boolean;
   /** Ask the LLM for a plan. A blank text is a no-op, not a request. */
   generate: () => Promise<void>;
-  /** The category and field names behind a metric's ids, ids as the fallback. */
-  resolveLabel: (metric: LogMetricOp) => MetricLabel;
+  /** The category and field names behind an op's ids, ids as the fallback. */
+  resolveLabel: (target: OpTarget) => MetricLabel;
   /** Check or uncheck one metric of the preview. */
   toggleMetric: (index: number, enabled: boolean) => void;
+  /** Check or uncheck one checklist tick of the preview. */
+  toggleCheck: (index: number, enabled: boolean) => void;
   /** Write the checked metrics as one transaction, then hand off to `onApplied`. */
   apply: () => Promise<void>;
 }
@@ -155,15 +189,35 @@ export interface UseDailySummaryOptions {
  * undone one entry at a time through Entries, so the doubtful ones have to cost
  * a deliberate click rather than an unnoticed one.
  */
-function initialMetricStates(plan: DailySummaryPlan): MetricState[] {
+function initialMetricStates(plan: DailySummaryPlan): OpEnabledState[] {
   return plan.metrics.map((metric) => ({
     enabled: !metric.uncertain && !metric.implausible,
   }));
 }
 
+/**
+ * The ticks of a plan, tolerating a response that carries none.
+ *
+ * `checklist` is optional on the wire so a frontend deployed ahead of its
+ * backend reads an old draft as "no boxes" rather than crashing on the preview.
+ */
+function planChecklist(plan: DailySummaryPlan): CheckOp[] {
+  return plan.checklist ?? [];
+}
+
+/** Default per tick: a confident one is opted in, a doubtful one costs a click. */
+function initialCheckStates(plan: DailySummaryPlan): OpEnabledState[] {
+  return planChecklist(plan).map((check) => ({ enabled: !check.uncertain }));
+}
+
 /** The apply payload: the metrics left checked, in plan order. */
-function selectedMetrics(plan: DailySummaryPlan, states: MetricState[]): LogMetricOp[] {
+function selectedMetrics(plan: DailySummaryPlan, states: OpEnabledState[]): LogMetricOp[] {
   return plan.metrics.filter((_, i) => states[i]?.enabled);
+}
+
+/** The apply payload: the ticks left checked, in plan order. */
+function selectedChecks(plan: DailySummaryPlan, states: OpEnabledState[]): CheckOp[] {
+  return planChecklist(plan).filter((_, i) => states[i]?.enabled);
 }
 
 /**
@@ -186,7 +240,8 @@ export function useDailySummary({
   const [transcript, setTranscript] = useState('');
   const [entryDate, setEntryDateState] = useState(today ?? todayISO());
   const [draft, setDraft] = useState<DraftState>({ status: 'idle' });
-  const [metricStates, setMetricStates] = useState<MetricState[]>([]);
+  const [metricStates, setMetricStates] = useState<OpEnabledState[]>([]);
+  const [checkStates, setCheckStates] = useState<OpEnabledState[]>([]);
   const [applyState, setApplyState] = useState<ApplyState>({ status: 'idle' });
   const [categories, setCategories] = useState<Category[]>([]);
   const [journalEnabled, setJournalEnabled] = useState(true);
@@ -230,13 +285,13 @@ export function useDailySummary({
   }, [categories]);
 
   const resolveLabel = useCallback(
-    (metric: LogMetricOp): MetricLabel => ({
+    (target: OpTarget): MetricLabel => ({
       categoryName:
-        namesById.categoryNames.get(metric.category_id) ??
-        unknownCategoryName(metric.category_id),
+        namesById.categoryNames.get(target.category_id) ??
+        unknownCategoryName(target.category_id),
       fieldName:
-        namesById.fieldNames.get(`${metric.category_id}:${metric.field_id}`) ??
-        unknownFieldName(metric.field_id),
+        namesById.fieldNames.get(`${target.category_id}:${target.field_id}`) ??
+        unknownFieldName(target.field_id),
     }),
     [namesById]
   );
@@ -251,6 +306,7 @@ export function useDailySummary({
     try {
       const plan = await dailySummaryAPI.draft(text, entryDate);
       setMetricStates(initialMetricStates(plan));
+      setCheckStates(initialCheckStates(plan));
       // A new plan is a new day-writing intent: it must not inherit the key of
       // the previous one, or the server would answer the fresh plan with the
       // stale plan's result. Replacement goes back off with it — it is a choice
@@ -290,6 +346,10 @@ export function useDailySummary({
     setMetricStates((prev) => prev.map((s, i) => (i === index ? { enabled } : s)));
   }, []);
 
+  const toggleCheck = useCallback((index: number, enabled: boolean) => {
+    setCheckStates((prev) => prev.map((s, i) => (i === index ? { enabled } : s)));
+  }, []);
+
   const journal = draft.status === 'done' ? (draft.plan.journal ?? null) : null;
   const canReplaceJournal = journal !== null && journal.existing_entry_id !== null;
 
@@ -307,16 +367,28 @@ export function useDailySummary({
     return journal;
   }, [journal, journalEnabled, journalReplace, canReplaceJournal]);
 
-  const enabledCount = metricStates.filter((s) => s.enabled).length;
+  // One count for both lists: the button says how many things the click writes,
+  // and a user reading "Записать выбранное (2)" does not care that one of them
+  // is a number and the other a tick.
+  const enabledCount =
+    metricStates.filter((s) => s.enabled).length +
+    checkStates.filter((s) => s.enabled).length;
   const canApply = enabledCount > 0 || journalToSend !== null;
 
   const apply = useCallback(async () => {
     if (draft.status !== 'done') return;
     const metrics = selectedMetrics(draft.plan, metricStates);
-    if (metrics.length === 0 && journalToSend === null) return;
+    const checklist = selectedChecks(draft.plan, checkStates);
+    if (metrics.length === 0 && checklist.length === 0 && journalToSend === null) return;
     setApplyState({ status: 'applying' });
     try {
-      await dailySummaryAPI.apply(entryDate, metrics, journalToSend, applyKey);
+      await dailySummaryAPI.apply(
+        entryDate,
+        metrics,
+        checklist,
+        journalToSend,
+        applyKey
+      );
       onApplied();
     } catch (err) {
       // Plan and text both survive: the apply is all-or-nothing server-side, so
@@ -326,7 +398,7 @@ export function useDailySummary({
         message: err instanceof Error ? err.message : APPLY_ERROR,
       });
     }
-  }, [draft, metricStates, entryDate, journalToSend, applyKey, onApplied]);
+  }, [draft, metricStates, checkStates, entryDate, journalToSend, applyKey, onApplied]);
 
   return {
     transcript,
@@ -336,6 +408,8 @@ export function useDailySummary({
     draft,
     applyState,
     metricStates,
+    checklist: draft.status === 'done' ? planChecklist(draft.plan) : [],
+    checkStates,
     unresolved: draft.status === 'done' ? draft.plan.unresolved : [],
     enabledCount,
     journal,
@@ -349,6 +423,7 @@ export function useDailySummary({
     generate,
     resolveLabel,
     toggleMetric,
+    toggleCheck,
     apply,
   };
 }

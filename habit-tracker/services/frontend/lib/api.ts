@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: dailySummaryAPI (draft/apply) + the write-only day-plan types, the journal op with its append/create/replace mode, and the apply's Idempotency-Key
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: dailySummaryAPI (draft/apply) + the write-only day-plan types — metrics, tick-only checklist ops, the journal op with its append/create/replace mode, and the apply's Idempotency-Key
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -210,13 +210,14 @@ export const dailySummaryAPI = {
   apply: async (
     entryDate: string,
     metrics: LogMetricOp[],
+    checklist: CheckOp[],
     journal: JournalOp | null,
     idempotencyKey: string
   ) => {
     return fetcher<DailySummaryApplyResponse>('/daily-summary/apply', {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify({ entry_date: entryDate, metrics, journal }),
+      body: JSON.stringify({ entry_date: entryDate, metrics, checklist, journal }),
     });
   },
 };
@@ -460,6 +461,24 @@ export interface LogMetricOp {
   implausible: boolean;
 }
 
+/**
+ * One checklist box the plan proposes to tick.
+ *
+ * There is no value here, and that absence is the whole safety of the feature:
+ * the checklist endpoint takes the day's full map, so a plan able to say
+ * `false` would untick every box the retelling failed to mention. Silence is
+ * "не сказал", never "не сделал" — so the word for unticking does not exist.
+ */
+export interface CheckOp {
+  op: 'check';
+  category_id: number;
+  field_id: number;
+  /** The wording the tick was read from, shown next to its checkbox. */
+  source_text: string;
+  /** The model was not confident the retelling meant this box — arrives unchecked. */
+  uncertain: boolean;
+}
+
 /** Something numeric the model heard but could not place. Creates nothing. */
 export interface UnresolvedMetric {
   text: string;
@@ -487,8 +506,26 @@ export interface JournalOp {
   existing_entry_id: number | null;
 }
 
+/**
+ * The draft the backend produces from a retelling.
+ *
+ * `metrics` and `unresolved` are required because `POST /daily-summary/draft`
+ * has always sent them: a response without either is a broken backend, not an
+ * older one, and typing them optional would push a `?? []` into every reader
+ * for a case that cannot happen.
+ *
+ * `checklist` and `journal` are optional only as deployment slack — each was
+ * added by a later slice (#75 and #74), and a frontend that ships ahead of the
+ * backend must read an old draft as "no boxes"/"no text" rather than crash the
+ * preview. Dropping the `?` on both is issue #83
+ * (`issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md`), which
+ * unblocks once no backend older than #75 can answer this frontend — i.e. after
+ * the next deploy in which backend and frontend go out together.
+ */
 export interface DailySummaryPlan {
   metrics: LogMetricOp[];
+  /** Boxes the retelling ticked. Absent on an older backend; never a full map. */
+  checklist?: CheckOp[];
   unresolved: UnresolvedMetric[];
   /** Null when the retelling held nothing worth reading back later. */
   journal?: JournalOp | null;

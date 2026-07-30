@@ -1,20 +1,22 @@
 'use client';
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: mobile day-summary screen — same useDailySummary flow as the desktop page (metrics + the day's journal text), laid out for a 375pt screen: every control on its own 44pt row, one card per operation
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: mobile day-summary screen — same useDailySummary flow as the desktop page (metrics + checklist ticks + the day's journal text), laid out for a 375pt screen: every control on its own 44pt row, one card per operation
 
 import { useRouter } from 'next/navigation';
-import { HelpCircle, Sparkles } from 'lucide-react';
+import { CheckSquare, HelpCircle, Sparkles } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import {
+  CHECKLIST_TITLE,
   JOURNAL_REPLACE_LABEL,
   UNRESOLVED_TITLE,
+  checkCheckboxLabel,
   journalCheckboxLabel,
   metricCheckboxLabel,
   useDailySummary,
   type MetricLabel,
 } from '@/hooks/useDailySummary';
-import type { JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
+import type { CheckOp, JournalOp, LogMetricOp, UnresolvedMetric } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
 import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 
@@ -69,6 +71,63 @@ function MetricCard({ metric, label, checked, onToggle }: MetricCardProps) {
             : 'модель не уверена, куда это относится'}
         </p>
       )}
+    </div>
+  );
+}
+
+interface ChecklistCardProps {
+  items: CheckOp[];
+  states: { enabled: boolean }[];
+  labels: MetricLabel[];
+  onToggle: (index: number, enabled: boolean) => void;
+}
+
+/**
+ * The boxes the retelling would tick, one 44pt tap row each.
+ *
+ * Same section as on the desktop screen and for the same reason — a tick edits
+ * the day-map that Today edits, not a record of its own — but the destination
+ * moves under the label instead of beside it, so nothing wraps at 375pt.
+ */
+function ChecklistCard({ items, states, labels, onToggle }: ChecklistCardProps) {
+  if (items.length === 0) return null;
+  return (
+    <div className="bg-card border border-white/5 rounded-3xl p-4">
+      <p className="flex items-center gap-2 text-sm font-semibold text-text-secondary">
+        <CheckSquare className="w-4 h-4 shrink-0" strokeWidth={2} />
+        {CHECKLIST_TITLE}
+      </p>
+      <ul aria-label={CHECKLIST_TITLE} className="mt-2 space-y-2">
+        {items.map((check, i) => (
+          // Index-keyed: a plan op has no id, and the whole list is replaced by
+          // the next draft rather than reordered.
+          <li key={i}>
+            <label
+              style={{ minHeight: TAP_TARGET_PX }}
+              className="flex items-center gap-3 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={states[i]?.enabled ?? false}
+                onChange={(e) => onToggle(i, e.target.checked)}
+                aria-label={checkCheckboxLabel(check)}
+                className="w-5 h-5 accent-lime rounded shrink-0"
+              />
+              <span className="min-w-0 text-sm font-medium text-text-primary break-words">
+                {check.source_text}
+              </span>
+            </label>
+            <p className="text-[13px] text-text-disabled break-words">
+              {labels[i].categoryName} · {labels[i].fieldName}
+            </p>
+            {check.uncertain && (
+              <p className="text-[13px] text-danger break-words">
+                модель не уверена, что речь про эту галочку
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -229,6 +288,7 @@ export default function MobileDailySummaryPage() {
 
       {day.draft.status === 'done' &&
         (day.draft.plan.metrics.length === 0 &&
+        day.checklist.length === 0 &&
         day.unresolved.length === 0 &&
         day.journal === null ? (
           <p className="text-sm text-text-secondary">
@@ -248,6 +308,13 @@ export default function MobileDailySummaryPage() {
               />
             ))}
 
+            <ChecklistCard
+              items={day.checklist}
+              states={day.checkStates}
+              labels={day.checklist.map(day.resolveLabel)}
+              onToggle={day.toggleCheck}
+            />
+
             {day.journal !== null && (
               <JournalCard
                 journal={day.journal}
@@ -265,7 +332,9 @@ export default function MobileDailySummaryPage() {
               <ErrorAlert message={day.applyState.message} />
             )}
 
-            {(day.draft.plan.metrics.length > 0 || day.journal !== null) && (
+            {(day.draft.plan.metrics.length > 0 ||
+              day.checklist.length > 0 ||
+              day.journal !== null) && (
               <button
                 type="button"
                 onClick={() => void day.apply()}

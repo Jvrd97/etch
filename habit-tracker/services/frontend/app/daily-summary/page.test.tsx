@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/74-daily-summary-journal
-// summary: desktop day-summary tests — text -> plan -> unchecked rows -> apply -> redirect, the journal op (append checked, replace offered and off), the unresolved section, and the LLM error with Retry
+// [review:need-review] PHASE-01/75-daily-summary-checklist
+// summary: desktop day-summary tests — text -> plan -> unchecked rows -> apply -> redirect, the checklist section (ticks only, checklist named per row), the journal op (append checked, replace offered and off), the unresolved section, and the LLM error with Retry
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
@@ -10,7 +10,14 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import type { Category, DailySummaryPlan, JournalOp, LogMetricOp } from '@/lib/api';
+import type {
+  Category,
+  CheckOp,
+  DailySummaryPlan,
+  JournalOp,
+  LogMetricOp,
+} from '@/lib/api';
+import { CHECKLIST_TITLE } from '@/hooks/useDailySummary';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -72,6 +79,36 @@ const PLAN: DailySummaryPlan = {
   journal: null,
 };
 
+const VITAMINS: Category = {
+  id: 4,
+  name: 'Витамины',
+  display_mode: 'checklist',
+  streak_mode: 'build',
+  is_active: true,
+  created_at: TIMESTAMP,
+  updated_at: TIMESTAMP,
+  fields: [
+    {
+      id: 9,
+      category_id: 4,
+      name: 'B12',
+      field_type: 'boolean',
+      is_required: false,
+      order: 0,
+      created_at: TIMESTAMP,
+      updated_at: TIMESTAMP,
+    },
+  ],
+};
+
+const CHECK: CheckOp = {
+  op: 'check',
+  category_id: 4,
+  field_id: 9,
+  source_text: 'выпил B12',
+  uncertain: false,
+};
+
 const JOURNAL: JournalOp = {
   op: 'write_journal',
   title: 'Разбор дня',
@@ -96,9 +133,10 @@ mock.module('@/lib/api', () => ({
     apply: (
       entryDate: string,
       metrics: LogMetricOp[],
+      checklist: CheckOp[],
       journal: JournalOp | null,
       idempotencyKey: string
-    ) => applyPlan(entryDate, metrics, journal, idempotencyKey),
+    ) => applyPlan(entryDate, metrics, checklist, journal, idempotencyKey),
   },
   onboardingAPI: { draft: () => Promise.resolve({ operations: [] }) },
   insightsAPI: {
@@ -228,7 +266,7 @@ describe('/daily-summary', () => {
     fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
 
     await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
-    const journal = applyPlan.mock.calls[0][2] as JournalOp;
+    const journal = applyPlan.mock.calls[0][3] as JournalOp;
     expect(journal.mode).toBe('append');
     expect(journal.content).toBe(JOURNAL.content);
   });
@@ -241,7 +279,7 @@ describe('/daily-summary', () => {
     fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
 
     await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
-    expect((applyPlan.mock.calls[0][2] as JournalOp).mode).toBe('replace');
+    expect((applyPlan.mock.calls[0][3] as JournalOp).mode).toBe('replace');
   });
 
   it('keeps the write available when only the day text is checked', async () => {
@@ -286,5 +324,95 @@ describe('/daily-summary', () => {
     await waitFor(() => expect(screen.getByText('unknown category_id 1')).toBeDefined());
     expect(screen.getByLabelText('Записать отжался 30 раз')).toBeDefined();
     expect(pushRoute).not.toHaveBeenCalled();
+  });
+});
+
+describe('/daily-summary checklist section', () => {
+  /** Render and settle a plan whose only operation is one tick. */
+  async function renderWithChecklist(check: CheckOp = CHECK) {
+    draft = mock(() =>
+      Promise.resolve({ metrics: [], unresolved: [], checklist: [check] })
+    );
+    getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
+    render(<DailySummaryPage />);
+    fireEvent.change(screen.getByLabelText('Как прошёл день'), {
+      target: { value: 'выпил B12' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Разобрать день/ }));
+    await waitFor(() => expect(screen.getByLabelText(CHECKLIST_TITLE)).toBeDefined());
+  }
+
+  it('shows the ticks in their own section, checked, with their checklist named', async () => {
+    await renderWithChecklist();
+
+    const section = screen.getByLabelText(CHECKLIST_TITLE);
+    expect(
+      (within(section).getByLabelText('Отметить выпил B12') as HTMLInputElement).checked
+    ).toBe(true);
+    await waitFor(() =>
+      expect(within(section).getByText(/Витамины · B12/)).toBeDefined()
+    );
+  });
+
+  it('leaves an uncertain tick unchecked', async () => {
+    await renderWithChecklist({ ...CHECK, uncertain: true });
+
+    expect(
+      (screen.getByLabelText('Отметить выпил B12') as HTMLInputElement).checked
+    ).toBe(false);
+  });
+
+  it('writes a day that is nothing but a tick, then lands on Entries', async () => {
+    await renderWithChecklist();
+
+    fireEvent.click(screen.getByRole('button', { name: /Записать выбранное \(1\)/ }));
+
+    await waitFor(() => expect(pushRoute).toHaveBeenCalledWith('/entries'));
+    const checklist = applyPlan.mock.calls[0][2] as CheckOp[];
+    expect(checklist).toHaveLength(1);
+    expect(checklist[0].field_id).toBe(9);
+  });
+
+  it('sends an empty checklist once the tick is unchecked', async () => {
+    // The journal keeps the write available, so the apply actually runs and
+    // the payload can be read: a plan whose only op is unchecked has nothing
+    // to write at all, which would prove nothing about what gets sent.
+    draft = mock(() =>
+      Promise.resolve({
+        metrics: [],
+        unresolved: [],
+        checklist: [CHECK],
+        journal: JOURNAL,
+      })
+    );
+    getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
+    render(<DailySummaryPage />);
+    fireEvent.change(screen.getByLabelText('Как прошёл день'), {
+      target: { value: 'выпил B12' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Разобрать день/ }));
+    await waitFor(() => expect(screen.getByLabelText(CHECKLIST_TITLE)).toBeDefined());
+
+    fireEvent.click(screen.getByLabelText('Отметить выпил B12'));
+    fireEvent.click(screen.getByRole('button', { name: /Записать выбранное/ }));
+
+    await waitFor(() => expect(applyPlan).toHaveBeenCalledTimes(1));
+    expect(applyPlan.mock.calls[0][2]).toEqual([]);
+  });
+
+  it('counts the unchecked tick out of the write button', async () => {
+    await renderWithChecklist();
+
+    fireEvent.click(screen.getByLabelText('Отметить выпил B12'));
+
+    expect(
+      screen.getByRole('button', { name: /Записать выбранное \(0\)/ })
+    ).toBeDefined();
+  });
+
+  it('renders no section at all when the plan ticks nothing', async () => {
+    await renderWithPlan();
+
+    expect(screen.queryByLabelText(CHECKLIST_TITLE)).toBeNull();
   });
 });
