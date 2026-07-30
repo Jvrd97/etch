@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/23-checklist-bar-streaks
-// summary: chart pure helpers - cumulate() prefix sums; checklist bar data (true-count per day) and per-field current streaks
+// [review:need-review] PHASE-01/59-previousday-mixed-utc-local
+// summary: chart pure helpers - cumulate() prefix sums; checklist bar data; previousDay stepped on the bare calendar (no timezone) and per-field current streaks
 
 import type { Field, TableDay } from './api';
 import type { ChartPoint } from './chart-data';
-import { toISODate } from './date';
+import { ISO_DATE_PAD } from './date';
 
 /**
  * Running (prefix) sum for every series key, computed independently per line.
@@ -64,11 +64,22 @@ export function buildChecklistBarData(
   }));
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** Previous calendar day of an ISO date string (UTC arithmetic). */
-function previousDay(isoDate: string): string {
-  return toISODate(new Date(Date.parse(`${isoDate}T00:00:00Z`) - MS_PER_DAY));
+/**
+ * Previous calendar day of a `YYYY-MM-DD` string.
+ *
+ * A bare ISO date carries no timezone, so neither does this: the day is stepped
+ * back on the proleptic Gregorian calendar itself, via a `Date` pinned to UTC
+ * for its month-length and leap-year knowledge and read back in the same UTC
+ * frame. Formatting through the local-calendar `toISODate` would reintroduce
+ * the offset and, west of Greenwich, land on the day before the one asked for.
+ */
+export function previousDay(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const cursor = new Date(Date.UTC(year, month - 1, day));
+  cursor.setUTCDate(cursor.getUTCDate() - 1);
+  const steppedMonth = String(cursor.getUTCMonth() + 1).padStart(ISO_DATE_PAD, '0');
+  const steppedDay = String(cursor.getUTCDate()).padStart(ISO_DATE_PAD, '0');
+  return `${cursor.getUTCFullYear()}-${steppedMonth}-${steppedDay}`;
 }
 
 /**

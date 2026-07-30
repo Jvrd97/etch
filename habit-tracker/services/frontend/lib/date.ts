@@ -1,7 +1,8 @@
-// [review:need-review] PHASE-01/56-local-calendar-date-instead-of-utc
+// [review:need-review] PHASE-01/59-previousday-mixed-utc-local
 // summary: single source of truth for the `YYYY-MM-DD` date strings the API speaks — local calendar date
 
-const ISO_DATE_PAD = 2;
+/** Width of the zero-padded month/day fields in a `YYYY-MM-DD` string. */
+export const ISO_DATE_PAD = 2;
 
 /**
  * `d` rendered as the `YYYY-MM-DD` string the API expects — the calendar date

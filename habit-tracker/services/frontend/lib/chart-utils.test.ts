@@ -1,10 +1,10 @@
-// [review:need-review] PHASE-01/23-checklist-bar-streaks
-// summary: unit tests for chart-utils - cumulate() running sums; checklist bar data (true-count per day) and per-field current streaks
+// [review:need-review] PHASE-01/59-previousday-mixed-utc-local
+// summary: unit tests for chart-utils - cumulate() running sums; checklist bar data; previousDay and currentStreak pinned to western timezones
 
 import { describe, expect, it } from 'bun:test';
 import type { Field, TableDay } from './api';
 import type { ChartPoint } from './chart-data';
-import { buildChecklistBarData, cumulate, currentStreak } from './chart-utils';
+import { buildChecklistBarData, cumulate, currentStreak, previousDay } from './chart-utils';
 
 describe('cumulate', () => {
   it('returns an empty array for an empty series', () => {
@@ -129,6 +129,53 @@ describe('buildChecklistBarData', () => {
   });
 });
 
+describe('previousDay', () => {
+  /**
+   * Runs `body` with the process pinned to `tz`. The zones used below sit west
+   * of Greenwich on purpose: a negative offset is what turned UTC midnight into
+   * the *previous* local date and made the old mixed UTC/local arithmetic skip
+   * a day.
+   */
+  function inTimezone(tz: string, body: () => void): void {
+    const original = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      body();
+    } finally {
+      process.env.TZ = original;
+    }
+  }
+
+  it('steps back one day inside a month', () => {
+    expect(previousDay('2026-07-22')).toBe('2026-07-21');
+  });
+
+  it('steps back across a month boundary', () => {
+    expect(previousDay('2026-07-01')).toBe('2026-06-30');
+  });
+
+  it('steps back across a year boundary', () => {
+    expect(previousDay('2026-01-01')).toBe('2025-12-31');
+  });
+
+  it('steps back onto a leap day', () => {
+    expect(previousDay('2024-03-01')).toBe('2024-02-29');
+  });
+
+  it('gives the same calendar date west of Greenwich', () => {
+    inTimezone('America/Los_Angeles', () => {
+      expect(previousDay('2026-07-22')).toBe('2026-07-21');
+      expect(previousDay('2026-01-01')).toBe('2025-12-31');
+    });
+  });
+
+  it('gives the same calendar date on a far-western zone', () => {
+    inTimezone('Pacific/Midway', () => {
+      expect(previousDay('2026-07-22')).toBe('2026-07-21');
+    });
+  });
+});
+
 describe('currentStreak', () => {
   const TODAY = '2026-07-22';
 
@@ -175,5 +222,20 @@ describe('currentStreak', () => {
   it('ignores true values of other fields and categories', () => {
     const days: TableDay[] = [day(TODAY, [2]), day('2026-07-21', [1], 9)];
     expect(currentStreak(days, 1, 1, TODAY)).toBe(0);
+  });
+
+  it('walks consecutive days west of Greenwich too', () => {
+    const original = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const days: TableDay[] = [
+        day('2026-07-20', [1]),
+        day('2026-07-21', [1]),
+        day(TODAY, [1]),
+      ];
+      expect(currentStreak(days, 1, 1, TODAY)).toBe(3);
+    } finally {
+      process.env.TZ = original;
+    }
   });
 });
