@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: desktop Today page — markup only, all state moved to hooks/useToday so /m/today shares it
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook
+// summary: desktop Today page — markup only; the quick-input total comes from useToday's entries and the tap goes back to the hook
 
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -23,6 +23,7 @@ export default function TodayPage() {
     nothingToTrack,
     setError,
     toggleField,
+    addNumber,
     reloadStreak,
   } = useToday();
 
@@ -126,8 +127,8 @@ export default function TodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
-                    initialTotal={numberFieldSum(entries, category.id, numberField.id)}
-                    onError={setError}
+                    total={numberFieldSum(entries, category.id, numberField.id)}
+                    onAdd={(amount) => addNumber(category.id, numberField.id, amount)}
                   />
                 ))}
               </div>

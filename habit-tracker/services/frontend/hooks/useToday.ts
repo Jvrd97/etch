@@ -1,8 +1,8 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: Today-screen state extracted from app/today/page.tsx so desktop and /m/today render the same data and handlers
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook
+// summary: Today-screen state for both shells — snapshot fetching plus the optimistic checklist flip and number increment, each rolled back on its own failure
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 import { categoriesAPI, entriesAPI, type Category, type Entry } from '@/lib/api';
 import { todayISO } from '@/lib/date';
@@ -11,6 +11,8 @@ import {
   buildCheckedMap,
   isFieldChecked,
   loadStreakMap,
+  mergeOptimisticEntries,
+  optimisticNumberEntry,
   setFieldChecked,
   type CheckedMap,
   type StreakMap,
@@ -30,6 +32,12 @@ export interface UseTodayResult {
   setError: (message: string | null) => void;
   /** Optimistically flip a checklist field, rolling back if the save fails. */
   toggleField: (categoryId: number, fieldId: number) => Promise<void>;
+  /**
+   * Log one number entry, showing it in `entries` before the request resolves
+   * and withdrawing exactly that increment if the request fails. Resolves false
+   * on failure, so the caller can keep whatever it would have to retype.
+   */
+  addNumber: (categoryId: number, fieldId: number, amount: number) => Promise<boolean>;
   /** Re-fetch one avoid category's streak, e.g. after a relapse was logged. */
   reloadStreak: (categoryId: number) => Promise<void>;
 }
@@ -37,6 +45,11 @@ export interface UseTodayResult {
 export function useToday(): UseTodayResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
+  // Entries this session logged that the last snapshot did not (yet) contain:
+  // in flight, or saved after the snapshot was taken. Kept apart from `entries`
+  // so a refetch can replace the snapshot without discarding them.
+  const [optimisticEntries, setOptimisticEntries] = useState<Entry[]>([]);
+  const nextOptimisticId = useRef(-1);
   const [checked, setChecked] = useState<CheckedMap>({});
   const [streaks, setStreaks] = useState<StreakMap>({});
   const [loading, setLoading] = useState(true);
@@ -61,6 +74,10 @@ export function useToday(): UseTodayResult {
       ]);
       setCategories(categoriesData);
       setEntries(entriesData);
+      // Whatever the snapshot now carries is no longer ours to hold; dropping it
+      // here is what keeps a saved increment from being counted twice.
+      const fetchedIds = new Set(entriesData.map((entry) => entry.id));
+      setOptimisticEntries((prev) => prev.filter((entry) => !fetchedIds.has(entry.id)));
       setChecked(buildCheckedMap(categoriesData, entriesData));
 
       const avoidIds = partitionTodayCategories(categoriesData).avoid.map(
@@ -115,13 +132,50 @@ export function useToday(): UseTodayResult {
     [checked]
   );
 
+  /**
+   * One tap, one entry, no in-flight lock: five taps are five increments, and a
+   * failure among them withdraws only its own — the rest stay banked.
+   */
+  const addNumber = useCallback(
+    async (categoryId: number, fieldId: number, amount: number): Promise<boolean> => {
+      const localId = nextOptimisticId.current;
+      nextOptimisticId.current -= 1;
+      const entryDate = todayISO();
+
+      setOptimisticEntries((prev) => [
+        ...prev,
+        optimisticNumberEntry({ id: localId, categoryId, fieldId, entryDate, amount }),
+      ]);
+
+      try {
+        const saved = await entriesAPI.create({
+          category_id: categoryId,
+          entry_date: entryDate,
+          values: [{ field_id: fieldId, value: String(amount) }],
+        });
+        // Adopt the server id so the snapshot that first returns this row
+        // reclaims it. The local values are kept as they are: the increment on
+        // screen must not shift because the response spelled it differently.
+        setOptimisticEntries((prev) =>
+          prev.map((entry) => (entry.id === localId ? { ...entry, id: saved.id } : entry))
+        );
+        return true;
+      } catch (err) {
+        setOptimisticEntries((prev) => prev.filter((entry) => entry.id !== localId));
+        setError(err instanceof Error ? err.message : 'Failed to save entry');
+        return false;
+      }
+    },
+    []
+  );
+
   const groups = partitionTodayCategories(categories);
   const nothingToTrack =
     groups.avoid.length === 0 && groups.checklist.length === 0 && groups.quickForm.length === 0;
 
   return {
     date: todayISO(),
-    entries,
+    entries: mergeOptimisticEntries(entries, optimisticEntries),
     groups,
     checked,
     streaks,
@@ -130,6 +184,7 @@ export function useToday(): UseTodayResult {
     nothingToTrack,
     setError,
     toggleField,
+    addNumber,
     reloadStreak,
   };
 }

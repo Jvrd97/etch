@@ -107,6 +107,24 @@ body {
   animation: fade-rise 250ms ease-out both;
 }
 
+/* Running total reacting to a logged increment: a short lift and glow */
+@keyframes total-bump {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+    text-shadow: 0 0 14px rgba(184, 255, 54, 0.55);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-total-bump {
+  animation: total-bump 220ms ease-out both;
+}
+
 /* Dark native controls (date/time pickers, color input) */
 input,
 select,

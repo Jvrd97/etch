@@ -733,3 +733,15 @@ Feedback loops: `bun test` (весь фронт) 364/364 green, `bunx tsc --noEm
 **Файлы (mod)**: `components/mobile/FullScreenSheet.tsx` (слежение за visual viewport, `mousedown`-гашение), `components/mobile/FullScreenSheet.test.tsx` (фейковый `visualViewport`, снятие подписки, гашение `mousedown`), `app/m/layout.tsx` (слот в шапке), `app/m/entries/page.tsx`, `app/m/categories/page.tsx`, `app/m/categories/[id]/page.tsx`, `app/m/journal/page.tsx` (FAB → `MobileHeaderAction`, текст пустых состояний про плюс в шапке).
 
 Feedback loops: `bun test` 372/372 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `bun run build` green. Проверка на устройстве — за пользователем.
+
+### Тикет 61 — итог за день владеет useToday
+
+Дата 2026-07-28. Итог квик-инпута перестал быть локальной выдумкой компонента. `QuickNumberRow` стал полностью контролируемым: `total` приходит пропом, тап только сообщает наверх сумму (`onAdd`), а `entriesAPI.create` и текст ошибки ушли в хук — рефетч по возврату на вкладку теперь сразу даёт верное число, в том числе после записи с другого устройства.
+
+Оптимистичный инкремент живёт в `useToday.addNumber`: запись рисуется в `entries` до ответа сервера, при падении вычитается ровно её вклад (остальные тапы остаются), сообщение уходит в общий `error`-баннер страницы. Гонка «рефетч во время полёта POST» решена вторым списком `optimisticEntries`, который мержится поверх снапшота с дедупом по `id`: локальная запись получает отрицательный `id` (сервер такие не выдаёт), после успеха перенимает серверный, а первый снапшот, который её вернул, вытесняет копию — поэтому инкремент не теряется и не считается дважды.
+
+Анимация итога — `key={total}` на узле с `.animate-total-bump`: узел перемонтируется на каждое изменение и проигрывает анимацию заново, при быстрых тапах видно каждый засчитанный.
+
+**Файлы (mod)**: `hooks/useToday.ts` (+`addNumber`, слияние оптимистичных записей, прунинг в `loadData`), `hooks/useToday.test.ts` (оптимистичный показ, откат одного тапа из трёх, рефетч в полёте, однократный учёт после рефетча, чужая запись), `lib/today-entries.ts` (+`optimisticNumberEntry`, `mergeOptimisticEntries`), `components/QuickNumberRow.tsx` (контролируемый `total`, `onAdd`, анимация), `components/QuickNumberRow.test.tsx` (проверяется проводка, а не запись в API), `app/today/page.tsx`, `app/m/today/page.tsx` (проброс `total`/`onAdd`), `app/globals.css` (`@keyframes total-bump`).
+
+Feedback loops: `bun test` 378/378 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `bun run build` green.

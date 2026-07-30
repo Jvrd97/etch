@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: mobile Today screen — same data/handlers as the desktop page via useToday, laid out in a single column with 44pt targets
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook
+// summary: mobile Today screen — same data/handlers as the desktop page via useToday, including the quick-input total and its optimistic increment
 
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -35,6 +35,7 @@ export default function MobileTodayPage() {
     nothingToTrack,
     setError,
     toggleField,
+    addNumber,
     reloadStreak,
   } = useToday();
 
@@ -118,8 +119,8 @@ export default function MobileTodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
-                    initialTotal={numberFieldSum(entries, category.id, numberField.id)}
-                    onError={setError}
+                    total={numberFieldSum(entries, category.id, numberField.id)}
+                    onAdd={(amount) => addNumber(category.id, numberField.id, amount)}
                   />
                 ))}
               </div>

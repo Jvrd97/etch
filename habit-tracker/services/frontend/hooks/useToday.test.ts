@@ -1,11 +1,24 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-01/42-mobile-categories-and-detail
-// summary: tests for useToday — the visibility refetch must stay silent (no spinner, no data reset)
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook
+// summary: tests for useToday — silent visibility refetch, and the optimistic number increment with per-tap rollback
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry } from '@/lib/api';
+import type { Category, Entry, Field } from '@/lib/api';
+import { numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
+const TODAY = '2026-07-24';
+
+const GLASSES_FIELD: Field = {
+  id: 7,
+  category_id: 1,
+  name: 'Glasses',
+  field_type: 'number',
+  is_required: false,
+  order: 1,
+  created_at: TIMESTAMP,
+  updated_at: TIMESTAMP,
+};
 
 const CATEGORY: Category = {
   id: 1,
@@ -15,17 +28,36 @@ const CATEGORY: Category = {
   is_active: true,
   created_at: TIMESTAMP,
   updated_at: TIMESTAMP,
-  fields: [],
+  fields: [GLASSES_FIELD],
 };
 
 const ENTRY: Entry = {
   id: 10,
   category_id: 1,
-  entry_date: '2026-07-24',
+  entry_date: TODAY,
   created_at: TIMESTAMP,
   updated_at: TIMESTAMP,
   values: [],
 };
+
+/** A saved entry as the API would echo it back. */
+function savedEntry(id: number, amount: number): Entry {
+  return {
+    id,
+    category_id: CATEGORY.id,
+    entry_date: TODAY,
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+    values: [
+      { id, entry_id: id, field_id: GLASSES_FIELD.id, value: String(amount) },
+    ],
+  };
+}
+
+/** Today's total for the number field, as the screens compute it. */
+function totalOf(entries: Entry[]): number {
+  return numberFieldSum(entries, CATEGORY.id, GLASSES_FIELD.id);
+}
 
 /** Resolves only when the test releases it, so a refetch can be observed mid-flight. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -38,6 +70,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
+let createEntry: ReturnType<typeof mock>;
 
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one never calls them.
@@ -58,7 +91,7 @@ mock.module('@/lib/api', () => ({
   },
   entriesAPI: {
     getAll: () => getAllEntries(),
-    create: () => Promise.resolve(null),
+    create: (data: unknown) => createEntry(data),
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
     upsertChecklist: () => Promise.resolve({}),
@@ -66,11 +99,14 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
+mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+
 const { useToday } = await import('./useToday');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
+  createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
 });
 
 afterEach(() => {
@@ -123,5 +159,104 @@ describe('useToday', () => {
     });
 
     await waitFor(() => expect(result.current.error).toBeNull());
+  });
+});
+
+describe('useToday.addNumber', () => {
+  it('shows the increment before the request resolves', async () => {
+    createEntry = mock(() => new Promise(() => {}));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      void result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+
+    expect(totalOf(result.current.entries)).toBe(250);
+    expect(createEntry).toHaveBeenCalledWith({
+      category_id: CATEGORY.id,
+      entry_date: TODAY,
+      values: [{ field_id: GLASSES_FIELD.id, value: '250' }],
+    });
+  });
+
+  it('rolls back only the failed tap and keeps the successful ones', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call = 0;
+    createEntry = mock(() => {
+      call += 1;
+      return call === 2
+        ? Promise.reject(new Error('server exploded'))
+        : Promise.resolve(savedEntry(100 + call, 1));
+    });
+
+    await act(async () => {
+      await Promise.all([
+        result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1),
+        result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1),
+        result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1),
+      ]);
+    });
+
+    expect(totalOf(result.current.entries)).toBe(2);
+    expect(result.current.error).toBe('server exploded');
+  });
+
+  it('keeps an in-flight increment when a refetch lands mid-request', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const pendingCreate = deferred<Entry>();
+    createEntry = mock(() => pendingCreate.promise);
+
+    act(() => {
+      void result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1);
+    });
+    expect(totalOf(result.current.entries)).toBe(1);
+
+    // The refetch was answered by a server that had not seen the POST yet.
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(getAllEntries).toHaveBeenCalledTimes(2));
+    expect(totalOf(result.current.entries)).toBe(1);
+
+    await act(async () => {
+      pendingCreate.resolve(savedEntry(11, 1));
+      await Promise.resolve();
+    });
+    expect(totalOf(result.current.entries)).toBe(1);
+  });
+
+  it('counts a saved increment once after the refetch that returns it', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1);
+    });
+    expect(totalOf(result.current.entries)).toBe(1);
+
+    getAllEntries = mock(() => Promise.resolve([ENTRY, savedEntry(11, 1)]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    await waitFor(() => expect(getAllEntries).toHaveBeenCalled());
+    await waitFor(() => expect(totalOf(result.current.entries)).toBe(1));
+  });
+
+  it('takes the total from a refetch that saw another device write', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    getAllEntries = mock(() => Promise.resolve([savedEntry(20, 3)]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    await waitFor(() => expect(totalOf(result.current.entries)).toBe(3));
   });
 });
