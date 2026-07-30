@@ -1,70 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-// summary: onboarding plan is now applied — checkboxes + editable names in the preview, transactional POST /categories/batch, redirect to /categories on success
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
+// summary: desktop voice-category-builder — markup only; the draft/preview/apply flow moved into useOnboardingPlan, which /m/onboarding renders with its own layout
 
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sparkles, AlertTriangle } from 'lucide-react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
-import {
-  categoriesAPI,
-  onboardingAPI,
-  type OnboardingPlan,
-  type PlanField,
-  type PlanOperation,
-} from '@/lib/api';
-
-// Per-operation editable state in the preview. `name` only matters for
-// create_category ops; add_field ops ignore it.
-interface OpState {
-  enabled: boolean;
-  name: string;
-}
-
-type DraftState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'done'; plan: OnboardingPlan };
-
-type ApplyState =
-  | { status: 'idle' }
-  | { status: 'applying' }
-  | { status: 'error'; message: string };
-
-/**
- * Default checkbox state per the ticket: a fresh category without a name clash
- * is opted in (a stray new category is undone by one delete), while add_field
- * and anything flagged as a conflict start off — those touch data that already
- * exists, so they need a deliberate click.
- */
-function initialOpStates(plan: OnboardingPlan): OpState[] {
-  return plan.operations.map((op) => {
-    if (op.op === 'create_category') {
-      return { enabled: !op.name_conflict, name: op.name };
-    }
-    return { enabled: false, name: '' };
-  });
-}
-
-/** Build the batch payload from the ops the user left enabled, with edited names. */
-function selectedOperations(
-  plan: OnboardingPlan,
-  states: OpState[]
-): PlanOperation[] {
-  const selected: PlanOperation[] = [];
-  plan.operations.forEach((op, i) => {
-    const state = states[i];
-    if (!state.enabled) return;
-    if (op.op === 'create_category') {
-      selected.push({ ...op, name: state.name });
-    } else {
-      selected.push(op);
-    }
-  });
-  return selected;
-}
+import { useOnboardingPlan, type OpState } from '@/hooks/useOnboardingPlan';
+import type { PlanField, PlanOperation } from '@/lib/api';
 
 function FieldList({ fields }: { fields: PlanField[] }) {
   if (fields.length === 0) return null;
@@ -148,48 +91,8 @@ function OperationCard({
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const [transcript, setTranscript] = useState('');
-  const [state, setState] = useState<DraftState>({ status: 'idle' });
-  const [opStates, setOpStates] = useState<OpState[]>([]);
-  const [applyState, setApplyState] = useState<ApplyState>({ status: 'idle' });
-
-  const generate = async () => {
-    const text = transcript.trim();
-    if (!text) return;
-    setState({ status: 'loading' });
-    setApplyState({ status: 'idle' });
-    try {
-      const plan = await onboardingAPI.draft(text);
-      setOpStates(initialOpStates(plan));
-      setState({ status: 'done', plan });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Не удалось построить план';
-      setState({ status: 'error', message });
-    }
-  };
-
-  const updateOp = (index: number, patch: Partial<OpState>) => {
-    setOpStates((prev) =>
-      prev.map((s, i) => (i === index ? { ...s, ...patch } : s))
-    );
-  };
-
-  const apply = async () => {
-    if (state.status !== 'done') return;
-    const operations = selectedOperations(state.plan, opStates);
-    if (operations.length === 0) return;
-    setApplyState({ status: 'applying' });
-    try {
-      await categoriesAPI.applyBatch(operations);
-      router.push('/categories');
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Не удалось создать категории';
-      setApplyState({ status: 'error', message });
-    }
-  };
-
-  const enabledCount = opStates.filter((s) => s.enabled).length;
+  const plan = useOnboardingPlan({ onApplied: () => router.push('/categories') });
+  const generate = () => void plan.generate();
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -206,8 +109,8 @@ export default function OnboardingPage() {
 
       <div className="space-y-4">
         <textarea
-          value={transcript}
-          onChange={(e) => setTranscript(e.target.value)}
+          value={plan.transcript}
+          onChange={(e) => plan.setTranscript(e.target.value)}
           rows={6}
           placeholder="Например: хочу трекать сон — сколько часов и качество, и добавить пульс в спорт"
           className="w-full bg-card border border-white/5 rounded-3xl px-5 py-4 text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-lime/30 resize-y"
@@ -215,7 +118,7 @@ export default function OnboardingPage() {
         <button
           type="button"
           onClick={generate}
-          disabled={state.status === 'loading' || transcript.trim().length === 0}
+          disabled={!plan.canGenerate}
           className="inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0"
         >
           <Sparkles className="w-4 h-4" strokeWidth={2} />
@@ -223,11 +126,11 @@ export default function OnboardingPage() {
         </button>
       </div>
 
-      {state.status === 'loading' && <LoadingSpinner size="lg" />}
+      {plan.draft.status === 'loading' && <LoadingSpinner size="lg" />}
 
-      {state.status === 'error' && (
+      {plan.draft.status === 'error' && (
         <div className="space-y-4">
-          <ErrorAlert message={state.message} />
+          <ErrorAlert message={plan.draft.message} />
           <button
             type="button"
             onClick={generate}
@@ -238,37 +141,37 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {state.status === 'done' && (
+      {plan.draft.status === 'done' && (
         <div className="space-y-5">
-          {state.plan.operations.length === 0 ? (
+          {plan.draft.plan.operations.length === 0 ? (
             <p className="text-text-secondary">
               Модель не предложила изменений. Попробуйте описать подробнее.
             </p>
           ) : (
             <>
-              {state.plan.operations.map((op, i) => (
+              {plan.draft.plan.operations.map((op, i) => (
                 <OperationCard
                   key={i}
                   op={op}
-                  state={opStates[i]}
-                  onToggle={(enabled) => updateOp(i, { enabled })}
-                  onNameChange={(name) => updateOp(i, { name })}
+                  state={plan.opStates[i]}
+                  onToggle={(enabled) => plan.updateOp(i, { enabled })}
+                  onNameChange={(name) => plan.updateOp(i, { name })}
                 />
               ))}
 
-              {applyState.status === 'error' && (
-                <ErrorAlert message={applyState.message} />
+              {plan.applyState.status === 'error' && (
+                <ErrorAlert message={plan.applyState.message} />
               )}
 
               <button
                 type="button"
-                onClick={apply}
-                disabled={applyState.status === 'applying' || enabledCount === 0}
+                onClick={() => void plan.apply()}
+                disabled={plan.applyState.status === 'applying' || plan.enabledCount === 0}
                 className="inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0"
               >
-                {applyState.status === 'applying'
+                {plan.applyState.status === 'applying'
                   ? 'Создаём…'
-                  : `Создать выбранное (${enabledCount})`}
+                  : `Создать выбранное (${plan.enabledCount})`}
               </button>
             </>
           )}

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/45-mobile-table-sticky-date, PHASE-01/46-mobile-insights
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen now has a mobile twin (insights was the last), a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
@@ -142,6 +142,10 @@ describe('toMobilePath', () => {
 
   it('maps the insights screen to its mobile twin', () => {
     expect(toMobilePath('/insights')).toBe('/m/insights');
+  });
+
+  it('maps the onboarding screen to its mobile twin', () => {
+    expect(toMobilePath('/onboarding')).toBe('/m/onboarding');
   });
 
   it('returns null for a nested route of a screen that has no detail version', () => {

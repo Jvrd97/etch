@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/44-mobile-journal
-// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal names its More-only mobile screen)
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
+// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
 
 import { describe, expect, it } from 'bun:test';
 import {
@@ -52,7 +52,12 @@ describe('TAB_BAR_ROUTES', () => {
 
 describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
-    expect(MORE_ROUTES.map((route) => route.id)).toEqual(['table', 'journal', 'insights']);
+    expect(MORE_ROUTES.map((route) => route.id)).toEqual([
+      'table',
+      'journal',
+      'insights',
+      'onboarding',
+    ]);
   });
 
   it('does not overlap the tab bar', () => {
@@ -134,6 +139,10 @@ describe('mobileScreenTitle', () => {
 
   it('names the mobile journal screen, though it lives under More', () => {
     expect(mobileScreenTitle('/m/journal')).toBe('Journal');
+  });
+
+  it('names the mobile onboarding screen, though it lives under More', () => {
+    expect(mobileScreenTitle('/m/onboarding')).toBe('Onboarding');
   });
 
   it('keeps naming the screen on a category detail route', () => {

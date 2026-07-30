@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
 // summary: integration tests for /m/categories — create a category, add and remove fields and have the edits actually persist, plus the layout rule that no form control sits two-in-a-row on a narrow screen
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -230,5 +230,20 @@ describe('/m/categories', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Create category' }));
     expect(screen.getByRole('dialog', { name: NEW_CATEGORY_SHEET_TITLE })).toBeDefined();
+  });
+
+  it('offers the builder alongside the form when there is no category yet', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    render(<MobileCategoriesPage />);
+
+    // Beside the one-field-at-a-time form, not instead of it: from nothing, the
+    // builder is the faster way in, and it must stay inside the mobile shell.
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: /Describe them instead/ })).toBeDefined()
+    );
+    expect(
+      screen.getByRole('link', { name: /Describe them instead/ }).getAttribute('href')
+    ).toBe('/m/onboarding');
+    expect(screen.getByRole('button', { name: 'Create category' })).toBeDefined();
   });
 });

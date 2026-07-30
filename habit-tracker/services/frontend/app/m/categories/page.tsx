@@ -1,10 +1,10 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
 // summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, and each field card stacked instead of the desktop's two-up grid
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ChevronRight, FolderKanban, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, FolderKanban, Pencil, Plus, Trash2, Wand2 } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
@@ -36,6 +36,9 @@ type SheetState = { kind: 'create' } | { kind: 'edit'; category: Category };
  * tree.
  */
 const NEW_CATEGORY_BUTTON_LABEL = 'New category';
+
+/** The mobile voice-category-builder, offered from the empty state. */
+const ONBOARDING_PATH = `${MOBILE_PATH_PREFIX}/onboarding`;
 
 export default function MobileCategoriesPage() {
   const { categories, loading, error, setError, reload, remove } = useCategories();
@@ -85,6 +88,17 @@ export default function MobileCategoriesPage() {
           >
             Create category
           </button>
+          {/* Beside the form, not instead of it: the form builds one field at a
+              time, which is the slow way in from nothing. Describing the setup
+              in words is worth the most exactly here. */}
+          <Link
+            href={ONBOARDING_PATH}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className="mt-3 inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium text-lime transition-transform duration-200 active:scale-95"
+          >
+            <Wand2 className="w-4 h-4" strokeWidth={2} />
+            Describe them instead
+          </Link>
         </div>
         {editor}
       </div>

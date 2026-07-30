@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/45-mobile-table-sticky-date, PHASE-01/46-mobile-insights
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen now has a mobile twin (insights was the last), Categories owns its nested detail route, Journal/Table/Insights reached through "More"
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen now has a mobile twin (insights was the last), Categories owns its nested detail route, Journal/Table/Insights/Onboarding reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -98,6 +98,17 @@ export const APP_ROUTES: readonly AppRoute[] = [
     href: '/insights',
     hasMobile: true,
     hasMobileNested: false,
+    inTabBar: null,
+  },
+  {
+    id: 'onboarding',
+    name: 'Onboarding',
+    href: '/onboarding',
+    hasMobile: true,
+    hasMobileNested: false,
+    // Last of the "More" screens on purpose: setting categories up by talking
+    // at the app is a rare act, not a daily one, and the tab bar's five slots
+    // are already spoken for.
     inTabBar: null,
   },
 ];

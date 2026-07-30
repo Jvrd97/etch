@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin
 // summary: route id -> lucide icon map — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
 
 import {
@@ -10,6 +10,7 @@ import {
   Sparkles,
   Sun,
   Table2,
+  Wand2,
   type LucideIcon,
 } from 'lucide-react';
 import { MORE_ROUTE_ID } from '@/lib/routes';
@@ -27,6 +28,7 @@ const ROUTE_ICONS: Record<string, LucideIcon> = {
   entries: CalendarDays,
   journal: BookOpen,
   insights: Sparkles,
+  onboarding: Wand2,
   [MORE_ROUTE_ID]: MoreHorizontal,
 };
 
