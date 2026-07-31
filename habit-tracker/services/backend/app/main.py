@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-# summary: registered daily-summary router (draft/apply) under API-key auth
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics
+# summary: registered the health router (raw-sample intake + metrics read) under API-key auth
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,6 +7,7 @@ from app.api import (
     categories,
     daily_summary,
     entries,
+    health,
     insights,
     journal,
     onboarding,
@@ -85,6 +86,9 @@ app.include_router(
     daily_summary.router,
     prefix=settings.API_V1_PREFIX,
     dependencies=API_KEY_DEPENDENCIES,
+)
+app.include_router(
+    health.router, prefix=settings.API_V1_PREFIX, dependencies=API_KEY_DEPENDENCIES
 )
 
 

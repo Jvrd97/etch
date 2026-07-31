@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-# summary: re-export the day-plan schemas
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics
+# summary: re-export the Health DTOs alongside the existing schemas
 from app.schemas.daily_summary import (
     DailySummaryApplyRequest,
     DailySummaryApplyResponse,
@@ -30,6 +30,14 @@ from app.schemas.journal import (
     JournalEntryUpdate,
     JournalEntryResponse,
     JournalEntryListResponse,
+)
+from app.schemas.health import (
+    HealthDayValue,
+    HealthMetricSeries,
+    HealthMetricsResponse,
+    HealthSampleIn,
+    HealthSamplesRequest,
+    HealthSamplesResponse,
 )
 from app.schemas.insight import (
     InsightListItem,
@@ -75,6 +83,12 @@ __all__ = [
     "JournalEntryUpdate",
     "JournalEntryResponse",
     "JournalEntryListResponse",
+    "HealthDayValue",
+    "HealthMetricSeries",
+    "HealthMetricsResponse",
+    "HealthSampleIn",
+    "HealthSamplesRequest",
+    "HealthSamplesResponse",
     "InsightListItem",
     "InsightRequest",
     "InsightResponse",
