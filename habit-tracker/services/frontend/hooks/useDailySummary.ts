@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/75-daily-summary-checklist
-// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric and per-checkbox opt-in, the day's journal text (append by default, replace opt-in) and one idempotent transactional apply
+// [review:need-review] PHASE-01/84-voice-day-input
+// summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric and per-checkbox opt-in, the day's journal text (append by default, replace opt-in), one idempotent transactional apply, and the shared wordings both screens label a plan with
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -52,6 +52,20 @@ export const JOURNAL_REPLACE_LABEL = 'Заменить текст';
 export function metricCheckboxLabel(metric: LogMetricOp): string {
   return `Записать ${metric.source_text}`;
 }
+
+/**
+ * Said of a number the model derived rather than heard.
+ *
+ * Spelled as a claim about where the number came from, not as a warning: the
+ * row ships checked, and asking the user to distrust a row that is on by
+ * default is the kind of label that gets read once and never again. What it
+ * has to convey is one thing — nobody said this number, so glance at it.
+ *
+ * Lives beside the other shared wordings because both screens render it and
+ * a guessed number reading as a quoted one on either of them is the failure
+ * this whole flag exists to prevent.
+ */
+export const ESTIMATED_NOTE = 'оценка по описанию — проверьте, если важна точность';
 
 /** Heading and accessible name of the checklist section of the preview. */
 export const CHECKLIST_TITLE = 'Отметки в чек-листах';

@@ -1,9 +1,9 @@
-MSG?=
+M?=
 
 
 f-git:
 	git add .  \
-	&& git commit -m "$(MSG)" \
+	&& git commit -m "$(M)" \
 	&& git push origin main
 
 up:
@@ -17,5 +17,5 @@ upgrade:
 
 migration:
 	cd habit-tracker/services/backend/alembic \
-	&& uv run alembic -c habit-tracker/services/backend/alembic.ini revision --autogenerate -m "$(MSG)" \
+	&& uv run alembic -c habit-tracker/services/backend/alembic.ini revision --autogenerate -m "$(M)" \
 	&& uv run alembic -c habit-tracker/services/backend/alembic.ini upgrade head

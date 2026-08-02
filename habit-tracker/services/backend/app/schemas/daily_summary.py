@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/75-daily-summary-checklist
-# summary: write-only day-plan DTOs — numeric metrics resolved by id, tick-only checklist ops (no value field, so an untick is unrepresentable), the day's journal text with its append/create collision mode, draft/apply requests
+# [review:need-review] PHASE-01/84-voice-day-input
+# summary: write-only day-plan DTOs — numeric metrics resolved by id (with `estimated` for a number derived from a description rather than heard), tick-only checklist ops (no value field, so an untick is unrepresentable), the day's journal text with its append/create collision mode, draft/apply requests
 from __future__ import annotations
 
 from datetime import date
@@ -32,6 +32,19 @@ class LogMetricOp(BaseModel):
     uncertain: bool = False
     # Set by the model when the value itself looks wrong (300 push-ups).
     implausible: bool = False
+    # Set when nobody said this number: the model derived it from a description,
+    # which in practice means a meal. "Отжался 30 раз" carries its own 30; "съел
+    # борщ" carries a calorie count only if someone estimates it, and typing
+    # four numbers per meal is what stops a food diary from being kept.
+    #
+    # Not the same doubt as `uncertain`, which is about *where* a number goes.
+    # An estimate can be confidently placed in Питание · Калории and still be a
+    # guess about the portion, so it arrives checked and labelled rather than
+    # unchecked: the user's own words already chose the category, and only the
+    # magnitude is open. The flag is display-only past that point — the apply
+    # writes an approved estimate exactly like a quoted number, because a diary
+    # that remembers which of its numbers were guesses cannot sum them.
+    estimated: bool = False
 
 
 class CheckOp(BaseModel):

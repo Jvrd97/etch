@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/75-daily-summary-checklist
-# summary: day-text orchestration — id-bearing catalogues for metrics and checklist boxes, prompt (metrics + ticks + the day's Markdown journal), semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
+# [review:need-review] PHASE-01/84-voice-day-input
+# summary: day-text orchestration — id-bearing catalogues for metrics and checklist boxes, prompt (metrics + ticks + the day's Markdown journal + estimated nutrition from a described meal), semantic validation; JSON parse and the repair pass come from app.llm.plan_flow
 from __future__ import annotations
 
 from datetime import date
@@ -29,7 +29,8 @@ You emit ONLY a JSON object, no prose, no markdown fences, of the shape:
       "value": <number>,
       "source_text": "<the words this number was read from>",
       "uncertain": false,
-      "implausible": false
+      "implausible": false,
+      "estimated": false
     }
   ],
   "checklist": [
@@ -60,7 +61,27 @@ Rules:
 - A `duration` field is stored in WHOLE SECONDS, and nothing converts the number
   after you: "40 минут" is `2400`, "1 час 30 минут" is `5400`, "два часа" is
   `7200`. Never send 40 for forty minutes.
-- Record only what was actually said. Do not infer a number nobody stated.
+- Record only what was actually said. Do not infer a number nobody stated:
+  "побегал" is not five kilometres, because an unspecified run has no knowable
+  length. Nutrition, spelled out below, is the single exception to this rule.
+- NUTRITION IS THAT EXCEPTION. When the retelling names food that was eaten and
+  the catalogue offers fields measuring nutrition — calories, protein, fat,
+  carbohydrates — estimate those numbers from typical portion sizes and emit
+  them as ordinary metrics with `"estimated": true`. "Съел борщ и котлету"
+  states nothing numeric and must still produce a calorie count: a meal is
+  fully describable without numbers, which is exactly why it gets spoken
+  instead of typed. A portion of borscht has a knowable calorie count; an
+  unspecified run does not have a knowable length. That is the whole difference.
+- Estimate the meal as a whole, one metric per nutrition field, every one of
+  them carrying the same `source_text` — the food as it was said. Do not give
+  each dish a row of its own: what gets read back later is the day's total.
+- Estimate a normal portion when none was stated, and follow the stated one when
+  it was ("две тарелки", "полпорции", "200 грамм"). Never round a portion up to
+  a number that sounds better than what was described.
+- Set `estimated` to true ONLY on a number you derived rather than heard. A
+  number the user stated outright — "съел 600 калорий" — is not an estimate,
+  however casually it was phrased, and a push-up count is never an estimate at
+  all: outside nutrition fields, `estimated` is always false.
 - The whole retelling belongs to the date given below, however the user phrased
   it. "вчера", "утром", "в среду" describe when inside that day something
   happened — they never move a metric to another date, and there is no way to

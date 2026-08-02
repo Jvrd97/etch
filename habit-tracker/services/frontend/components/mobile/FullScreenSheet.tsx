@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/49-device-acceptance-checklist
-// summary: full-screen editor sheet of the mobile shell — Cancel / title / Done bar pinned above a single scrolling content column (sized to the visual viewport so an open keyboard never moves the bar out of reach), an in-sheet error banner, and the modal contract its role promises: Escape, initial focus, focus trap, frozen page behind
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/49-device-acceptance-checklist, PHASE-01/84-voice-day-input
+// summary: full-screen editor sheet of the mobile shell — Cancel / title / confirm bar (its label and availability overridable, for a sheet whose confirm is not "Done") pinned above a single scrolling content column sized to the visual viewport, an in-sheet error banner, and the modal contract its role promises: Escape, initial focus, focus trap, frozen page behind
 
 import { useCallback, useEffect, useRef } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -15,6 +15,23 @@ export interface FullScreenSheetProps {
   onDone: () => void;
   /** True while the save is in flight: Done is disabled and announces itself. */
   busy?: boolean;
+  /**
+   * What the confirming action is called here, when "Done" is not what it does.
+   *
+   * The editors this sheet was built for all end the same way — the form is
+   * filled in and committed — but the day-dictation sheet moves through two
+   * steps under one bar button, and a bar reading "Done" over a screen whose
+   * next step is parsing a retelling is simply the wrong promise.
+   */
+  doneLabel?: string;
+  /**
+   * Whether the confirming action is unavailable, separately from `busy`.
+   *
+   * `busy` already disables Done, but it also relabels it as saving, which is a
+   * lie about a step that has not started. A sheet whose first step needs text
+   * before it can do anything needs the disabling without the label.
+   */
+  doneDisabled?: boolean;
   /**
    * Message of the last failed action, shown at the top of the sheet's content.
    *
@@ -80,6 +97,8 @@ export default function FullScreenSheet({
   onCancel,
   onDone,
   busy = false,
+  doneLabel = DONE_LABEL,
+  doneDisabled = false,
   error = null,
   onDismissError,
   children,
@@ -90,7 +109,7 @@ export default function FullScreenSheet({
     event.preventDefault();
     // Disabling Done covers the click; this covers Enter (and "Go" on a mobile
     // keyboard), which submits the form without touching the button.
-    if (busy) return;
+    if (busy || doneDisabled) return;
     onDone();
   };
 
@@ -201,12 +220,12 @@ export default function FullScreenSheet({
           </h2>
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || doneDisabled}
             onMouseDown={keepFocusInField}
             style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
             className="px-2 text-[15px] font-semibold text-lime transition-opacity duration-200 disabled:opacity-50"
           >
-            {busy ? DONE_BUSY_LABEL : DONE_LABEL}
+            {busy ? DONE_BUSY_LABEL : doneLabel}
           </button>
         </div>
 

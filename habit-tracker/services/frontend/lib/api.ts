@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/75-daily-summary-checklist
+// [review:need-review] PHASE-01/84-voice-day-input
 // summary: dailySummaryAPI (draft/apply) + the write-only day-plan types — metrics, tick-only checklist ops, the journal op with its append/create/replace mode, and the apply's Idempotency-Key
 
 // Relative by default: requests go to the same origin that served the page and
@@ -459,6 +459,21 @@ export interface LogMetricOp {
   uncertain: boolean;
   /** The number itself looks wrong — the row arrives unchecked. */
   implausible: boolean;
+  /**
+   * Nobody said this number: the model derived it from a description, which in
+   * practice means a meal. "Отжался 30 раз" carries its own 30; "съел борщ"
+   * carries a calorie count only if something estimates it.
+   *
+   * Not the doubt `uncertain` carries. That one is about where a number goes,
+   * and an estimate can be confidently placed in Питание · Калории while still
+   * being a guess about the portion — so an estimated row arrives checked, like
+   * any confidently placed metric, and says on its face that it is an estimate.
+   *
+   * Optional on the wire while a frontend can outrun its backend: a draft from
+   * before the flag existed reads as "the user said it", which is what every
+   * metric written then actually was.
+   */
+  estimated?: boolean;
 }
 
 /**

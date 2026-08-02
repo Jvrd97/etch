@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/75-daily-summary-checklist
-// summary: desktop day-summary screen — markup only; the text/date/plan/checklist/journal/apply flow lives in useDailySummary, which /m/daily-summary renders with its own layout
+// [review:need-review] PHASE-01/84-voice-day-input
+// summary: desktop day-summary screen — markup only; the flow lives in useDailySummary, and a metric the model estimated rather than heard says so on its row
 
 import { useRouter } from 'next/navigation';
 import { CheckSquare, HelpCircle, Sparkles } from 'lucide-react';
@@ -8,6 +8,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import {
   CHECKLIST_TITLE,
+  ESTIMATED_NOTE,
   JOURNAL_REPLACE_LABEL,
   UNRESOLVED_TITLE,
   checkCheckboxLabel,
@@ -47,6 +48,13 @@ function MetricRow({
           <p className="text-[13px] text-text-disabled mt-1">
             {metric.value} · {label.categoryName} · {label.fieldName}
           </p>
+          {/* Not the danger styling of the two flags below: an estimate is the
+              normal outcome of describing a meal, and the same sentence as on
+              the mobile card, because a guessed number must never read as a
+              quoted one on either screen. */}
+          {metric.estimated && (
+            <p className="text-[13px] text-text-secondary mt-1">{ESTIMATED_NOTE}</p>
+          )}
           {(metric.uncertain || metric.implausible) && (
             <p className="text-[13px] text-danger mt-1">
               {metric.implausible

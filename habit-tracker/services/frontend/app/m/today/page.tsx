@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor for today's record in that category
+// [review:need-review] PHASE-01/84-voice-day-input
+// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -8,12 +8,21 @@ import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
+import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
 import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 import { useToday } from '@/hooks/useToday';
-import { Check, Sun } from 'lucide-react';
+import { Check, Mic, Sun } from 'lucide-react';
+
+/**
+ * Accessible name of the control that opens the dictation sheet.
+ *
+ * Exported because the test asserts on it, and named exports out of an App
+ * Router `page.tsx` are otherwise a contract Next does not promise to keep.
+ */
+export const TELL_DAY_LABEL = 'Рассказать день голосом';
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -45,6 +54,7 @@ export default function MobileTodayPage() {
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one sheet can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
+  const [dictating, setDictating] = useState(false);
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -59,6 +69,22 @@ export default function MobileTodayPage() {
       <p className="text-sm text-text-secondary">{date}</p>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      {/* Above the sections rather than beside one of them: dictation fills in
+          the whole day — several categories, the checklist and the day's text
+          together — so it belongs to the screen, not to any card on it. It
+          stays offered even when there is nothing to track yet, because a
+          spoken day is also the fastest way to find out what is missing. */}
+      <button
+        type="button"
+        onClick={() => setDictating(true)}
+        aria-label={TELL_DAY_LABEL}
+        style={{ minHeight: TAP_TARGET_PX }}
+        className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-transform duration-200 active:scale-95"
+      >
+        <Mic className="w-4 h-4 shrink-0" strokeWidth={2} />
+        Рассказать день
+      </button>
 
       {nothingToTrack ? (
         <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
@@ -141,6 +167,19 @@ export default function MobileTodayPage() {
             </section>
           )}
         </>
+      )}
+
+      {dictating && (
+        <VoiceDaySheet
+          onClose={() => setDictating(false)}
+          // A dictated day lands in the very categories this screen is
+          // showing, so the sheet closing onto stale totals is how the same
+          // lunch gets logged twice.
+          onApplied={() => {
+            setDictating(false);
+            void reload();
+          }}
+        />
       )}
 
       {editing && (
