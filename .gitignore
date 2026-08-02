@@ -11,3 +11,4 @@ refs/
 
 # Generated knowledge graph (graphify)
 graphify-out/
+docs/design/
