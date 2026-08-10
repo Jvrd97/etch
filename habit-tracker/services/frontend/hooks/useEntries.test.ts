@@ -68,6 +68,11 @@ mock.module('@/lib/api', () => ({
     update: () => Promise.resolve(TODAY_ENTRY),
     delete: () => Promise.resolve(undefined),
   },
+  journalAPI: {
+    getAll: () => Promise.resolve({ items: [], total: 0 }),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 

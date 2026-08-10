@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/39-server-idempotency-key-entries
-# summary: POST /entries honours Idempotency-Key header - replay returns original entry (200), no dup
+# [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+# summary: GET /entries takes `sort` (entry_date_desc default, created_at_desc for "last written"); POST still honours Idempotency-Key
 from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -11,7 +11,13 @@ from app.crud import category as category_crud
 from app.crud import entry as entry_crud
 from app.crud.category import CHECKLIST_DISPLAY_MODE
 from app.models import Entry
-from app.schemas import ChecklistUpsertRequest, EntryCreate, EntryUpdate, EntryResponse
+from app.schemas import (
+    ChecklistUpsertRequest,
+    EntryCreate,
+    EntrySort,
+    EntryUpdate,
+    EntryResponse,
+)
 
 router = APIRouter(prefix="/entries", tags=["entries"])
 
@@ -23,6 +29,7 @@ async def get_entries(
     category_id: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    sort: EntrySort = EntrySort.ENTRY_DATE_DESC,
     db: AsyncSession = Depends(get_db),
 ) -> list[Entry]:
     """
@@ -33,10 +40,13 @@ async def get_entries(
     - **category_id**: фильтр по категории
     - **start_date**: начальная дата (формат: YYYY-MM-DD)
     - **end_date**: конечная дата (формат: YYYY-MM-DD)
+    - **sort**: `entry_date_desc` (по умолчанию, дата события) либо
+      `created_at_desc` (время сохранения — «что записано последним»)
 
     Примеры:
     - `/api/v1/entries?category_id=1` - все записи для категории 1
     - `/api/v1/entries?start_date=2024-01-01&end_date=2024-01-31` - записи за январь
+    - `/api/v1/entries?sort=created_at_desc&limit=1` - последняя сохранённая запись
     """
     entries = await entry_crud.get_entries(
         db,
@@ -45,6 +55,7 @@ async def get_entries(
         category_id=category_id,
         start_date=start_date,
         end_date=end_date,
+        sort=sort,
     )
     return entries
 

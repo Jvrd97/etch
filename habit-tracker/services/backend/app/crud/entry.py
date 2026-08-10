@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/75-daily-summary-checklist
-# summary: entry CRUD — idempotency-key lookup, plus the checklist trio: checklist_entry_id (the one rule for "the day's entry"), get_checklist_state reading that entry's ticks and the transaction-free upsert_checklist_values the day-summary apply reuses
+# [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+# summary: get_entries takes the EntrySort ordering (created_at desc tie-broken by id); the rest is the existing entry CRUD — idempotency-key lookup, plus the checklist trio: checklist_entry_id (the one rule for "the day's entry"), get_checklist_state reading that entry's ticks and the transaction-free upsert_checklist_values the day-summary apply reuses
 from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.crud.values import is_true_value
 from app.models import Entry, EntryValue, Field, FieldType
-from app.schemas import EntryCreate, EntryUpdate
+from app.schemas import EntryCreate, EntrySort, EntryUpdate
 
 # How this module *writes* a box into `entry_values.value`, which is text for
 # every field type. Reading is not the mirror of it: `POST /entries` stores the
@@ -34,6 +34,7 @@ async def get_entries(
     category_id: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    sort: EntrySort = EntrySort.ENTRY_DATE_DESC,
 ) -> list[Entry]:
     """
     Получить список записей с фильтрацией.
@@ -42,6 +43,13 @@ async def get_entries(
         category_id: Фильтр по категории
         start_date: Начальная дата
         end_date: Конечная дата
+        sort: Порядок выдачи (см. `EntrySort`); по умолчанию — прежний,
+            по дате события
+
+    При сортировке по времени записи добавляется вторичный ключ `id desc`:
+    `created_at` ставится сервером с точностью базы, и две записи, сохранённые
+    в одну секунду, иначе возвращались бы в произвольном порядке — «последняя
+    запись» на дашборде прыгала бы между ними от запроса к запросу.
     """
     query = select(Entry).options(selectinload(Entry.values))
 
@@ -57,7 +65,12 @@ async def get_entries(
     if filters:
         query = query.where(and_(*filters))
 
-    query = query.offset(skip).limit(limit).order_by(Entry.entry_date.desc())
+    if sort is EntrySort.CREATED_AT_DESC:
+        query = query.order_by(Entry.created_at.desc(), Entry.id.desc())
+    else:
+        query = query.order_by(Entry.entry_date.desc())
+
+    query = query.offset(skip).limit(limit)
 
     result = await db.execute(query)
     return list(result.scalars().all())

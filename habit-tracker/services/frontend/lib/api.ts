@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/84-voice-day-input
-// summary: dailySummaryAPI (draft/apply) + the write-only day-plan types — metrics, tick-only checklist ops, the journal op with its append/create/replace mode, and the apply's Idempotency-Key
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -94,6 +94,16 @@ export const categoriesAPI = {
   },
 };
 
+/**
+ * Ordering of `GET /entries`.
+ *
+ * `entry_date_desc` answers "what happened later" and is the backend default,
+ * so omitting the parameter keeps every existing call unchanged.
+ * `created_at_desc` answers "what was written last" — the only way to ask for
+ * the most recent record without reading the whole list to find it.
+ */
+export type EntrySort = 'entry_date_desc' | 'created_at_desc';
+
 // Entries API
 export const entriesAPI = {
   getAll: async (params?: {
@@ -102,6 +112,7 @@ export const entriesAPI = {
     endDate?: string;
     skip?: number;
     limit?: number;
+    sort?: EntrySort;
   }) => {
     const query = new URLSearchParams();
     if (params?.categoryId) query.append('category_id', params.categoryId.toString());
@@ -109,6 +120,7 @@ export const entriesAPI = {
     if (params?.endDate) query.append('end_date', params.endDate);
     if (params?.skip) query.append('skip', params.skip.toString());
     if (params?.limit) query.append('limit', params.limit.toString());
+    if (params?.sort) query.append('sort', params.sort);
 
     return fetcher<Entry[]>(`/entries?${query.toString()}`);
   },

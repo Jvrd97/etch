@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: re-export the Health DTOs alongside the existing schemas
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-01/73-dashboard-hero-today-ring
+# summary: re-export the Health DTOs and EntrySort alongside the existing schemas
 from app.schemas.daily_summary import (
     DailySummaryApplyRequest,
     DailySummaryApplyResponse,
@@ -19,6 +19,7 @@ from app.schemas.category import (
 from app.schemas.entry import (
     ChecklistUpsertRequest,
     EntryCreate,
+    EntrySort,
     EntryUpdate,
     EntryResponse,
     EntryValueCreate,
@@ -74,6 +75,7 @@ __all__ = [
     "FieldResponse",
     "ChecklistUpsertRequest",
     "EntryCreate",
+    "EntrySort",
     "EntryUpdate",
     "EntryResponse",
     "EntryValueCreate",

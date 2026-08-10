@@ -1,14 +1,38 @@
-// [review:need-review] PHASE-01/73-category-field-reorder
-// summary: shared UI constants used by both shells — touch target size, the editor field styling including the field-row reorder buttons, the human labels of the category enums and the accessible names of the mobile editor sheets
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// summary: shared UI constants used by both shells — touch target, editor field styling, category enum labels, mobile sheet names, and the dashboard hero's wording (ring caption, empty day, last-entry headline)
 
 import type {
   CategoryDisplayMode,
   CategoryStreakMode,
   FieldCreate,
 } from '@/lib/api';
+import type { HeroLastEntry } from '@/lib/dashboard-stats';
 
 /** Apple HIG minimum touch target, in CSS px. */
 export const TAP_TARGET_PX = 44;
+
+/**
+ * Caption under the hero ring. It names the day on purpose: the number inside
+ * the ring counts today, and a bare "entries" is how the old ring came to read
+ * as a lifetime total.
+ */
+export const ENTRIES_TODAY_LABEL = 'entries today';
+
+/** Hero headline on a day nothing has been written yet. */
+export const NO_ENTRIES_YET = 'Nothing logged today yet';
+
+/**
+ * The hero's headline for the last thing written: `Last entry: Pushups 30`.
+ *
+ * The value is appended bare, and is allowed to be absent. Units arrive with
+ * #75 and are not part of the entry yet, so the line has to read correctly with
+ * a naked number now and keep reading correctly once a unit joins it.
+ */
+export function heroLastEntryLine(lastEntry: HeroLastEntry | null): string {
+  if (lastEntry === null) return NO_ENTRIES_YET;
+  const value = lastEntry.value === null ? '' : ` ${lastEntry.value}`;
+  return `Last entry: ${lastEntry.categoryName}${value}`;
+}
 
 /**
  * Colour a category starts on, and the swatch drawn for one that carries none.

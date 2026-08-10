@@ -1,7 +1,28 @@
-# [review:need-review] PHASE-01/16-checklist-upsert-today-page
-# summary: added ChecklistUpsertRequest ({category_id, entry_date, values: {field_id: bool}})
+# [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+# summary: added EntrySort — the ordering vocabulary of GET /entries (event date vs write time)
+from enum import Enum
+
 from pydantic import BaseModel
 from datetime import datetime, date
+
+
+class EntrySort(str, Enum):
+    """
+    Порядок выдачи `GET /entries`.
+
+    Два порядка — это два разных вопроса. `entry_date_desc` отвечает «что
+    происходило позже» и остаётся значением по умолчанию, чтобы существующие
+    вызовы не поменяли выдачу. `created_at_desc` отвечает «что записано
+    последним»: дашборду нужна именно последняя сохранённая запись, а она может
+    быть датирована вчера, если день заносят вечером.
+
+    Направление зашито в само значение: сортировка по возрастанию ни одному
+    экрану не нужна, а отдельный параметр `order` завёл бы четыре комбинации,
+    из которых осмысленны две.
+    """
+
+    ENTRY_DATE_DESC = "entry_date_desc"
+    CREATED_AT_DESC = "created_at_desc"
 
 
 class EntryValueCreate(BaseModel):

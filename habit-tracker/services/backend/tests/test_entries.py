@@ -2,6 +2,8 @@
 Tests for Entry CRUD operations.
 """
 
+# [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+# summary: added TestEntrySort — the default order is unchanged, created_at_desc returns the last written entry first, limit narrows it to one, and an unknown sort is a 422
 import pytest
 from httpx import AsyncClient
 from datetime import date
@@ -246,6 +248,74 @@ class TestEntryRead:
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 3
+
+
+@pytest.mark.asyncio
+class TestEntrySort:
+    """Ordering of `GET /entries` — write order vs event order."""
+
+    async def _create_descending_dates(
+        self, client: AsyncClient, category: dict
+    ) -> list[int]:
+        """
+        Three entries written oldest-created first, dated newest-event first.
+
+        Написание в обратном порядке к датам — единственный способ отличить два
+        порядка: при совпадающем направлении оба вернули бы одну и ту же выдачу,
+        и тест прошёл бы, даже если сортировка не переключилась.
+        """
+        field_id = category["fields"][0]["id"]
+        created_ids = []
+        for entry_date in ("2024-01-17", "2024-01-16", "2024-01-15"):
+            response = await client.post(
+                "/api/v1/entries",
+                json={
+                    "category_id": category["id"],
+                    "entry_date": entry_date,
+                    "values": [{"field_id": field_id, "value": "8"}],
+                },
+            )
+            created_ids.append(response.json()["id"])
+        return created_ids
+
+    async def test_default_order_is_by_entry_date(
+        self, client: AsyncClient, sample_category: dict
+    ):
+        """Без параметров выдача остаётся прежней: entry_date по убыванию."""
+        created_ids = await self._create_descending_dates(client, sample_category)
+
+        response = await client.get("/api/v1/entries")
+
+        assert response.status_code == 200
+        assert [e["id"] for e in response.json()] == created_ids
+
+    async def test_sort_by_created_at_returns_last_written_first(
+        self, client: AsyncClient, sample_category: dict
+    ):
+        """`sort=created_at_desc` ставит последнюю сохранённую запись первой."""
+        created_ids = await self._create_descending_dates(client, sample_category)
+
+        response = await client.get("/api/v1/entries?sort=created_at_desc")
+
+        assert response.status_code == 200
+        assert [e["id"] for e in response.json()] == list(reversed(created_ids))
+
+    async def test_sort_by_created_at_with_limit_one(
+        self, client: AsyncClient, sample_category: dict
+    ):
+        """Лимит поверх сортировки отдаёт ровно последнюю сохранённую запись."""
+        created_ids = await self._create_descending_dates(client, sample_category)
+
+        response = await client.get("/api/v1/entries?sort=created_at_desc&limit=1")
+
+        assert response.status_code == 200
+        assert [e["id"] for e in response.json()] == [created_ids[-1]]
+
+    async def test_unknown_sort_is_rejected(self, client: AsyncClient):
+        """Неизвестное значение сортировки — 422, а не молчаливый фолбэк."""
+        response = await client.get("/api/v1/entries?sort=whatever")
+
+        assert response.status_code == 422
 
 
 @pytest.mark.asyncio

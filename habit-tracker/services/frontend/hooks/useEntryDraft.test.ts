@@ -80,6 +80,11 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(),
     upsertChecklist: () => Promise.resolve({}),
   },
+  journalAPI: {
+    getAll: () => Promise.resolve({ items: [], total: 0 }),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 

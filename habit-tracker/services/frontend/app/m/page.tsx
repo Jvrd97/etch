@@ -1,13 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/43-mobile-dashboard
-// summary: mobile Dashboard at the bare /m — same data/insight flow as the desktop page via useDashboard, laid out in a single column so nothing scrolls sideways on a phone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// summary: mobile Dashboard at the bare /m — hero card shows today's ring, the last written entry with its time of writing and the tip of the day, in the same wording as the desktop shell
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
 import Markdown from '@/components/Markdown';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
-import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { ENTRIES_TODAY_LABEL, heroLastEntryLine, TAP_TARGET_PX } from '@/lib/ui-constants';
 import { NEW_ENTRY_QUERY } from '@/lib/routes';
 import {
   ArrowRight,
@@ -27,7 +27,7 @@ const MOBILE_RING_SIZE_PX = 128;
 export default function MobileDashboardPage() {
   const {
     stats,
-    ringProgress,
+    hero,
     loading,
     error,
     insight,
@@ -57,22 +57,24 @@ export default function MobileDashboardPage() {
       {/* Hero score card */}
       <div className="bg-card border border-white/5 rounded-3xl p-6 flex flex-col items-center gap-5 text-center">
         <div className="relative flex-shrink-0">
-          <ProgressRing progress={ringProgress} size={MOBILE_RING_SIZE_PX} />
+          <ProgressRing progress={hero.ringProgress} size={MOBILE_RING_SIZE_PX} />
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <span className="text-3xl font-bold text-text-primary leading-none">
-              {stats.entriesCount}
+              {hero.entriesToday}
             </span>
-            <span className="text-[12px] font-medium text-text-secondary mt-1">entries</span>
+            <span className="text-[12px] font-medium text-text-secondary mt-1">
+              {ENTRIES_TODAY_LABEL}
+            </span>
           </div>
         </div>
         <div>
-          <p className="text-[12px] font-medium uppercase tracking-widest text-lime">
-            All good, keep going
+          <p className="text-base font-semibold text-text-primary">
+            {heroLastEntryLine(hero.lastEntry)}
           </p>
-          <p className="text-text-secondary mt-2 text-sm px-2">
-            {stats.categoriesCount} categories, {stats.journalCount} journal notes. Log something
-            today to keep the streak alive.
-          </p>
+          {hero.lastEntry !== null && (
+            <p className="text-[12px] text-text-disabled mt-1">{hero.lastEntry.loggedAgo}</p>
+          )}
+          <p className="text-text-secondary mt-2 text-sm px-2">{hero.tip.text}</p>
         </div>
         <Link
           href={`/entries${NEW_ENTRY_QUERY}`}

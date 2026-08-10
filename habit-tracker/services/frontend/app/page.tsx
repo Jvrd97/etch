@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/43-mobile-dashboard
-// summary: desktop Dashboard — markup only, all data/insight state moved to hooks/useDashboard so /m shares it; shared Markdown renderer for AI разбор, Log entry links open /entries?new=1
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// summary: desktop Dashboard — hero card now shows today's ring, the last written entry with its time of writing, and the tip of the day; the rest of the page is unchanged markup over useDashboard
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -20,11 +20,12 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { NEW_ENTRY_QUERY } from '@/lib/routes';
+import { ENTRIES_TODAY_LABEL, heroLastEntryLine } from '@/lib/ui-constants';
 
 export default function Dashboard() {
   const {
     stats,
-    ringProgress,
+    hero,
     loading,
     error,
     insight,
@@ -77,25 +78,25 @@ export default function Dashboard() {
       {/* Hero score card */}
       <div className="bg-card border border-white/5 rounded-3xl p-8 flex flex-col sm:flex-row items-center gap-8">
         <div className="relative flex-shrink-0">
-          <ProgressRing progress={ringProgress} />
+          <ProgressRing progress={hero.ringProgress} />
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <span className="text-4xl font-bold text-text-primary leading-none">
-              {stats.entriesCount}
+              {hero.entriesToday}
             </span>
-            <span className="text-[13px] font-medium text-text-secondary mt-1">entries</span>
+            <span className="text-[13px] font-medium text-text-secondary mt-1">
+              {ENTRIES_TODAY_LABEL}
+            </span>
           </div>
         </div>
         <div className="flex-1 text-center sm:text-left">
-          <p className="text-[13px] font-medium uppercase tracking-widest text-lime">
-            All good, keep going
-          </p>
+          <p className="text-[13px] font-medium uppercase tracking-widest text-lime">Today</p>
           <h2 className="text-[22px] font-semibold text-text-primary mt-2">
-            Your recent tracking activity
+            {heroLastEntryLine(hero.lastEntry)}
           </h2>
-          <p className="text-text-secondary mt-2 text-base">
-            {stats.categoriesCount} categories, {stats.journalCount} journal notes. Log something
-            today to keep the streak alive.
-          </p>
+          {hero.lastEntry !== null && (
+            <p className="text-[13px] text-text-disabled mt-1">{hero.lastEntry.loggedAgo}</p>
+          )}
+          <p className="text-text-secondary mt-2 text-base">{hero.tip.text}</p>
           <Link
             href={`/entries${NEW_ENTRY_QUERY}`}
             className="inline-flex items-center gap-2 mt-5 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
