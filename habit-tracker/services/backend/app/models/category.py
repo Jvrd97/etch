@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-# summary: + show_in_today (tri-state: NULL = decide by heuristic, true/false = user override)
+# [review:need-review] PHASE-01/73-category-field-reorder
+# summary: Category + show_in_today (tri-state: NULL = decide by heuristic, true/false = user override); fields relationship ordered by (order, id), so a reorder is visible in every response
 from __future__ import annotations
 
 from datetime import datetime
@@ -52,8 +52,15 @@ class Category(Base):
     )
 
     # Relationships
+    # order_by — часть контракта, а не украшение: `order` задаёт порядок полей
+    # в UI, а без сортировки список приходит в порядке строк таблицы.
+    # Перестановка полей меняет только `order` (id сохраняются), поэтому без
+    # order_by ответ выглядел бы так, будто ничего не двигали.
+    # `Field.id` — тай-брейк: у полей, созданных одним батчем, `order` совпадает.
     fields: Mapped[list[Field]] = relationship(
-        back_populates="category", cascade="all, delete-orphan"
+        back_populates="category",
+        cascade="all, delete-orphan",
+        order_by="(Field.order, Field.id)",
     )
     entries: Mapped[list[Entry]] = relationship(
         back_populates="category", cascade="all, delete-orphan"

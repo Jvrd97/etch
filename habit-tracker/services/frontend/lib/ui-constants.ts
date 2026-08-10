@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: shared UI constants used by both shells — touch target size, the editor field styling, the human labels of the category enums and the accessible names of the mobile editor sheets
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: shared UI constants used by both shells — touch target size, the editor field styling including the field-row reorder buttons, the human labels of the category enums and the accessible names of the mobile editor sheets
 
 import type {
   CategoryDisplayMode,
@@ -42,6 +42,17 @@ export const entryInputClass =
  */
 export const compactInputClass =
   'w-full px-3 py-2.5 bg-card border border-white/10 rounded-2xl text-sm text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25';
+
+/**
+ * The up/down button that moves a field row within the category editor.
+ *
+ * Quiet by design: reordering is a rearrangement, not a destructive action, so
+ * the arrows read as secondary next to Remove. The disabled state has to look
+ * inert rather than merely dim — at the ends of the list it is the only signal
+ * that the press did nothing.
+ */
+export const reorderButtonClass =
+  'inline-flex items-center justify-center rounded-xl text-text-secondary transition-colors duration-200 hover:text-text-primary disabled:text-text-disabled disabled:cursor-not-allowed disabled:hover:text-text-disabled';
 
 /**
  * Human labels of the category enums and of the field types.

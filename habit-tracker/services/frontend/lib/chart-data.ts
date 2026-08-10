@@ -1,8 +1,9 @@
-// [review:need-review] PHASE-01/23-checklist-bar-streaks
+// [review:need-review] PHASE-01/23-checklist-bar-streaks, PHASE-01/73-category-field-reorder
 // summary: pure helpers for the category chart - series/axis/unit assignment, cell parsing, per-day points; sliceByPeriod made generic for checklist bar points
 
 import type { Field, TableDay } from './api';
 import { toISODate } from './date';
+import { orderedFields } from './today-categories';
 
 export type ChartPeriod = '7d' | '30d' | '90d' | 'all';
 
@@ -54,9 +55,9 @@ type ChartableFieldType = 'number' | 'time';
 
 /** Fields that can be plotted as lines, in field order. */
 export function chartableFields(fields: Field[]): Field[] {
-  return fields
-    .filter((f) => f.field_type === 'number' || f.field_type === 'time')
-    .sort((a, b) => a.order - b.order || a.id - b.id);
+  return orderedFields(fields).filter(
+    (f) => f.field_type === 'number' || f.field_type === 'time'
+  );
 }
 
 /** Unit label: time fields are minutes; number fields use "(unit)" from the name if present. */

@@ -1,7 +1,8 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/73-category-field-reorder
 // summary: pure conversions between an entry's stored values and what the UI needs — the field-id-keyed draft the editors hold and the field-named list the cards render; shared by useEntryDraft, EntryCard and the mobile list
 
 import type { Category, Entry, EntryValueCreate } from './api';
+import { orderedFields } from './today-categories';
 
 /** What an entry editor holds while the user types: field id -> raw string value. */
 export type EntryDraftValues = Record<number, string>;
@@ -27,7 +28,7 @@ export function toEntryValues(
   category: Category,
   values: EntryDraftValues
 ): EntryValueCreate[] {
-  return category.fields.map((field) => ({
+  return orderedFields(category).map((field) => ({
     field_id: field.id,
     value: values[field.id] || '',
   }));

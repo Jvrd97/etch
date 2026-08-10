@@ -1,11 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder
 // summary: reusable entry card — draft state and saving come from useEntryDraft, value labelling from lib/entry-values, field inputs from components/FieldValueInput, colour fallback from lib/ui-constants
 
 import { useState } from 'react';
 import { Pencil, X } from 'lucide-react';
 import { Category, Entry, entriesAPI } from '@/lib/api';
 import { labelledValues } from '@/lib/entry-values';
+import { orderedFields } from '@/lib/today-categories';
 import { DEFAULT_CATEGORY_COLOR, entryInputClass } from '@/lib/ui-constants';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -140,7 +141,7 @@ function EntryEditForm({ entry, category, onCancel, onSaved }: EntryEditFormProp
         />
       </div>
 
-      {category.fields.map((field) => (
+      {orderedFields(category).map((field) => (
         <div key={field.id}>
           <label className="block text-[13px] font-medium text-text-secondary mb-2">
             {field.name} {field.is_required && '*'}

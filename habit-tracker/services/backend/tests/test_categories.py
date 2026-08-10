@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-# summary: + show_in_today tri-state coverage (default null, explicit pin/hide, explicit null returns to the heuristic, untouched by unrelated patches)
+# [review:need-review] PHASE-01/73-category-field-reorder
+# summary: category CRUD coverage — show_in_today tri-state, field diff-sync by id, and a reorder that has to be visible in every response that carries fields
 
 import logging
 
@@ -440,6 +440,66 @@ class TestCategoryUpdate:
         fields = {f["name"]: f for f in response.json()["fields"]}
         assert set(fields) == {"Vitamin D3", "Magnesium"}
         assert fields["Vitamin D3"]["id"] == d3_id  # same row, kept its id
+
+    async def test_reordered_fields_come_back_in_the_new_order(
+        self, client: AsyncClient
+    ):
+        """PATCH меняет только `order` — и ответы отдают поля уже в этом порядке.
+
+        Перестановка не трогает ни id, ни порядок строк в таблице, поэтому без
+        сортировки в relationship клиент получал бы прежнюю последовательность и
+        решил бы, что сохранение не прошло.
+        """
+        create_response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Sleep",
+                "fields": [
+                    {"name": "Hours", "field_type": "number", "order": 0},
+                    {"name": "Quality", "field_type": "text", "order": 1},
+                ],
+            },
+        )
+        category = create_response.json()
+        assert [f["name"] for f in category["fields"]] == ["Hours", "Quality"]
+        hours_id, quality_id = (f["id"] for f in category["fields"])
+
+        patch_response = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={
+                "fields": [
+                    {
+                        "id": quality_id,
+                        "name": "Quality",
+                        "field_type": "text",
+                        "order": 0,
+                    },
+                    {
+                        "id": hours_id,
+                        "name": "Hours",
+                        "field_type": "number",
+                        "order": 1,
+                    },
+                ]
+            },
+        )
+        assert patch_response.status_code == 200
+        assert [f["id"] for f in patch_response.json()["fields"]] == [
+            quality_id,
+            hours_id,
+        ]
+
+        # Перечитываем отдельным запросом: порядок должен пережить рефетч, а не
+        # быть побочным эффектом порядка элементов в теле PATCH.
+        get_response = await client.get(f"/api/v1/categories/{category['id']}")
+        fields = get_response.json()["fields"]
+        assert [f["name"] for f in fields] == ["Quality", "Hours"]
+        assert [f["order"] for f in fields] == [0, 1]
+
+        # И в списке категорий — им пользуется экран Today.
+        list_response = await client.get("/api/v1/categories")
+        listed = next(c for c in list_response.json() if c["id"] == category["id"])
+        assert [f["name"] for f in listed["fields"]] == ["Quality", "Hours"]
 
     async def test_update_fields_preserves_entry_history(self, client: AsyncClient):
         """Renaming a field (same id) keeps existing entry values intact."""

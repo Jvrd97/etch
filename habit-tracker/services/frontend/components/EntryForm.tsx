@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/73-category-field-reorder
 // summary: desktop entry modal — markup over useEntryDraft; now edits an existing entry as well as creating one, which is what a Today card tap opens
 
 import { X } from 'lucide-react';
@@ -7,6 +7,7 @@ import { Category, Entry } from '@/lib/api';
 import { FieldValueInput } from '@/components/FieldValueInput';
 import ErrorAlert from '@/components/ErrorAlert';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
+import { orderedFields } from '@/lib/today-categories';
 import { entryInputClass } from '@/lib/ui-constants';
 
 export interface EntryFormProps {
@@ -106,7 +107,7 @@ export default function EntryForm({
           {selectedCategory && (
             <div className="space-y-4">
               <h3 className="text-lg font-medium text-text-primary">Field values</h3>
-              {selectedCategory.fields.map((field) => (
+              {orderedFields(selectedCategory).map((field) => (
                 <div key={field.id}>
                   <label className="block text-[13px] font-medium text-text-secondary mb-2">
                     {field.name} {field.is_required && '*'}

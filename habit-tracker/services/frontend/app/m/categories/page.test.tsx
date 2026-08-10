@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: integration tests for /m/categories — create a category, add and remove fields and have the edits actually persist, plus the layout rule that no form control sits two-in-a-row on a narrow screen
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: integration tests for /m/categories — create a category, add, remove and reorder fields and have the edits actually persist, the announcement and focus a reorder owes the keyboard and the screen reader, plus the layout rules on a narrow screen: no form control two-in-a-row, and a field card's action row wrapping instead of shrinking its 44px targets
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -73,7 +73,11 @@ mock.module('@/lib/api', () => ({
 }));
 
 const { default: MobileCategoriesPage } = await import('./page');
-const { NEW_CATEGORY_SHEET_TITLE } = await import('@/lib/ui-constants');
+const { NEW_CATEGORY_SHEET_TITLE, TAP_TARGET_PX } = await import('@/lib/ui-constants');
+const { fieldMovedMessage } = await import('@/hooks/useCategories');
+
+/** Narrowest phone this shell is expected to survive. */
+const NARROW_SCREEN_PX = 320;
 
 /** Render the screen and wait for the first load to settle. */
 async function renderPage() {
@@ -147,6 +151,112 @@ describe('/m/categories', () => {
     await waitFor(() => expect(updateCategory).toHaveBeenCalled());
     const payload = updateCategory.mock.calls[0][1] as { fields: { id?: number }[] };
     expect(payload.fields).toEqual([expect.objectContaining({ id: 8, order: 0 })]);
+  });
+
+  it('moves a field up and saves the new order with the ids intact', async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 2 up' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    const payload = updateCategory.mock.calls[0][1] as { fields: { id?: number }[] };
+    // Reordering must not look like a delete-and-recreate to the backend, or
+    // every value logged against the moved field goes with it.
+    expect(payload.fields).toEqual([
+      expect.objectContaining({ id: 8, name: 'Quality', order: 0 }),
+      expect.objectContaining({ id: 7, name: 'Hours', order: 1 }),
+    ]);
+  });
+
+  it('moves a field back down again', async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 2 up' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 1 down' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    const payload = updateCategory.mock.calls[0][1] as { fields: { id?: number }[] };
+    expect(payload.fields.map((f) => f.id)).toEqual([7, 8]);
+  });
+
+  it('has nowhere to go at either end of the field list', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    const firstUp = screen.getByRole('button', { name: 'Move field 1 up' }) as HTMLButtonElement;
+    const lastDown = screen.getByRole('button', {
+      name: 'Move field 2 down',
+    }) as HTMLButtonElement;
+    expect(firstUp.disabled).toBe(true);
+    expect(lastDown.disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Move field 2 up' }) as HTMLButtonElement).disabled
+    ).toBe(false);
+  });
+
+  it('carries the row DOM with the field, so the inputs do not swap contents', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    const secondNameInput = screen.getByLabelText('Field 2 name');
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 2 up' }));
+
+    // Same node now answering to position 1: index-keyed rows would instead
+    // reuse the DOM that already sat there, taking the focus and the caret of
+    // whoever was typing to a different field.
+    expect(screen.getByLabelText('Field 1 name')).toBe(secondNameInput);
+    expect((screen.getByLabelText('Field 1 name') as HTMLInputElement).value).toBe('Quality');
+  });
+
+  it('announces where the moved field landed', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 2 up' }));
+
+    // Without the live region the reorder is silent: the cards swap places and
+    // a screen reader has nothing to report.
+    expect(screen.getByRole('status').textContent).toBe(fieldMovedMessage(1));
+  });
+
+  it('keeps the focus on a button that still does something after a move', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move field 2 up' }));
+
+    // The pressed button travelled with its card to position 1, where "up" is
+    // disabled: leaving focus there strands the keyboard on an inert control,
+    // so it moves to the button that undoes the move.
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Move field 1 down' })
+    );
+  });
+
+  it('lets a field card wrap rather than shrink its tap targets on a 320px screen', async () => {
+    window.innerWidth = NARROW_SCREEN_PX;
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    const actions = ['Move field 1 up', 'Move field 1 down', 'Remove field 1'].map((name) =>
+      screen.getByRole('button', { name })
+    );
+    for (const button of actions) {
+      expect(button.style.minWidth).toBe(`${TAP_TARGET_PX}px`);
+      expect(button.style.minHeight).toBe(`${TAP_TARGET_PX}px`);
+    }
+
+    // Same rule as "no form control two-in-a-row on a narrow screen", one level
+    // down: three 44px targets plus the Required checkbox declare more width
+    // than a 320px screen has left after the sheet's and the card's padding, so
+    // the row that holds them has to be allowed to wrap. Without that the
+    // browser resolves the overflow by squeezing the targets below tap size.
+    const row = actions[0].parentElement?.parentElement;
+    expect(row?.className).toContain('flex-wrap');
   });
 
   it('renames a field without losing its id, so the edit really persists', async () => {

@@ -1,11 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder
 // summary: the mobile shell's single entry editor — the full-screen sheet around useEntryDraft, shared by /m/entries (create and edit) and /m/categories/[id] (quick-add locked to one category)
 
 import { FieldValueInput } from '@/components/FieldValueInput';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
 import type { Category, Entry } from '@/lib/api';
+import { orderedFields } from '@/lib/today-categories';
 import { NEW_ENTRY_SHEET_TITLE, TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 
 /** Shown as the sheet's title when the edited entry points at a category that is gone. */
@@ -106,22 +107,23 @@ export default function EntryEditorSheet({
         />
       </div>
 
-      {category?.fields.map((field) => (
-        <div key={field.id}>
-          <label
-            htmlFor={`entry-field-${field.id}`}
-            className="block text-[13px] font-medium text-text-secondary mb-2"
-          >
-            {field.name} {field.is_required && '*'}
-          </label>
-          <FieldValueInput
-            id={`entry-field-${field.id}`}
-            field={field}
-            value={draft.values[field.id] || ''}
-            onChange={(value) => draft.setValue(field.id, value)}
-          />
-        </div>
-      ))}
+      {category &&
+        orderedFields(category).map((field) => (
+          <div key={field.id}>
+            <label
+              htmlFor={`entry-field-${field.id}`}
+              className="block text-[13px] font-medium text-text-secondary mb-2"
+            >
+              {field.name} {field.is_required && '*'}
+            </label>
+            <FieldValueInput
+              id={`entry-field-${field.id}`}
+              field={field}
+              value={draft.values[field.id] || ''}
+              onChange={(value) => draft.setValue(field.id, value)}
+            />
+          </div>
+        ))}
 
       <div>
         <label

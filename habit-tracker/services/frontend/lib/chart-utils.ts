@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-01/59-previousday-mixed-utc-local
+// [review:need-review] PHASE-01/59-previousday-mixed-utc-local, PHASE-01/73-category-field-reorder
 // summary: chart pure helpers - cumulate() prefix sums; checklist bar data; previousDay stepped on the bare calendar (no timezone) and per-field current streaks
 
 import type { Field, TableDay } from './api';
 import type { ChartPoint } from './chart-data';
 import { ISO_DATE_PAD } from './date';
+import { orderedFields } from './today-categories';
 
 /**
  * Running (prefix) sum for every series key, computed independently per line.
@@ -38,9 +39,7 @@ export interface ChecklistBarPoint {
 
 /** Boolean fields of a checklist category, in field order. */
 export function booleanFields(fields: Field[]): Field[] {
-  return fields
-    .filter((f) => f.field_type === 'boolean')
-    .sort((a, b) => a.order - b.order || a.id - b.id);
+  return orderedFields(fields).filter((f) => f.field_type === 'boolean');
 }
 
 /**

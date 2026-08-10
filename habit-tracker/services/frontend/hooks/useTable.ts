@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/45-mobile-table-sticky-date
+// [review:need-review] PHASE-01/45-mobile-table-sticky-date, PHASE-01/73-category-field-reorder
 // summary: Table-screen state extracted from app/table/page.tsx so the desktop page and /m/table share the same data load, dynamic column building (checklist categories expand to one column per boolean field), tab grouping and optimistic checklist toggle
 
 import { useCallback, useEffect, useState } from 'react';
@@ -14,6 +14,7 @@ import {
   type TableResponse,
 } from '@/lib/api';
 import { toISODate } from '@/lib/date';
+import { orderedFields } from '@/lib/today-categories';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 
 /** How many days of history the table spans. */
@@ -47,9 +48,9 @@ function checklistBooleanFields(
   category: TableCategoryMeta,
   fieldsByCategory: Map<number, Field[]>
 ): Field[] {
-  return (fieldsByCategory.get(category.id) ?? [])
-    .filter((f) => f.field_type === 'boolean')
-    .sort((a, b) => a.order - b.order);
+  return orderedFields(fieldsByCategory.get(category.id) ?? []).filter(
+    (f) => f.field_type === 'boolean'
+  );
 }
 
 /**

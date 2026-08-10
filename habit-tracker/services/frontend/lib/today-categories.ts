@@ -1,20 +1,39 @@
-// [review:need-review] PHASE-01/28-today-avoid-card
-// summary: pure Today-page category partitioning (avoid streak / checklist / quick-form) + field helpers
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: pure Today-page category partitioning (avoid streak / checklist / quick-form) + the field helpers, over `orderedFields` — the one place that knows what "field order" means
 
 import type { Category, Field } from './api';
 
+/**
+ * A category's fields in display order: by `order`, then by `id`.
+ *
+ * The single definition of field order in the frontend. Every screen that lists
+ * fields — the entry editors, the charts, the table columns, the category card,
+ * the editor draft — has to agree on it, or reordering a category shows up on
+ * some of them and not on others, and the user cannot tell which screen is
+ * lying. The `id` tie-break makes the result total: fields created in one batch
+ * share an `order`, and `Array.prototype.sort` only promises stability, not an
+ * order that matches whatever the API happened to serialise.
+ *
+ * Takes a category or a bare field list, because half the callers only ever
+ * have the fields — the table keeps them in a per-category map, the chart
+ * helpers are handed one category's fields already.
+ *
+ * The input is never mutated: `category.fields` is shared state, and sorting it
+ * in place would reorder the list every other component is rendering from.
+ */
+export function orderedFields(source: Category | Field[]): Field[] {
+  const fields = Array.isArray(source) ? source : source.fields;
+  return [...fields].sort((a, b) => a.order - b.order || a.id - b.id);
+}
+
 /** First number field of a category, ordered, or undefined if none. */
 export function firstNumberField(category: Category): Field | undefined {
-  return [...category.fields]
-    .sort((a, b) => a.order - b.order)
-    .find((f) => f.field_type === 'number');
+  return orderedFields(category).find((f) => f.field_type === 'number');
 }
 
 /** Boolean fields of a category, ordered. */
 export function booleanFields(category: Category): Field[] {
-  return [...category.fields]
-    .filter((f) => f.field_type === 'boolean')
-    .sort((a, b) => a.order - b.order);
+  return orderedFields(category).filter((f) => f.field_type === 'boolean');
 }
 
 /** An avoid category plus its optional "how much" number field. */

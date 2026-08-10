@@ -1,18 +1,21 @@
 'use client';
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-01/63-today-card-tap-and-visibility
-// summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, each field card stacked instead of the desktop's two-up grid, and the Today-visibility choice
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: mobile Categories screen — same data as the desktop page via useCategories, editing done in the full-screen sheet with every form control on its own row, each field card stacked instead of the desktop's two-up grid, reorderable through the shared FieldReorderButtons with a live region and a wrapping action row that keeps every 44px target intact on a 320px screen, and the Today-visibility choice
 
 import { useState } from 'react';
 import Link from 'next/link';
 import { ChevronRight, FolderKanban, Pencil, Plus, Trash2, Wand2 } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import FieldReorderButtons from '@/components/FieldReorderButtons';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import {
   DEFAULT_CATEGORY_COLOR,
   useCategories,
   useCategoryDraft,
+  type DraftField,
+  type FieldMoveDirection,
 } from '@/hooks/useCategories';
 import type { Category, CategoryDisplayMode, CategoryStreakMode, FieldCreate } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
@@ -370,16 +373,25 @@ function CategoryEditorSheet({ state, onCancel, onSaved }: CategoryEditorSheetPr
 
       <div>
         <p className="text-[13px] font-medium text-text-secondary mb-3">Fields</p>
+        {/* The reorder is a purely visual event otherwise: the card swaps with
+            its neighbour and nothing says so out loud. */}
+        <p role="status" aria-live="polite" className="sr-only">
+          {draft.moveAnnouncement}
+        </p>
         <div className="space-y-3">
           {draft.fields.map((field, index) => (
             <FieldCard
-              // Index-keyed on purpose: a new row has no id yet, and the list is
-              // only ever appended to or filtered, never reordered.
-              key={index}
+              // Keyed by the draft's own row key rather than the index: the rows
+              // reorder, and an index key would leave React reusing the DOM of
+              // whichever row used to sit here.
+              key={field.key}
               field={field}
               position={index + 1}
+              canMoveUp={index > 0}
+              canMoveDown={index < draft.fields.length - 1}
               onChange={(updates) => draft.updateField(index, updates)}
               onRemove={() => draft.removeField(index)}
+              onMove={(direction) => draft.moveField(index, direction)}
             />
           ))}
         </div>
@@ -401,15 +413,32 @@ function CategoryEditorSheet({ state, onCancel, onSaved }: CategoryEditorSheetPr
 }
 
 interface FieldCardProps {
-  field: FieldCreate;
+  /**
+   * `DraftField`, not `FieldCreate`: the row's identity is part of the contract
+   * between the editor and this component. The parent keys the card by
+   * `field.key`, and a prop type that did not carry it would let a caller pass
+   * a plain payload object whose rows React can only tell apart by position.
+   */
+  field: DraftField;
   /** 1-based position, used for the accessible names of the row's controls. */
   position: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onChange: (updates: Partial<FieldCreate>) => void;
   onRemove: () => void;
+  onMove: (direction: FieldMoveDirection) => void;
 }
 
-/** One field of the category, stacked: name, type, options, required, remove. */
-function FieldCard({ field, position, onChange, onRemove }: FieldCardProps) {
+/** One field of the category, stacked: name, type, options, required, reorder, remove. */
+function FieldCard({
+  field,
+  position,
+  canMoveUp,
+  canMoveDown,
+  onChange,
+  onRemove,
+  onMove,
+}: FieldCardProps) {
   return (
     <div className="bg-surface border border-white/5 rounded-2xl p-3 space-y-3">
       <input
@@ -447,7 +476,12 @@ function FieldCard({ field, position, onChange, onRemove }: FieldCardProps) {
         />
       )}
 
-      <div className="flex items-center justify-between gap-3">
+      {/* Wraps rather than squeezes: the row carries the Required checkbox plus
+          three 44px targets (up, down, Remove), and on a 320px screen the card's
+          own padding leaves them nowhere near enough width to sit side by side.
+          Without the wrap the browser shrinks the targets below the tap size,
+          which is exactly the control the reorder buttons cannot afford to be. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <label
           style={{ minHeight: TAP_TARGET_PX }}
           className="flex items-center gap-2 cursor-pointer"
@@ -460,15 +494,24 @@ function FieldCard({ field, position, onChange, onRemove }: FieldCardProps) {
           />
           <span className="text-sm text-text-secondary">Required</span>
         </label>
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove field ${position}`}
-          style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
-          className="inline-flex items-center justify-center text-danger text-sm font-medium transition-transform duration-200 active:scale-95"
-        >
-          Remove
-        </button>
+        <div className="flex items-center gap-1">
+          <FieldReorderButtons
+            position={position}
+            canMoveUp={canMoveUp}
+            canMoveDown={canMoveDown}
+            onMove={onMove}
+            touch
+          />
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove field ${position}`}
+            style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
+            className="inline-flex items-center justify-center text-danger text-sm font-medium transition-transform duration-200 active:scale-95"
+          >
+            Remove
+          </button>
+        </div>
       </div>
     </div>
   );

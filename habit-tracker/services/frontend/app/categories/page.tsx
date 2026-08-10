@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: desktop Categories page — list/cards layout and the editor modal unchanged, but all of the state (load, layout preference, delete, form draft with the id-carrying field diff-sync) now comes from hooks/useCategories and the enum labels plus field styling from lib/ui-constants, both shared with /m/categories
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: desktop Categories page — list/cards layout and the editor modal, whose field rows are keyed by draft row and reorderable through the shared FieldReorderButtons, with a live region announcing where a moved row landed; all of the state (load, layout preference, delete, form draft with the id-carrying field diff-sync) comes from hooks/useCategories, field order from lib/today-categories and the enum labels plus field styling from lib/ui-constants, all shared with /m/categories
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -12,11 +12,15 @@ import {
 } from '@/lib/api';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
+import FieldReorderButtons from '@/components/FieldReorderButtons';
 import {
   DEFAULT_CATEGORY_COLOR,
   useCategories,
   useCategoryDraft,
+  type DraftField,
+  type FieldMoveDirection,
 } from '@/hooks/useCategories';
+import { orderedFields } from '@/lib/today-categories';
 import {
   DISPLAY_MODE_LABELS,
   FIELD_TYPE_LABELS,
@@ -29,7 +33,15 @@ import {
   showInTodayValue,
   type ShowInTodayChoice,
 } from '@/lib/ui-constants';
-import { Plus, Pencil, Trash2, FolderKanban, X, LayoutGrid, List } from 'lucide-react';
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  FolderKanban,
+  X,
+  LayoutGrid,
+  List,
+} from 'lucide-react';
 
 export default function CategoriesPage() {
   const { categories, loading, error, setError, layout, setLayout, reload, remove } =
@@ -243,7 +255,7 @@ export default function CategoriesPage() {
                 </p>
                 {category.fields.length > 0 ? (
                   <ul className="space-y-1.5">
-                    {category.fields.map((field) => (
+                    {orderedFields(category).map((field) => (
                       <li
                         key={field.id}
                         className="text-sm text-text-secondary flex items-center gap-2"
@@ -457,15 +469,26 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
               Fields
             </label>
 
+            {/* The reorder is a purely visual event otherwise: the row swaps
+                with its neighbour and nothing says so out loud. */}
+            <p role="status" aria-live="polite" className="sr-only">
+              {draft.moveAnnouncement}
+            </p>
+
             <div className="space-y-4">
               {draft.fields.map((field, index) => (
                 <FieldRow
-                  // Index-keyed on purpose: a new row has no id yet, and the list
-                  // is only ever appended to or filtered, never reordered.
-                  key={index}
+                  // Keyed by the draft's own row key rather than the index: the
+                  // rows reorder, and an index key would leave React reusing the
+                  // DOM of whichever row used to sit here.
+                  key={field.key}
                   field={field}
+                  position={index + 1}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < draft.fields.length - 1}
                   onChange={(updates) => draft.updateField(index, updates)}
                   onRemove={() => draft.removeField(index)}
+                  onMove={(direction) => draft.moveField(index, direction)}
                 />
               ))}
             </div>
@@ -507,18 +530,38 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
 }
 
 interface FieldRowProps {
-  field: FieldCreate;
+  /**
+   * `DraftField`, not `FieldCreate`: the row's identity is part of the contract
+   * between the editor and this component. The parent keys the row by
+   * `field.key`, and a prop type that did not carry it would let a caller pass
+   * a plain payload object whose rows React can only tell apart by position.
+   */
+  field: DraftField;
+  /** 1-based position, used for the accessible names of the row's controls. */
+  position: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onChange: (updates: Partial<FieldCreate>) => void;
   onRemove: () => void;
+  onMove: (direction: FieldMoveDirection) => void;
 }
 
 /** One field of the category in the desktop modal. */
-function FieldRow({ field, onChange, onRemove }: FieldRowProps) {
+function FieldRow({
+  field,
+  position,
+  canMoveUp,
+  canMoveDown,
+  onChange,
+  onRemove,
+  onMove,
+}: FieldRowProps) {
   return (
     <div className="bg-surface border border-white/5 rounded-2xl p-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <input
           type="text"
+          aria-label={`Field ${position} name`}
           placeholder="Field name"
           value={field.name}
           onChange={(e) => onChange({ name: e.target.value })}
@@ -559,13 +602,22 @@ function FieldRow({ field, onChange, onRemove }: FieldRowProps) {
           />
           <span className="text-sm text-text-secondary">Required</span>
         </label>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="text-danger hover:text-red-400 text-sm font-medium transition-colors duration-200"
-        >
-          Remove
-        </button>
+        <div className="flex items-center gap-2">
+          <FieldReorderButtons
+            position={position}
+            canMoveUp={canMoveUp}
+            canMoveDown={canMoveDown}
+            onMove={onMove}
+          />
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={`Remove field ${position}`}
+            className="text-danger hover:text-red-400 text-sm font-medium transition-colors duration-200"
+          >
+            Remove
+          </button>
+        </div>
       </div>
     </div>
   );

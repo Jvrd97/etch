@@ -831,3 +831,59 @@ Feedback loops раунда 3: `bun test` 494/494 green, `bunx tsc --noEmit` cle
 - `components/mobile/FullScreenSheet.tsx` — **mod**: опциональные `doneLabel` и `doneDisabled` (у существующих вызовов поведение прежнее).
 
 Feedback loops: `bun test` 520/520 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems.
+
+## 2026-08-10 — PHASE-01/73 перестановка полей в редакторе категории
+
+Дата 2026-08-10. Порядок полей внутри категории задавался ровно один раз — тем, в каком порядке их создали. Чтобы поднять нужное поле наверх, категорию приходилось пересобирать, а поле, пересозданное без `id`, уводило свои `entry_values` каскадом. Бэкенд менять не пришлось: `Field.order` сквозной, а `save` и так выводит `order` из позиции в списке.
+
+**`moveField(index, direction)` в `useCategoryDraft`.** Свап соседей целыми объектами, вместе с `id`: перестановка, которая двигала бы только имя и тип, для бэкенда выглядела бы как переименование двух полей, и вся история значений уехала бы не в ту колонку. Выход за границы списка — no-op, поэтому экраны вешают обработчики безусловно, а `disabled` у крайних кнопок остаётся чисто визуальным сигналом.
+
+**Стабильные ключи строк — `DraftField.key`.** Оба редактора рендерили поля с `key={index}` и обосновывали это тем, что список только дополняется и фильтруется. После перестановки обоснование неверно: React переиспользовал бы DOM той строки, что раньше стояла на этой позиции, и фокус с кареткой уехали бы на соседнее поле. Ключ выдаётся один раз на строку (`mintFieldKey`) и едет вместе с ней. В пейлоад он не попадает — `toFieldPayload` снимает его и заодно проставляет `order` по позиции.
+
+**Кнопки.** ↑/↓ в правом углу карточки поля, рядом с Remove, на обоих шеллах; на мобиле подчиняются `TAP_TARGET_PX`. Стиль общий (`reorderButtonClass` в `lib/ui-constants`): тихий, вторичный рядом с деструктивным Remove, с отчётливо инертным disabled — на концах списка это единственный сигнал, что нажатие ничего не сделало. У десктопного `FieldRow` появились `aria-label` на имени поля и на кнопках — раньше строка была безымянной для тестов и для скринридера.
+
+Тронутые файлы:
+
+- `hooks/useCategories.ts` — **mod**: `DraftField`, `FieldMoveDirection`, `moveField`, `toFieldPayload`. `hooks/useCategories.test.ts` — **mod** (4 новых теста).
+- `app/categories/page.tsx` — **mod**: `FieldRow` с позицией, кнопками и ключом по строке. `app/categories/page.test.tsx` — **mod** (3 новых теста, во фикстуру добавлено второе поле).
+- `app/m/categories/page.tsx` — **mod**: то же для `FieldCard`. `app/m/categories/page.test.tsx` — **mod** (4 новых теста).
+- `lib/ui-constants.ts` — **mod**: `reorderButtonClass`.
+
+Feedback loops: `bun test` 531/531 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `next build` ok.
+
+### Раунд 2 (правки по ревью, PHASE-01/73)
+
+Дата 2026-08-10. Раунд 1 сделал перестановку в редакторе, но нигде не закрепил, что «порядок полей» — это `order`. Раунд 2 закрывает именно это: один источник порядка на всём пути от БД до формы записи, плюс доступность самой перестановки.
+
+**Порядок как контракт, а не как совпадение.**
+
+- `backend/app/models/category.py` — **mod**: `Category.fields` получил `order_by="(Field.order, Field.id)"`. Перестановка меняет только `order` (id сохраняются, строки в таблице не двигаются), поэтому без сортировки в relationship ответ выглядел ровно так же, как до перестановки. Тай-брейк по `id` нужен полям одного батча — у них `order` совпадает.
+- `backend/tests/test_categories.py` — **mod**: тест `test_reordered_fields_come_back_in_the_new_order` (красный до правки: `[1, 2] == [2, 1]`) — PATCH меняет `order`, и порядок держится и в ответе PATCH, и в отдельном GET категории, и в списке категорий, которым питается Today.
+- `lib/today-categories.ts` — **mod**: `orderedFields(category | fields)` — единственное определение порядка полей во фронтенде. Четыре копии `.sort((a, b) => a.order - b.order)` (`today-categories` ×2, `hooks/useTable`, `lib/chart-data`, `lib/chart-utils`) заменены на него; вход не мутируется, тай-брейк по `id`.
+- `hooks/useCategories.ts` — **mod**: черновик сеется из `orderedFields(editing)`, а не из массива как он приехал. `save` выводит `order` из позиции, поэтому черновик в порядке доставки показывал бы одно, а сохранял другое — то есть отменял бы только что сделанную перестановку самим фактом открытия редактора.
+- Потребители порядка переведены на хелпер: `components/EntryForm.tsx`, `components/EntryCard.tsx`, `components/mobile/EntryEditorSheet.tsx`, `lib/entry-values.ts` (`toEntryValues`), список полей в карточке категории `app/categories/page.tsx`.
+
+**Дедупликация и типы.**
+
+- `components/FieldReorderButtons.tsx` — **new**: общая пара ↑/↓ вместе с `moveFieldLabel` — единственный источник aria-имён, на которые опираются тесты обоих шеллов. Обе страницы её импортируют; десктоп рендерит `p-2`, мобила — 44px-таргеты через проп `touch`.
+- `app/categories/page.tsx`, `app/m/categories/page.tsx` — **mod**: `FieldRowProps.field` и `FieldCardProps.field` типизированы как `DraftField`, а не `FieldCreate` — keyed-row контракт (родитель ключует строку по `field.key`) теперь выражен в типе, а не только в комментарии.
+- `hooks/useCategories.ts` — **mod**: no-op `void key;` в `toFieldPayload` убран. Без него линт даёт warning (`ignoreRestSiblings` в конфиге не выставлен), поэтому вместо no-op стоит `eslint-disable-next-line` с однострочным обоснованием — CLAUDE.md §3.
+
+**Доступность перестановки.**
+
+- `hooks/useCategories.ts` — **mod**: `moveAnnouncement` + `fieldMovedMessage(position)`. Проверка границ переехала из апдейтера наружу: апдейтер снова чистый, а объявление звучит только для состоявшегося перемещения.
+- Оба шелла — **mod**: `role="status" aria-live="polite"` рядом со списком полей.
+- `components/FieldReorderButtons.tsx` — фокус едет за строкой: нажатая кнопка приезжает на новую позицию, на краю списка — задизейбленной, и фокус проваливался в документ. Теперь фокус уходит на кнопку, которая ещё что-то делает (обратное направление).
+
+**Мобильный шелл на 320px.**
+
+- `app/m/categories/page.tsx` — **mod**: строка действий карточки поля стала `flex-wrap`. В ней теперь соседствуют чекбокс Required и три 44px-таргета (вверх, вниз, Remove); на 320px после отступов шторки и карточки запас — единицы пикселей, и без переноса браузер разрешает переполнение сжатием тап-таргетов.
+
+**Тесты (мод/new).**
+
+- `hooks/useCategories.test.ts` — **mod**: черновик из фикстуры вне порядка (ids [8, 7], order [1, 0]) рендерит 7 затем 8; объявление после перемещения; молчание при no-op на краю.
+- `app/categories/page.test.tsx`, `app/m/categories/page.test.tsx` — **mod**: live-регион с обновлённым текстом; фокус после перемещения; карточка категории перечисляет поля по `order`; узкий экран 320px — три 44px-таргета плюс перенос строки.
+- `components/entry-field-order.test.tsx` — **new**: оба шелла формы записи перечисляют поля в сохранённом порядке, и пейлоад значений уходит в том же порядке.
+- `lib/today-categories.test.ts` — **mod**: `orderedFields` — категория и голый список, тай-брейк по id, отсутствие мутации входа.
+
+Feedback loops раунда 2: `bun test` 546/546 green, `bunx tsc --noEmit` clean, `bun run lint` 0 problems, `bun run build` green (21 роут); backend — `pytest` 311/311 green, `ruff check` clean, `ruff format --check` clean, `mypy app` clean.

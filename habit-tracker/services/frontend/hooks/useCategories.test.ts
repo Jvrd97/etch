@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: tests for useCategories and useCategoryDraft — list load, layout preference, delete, and the draft that carries field ids into the update payload so the backend diff-syncs instead of replacing
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: tests for useCategories and useCategoryDraft — list load, layout preference, delete, the field reorder with its stable row keys and its screen-reader announcement, the draft seeded in field order rather than in arrival order, and the field ids carried into the update payload so the backend diff-syncs instead of replacing
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -76,9 +76,19 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-const { useCategories, useCategoryDraft, CATEGORY_LAYOUT_STORAGE_KEY } = await import(
-  './useCategories'
-);
+/**
+ * The same two fields as `CATEGORY`, handed over in the wrong sequence: ids
+ * [8, 7] carrying orders [1, 0]. That is what a category looks like after a
+ * reorder that swapped nothing but `order`, and nothing in the transport
+ * promises the array itself comes back sorted.
+ */
+const UNORDERED_CATEGORY: Category = {
+  ...CATEGORY,
+  fields: [field(8, 'Quality', 1), field(7, 'Hours', 0)],
+};
+
+const { useCategories, useCategoryDraft, CATEGORY_LAYOUT_STORAGE_KEY, fieldMovedMessage } =
+  await import('./useCategories');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY, OTHER_CATEGORY]));
@@ -230,6 +240,46 @@ describe('useCategoryDraft', () => {
     expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
   });
 
+  it('seeds the draft in field order, not in the order the API listed them', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: UNORDERED_CATEGORY, onSaved: noop })
+    );
+
+    // `save` re-derives `order` from position, so a draft that trusted the
+    // array would render the rows one way and save them the other — undoing the
+    // reorder the user just made, simply by opening the editor.
+    expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+    expect(result.current.fields.map((f) => f.name)).toEqual(['Hours', 'Quality']);
+  });
+
+  it('announces where a moved field landed', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    // Nothing is announced before anything moves: a live region that speaks on
+    // arrival trains the listener to ignore it.
+    expect(result.current.moveAnnouncement).toBe('');
+
+    act(() => result.current.moveField(1, 'up'));
+    expect(result.current.moveAnnouncement).toBe(fieldMovedMessage(1));
+
+    act(() => result.current.moveField(0, 'down'));
+    expect(result.current.moveAnnouncement).toBe(fieldMovedMessage(2));
+  });
+
+  it('says nothing when the move went nowhere', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    act(() => result.current.moveField(0, 'up'));
+
+    // The ends of the list are a no-op, and announcing one would tell the user
+    // something happened when the list is exactly as it was.
+    expect(result.current.moveAnnouncement).toBe('');
+  });
+
   it('starts a new category under the Today heuristic, not switched on by hand', () => {
     const { result } = renderHook(() =>
       useCategoryDraft({ category: null, onSaved: noop })
@@ -285,6 +335,74 @@ describe('useCategoryDraft', () => {
 
     act(() => result.current.removeField(0));
     expect(result.current.fields.map((f) => f.id)).toEqual([8, undefined]);
+  });
+
+  it('moves a field up and down, carrying the whole field with it', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    act(() => result.current.moveField(1, 'up'));
+    // The objects move whole, ids included: a swap that copied only the visible
+    // text would hand the backend two fields it has to recreate.
+    expect(result.current.fields.map((f) => f.id)).toEqual([8, 7]);
+    expect(result.current.fields.map((f) => f.name)).toEqual(['Quality', 'Hours']);
+
+    act(() => result.current.moveField(0, 'down'));
+    expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+  });
+
+  it('leaves the list alone at either end', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    act(() => result.current.moveField(0, 'up'));
+    expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+
+    act(() => result.current.moveField(1, 'down'));
+    expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+  });
+
+  it('gives every row a key that travels with it through a reorder', () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    const keysBefore = result.current.fields.map((f) => f.key);
+    expect(new Set(keysBefore).size).toBe(2);
+
+    act(() => result.current.moveField(1, 'up'));
+
+    // Stable per row, not per position: a positional key makes React reuse the
+    // DOM of the row that used to sit there, and the text in the inputs swaps
+    // back under the user.
+    expect(result.current.fields.map((f) => f.key)).toEqual([keysBefore[1], keysBefore[0]]);
+
+    act(() => result.current.addField());
+    const keys = result.current.fields.map((f) => f.key);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it('re-derives order from the new positions and keeps the ids', async () => {
+    const { result } = renderHook(() =>
+      useCategoryDraft({ category: CATEGORY, onSaved: noop })
+    );
+
+    act(() => result.current.moveField(1, 'up'));
+    await act(async () => {
+      await result.current.save();
+    });
+
+    const payload = updateCategory.mock.calls[0][1] as {
+      fields: Record<string, unknown>[];
+    };
+    expect(payload.fields).toEqual([
+      expect.objectContaining({ id: 8, name: 'Quality', order: 0 }),
+      expect.objectContaining({ id: 7, name: 'Hours', order: 1 }),
+    ]);
+    // The row key is the editor's own bookkeeping; the backend must not see it.
+    expect(payload.fields.every((f) => !('key' in f))).toBe(true);
   });
 
   it('updates a field in place', () => {

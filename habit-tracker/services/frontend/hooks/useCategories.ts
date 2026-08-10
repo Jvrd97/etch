@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: Categories-screen state extracted from app/categories/page.tsx — the list with its layout preference and delete, plus useCategoryDraft, the single owner of the category editor form and of the diff-syncing save both shells post
+// [review:need-review] PHASE-01/73-category-field-reorder
+// summary: Categories-screen state extracted from app/categories/page.tsx — the list with its layout preference and delete, plus useCategoryDraft, the single owner of the category editor form, of its reorderable keyed field rows, and of the diff-syncing save both shells post
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -11,6 +11,7 @@ import {
   type CategoryStreakMode,
   type FieldCreate,
 } from '@/lib/api';
+import { orderedFields } from '@/lib/today-categories';
 import { DEFAULT_CATEGORY_COLOR } from '@/lib/ui-constants';
 
 /**
@@ -148,10 +149,24 @@ export interface UseCategoryDraftResult {
   isActive: boolean;
   setIsActive: (isActive: boolean) => void;
   /** The draft's fields in display order; existing ones keep their id. */
-  fields: FieldCreate[];
+  fields: DraftField[];
   addField: () => void;
   removeField: (index: number) => void;
   updateField: (index: number, updates: Partial<FieldCreate>) => void;
+  /**
+   * Swap a field with its neighbour; `order` follows from the new position at
+   * save time. A move off either end is a no-op, so the screens can wire the
+   * buttons up unconditionally and only disable them for looks.
+   */
+  moveField: (index: number, direction: FieldMoveDirection) => void;
+  /**
+   * Text for the editor's live region: where the last moved row ended up.
+   *
+   * Empty until something moves. Rendering it is the screens' job, but the
+   * wording is not theirs to invent — two shells describing the same move
+   * differently is two different apps to anyone listening rather than looking.
+   */
+  moveAnnouncement: string;
   /** True when a checklist category has no boolean field — the save would be rejected. */
   checklistNeedsBoolean: boolean;
   /** True while the save request is in flight. */
@@ -162,9 +177,58 @@ export interface UseCategoryDraftResult {
   save: () => Promise<void>;
 }
 
+export type FieldMoveDirection = 'up' | 'down';
+
+/**
+ * A draft row: the field the API speaks plus the identity React needs.
+ *
+ * The rows are reorderable, so a positional key would make React keep the DOM
+ * of whichever row used to sit at that index — the text in the inputs would
+ * swap back under the user, focus included. `key` is minted once per row and
+ * travels with it; `save` strips it before the payload leaves.
+ */
+export interface DraftField extends FieldCreate {
+  key: string;
+}
+
+/** Distinct across a draft's lifetime, which is all a React key has to be. */
+let nextFieldKey = 0;
+function mintFieldKey(): string {
+  nextFieldKey += 1;
+  return `field-${nextFieldKey}`;
+}
+
+/**
+ * Strip the editor's row identity and stamp the position as `order`.
+ *
+ * `key` exists only so React can tell the rows apart across a reorder; sending
+ * it would put a field the API has no column for into the payload.
+ */
+function toFieldPayload(field: DraftField, index: number): FieldCreate {
+  // Justification for the suppression: `key` is bound only to be left out of
+  // `rest` — that is the whole point of the line — and this config does not set
+  // `ignoreRestSiblings`. Listing the payload's keys by hand instead would drop
+  // any field later added to `FieldCreate` without a word.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { key, ...rest } = field;
+  return { ...rest, order: index };
+}
+
+/**
+ * What a screen reader is told after a field row changed places.
+ *
+ * The move is otherwise a purely visual event: the row swaps with its
+ * neighbour, and someone who cannot see the list gets no confirmation that the
+ * press did anything at all. Spelled once here because both shells announce it
+ * and the tests read it.
+ */
+export function fieldMovedMessage(position: number): string {
+  return `Field moved to position ${position}`;
+}
+
 /** A brand-new category starts on one blank field, so there is nothing to add first. */
-function blankField(order: number): FieldCreate {
-  return { name: '', field_type: 'text', is_required: false, order };
+function blankField(order: number): DraftField {
+  return { key: mintFieldKey(), name: '', field_type: 'text', is_required: false, order };
 }
 
 /**
@@ -201,9 +265,15 @@ export function useCategoryDraft({
     editing?.show_in_today ?? null
   );
   const [isActive, setIsActive] = useState(editing?.is_active ?? true);
-  const [fields, setFields] = useState<FieldCreate[]>(() =>
+  // Seeded from the ordered copy, never from the array as it arrived: `order` is
+  // what the editor then re-derives from position on save, so a draft built in
+  // whatever sequence the API serialised would show the rows in one order and
+  // save them in another — the reorder the user just made, undone by opening
+  // the editor again.
+  const [fields, setFields] = useState<DraftField[]>(() =>
     editing
-      ? editing.fields.map((f) => ({
+      ? orderedFields(editing).map((f) => ({
+          key: mintFieldKey(),
           id: f.id,
           name: f.name,
           field_type: f.field_type,
@@ -217,6 +287,9 @@ export function useCategoryDraft({
   /** Same fact as `saving`, readable synchronously — see the guard in `save`. */
   const savingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  /** Empty until the first move: a live region announces changes, not its own arrival. */
+  const [moveAnnouncement, setMoveAnnouncement] = useState('');
+  const fieldCount = fields.length;
 
   const addField = useCallback(() => {
     // Appended rather than prepended: with many fields you should not have to
@@ -233,6 +306,28 @@ export function useCategoryDraft({
       prev.map((field, i) => (i === index ? { ...field, ...updates } : field))
     );
   }, []);
+
+  const moveField = useCallback(
+    (index: number, direction: FieldMoveDirection) => {
+      const target = direction === 'up' ? index - 1 : index + 1;
+      // Checked here rather than inside the updater so the announcement below
+      // only fires for a move that actually happened — and so the updater stays
+      // the pure function React is allowed to run twice.
+      if (index < 0 || index >= fieldCount || target < 0 || target >= fieldCount) {
+        return;
+      }
+      setFields((prev) => {
+        // Whole objects change places, ids and all: a swap that moved only the
+        // visible name and type would hand the backend a field it has never seen
+        // at that id and orphan every value logged against the other one.
+        const next = [...prev];
+        [next[index], next[target]] = [next[target], next[index]];
+        return next;
+      });
+      setMoveAnnouncement(fieldMovedMessage(target + 1));
+    },
+    [fieldCount]
+  );
 
   const checklistNeedsBoolean = useMemo(
     () => displayMode === 'checklist' && !fields.some((f) => f.field_type === 'boolean'),
@@ -259,9 +354,9 @@ export function useCategoryDraft({
       show_in_today: showInToday,
       is_active: isActive,
       // Unnamed rows are the placeholder the editor hands out, not fields the
-      // user filled in; `order` is re-derived from position so add and remove
-      // leave no gaps behind.
-      fields: fields.filter((f) => f.name.trim()).map((f, i) => ({ ...f, order: i })),
+      // user filled in; `order` is re-derived from position so add, remove and
+      // reorder leave no gaps behind.
+      fields: fields.filter((f) => f.name.trim()).map(toFieldPayload),
     };
 
     try {
@@ -316,6 +411,8 @@ export function useCategoryDraft({
     addField,
     removeField,
     updateField,
+    moveField,
+    moveAnnouncement,
     checklistNeedsBoolean,
     saving,
     error,

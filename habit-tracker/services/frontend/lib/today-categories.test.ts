@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: unit tests for Today category partitioning — avoid vs checklist vs quick-form, plus the show_in_today override that pins or hides a category
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/73-category-field-reorder
+// summary: unit tests for Today category partitioning — avoid vs checklist vs quick-form, the show_in_today override that pins or hides a category, and the shared orderedFields the whole frontend takes field order from
 
 import { describe, expect, it } from 'bun:test';
 import type { Category, Field } from './api';
-import { partitionTodayCategories } from './today-categories';
+import { orderedFields, partitionTodayCategories } from './today-categories';
 
 function field(overrides: Partial<Field>): Field {
   return {
@@ -32,6 +32,38 @@ function category(overrides: Partial<Category>): Category {
     ...overrides,
   };
 }
+
+describe('orderedFields', () => {
+  it('sorts by order whether it is handed a category or a bare field list', () => {
+    const second = field({ id: 8, order: 1, name: 'Quality' });
+    const first = field({ id: 7, order: 0, name: 'Hours' });
+
+    expect(orderedFields([second, first]).map((f) => f.name)).toEqual([
+      'Hours',
+      'Quality',
+    ]);
+    expect(
+      orderedFields(category({ fields: [second, first] })).map((f) => f.name)
+    ).toEqual(['Hours', 'Quality']);
+  });
+
+  it('breaks a tie on id, so a batch of same-order fields still has one order', () => {
+    const later = field({ id: 9, order: 0, name: 'Zinc' });
+    const earlier = field({ id: 4, order: 0, name: 'D3' });
+
+    expect(orderedFields([later, earlier]).map((f) => f.id)).toEqual([4, 9]);
+  });
+
+  it('does not reorder the list it was given', () => {
+    const fields = [field({ id: 8, order: 1 }), field({ id: 7, order: 0 })];
+
+    orderedFields(fields);
+
+    // `category.fields` is shared with every other component rendering it; a
+    // sort in place would silently reshuffle their lists too.
+    expect(fields.map((f) => f.id)).toEqual([8, 7]);
+  });
+});
 
 describe('partitionTodayCategories', () => {
   it('routes avoid categories to the avoid group, not quick-form', () => {
