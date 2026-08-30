@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
-# summary: day DTOs — the day itself, the rule it is judged by, the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, and the итог with the verdict of the day
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/142
+# summary: day DTOs — the day itself, the rule it is judged by, the map of the day the rule draws (edges, free evening, ceilings, anchors, the order of the verdict), the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, and the итог with the verdict of the day
 """
 Wire types of the day.
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,17 +42,106 @@ class DayRuleSetResponse(BaseModel):
 
     work_cap_min: int
     work_hard_cap_min: int
+    overtime_lost_min: int = Field(
+        ...,
+        description="Потолок, выше которого день не планируется никогда, в минутах",
+    )
     work_stop_at: time
     max_work_tasks: int
+    max_study_items: int
     tasks_required_ratio: Decimal
     overtime_disqualifies: bool
+
+    wake_at: time
+    work_start: time
+    review_at: time
+    bedtime_max: time
+    free_evening_start: time
+    free_evening_end: time
+    relationship_anchor_required: bool = Field(
+        ...,
+        description="Нужен ли вечер с близкими; снимается новой строкой правила",
+    )
+    relationship_evening_start: time
+    relationship_evening_end: time
 
     workdays: list[int] = Field(
         ..., description="Номера дней недели по ISO, 1 — понедельник"
     )
+    days_off: list[int] = Field(
+        ..., description="Выходные — не то же самое, что «не рабочий день»"
+    )
     nocode_days: list[int]
     required_anchors: list[str]
+    hard_edge_kinds: list[str] = Field(
+        ..., description="Виды пунктов, которым канон разрешает жёсткость"
+    )
+    anchors: list[str] = Field(
+        ..., description="Состав якорей, обязательных для выигранного дня"
+    )
+    verdict_rule: dict[str, Any] = Field(
+        ...,
+        description="Формула вердикта: какие условия снимают день и в каком порядке",
+    )
     note_md: str
+
+
+class DayEdgeResponse(BaseModel):
+    """
+    One hard edge of the day: its code, its Russian label and its hour.
+
+    `at` is null for an edge the canon places but does not clock — спорт stands
+    before the start of work, and no row says at which minute. Null is the
+    honest answer; an invented 06:15 would be a number nobody decided.
+    """
+
+    kind: str
+    label: str
+    at: time | None = None
+
+
+class IntervalResponse(BaseModel):
+    """A stretch of the evening, named by its two wall-clock ends."""
+
+    start: time
+    end: time
+
+
+class DayMapResponse(BaseModel):
+    """
+    The map of the day: where the hard points stand, which evening stays free.
+
+    Sent beside the plan so the two can be compared by eye. Every number here is
+    a column of `day_rule_set`, which is the whole point: «подъём 6:00, спорт,
+    старт работы, ревью 15:40, отбой 22:30» lived only in `config.md` until
+    `#142`, and a plan could not be checked against a paragraph.
+    """
+
+    rule_set_id: int
+    edges: list[DayEdgeResponse]
+    free_evening: IntervalResponse = Field(
+        ..., description="Интервал вечера, который планом не расписывается"
+    )
+    relationship_evening: IntervalResponse
+    relationship_anchor_required: bool
+    work_cap_min: int
+    work_hard_cap_min: int
+    overtime_lost_min: int
+    work_stop_at: time
+    max_work_tasks: int
+    max_study_items: int
+    anchors: list[str]
+    hard_edge_kinds: list[str]
+    workdays: list[int]
+    days_off: list[int]
+    nocode_days: list[int]
+    verdict_reasons: list[str] = Field(
+        ...,
+        description=(
+            "Условия, снимающие день, в порядке проверки — машинные коды, "
+            "как их читает `verdict_reason`"
+        ),
+    )
 
 
 class DayResponse(BaseModel):
@@ -89,6 +179,13 @@ class DayDetailResponse(BaseModel):
 
     day: DayResponse
     rule: DayRuleSetResponse
+    day_map: DayMapResponse = Field(
+        ...,
+        description=(
+            "Карта дня из той же строки правила: жёсткие точки, свободный "
+            "вечер, потолки и состав якорей — числами, а не вёрсткой"
+        ),
+    )
     plan: PlanResponse | None = Field(
         None, description="План дня с расписанием и наложениями; null — плана нет"
     )

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93
-# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges, a link to a goal of the quarter that exists (the set of ids arrives as an argument, the session stays out), windows unrolled across midnight, markdown flattened to the text search reads
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/142
+# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges (which kinds those are is read from `day_rule_set.hard_edge_kinds`), a link to a goal of the quarter that exists (the set of ids arrives as an argument, the session stays out), windows unrolled across midnight, markdown flattened to the text search reads
 """
 What a plan is allowed to be, decided without a database.
 
@@ -270,16 +270,22 @@ def check_hard_rigidity(items: list[ItemFacts], rule: DayRuleSet) -> None:
     `required_anchors`; a hard point may be hard because a commitment at a clock
     time is what that kind is for. Everything else is soft or free, and a task
     that wants to be unmovable has to become an anchor first, in the open.
+
+    Which kinds those are is `day_rule_set.hard_edge_kinds` since `#142`, not a
+    constant of this module: the list belongs to the canon, and a canon that
+    changes changes by a new row. `HARD_ALLOWED_KINDS` stays the answer for a
+    rule built in memory without the column.
     """
     allowed_anchors = set(rule.required_anchors)
+    allowed_kinds = tuple(rule.hard_edge_kinds or HARD_ALLOWED_KINDS)
     for item in items:
         if item.rigidity != RIGIDITY_HARD:
             continue
-        if item.kind not in HARD_ALLOWED_KINDS:
+        if item.kind not in allowed_kinds:
             raise PlanRejected(
                 "hard_is_not_an_edge",
                 f"пункт {item.code or item.text_plain!r} объявлен жёстким, но "
-                f"жёсткими бывают только края дня ({', '.join(HARD_ALLOWED_KINDS)}). "
+                f"жёсткими бывают только края дня ({', '.join(allowed_kinds)}). "
                 "Не перезакручивать: середина дня двигается.",
                 code=item.code,
                 text=item.text_plain,

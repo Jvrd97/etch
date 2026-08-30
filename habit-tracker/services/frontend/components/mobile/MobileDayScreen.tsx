@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90
-// summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/142
+// summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day beside it, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayVerdict from '@/components/day/DayVerdict';
@@ -116,6 +117,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           />
         </>
       )}
+
+      <DayMapCard map={detail.day_map} compact />
 
       <DayVerdict
         summary={detail.summary}

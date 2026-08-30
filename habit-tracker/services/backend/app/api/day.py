@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/142
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
 from datetime import date
 from uuid import UUID
 
@@ -13,10 +13,17 @@ from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
 from app.day.plan_validate import PlanRejected
-from app.day.rules import NoRuleForDate, is_openable
+from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
-from app.schemas.day import DayDetailResponse, DayResponse, DayRuleSetResponse
+from app.schemas.day import (
+    DayDetailResponse,
+    DayEdgeResponse,
+    DayMapResponse,
+    DayResponse,
+    DayRuleSetResponse,
+    IntervalResponse,
+)
 from app.schemas.mark import (
     MarkIn,
     MarkResponse,
@@ -52,6 +59,43 @@ def _person_is_here(on: date) -> bool:
     return is_openable(on, today_local())
 
 
+def _map(canon: DayMap) -> DayMapResponse:
+    """
+    The map of the day as the wire carries it.
+
+    Built from `app.day.rules.day_map` rather than from the row field by field:
+    the map is one answer, and a DTO assembled here out of fifteen reads would
+    be the second place «где стоят края дня» could be got wrong.
+    """
+    return DayMapResponse(
+        rule_set_id=canon.rule_set_id,
+        edges=[
+            DayEdgeResponse(kind=edge.kind, label=edge.label, at=edge.at)
+            for edge in canon.edges
+        ],
+        free_evening=IntervalResponse(
+            start=canon.free_evening.start, end=canon.free_evening.end
+        ),
+        relationship_evening=IntervalResponse(
+            start=canon.relationship_evening.start,
+            end=canon.relationship_evening.end,
+        ),
+        relationship_anchor_required=canon.relationship_anchor_required,
+        work_cap_min=canon.work_cap_min,
+        work_hard_cap_min=canon.work_hard_cap_min,
+        overtime_lost_min=canon.overtime_lost_min,
+        work_stop_at=canon.work_stop_at,
+        max_work_tasks=canon.max_work_tasks,
+        max_study_items=canon.max_study_items,
+        anchors=list(canon.anchors),
+        hard_edge_kinds=list(canon.hard_edge_kinds),
+        workdays=list(canon.workdays),
+        days_off=list(canon.days_off),
+        nocode_days=list(canon.nocode_days),
+        verdict_reasons=list(canon.verdict_reasons),
+    )
+
+
 def _day(day: Day) -> DayResponse:
     """The day itself, without the rule or the plan hanging off it."""
     return DayResponse(
@@ -80,6 +124,7 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
     return DayDetailResponse(
         day=_day(day),
         rule=DayRuleSetResponse.model_validate(rule),
+        day_map=_map(day_map(rule)),
         plan=plan,
         has_plan=plan is not None,
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
@@ -137,7 +182,9 @@ async def get_day(
     """
     День по дате `YYYY-MM-DD`.
 
-    Отдаёт сам день, правило, по которому он считается, план — секциями,
+    Отдаёт сам день, правило, по которому он считается, карту дня из той же
+    строки правила — жёсткие точки, свободный вечер, потолки, состав якорей, —
+    план — секциями,
     пунктами, расписанием и наложениями, — отметки пунктов, счётчик задач и
     блокнот. Плана нет — `plan: null` и `has_plan: false`, а не 404: пустой день
     это ответ, а не ошибка.

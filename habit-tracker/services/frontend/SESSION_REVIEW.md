@@ -958,3 +958,24 @@ Feedback loops: `bun test` 580/580 green, `bunx tsc --noEmit` clean, `bun run li
 Feedback loops: `bun test` 664/664 green (было 574 до волны), `bunx tsc --noEmit` clean, `bun run lint` 0 problems. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль. Бэкенд той же волны: pytest 455/455, `ruff check`, `ruff format --check`, `mypy --strict app`, одна голова Alembic `e0b2d4f6a8c1`. `make check` целиком не прогонялся ни разу: его цель `test` поднимает постгрес в docker, а демон на машине не отвечает — тесты шли против локального постгреса на 5432, база `habit_tracker_test`.
 
 Известные долги экрана, зафиксированные приёмкой волны: `DayScreen` и `MobileDayScreen` зовут `useDay(date, true)` без разбора даты, поэтому листание истории проставляет `opened_at` историческим дням и стирает разницу между непрожитым днём и прожитым пусто (чинится в [#90]); `MobileDayScreen` не покрыт тестами и дублирует шапку десктопного шелла.
+
+## 2026-08-30 — PHASE-03/142 карта дня на экране дня
+
+Тронуто 7 файлов фронтенда, из них 2 новых.
+
+- `components/day/DayMapCard.tsx` — **new** (+тест): карта дня рядом с планом — жёсткие точки с
+  часами из строки правила, свободный вечер интервалом и подписью «не расписывается», вечер с
+  близкими, потолки генератора и формула вердикта по порядку. Ни одного числа в вёрстке: новый
+  канон двигает карточку без правки фронта.
+- `lib/day-format.ts` — **mod**: `edgeLines`, `intervalText`, `relationshipEveningText`,
+  `verdictFormulaText`, подпись `EDGE_WITHOUT_A_TIME` для края без часа и метка `anchor_kinds`
+  в списке неизмеренного.
+- `lib/api.ts` — **mod**: `DayMap`, `DayEdge`, `DayInterval`, `day_map` в `DayDetail`,
+  пятнадцать новых полей `DayRuleSet` и `anchor_kinds` в `MissingData`.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: карточка над
+  итогом дня, на мобильном — `compact`.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts`, `lib/day-format.test.ts` — **mod**:
+  фикстуры дополнены новыми полями правила и блоком `day_map`.
+
+Feedback loops: `bun test` **687/687 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.

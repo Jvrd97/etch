@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90
-# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero
+# [review:need-review] PHASE-03/90, PHASE-03/142
+# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero; since #142 the order of the reasons and the composition of the anchors come from the rule row (`verdict_rule`, `anchors`) instead of from constants
 """
 Whether a day was won, decided without a database.
 
@@ -17,6 +17,14 @@ day that failed on both anchors and tasks says `anchors`, because that is the
 one worth fixing first; a day that ran nine hours says `overtime` and stops,
 because anchors missed *after* the ninth hour are a consequence and pointing at
 them would send the reader to repair the wrong thing.
+
+**Сама формула — строка таблицы, а не эта функция.** `verdict_rule.reason_order`
+holds the order, `anchors` holds the composition of the anchors, and both are
+read here rather than written here (`#142`). Dropping `anchors` from the order,
+or adding a sixth anchor, is a new rule row: yesterday keeps the formula it was
+lived under, exactly as it keeps the ceiling of hours. `not_closed` is not in
+the list and cannot be — «никто не закрыл день» is the absence of a judgement,
+not a condition of one.
 
 **«Не закрыл» и «проиграл» — разные факты.** An unclosed day has no verdict at
 all rather than a lost one: nobody has said what happened to it yet, and a
@@ -45,6 +53,8 @@ from app.day.marks import TaskCounts
 from app.models.day import DayRuleSet
 
 __all__ = [
+    "DEFAULT_REASON_ORDER",
+    "MISSING_ANCHOR_KINDS",
     "MISSING_WORK_MINUTES",
     "REASON_ANCHORS",
     "REASON_NONE",
@@ -55,8 +65,10 @@ __all__ = [
     "VERDICT_WON",
     "VERDICTS",
     "DayFacts",
+    "UnknownVerdictReason",
     "Verdict",
     "evaluate_day",
+    "verdict_reasons",
 ]
 
 # The two things a verdict can say. Absence of a verdict — the day nobody
@@ -74,9 +86,60 @@ REASON_OVERTIME = "overtime"
 REASON_ANCHORS = "anchors"
 REASON_TASKS = "tasks"
 
-# What the day could not be judged on. One code for now — the minutes of work,
-# which nothing measures until `#91`.
+# What the day could not be judged on. `work_minutes` is measured by nothing
+# until `#91`; `anchor_kinds` — which anchors of the canon the day actually
+# closed — until the plan names them or `day_anchor` arrives with `#92`.
 MISSING_WORK_MINUTES = "work_minutes"
+MISSING_ANCHOR_KINDS = "anchor_kinds"
+
+# The order the conditions are weighed in when the rule row does not say. The
+# priority of `config.md`: работа сначала (переработка снимает день целиком),
+# затем якоря здоровья и отношений, затем задачи.
+DEFAULT_REASON_ORDER: tuple[str, ...] = (REASON_OVERTIME, REASON_ANCHORS, REASON_TASKS)
+
+# Key of `verdict_rule` the order is written under.
+REASON_ORDER_KEY = "reason_order"
+
+
+class UnknownVerdictReason(ValueError):
+    """
+    `verdict_rule.reason_order` names a condition nothing knows how to weigh.
+
+    Loud rather than ignored. A silently dropped code would mean a canon a
+    person wrote — «перестань снимать день за задачи» — applied in a way nobody
+    asked for, and the whole point of keeping the formula in a row is that what
+    is written there is what happens.
+    """
+
+
+def verdict_reasons(rule: DayRuleSet) -> tuple[str, ...]:
+    """
+    Which conditions lower a day under this canon, in the order they are weighed.
+
+    A row with no formula — one built in memory, or written before `#142` — is
+    judged by `DEFAULT_REASON_ORDER`: that is the canon as it stood, and reading
+    an absent column as "ничто не снимает день" would silently turn every past
+    day into a won one.
+    """
+    formula = rule.verdict_rule or {}
+    raw = formula.get(REASON_ORDER_KEY)
+    if raw is None:
+        return DEFAULT_REASON_ORDER
+    if not isinstance(raw, list):
+        raise UnknownVerdictReason(
+            f"verdict_rule.{REASON_ORDER_KEY} правила {rule.id} — не список: "
+            f"{raw!r}. Формула вердикта это порядок условий, а не одно значение."
+        )
+    order = tuple(str(reason) for reason in raw)
+    unknown = [reason for reason in order if reason not in DEFAULT_REASON_ORDER]
+    if unknown:
+        raise UnknownVerdictReason(
+            f"verdict_rule.{REASON_ORDER_KEY} правила {rule.id} называет условия "
+            f"{unknown}, которых нет: считать можно "
+            f"{list(DEFAULT_REASON_ORDER)}. Опечатка в правиле молча не "
+            "проглатывается — иначе день считался бы не по тому, что записано."
+        )
+    return order
 
 
 @dataclass(frozen=True)
@@ -94,6 +157,13 @@ class DayFacts:
     tasks: TaskCounts
     anchors: TaskCounts
     work_minutes: int | None
+    # Which anchors of the canon the day actually closed, by kind. `None` means
+    # «состав не измерен», not «ни одного»: the plan of the day names its
+    # anchors only when its lines carry codes, and the catalogue that will
+    # always name them (`day_anchor`) arrives with `#92`. An unmeasured
+    # composition falls back to the counter and says so in `missing_data`,
+    # exactly as an unmeasured `work_minutes` does.
+    anchor_kinds: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +186,10 @@ class Verdict:
     tasks_total: int
     work_minutes: int | None
     missing_data: tuple[str, ...]
+    # Anchors of the canon the day did not close, by kind — empty when the
+    # composition was not measured. Named rather than counted: «не хватило
+    # вечера с близкими» is what a reader can act on, «якоря 5/6» is not.
+    missing_anchor_kinds: tuple[str, ...] = ()
 
 
 def _closed_of(counts: TaskCounts) -> tuple[int, int]:
@@ -150,6 +224,22 @@ def _tasks_are_short(rule: DayRuleSet, done: int, total: int) -> bool:
     return Decimal(done) / Decimal(total) < rule.tasks_required_ratio
 
 
+def _anchors_not_closed(rule: DayRuleSet, facts: DayFacts) -> tuple[str, ...]:
+    """
+    Which anchors of the canon the day left open, by kind.
+
+    The composition comes from the row (`anchors`), so adding «вечер с
+    близкими» to the canon is an INSERT rather than an edit of this function —
+    and a day lived under the older row keeps being judged by the five anchors
+    it was lived under. An unmeasured composition answers with nothing at all;
+    the counter of the plan's own anchor lines still has the last word.
+    """
+    if facts.anchor_kinds is None:
+        return ()
+    closed = facts.anchor_kinds
+    return tuple(kind for kind in (rule.anchors or ()) if kind not in closed)
+
+
 def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
     """
     Judge one day against the canon it was lived under.
@@ -157,10 +247,25 @@ def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
     Returns the verdict, the condition that was not met, and the counters the
     screen shows — so that a reader is never told only "день не выигран" and
     left to guess which of three things went wrong.
+
+    Which conditions are weighed, and in which order, is `verdict_rule` of the
+    same row: this function knows how to weigh each condition, and the row says
+    which of them count. That is why a change of canon — «якоря больше не
+    снимают день», «добавился шестой якорь» — is a new row and never a patch
+    here.
     """
     anchors_done, anchors_total = _closed_of(facts.anchors)
     tasks_done, tasks_total = _closed_of(facts.tasks)
-    missing_data = () if facts.work_minutes is not None else (MISSING_WORK_MINUTES,)
+    missing_anchor_kinds = _anchors_not_closed(rule, facts)
+
+    missing_data: tuple[str, ...] = ()
+    if facts.work_minutes is None:
+        missing_data += (MISSING_WORK_MINUTES,)
+    # Only worth saying when the canon actually names anchors: a row that names
+    # none has nothing to measure, and reporting a gap there would be noise
+    # rather than a fact.
+    if facts.anchor_kinds is None and rule.anchors:
+        missing_data += (MISSING_ANCHOR_KINDS,)
 
     def decided(verdict: str | None, reason: str) -> Verdict:
         return Verdict(
@@ -173,14 +278,20 @@ def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
             tasks_total=tasks_total,
             work_minutes=facts.work_minutes,
             missing_data=missing_data,
+            missing_anchor_kinds=missing_anchor_kinds,
         )
 
+    # Не судить нечего: день, который никто не закрыл, вердикта не получает —
+    # и это не условие формулы, а её отсутствие.
     if not facts.closed:
         return decided(None, REASON_NOT_CLOSED)
-    if _is_overtime(rule, facts.work_minutes):
-        return decided(VERDICT_LOST, REASON_OVERTIME)
-    if anchors_done < anchors_total:
-        return decided(VERDICT_LOST, REASON_ANCHORS)
-    if _tasks_are_short(rule, tasks_done, tasks_total):
-        return decided(VERDICT_LOST, REASON_TASKS)
+
+    lowered = {
+        REASON_OVERTIME: _is_overtime(rule, facts.work_minutes),
+        REASON_ANCHORS: anchors_done < anchors_total or bool(missing_anchor_kinds),
+        REASON_TASKS: _tasks_are_short(rule, tasks_done, tasks_total),
+    }
+    for reason in verdict_reasons(rule):
+        if lowered[reason]:
+            return decided(VERDICT_LOST, reason)
     return decided(VERDICT_WON, REASON_NONE)

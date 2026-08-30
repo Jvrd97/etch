@@ -145,7 +145,10 @@ async def test_closing_a_day_writes_the_verdict_the_reason_and_the_streak(
     assert stored["closed"] is True
     assert (stored["verdict"], stored["streak_after"]) == (VERDICT_WON, 1)
     assert stored["work_minutes"] == 400
-    assert stored["missing_data"] == []
+    # `anchor_kinds`: плану этого дня якоря не названы кодами, поэтому состав
+    # якорей канона (`#142`) с ним не сверить — день посчитан по счётчику
+    # собственных якорей плана и говорит, чего не измерил.
+    assert stored["missing_data"] == ["anchor_kinds"]
 
 
 async def test_the_summary_names_the_rule_the_day_was_judged_by(
@@ -247,7 +250,7 @@ async def test_a_day_whose_work_was_never_measured_says_so(
     closed = await close(client, CLOSE_DAY, body_md="времени не мерил")
 
     assert closed["verdict"] == VERDICT_WON
-    assert closed["missing_data"] == ["work_minutes"]
+    assert closed["missing_data"] == ["work_minutes", "anchor_kinds"]
     assert closed["work_minutes"] is None
 
 
