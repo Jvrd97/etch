@@ -11,6 +11,17 @@ let setMark: ReturnType<typeof mock>;
 // the first time anything links against it and shares that registry across the
 // run, so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // The Today screen carries the challenge block (#127). Present in every api
+  // mock for the same reason the rest of the surface is: bun fixes a module's
+  // export names on first link, so a mock that omits it deletes it for whoever
+  // runs next.
+  challengesAPI: {
+    list: () => Promise.resolve([]),
+    get: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+    patch: () => Promise.resolve(null),
+    recompute: () => Promise.resolve(null),
+  },
   dailySummaryAPI: {
     draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
     apply: () => Promise.resolve({ entry_ids: [] }),

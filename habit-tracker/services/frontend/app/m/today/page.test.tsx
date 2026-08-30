@@ -93,6 +93,16 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(undefined),
     upsertChecklist: () => Promise.resolve({}),
   },
+  // The Today screen now carries the challenge block (#127). Listed here for
+  // the same reason as the rest: bun fixes a module's export names on first
+  // link, and an omitted one is deleted for whoever imports it next.
+  challengesAPI: {
+    list: () => Promise.resolve([]),
+    get: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+    patch: () => Promise.resolve(null),
+    recompute: () => Promise.resolve(null),
+  },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
 }));

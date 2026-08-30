@@ -1360,3 +1360,119 @@ export const chatAPI = {
     }
   },
 };
+
+// ============ Challenges ============
+
+/** Which of the four promises a challenge holds its category to. */
+export type ChallengeRuleKind =
+  | 'metric_at_least'
+  | 'metric_at_most'
+  | 'checked'
+  | 'abstain';
+
+/**
+ * The state of one day of an obligation.
+ *
+ * `pending` exists because today has not closed yet: an obligation's day
+ * becomes a miss when `local_date()` names the next date, not at browser
+ * midnight, so the browser never decides this for itself.
+ */
+export type ChallengeDayVerdict = 'done' | 'miss' | 'pending';
+
+/** Who put the verdict there. A recompute never overwrites `manual`. */
+export type ChallengeDaySource = 'computed' | 'manual';
+
+/** `any_miss` — the first miss ends it; `budget` — the (allowed + 1)-th does. */
+export type ChallengeFailureMode = 'any_miss' | 'budget';
+
+export type ChallengeStatus = 'active' | 'won' | 'failed' | 'abandoned';
+
+export interface ChallengeDay {
+  day: string;
+  verdict: ChallengeDayVerdict;
+  source: ChallengeDaySource;
+  note: string | null;
+}
+
+export interface Challenge {
+  id: number;
+  title: string;
+  category_id: number;
+  field_id: number;
+  rule_kind: ChallengeRuleKind;
+  /** Decimal over the wire: the server never rounds a threshold into a float. */
+  target: string | null;
+  starts_on: string;
+  ends_on: string;
+  failure_mode: ChallengeFailureMode;
+  allowed_misses: number;
+  status: ChallengeStatus;
+  failed_on: string | null;
+  total_days: number;
+  day_number: number;
+  done_count: number;
+  misses_used: number;
+  /** null when today is outside the window. */
+  today_verdict: ChallengeDayVerdict | null;
+  created_at: string;
+}
+
+export interface ChallengeDetail extends Challenge {
+  days: ChallengeDay[];
+}
+
+export interface ChallengeDraft {
+  title: string;
+  category_id: number;
+  field_id: number;
+  rule_kind: ChallengeRuleKind;
+  target?: string;
+  starts_on: string;
+  ends_on: string;
+  failure_mode?: ChallengeFailureMode;
+  allowed_misses?: number;
+}
+
+export interface ChallengePatch {
+  title?: string;
+  target?: string | null;
+  ends_on?: string;
+  failure_mode?: ChallengeFailureMode;
+  allowed_misses?: number;
+}
+
+/**
+ * Reading a challenge is what advances it.
+ *
+ * There is no scheduler in this project — every line of code runs inside an
+ * HTTP request — so the verdicts of the days that passed are materialized by
+ * the read itself. That is why the card never computes a count of its own: the
+ * numbers it prints are the ones the server just wrote down.
+ */
+export const challengesAPI = {
+  list: async () => {
+    return fetcher<Challenge[]>('/challenges');
+  },
+
+  get: async (id: number) => {
+    return fetcher<ChallengeDetail>(`/challenges/${id}`);
+  },
+
+  create: async (draft: ChallengeDraft) => {
+    return fetcher<Challenge>('/challenges', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patch: async (id: number, patch: ChallengePatch) => {
+    return fetcher<Challenge>(`/challenges/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  recompute: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}/recompute`, { method: 'POST' });
+  },
+};

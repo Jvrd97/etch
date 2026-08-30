@@ -6,6 +6,7 @@ import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
+import ChallengesSection from '@/components/ChallengesSection';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
@@ -39,6 +40,7 @@ export default function MobileTodayPage() {
   const {
     date,
     entries,
+    categories,
     groups,
     checked,
     streaks,
@@ -69,6 +71,8 @@ export default function MobileTodayPage() {
       <p className="text-sm text-text-secondary">{date}</p>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      <ChallengesSection categories={categories} />
 
       {/* Above the sections rather than beside one of them: dictation fills in
           the whole day — several categories, the checklist and the day's text

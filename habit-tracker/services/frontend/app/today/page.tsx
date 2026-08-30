@@ -6,6 +6,7 @@ import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
+import ChallengesSection from '@/components/ChallengesSection';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryForm from '@/components/EntryForm';
 import { booleanFields } from '@/lib/today-categories';
@@ -18,6 +19,7 @@ export default function TodayPage() {
   const {
     date,
     entries,
+    categories,
     groups,
     checked,
     streaks,
@@ -53,6 +55,8 @@ export default function TodayPage() {
       </div>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      <ChallengesSection categories={categories} />
 
       {nothingToTrack ? (
         <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">

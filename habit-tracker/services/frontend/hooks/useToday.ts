@@ -22,6 +22,13 @@ import {
 export interface UseTodayResult {
   date: string;
   entries: Entry[];
+  /**
+   * Every active category, ungrouped.
+   *
+   * `groups` routes categories to widgets; the challenge form needs the plain
+   * list, because a rule may point at a category no Today widget shows.
+   */
+  categories: Category[];
   groups: TodayGroups;
   checked: CheckedMap;
   streaks: StreakMap;
@@ -185,6 +192,7 @@ export function useToday(): UseTodayResult {
   return {
     date: todayISO(),
     entries: mergeOptimisticEntries(entries, optimisticEntries),
+    categories,
     groups,
     checked,
     streaks,
