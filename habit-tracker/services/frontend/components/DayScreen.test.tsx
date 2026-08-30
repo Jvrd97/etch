@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88
-// summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook is there
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
+// summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -38,6 +38,28 @@ const DAY: DayDetail = {
   marks: [],
   task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
   notebook: null,
+  summary: {
+    day_date: '2026-08-30',
+    closed: false,
+    rule_set_id: 2,
+    verdict: null,
+    verdict_reason: 'not_closed',
+    verdict_override: false,
+    verdict_override_note: null,
+    anchors_done: 0,
+    anchors_total: 0,
+    tasks_done: 0,
+    tasks_total: 0,
+    work_minutes: null,
+    streak_after: null,
+    wrote_from_scratch: null,
+    education_debt: null,
+    reviewed_today: null,
+    body_md: '',
+    missing_data: ['work_minutes'],
+    missing_anchors: [],
+    source: 'close',
+  },
 };
 
 // A plan as the server answers with one: sections in order, a schedule the

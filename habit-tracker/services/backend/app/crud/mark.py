@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/88
-# summary: mark persistence — an upsert that lets the last of two tabs win, an append-only event beside every change of state, and the snapshot/restore that carries marks across a plan being rewritten
+# [review:need-review] PHASE-03/88, PHASE-03/90
+# summary: mark persistence — an upsert that lets the last of two tabs win, an append-only event beside every change of state, the snapshot/restore that carries marks across a plan being rewritten, and the counts of tasks and anchors the verdict of #90 is decided from
 """
 Database access for the marks of a day.
 
@@ -35,15 +35,17 @@ from sqlalchemy import Select, case, delete, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.day.marks import TaskCounts, count_tasks
-from app.models.mark import PlanMark, PlanMarkEvent
+from app.day.marks import ANCHOR_KIND, TaskCounts, count_anchors, count_tasks
+from app.models.mark import MARK_DONE, MARK_SKIPPED, PlanMark, PlanMarkEvent
 from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 
 __all__ = [
     "CarriedMark",
+    "anchor_counts",
     "day_item",
     "list_marks",
+    "missing_anchors",
     "restore_marks",
     "set_mark",
     "snapshot_marks",
@@ -293,6 +295,17 @@ async def restore_marks(db: AsyncSession, carried: list[CarriedMark]) -> None:
     await db.flush()
 
 
+def _kinds(plan: DayPlan | None) -> dict[uuid.UUID, str]:
+    """Every line of the plan by id, or nothing at all when there is no plan."""
+    if plan is None:
+        return {}
+    return {item.id: item.kind for section in plan.sections for item in section.items}
+
+
+def _states(marks: list[PlanMark]) -> dict[uuid.UUID, str]:
+    return {mark.item_id: mark.state for mark in marks}
+
+
 def task_counts(plan: DayPlan | None, marks: list[PlanMark]) -> TaskCounts:
     """
     The day's tasks split by what happened to them, marks included.
@@ -300,12 +313,34 @@ def task_counts(plan: DayPlan | None, marks: list[PlanMark]) -> TaskCounts:
     A day with no plan counts zeroes rather than refusing to answer: the header
     of an empty day still has to say something, and "0 из 0" is true.
     """
-    kinds = (
-        {}
-        if plan is None
-        else {item.id: item.kind for section in plan.sections for item in section.items}
-    )
-    return count_tasks(kinds, {mark.item_id: mark.state for mark in marks})
+    return count_tasks(_kinds(plan), _states(marks))
+
+
+def anchor_counts(plan: DayPlan | None, marks: list[PlanMark]) -> TaskCounts:
+    """The day's anchors, counted by the same rule as its tasks (`#90`)."""
+    return count_anchors(_kinds(plan), _states(marks))
+
+
+def missing_anchors(plan: DayPlan | None, marks: list[PlanMark]) -> list[str]:
+    """
+    The anchors that were neither closed nor set aside, in the order of the plan.
+
+    This is the decoding «какого именно якоря не хватило» — «вечер с близкими»
+    rather than «якоря 4/5». Not a column: it is a reading of rows the day
+    screen has already loaded, and storing it would give the same fact two
+    places to be wrong in. An imported day has none, and that is honest — its
+    verdict arrived as prose, and the prose is in `body_md`.
+    """
+    if plan is None:
+        return []
+    states = _states(marks)
+    return [
+        item.text_plain
+        for section in plan.sections
+        for item in section.items
+        if item.kind == ANCHOR_KIND
+        and states.get(item.id) not in (MARK_DONE, MARK_SKIPPED)
+    ]
 
 
 def to_response(item_id: uuid.UUID, mark: PlanMark | None) -> MarkResponse:

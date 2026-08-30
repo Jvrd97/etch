@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87
-# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges, windows unrolled across midnight, markdown flattened to the text search reads
+# [review:need-review] PHASE-03/87, PHASE-03/93
+# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges, a link to a goal of the quarter that exists (the set of ids arrives as an argument, the session stays out), windows unrolled across midnight, markdown flattened to the text search reads
 """
 What a plan is allowed to be, decided without a database.
 
@@ -41,6 +41,7 @@ __all__ = [
     "RIGIDITY_HARD",
     "Window",
     "ItemFacts",
+    "check_goal_exists",
     "check_hard_rigidity",
     "check_item_shape",
     "check_task_bar",
@@ -224,6 +225,11 @@ class ItemFacts:
     has_window: bool = False
     has_criterion: bool = False
     is_goal_linked: bool = False
+    # The goal of the quarter this line names, if it names one. Checked against
+    # a set the caller looked up, not against the session: see the module
+    # docstring — nothing here may query, or the truth table of every rejection
+    # stops being testable in milliseconds.
+    quarter_goal_id: int | None = None
 
 
 def count_tasks(items: list[ItemFacts]) -> int:
@@ -335,14 +341,62 @@ def check_item_shape(items: list[ItemFacts]) -> None:
             )
 
 
-def validate_plan(items: list[ItemFacts], rule: DayRuleSet) -> None:
+def check_goal_exists(
+    items: list[ItemFacts],
+    known: frozenset[int],
+    plan_goal_id: int | None = None,
+) -> None:
+    """
+    Refuse a plan that points at a goal of the quarter nobody entered.
+
+    `known` is looked up once by `app.crud.plan` and handed in, so this module
+    keeps its promise of never touching a session. The foreign key on
+    `plan_item.quarter_goal_id` is what makes the rule true for every writer;
+    this is what turns it into an answer — an `IntegrityError` arrives as a 500
+    naming a constraint, and the author needs the code of the task.
+
+    The header of the plan («ради чего сегодня») is checked in the same pass and
+    reported with no code: it is not a line, and pretending it is one would send
+    the reader looking for a task that does not exist.
+    """
+    if plan_goal_id is not None and plan_goal_id not in known:
+        raise PlanRejected(
+            "goal_does_not_exist",
+            f"план назван целью квартала {plan_goal_id}, а такой цели нет. "
+            "«Ради чего сегодня» указывает на пункт квартала, который заведён.",
+        )
+    for item in items:
+        goal_id = item.quarter_goal_id
+        if goal_id is None or goal_id in known:
+            continue
+        raise PlanRejected(
+            "goal_does_not_exist",
+            f"задача {item.code or item.text_plain!r} ссылается на цель "
+            f"квартала {goal_id}, а такой цели нет. Либо это опечатка, либо "
+            "цель ещё не заведена — привязка к несуществующему пункту не "
+            "считается привязкой.",
+            code=item.code,
+            text=item.text_plain,
+        )
+
+
+def validate_plan(
+    items: list[ItemFacts],
+    rule: DayRuleSet,
+    known_goal_ids: frozenset[int],
+    plan_goal_id: int | None = None,
+) -> None:
     """
     Every whole-document rule, in the order the author would want to hear them.
 
     Line-shaped complaints first — a missing window is a typo and cheap to fix.
     The bar on the number of tasks last, because "delete the fifth task" is a
     decision about the day rather than a correction of the document.
+
+    `known_goal_ids` are the ids of `quarter_goal` that exist; the caller reads
+    them, because this module has no session.
     """
     check_item_shape(items)
+    check_goal_exists(items, known_goal_ids, plan_goal_id)
     check_hard_rigidity(items, rule)
     check_task_bar(items, rule)

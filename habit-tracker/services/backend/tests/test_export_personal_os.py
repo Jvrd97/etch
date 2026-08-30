@@ -11,7 +11,7 @@ plan file, and what happened to the plan lands in `.report.md` beside it rather
 than inside the plan text.
 """
 
-# [review:need-review] PHASE-03/96
+# [review:need-review] PHASE-03/96, PHASE-03/93
 # summary: tests for app.exports.personal_os — the rendered plan, the wall-clock window, the report of marks and notebook, byte-stability between two exports, the day with no plan, and the week folder the cron job writes
 from collections.abc import AsyncGenerator
 from datetime import date
@@ -41,8 +41,15 @@ PLAN_URL = f"{DAY_PATH}/plan"
 
 
 @pytest.fixture(autouse=True)
-async def seeded_rules(db_session: AsyncSession) -> AsyncGenerator[None, None]:
-    """The rule table as a migrated database has it; `create_all` has no seed."""
+async def seeded_rules(
+    db_session: AsyncSession, seeded_goal: int
+) -> AsyncGenerator[None, None]:
+    """
+    The rule table as a migrated database has it; `create_all` has no seed.
+
+    `seeded_goal` comes with it: the exported task names goal 1 of the quarter,
+    and since `#93` that column has a foreign key.
+    """
     await day_crud.seed_rules(db_session)
     yield
 

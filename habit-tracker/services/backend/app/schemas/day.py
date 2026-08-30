@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88
-# summary: day DTOs — the day itself, the rule it is judged by (so the screen can explain the verdict before there is one), the plan when there is one instead of a 404 when there is not, and the marks, task counts and notebook that come with it
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
+# summary: day DTOs — the day itself, the rule it is judged by, the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, and the итог with the verdict of the day
 """
 Wire types of the day.
 
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
+from app.schemas.summary import DaySummaryResponse
 
 
 class DayRuleSetResponse(BaseModel):
@@ -107,4 +108,12 @@ class DayDetailResponse(BaseModel):
     )
     notebook: str | None = Field(
         None, description="Блокнот дня из journal_entries; null — не писали"
+    )
+    summary: DaySummaryResponse = Field(
+        ...,
+        description=(
+            "Итог дня: вердикт, невыполненное условие, счётчики, стрик и проза. "
+            "День не закрыт — `closed: false`, `verdict: null` и живой пересчёт, "
+            "а не «проиграл»"
+        ),
     )

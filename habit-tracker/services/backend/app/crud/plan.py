@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/88
-# summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), and overlapping windows found by a self-join on `&&` rather than on render
+# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93
+# summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), overlapping windows found by a self-join on `&&` rather than on render, and every goal of the quarter the document names looked up in one query so a link to a goal that does not exist is a 422 naming the task rather than a 500 naming a foreign key
 """
 Database access for the plan of a day.
 
@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.daytime import DayBoundary, current_boundary
+from app.crud import goal as goal_crud
 from app.crud import mark as mark_crud
 from app.day.plan_validate import (
     ItemFacts,
@@ -126,6 +127,7 @@ class _PreparedItem:
                 self.source.quarter_goal_id is not None
                 or bool(self.source.unlinked_reason)
             ),
+            quarter_goal_id=self.source.quarter_goal_id,
         )
 
 
@@ -292,7 +294,15 @@ async def replace_plan(
     resolved_boundary = boundary if boundary is not None else current_boundary()
     keep = await _stored_item_ids(db, on)
     trees, flat = prepare_plan(document, on, resolved_boundary, keep)
-    validate_plan([row.facts() for row in flat], rule)
+    facts = [row.facts() for row in flat]
+    # One query for every goal the document names, header included. The rule
+    # itself stays in `plan_validate`, which has no session: this is the layer
+    # that is allowed to read, and it reads once.
+    named = {fact.quarter_goal_id for fact in facts if fact.quarter_goal_id is not None}
+    if document.quarter_goal_id is not None:
+        named.add(document.quarter_goal_id)
+    known = await goal_crud.existing_goal_ids(db, named)
+    validate_plan(facts, rule, known, document.quarter_goal_id)
 
     carried = await mark_crud.snapshot_marks(
         db, {row.id for row in flat if row.id in keep}

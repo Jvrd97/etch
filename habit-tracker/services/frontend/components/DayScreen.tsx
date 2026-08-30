@@ -1,17 +1,18 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87
-// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySchedule from '@/components/day/DaySchedule';
+import DayVerdict from '@/components/day/DayVerdict';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
-import { dayAPI, type Mark } from '@/lib/api';
+import { dayAPI, type DayCloseDraft, type Mark } from '@/lib/api';
 import {
   NO_PLAN_HINT,
   NO_PLAN_TEXT,
@@ -115,6 +116,16 @@ export default function DayScreen({ date }: DayScreenProps) {
           />
         </>
       )}
+
+      <DayVerdict
+        summary={detail.summary}
+        onClose={async (draft: DayCloseDraft) => {
+          await dayAPI.close(day.date, draft);
+          // Re-read rather than patch in place: closing re-folds the streak of
+          // every later day, so the server's answer is the only correct one.
+          reload();
+        }}
+      />
 
       <DayNotebook
         value={detail.notebook}

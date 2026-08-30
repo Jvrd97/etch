@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/89
-# summary: `import_source` — every file the importer read, kept whole with its sha256, so a mark that found no line is still recoverable and a second run can tell "unchanged" from "not imported yet"
+# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/93
+# summary: `import_source` — every file the importer read, kept whole with its sha256, so a mark that found no line is still recoverable and a second run can tell "unchanged" from "not imported yet"; #90 adds the summaries to the vocabulary of kinds and #93 adds `goal.md`
 from __future__ import annotations
 
 import uuid
@@ -12,13 +12,21 @@ from sqlalchemy.sql import func
 
 from app.core.database import Base
 
-# What kind of file a row keeps. The importer of `#89` reads three; later
-# tickets (`#90` summaries, `#94` weeks, `#95` feedback) add their own rather
-# than widening the meaning of these.
+# What kind of file a row keeps. The importer of `#89` reads three, `#90`
+# adds the summaries and `#93` adds `goal.md`; later tickets (`#94` weeks, `#95`
+# feedback) add their own rather than widening the meaning of these.
 KIND_PLAN_MD = "plan_md"
 KIND_PLAN_HTML = "plan_html"
 KIND_PLAN_REPORT_MD = "plan_report_md"
-IMPORT_KINDS: tuple[str, ...] = (KIND_PLAN_MD, KIND_PLAN_HTML, KIND_PLAN_REPORT_MD)
+KIND_SUMMARY_MD = "summary_md"
+KIND_GOAL_MD = "goal_md"
+IMPORT_KINDS: tuple[str, ...] = (
+    KIND_PLAN_MD,
+    KIND_PLAN_HTML,
+    KIND_PLAN_REPORT_MD,
+    KIND_SUMMARY_MD,
+    KIND_GOAL_MD,
+)
 
 
 class ImportSource(Base):

@@ -9,8 +9,8 @@ are reported, an unknown label survives the round trip, and a second POST
 replaces the plan instead of doubling it.
 """
 
-# [review:need-review] PHASE-03/87
-# summary: API tests for the whole-document plan — order preserved, the offending line named in every 422, the midnight window measured, overlaps found by the database, unknown labels kept in `extra`, and a repeated POST replacing rather than accumulating
+# [review:need-review] PHASE-03/87, PHASE-03/93
+# summary: API tests for the whole-document plan — order preserved, the offending line named in every 422, the midnight window measured, overlaps found by the database, unknown labels kept in `extra`, and a repeated POST replacing rather than accumulating; the goal every task names is now a real row, seeded by `seeded_goal`
 from collections.abc import AsyncGenerator
 from datetime import date
 from typing import Any
@@ -31,13 +31,16 @@ MINUTES_IN_HOUR = 60
 
 
 @pytest.fixture(autouse=True)
-async def seeded_rules(db_session: AsyncSession) -> AsyncGenerator[None, None]:
+async def seeded_rules(
+    db_session: AsyncSession, seeded_goal: int
+) -> AsyncGenerator[None, None]:
     """
-    The rule table as a migrated database has it.
+    The rule table as a migrated database has it, plus goal 1 of the quarter.
 
     The test database is built by `create_all`, which never runs the migration's
     seed, so without this every plan would be judged by a canon describing no
-    date at all.
+    date at all. `seeded_goal` is here for the same reason: `task()` below names
+    goal 1, and since `#93` that column has a foreign key.
     """
     await day_crud.seed_rules(db_session)
     yield

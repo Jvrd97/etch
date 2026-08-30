@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/88
-# summary: wire types of the mark — an explicit target state (null clears it) so that two tabs cannot fight over "the next one", the counts of the day's tasks, and the day's notebook
+# [review:need-review] PHASE-03/88, PHASE-03/90
+# summary: wire types of the mark — an explicit target state (null clears it) so that two tabs cannot fight over "the next one", the counts of the day's tasks, and the day's notebook, which now names its source the way a mark does
 """
 Wire types of the mark and of the notebook.
 
@@ -107,7 +107,14 @@ class TaskCountsResponse(BaseModel):
 
 
 class NotebookIn(BaseModel):
-    """The free text of a day, as the notebook sends it."""
+    """
+    The free text of a day, as the notebook sends it.
+
+    `source` is here for the same reason it is on `MarkIn`: the local agent
+    writes the notebook too, and a day the agent wrote into is not a day a
+    person came to. Without it `PUT .../notebook` claimed `opened_at` for every
+    writer, which is one half of the `#88` debt `#90` pays.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -115,6 +122,16 @@ class NotebookIn(BaseModel):
         ...,
         description="Текст блокнота целиком; он заменяет прежний, а не дописывается",
     )
+    source: str = Field(
+        SOURCE_WEB, description=f"Кто записал: {', '.join(MARK_SOURCES)}"
+    )
+
+    @field_validator("source")
+    @classmethod
+    def _known_source(cls, value: str) -> str:
+        if value not in MARK_SOURCES:
+            raise ValueError(f"одно из {', '.join(MARK_SOURCES)}")
+        return value
 
 
 class NotebookResponse(BaseModel):

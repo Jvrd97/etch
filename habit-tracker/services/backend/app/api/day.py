@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks and its notebook; POST /day/{date}/plan takes the whole plan as one document, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
 from datetime import date
 from uuid import UUID
 
@@ -11,8 +11,9 @@ from app.core.daytime import today_local
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import summary as summary_crud
 from app.day.plan_validate import PlanRejected
-from app.day.rules import NoRuleForDate
+from app.day.rules import NoRuleForDate, is_openable
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
 from app.schemas.day import DayDetailResponse, DayResponse, DayRuleSetResponse
@@ -23,6 +24,7 @@ from app.schemas.mark import (
     NotebookResponse,
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
+from app.schemas.summary import DayCloseIn, DaySummaryResponse
 
 router = APIRouter(prefix="/day", tags=["day"])
 
@@ -32,8 +34,22 @@ router = APIRouter(prefix="/day", tags=["day"])
 # "не открывал" and "открыл и ничего не сделал" — would stop meaning anything.
 OPENED_DESCRIPTION = (
     "Проставить `opened_at`, если он ещё пуст: страницу дня открыл человек. "
-    "Агент, импорт и cron читают день без этого флага"
+    "Агент, импорт и cron читают день без этого флага. Работает только на "
+    "сегодня и вчера — пролистанный август остаётся «не открывали»"
 )
+
+
+def _person_is_here(on: date) -> bool:
+    """
+    Whether a write on `on` may claim that a person opened the day.
+
+    One predicate for all three writers — `?opened=`, `PUT .../marks` and
+    `PUT .../notebook` — and it lives on the server rather than in the browser:
+    a page has its own midnight and does not know the boundary hour of 04:00.
+    Wave A set `opened_at` on any date a browser rendered, so пролистать август
+    из любопытства was enough to erase the difference `verdict = null` stands on.
+    """
+    return is_openable(on, today_local())
 
 
 def _day(day: Day) -> DayResponse:
@@ -69,6 +85,7 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
+        summary=await summary_crud.summary_for(db, day.day_date, rule, stored, marks),
     )
 
 
@@ -125,14 +142,16 @@ async def get_day(
     блокнот. Плана нет — `plan: null` и `has_plan: false`, а не 404: пустой день
     это ответ, а не ошибка.
 
-    `?opened=true` проставляет `opened_at`, если тот ещё пуст. Флаг ставит
-    страница дня; чтение днём агентом, импортом или cron его не ставит, иначе
-    «не открывал» перестало бы быть отличимым от «открыл и ничего не отметил».
+    `?opened=true` проставляет `opened_at`, если тот ещё пуст, — и только на
+    сегодня и вчера. Флаг ставит страница дня; чтение днём агентом, импортом или
+    cron его не ставит, иначе «не открывал» перестало бы быть отличимым от
+    «открыл и ничего не отметил». Пролистанный из любопытства август остаётся
+    неоткрытым, потому что на этом различии стоит `verdict = null`.
 
     404 остаётся за датой, которую не покрывает ни одно записанное правило.
     """
     day, rule = await _resolve(db, on)
-    if opened:
+    if opened and _person_is_here(day.day_date):
         await day_crud.touch_day(db, day, opened=True)
     return await _detail(db, day, rule)
 
@@ -209,8 +228,10 @@ async def put_mark(
     )
     # A mark written from the browser is a person on the page; one written by
     # the agent or an import is not, and only the first may claim the day was
-    # opened.
-    await day_crud.touch_day(db, day, opened=body.source == SOURCE_WEB)
+    # opened — and only while the day is still inside the open window.
+    await day_crud.touch_day(
+        db, day, opened=body.source == SOURCE_WEB and _person_is_here(day.day_date)
+    )
     return mark_crud.to_response(item_id, mark)
 
 
@@ -225,12 +246,44 @@ async def put_notebook(
     дописывание удваивало бы написанное на каждом сохранении. Живёт он в
     `journal_entries` одной записью на дату — у дня уже есть место для прозы,
     и второе означало бы два ответа на вопрос «что я писал 30-го».
+
+    Источник проверяется наравне с отметкой: блокнот пишет и локальный агент,
+    и день, в который писал агент, — не день, в который приходил человек.
     """
     day, _ = await _resolve(db, on)
     entry = await day_crud.set_notebook(db, day.day_date, body.content)
-    await day_crud.touch_day(db, day, opened=True)
+    await day_crud.touch_day(
+        db, day, opened=body.source == SOURCE_WEB and _person_is_here(day.day_date)
+    )
     return NotebookResponse(
         day_date=day.day_date,
         content=entry.content,
         updated_at=entry.updated_at,
     )
+
+
+@router.post("/{on}/close", response_model=DaySummaryResponse)
+async def post_close(
+    on: date, body: DayCloseIn, db: AsyncSession = Depends(get_db)
+) -> DaySummaryResponse:
+    """
+    Закрыть день: посчитать вердикт, записать итог, пересчитать стрик.
+
+    Вердикт считается по правилу, под которым день прожит, а не по нынешнему:
+    канон менялся 2026-08-17, и день до этой даты обязан получить тот же ответ,
+    который получил бы тогда. Причина названа машинным кодом — `tasks`,
+    `anchors`, `overtime`, — а не «день не выигран»: читателю нужно знать,
+    что именно чинить.
+
+    `work_minutes` допускает `null` — «не измерено», а не ноль: интервалы работы
+    приезжают с `#91`, и до тех пор проверка переработки пропускается, а факт
+    уходит в `missing_data`.
+
+    Переопределение вердикта требует записки. 422 без неё — от схемы, и то же
+    самое отвергает `CHECK` в базе: валидатор это сообщение, а правило — база.
+
+    Повторный вызов заменяет итог, а не добавляет второй: закрытие — состояние
+    дня, а не запись в журнале.
+    """
+    day, _ = await _resolve(db, on)
+    return await summary_crud.close_day(db, day.day_date, body)

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86
-# summary: pure day-canon logic — which rule row was in force on a date, which rule is in force now, the kind/is_nocode a date gets under a rule, and the two seed rows
+# [review:need-review] PHASE-03/86, PHASE-03/90
+# summary: pure day-canon logic — which rule row was in force on a date, which rule is in force now, the kind/is_nocode a date gets under a rule, the window in which opening a day counts as opening it, and the two seed rows
 """
 The canon of a day, decided without a database.
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from app.models.day import DayRuleSet
@@ -33,6 +33,7 @@ from app.models.day import DayRuleSet
 __all__ = [
     "KIND_OFF",
     "KIND_WORK",
+    "OPEN_WINDOW_DAYS",
     "SEED_RULES",
     "NoRuleForDate",
     "RuleSeed",
@@ -40,6 +41,7 @@ __all__ = [
     "covers",
     "day_kind",
     "is_nocode_date",
+    "is_openable",
     "resolve_rule",
 ]
 
@@ -63,6 +65,9 @@ HISTORY_STARTS_ON = date(2020, 1, 1)
 
 # The hard edges of the day. Only these may carry `rigidity='hard'` when plans
 # arrive (`#87`); the middle of the evening breathes.
+# How far back an open window reaches: сегодня и вчера. See `is_openable`.
+OPEN_WINDOW_DAYS = 1
+
 REQUIRED_ANCHORS: tuple[str, ...] = (
     "подъём",
     "спорт",
@@ -214,3 +219,23 @@ def day_kind(rule: DayRuleSet, on: date) -> str:
 def is_nocode_date(rule: DayRuleSet, on: date) -> bool:
     """Whether `on` is a no-code day — one the human writes the code themselves."""
     return on.isoweekday() in rule.nocode_days
+
+
+def is_openable(on: date, today: date) -> bool:
+    """
+    Whether opening `on` in a browser may claim that the day was opened.
+
+    Сегодня и вчера, и ни дня больше. Пролистать август из любопытства — это не
+    «открыл день»: `GET /day/{date}?opened=true` ставил `opened_at` любой дате,
+    и «не открывал» переставало отличаться от «открыл и ничего не сделал», а на
+    этом различии стоит `verdict = null` (`#90`).
+
+    Yesterday is inside the window because closing a day at 00:30 is the normal
+    case rather than the exception — the boundary hour is 04:00, so «вчера» by
+    the calendar is often still the day being lived.
+
+    The predicate is the server's, never the browser's: a page has its own
+    midnight and does not know this one, which is the same reason `useDay` sends
+    `date === null` for today instead of the calendar's date.
+    """
+    return today - timedelta(days=OPEN_WINDOW_DAYS) <= on <= today

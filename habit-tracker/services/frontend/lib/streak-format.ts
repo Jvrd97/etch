@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/28-today-avoid-card
-// summary: pure label helpers for the avoid-streak block (day count, clean badge, last relapse date)
+// [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/28-today-avoid-card, PHASE-03/90
+// summary: pure label helpers for the avoid-streak block (day count, clean badge, last relapse date); #90 examined the date renderer and left it as it is — it holds no day boundary to move
 
 const RELAPSE_DATE_FORMAT: Intl.DateTimeFormatOptions = {
   day: 'numeric',
@@ -20,6 +20,11 @@ export function formatCleanDays(days: number): string {
 /**
  * Readable last-relapse day; "never" when the streak was never broken.
  * The ISO date is parsed as UTC so the rendered day never shifts by timezone.
+ *
+ * This is a renderer of a date-only string, not a day boundary, which is why
+ * `#90` moved the server onto `local_date()` and left this alone: `parsed` has
+ * no time in it, and reading it in the viewer's zone would print the previous
+ * day everywhere west of Greenwich — the very shift the ticket exists to remove.
  */
 export function formatLastRelapse(isoDate: string | null): string {
   if (!isoDate) return 'never';

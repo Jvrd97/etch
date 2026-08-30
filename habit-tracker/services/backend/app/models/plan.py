@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87
-# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces
+# [review:need-review] PHASE-03/87, PHASE-03/93
+# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key
 from __future__ import annotations
 
 import uuid
@@ -113,9 +113,18 @@ class DayPlan(Base):
     lede: Mapped[str | None] = mapped_column(Text, nullable=True)
     purpose_md: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # No FK: `quarter_goal` arrives in `#93`. The column is here now because the
-    # plan is written now, and a nullable integer costs nothing to fill in later.
-    quarter_goal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # «Ради чего сегодня» — the goal of the quarter the whole day is spent on
+    # (`goal.md`, уровень 5). `RESTRICT`, like the one on `plan_item`: deleting a
+    # goal a day was lived for has to fail loudly.
+    quarter_goal_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "quarter_goal.id",
+            ondelete="RESTRICT",
+            name="fk_day_plan_quarter_goal_id",
+        ),
+        nullable=True,
+    )
 
     counters: Mapped[list[Any]] = mapped_column(
         JSONB, default=list, server_default="[]"
@@ -296,7 +305,18 @@ class PlanItem(Base):
         JSONB, default=dict, server_default="{}"
     )
 
-    quarter_goal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # `RESTRICT` rather than `SET NULL`: a task that named a goal of the quarter
+    # must not quietly become somebody else's urgency because the goal was
+    # deleted. The delete is what fails, and a person decides what the task was.
+    quarter_goal_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "quarter_goal.id",
+            ondelete="RESTRICT",
+            name="fk_plan_item_quarter_goal_id",
+        ),
+        nullable=True,
+    )
     unlinked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     carried_from_item_id: Mapped[uuid.UUID | None] = mapped_column(

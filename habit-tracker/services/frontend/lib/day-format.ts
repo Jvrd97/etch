@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-03/86
-// summary: pure labels for the day screen — what kind of day it is, and the plain-Russian reading of the rule it is judged by (both shells render the same strings)
+// [review:need-review] PHASE-03/86, PHASE-03/90
+// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings)
 
-import type { Day, DayRuleSet } from '@/lib/api';
+import type { Day, DayRuleSet, VerdictReason, MissingData } from '@/lib/api';
 
 /** Text shown where a plan would be. A day without one is an answer, not an error. */
 export const NO_PLAN_TEXT = 'Плана нет';
@@ -103,4 +103,58 @@ export function ruleLines(rule: DayRuleSet): RuleLine[] {
 export function ruleValidity(rule: DayRuleSet): string {
   if (rule.valid_to === null) return `действует с ${rule.valid_from}`;
   return `действовало с ${rule.valid_from} по ${rule.valid_to}`;
+}
+
+/**
+ * What the verdict says, including its absence.
+ *
+ * `null` is не «проиграл» а «не закрыт» — the distinction the whole slice
+ * exists to keep: nobody has said what happened to the day yet.
+ */
+export function verdictLabel(verdict: 'won' | 'lost' | null): string {
+  if (verdict === 'won') return 'День выигран';
+  if (verdict === 'lost') return 'День проигран';
+  return 'День не закрыт';
+}
+
+/**
+ * Which condition was not met, in one word.
+ *
+ * The server sends a code and the screen translates it, the way it does for
+ * `mark.state`. A reader told only «день не выигран» has to guess which of
+ * three things to repair, and that guess is what the ticket removes.
+ */
+const REASON_LABEL: Record<VerdictReason, string> = {
+  tasks: 'задачи',
+  anchors: 'якоря',
+  overtime: 'переработка',
+  not_closed: 'день не закрыт',
+};
+
+export function verdictReasonLabel(reason: VerdictReason | ''): string {
+  return reason === '' ? '' : REASON_LABEL[reason];
+}
+
+/** What the day could not be judged on — «не измерено», а не «ноль». */
+const MISSING_LABEL: Record<MissingData, string> = {
+  work_minutes: 'время не измерено',
+};
+
+export function missingDataLabel(code: MissingData): string {
+  return MISSING_LABEL[code];
+}
+
+/**
+ * A streak of days, counted the way Russian counts.
+ *
+ * «1 день», «2 дня», «5 дней» — and 11 to 14 are «дней» however they end,
+ * which is exactly the case a naive `n % 10` gets wrong.
+ */
+export function streakLabel(days: number): string {
+  const lastTwo = days % 100;
+  const last = days % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${days} дней`;
+  if (last === 1) return `${days} день`;
+  if (last >= 2 && last <= 4) return `${days} дня`;
+  return `${days} дней`;
 }

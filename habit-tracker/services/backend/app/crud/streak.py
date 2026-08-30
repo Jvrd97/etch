@@ -1,12 +1,12 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107
-# summary: avoid-streak calculation over full entry history (current/best/last relapse)
-# summary: its UTC day boundary is now documented as the one debt left over from the single boundary, closed by #90
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90
+# summary: avoid-streak calculation over full entry history (current/best/last relapse); its day boundary is now the one boundary — `today_local()` — so a mark at 00:30 lands in the same day for the streak as for the plan
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import today_local
 from app.crud.values import is_true_value, parse_number
 from app.models import Entry, EntryValue, Field
 from app.models.field import FieldType
@@ -85,12 +85,15 @@ async def get_category_streak(
     """
     Compute the streak of a category from every entry it ever had.
 
-    The day boundary here is UTC, and after PHASE-03/107 this is the only place
-    in `app/` that disagrees with `app/core/daytime.local_date()`. It stays that
-    way on purpose: the frontend parses `last_relapse_date` as a UTC instant
-    (lib/streak-format.ts), so moving the server alone would make the two sides
-    disagree by a day. TODO(#90): move both sides onto `local_date()` — the debt
-    is named in ADR-0014. `today` can be passed in to pin the timeline.
+    "Сегодня" is `today_local()` — the one boundary of `app.core.daytime`, read
+    from the `day_rule_set` row in force. It used to be `datetime.now(utc).date()`,
+    which was the last second arithmetic of days left in `app/` and meant that a
+    mark made at 00:30 landed in one day for the plan and in the next one for the
+    streak. `today` can still be passed in to pin the timeline.
+
+    The frontend needs no matching change: `lib/streak-format.ts` renders
+    `last_relapse_date`, a date-only string with no time in it, and there is no
+    day boundary on that side to move.
     """
     result = await db.execute(
         select(
@@ -114,6 +117,4 @@ async def get_category_streak(
         ):
             relapse_dates.add(entry_date)
 
-    return compute_streak(
-        entry_dates, relapse_dates, today or datetime.now(timezone.utc).date()
-    )
+    return compute_streak(entry_dates, relapse_dates, today or today_local())

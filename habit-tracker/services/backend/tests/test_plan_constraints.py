@@ -8,7 +8,7 @@ second calls `app.day.plan_validate` with no database at all, and asserts the
 same refusals arrive as messages naming the line.
 """
 
-# [review:need-review] PHASE-03/87
+# [review:need-review] PHASE-03/87, PHASE-03/93
 # summary: the four CHECKs refuse a plan written past the service, generated `window`/`search` are populated by postgres, and the pure validator (task bar, hardness, windows across midnight, markdown flattening) answers with the offending item
 import uuid
 from collections.abc import AsyncGenerator
@@ -23,6 +23,7 @@ from app.crud import day as day_crud
 from app.day.plan_validate import (
     ItemFacts,
     PlanRejected,
+    check_goal_exists,
     check_hard_rigidity,
     check_item_shape,
     check_task_bar,
@@ -42,8 +43,16 @@ MINUTES_IN_HOUR = 60
 
 
 @pytest.fixture
-async def plan_id(db_session: AsyncSession) -> AsyncGenerator[uuid.UUID, None]:
-    """An empty plan with one section, so a test can write a single item into it."""
+async def plan_id(
+    db_session: AsyncSession, seeded_goal: int
+) -> AsyncGenerator[uuid.UUID, None]:
+    """
+    An empty plan with one section, so a test can write a single item into it.
+
+    `seeded_goal` comes with it: the items below name goal 1 of the quarter to
+    satisfy `ck_plan_item_task_is_linked_or_explained`, and since `#93` that
+    column also has a foreign key.
+    """
     await day_crud.seed_rules(db_session)
     await day_crud.ensure_day(db_session, PLAN_DAY)
 
@@ -363,6 +372,38 @@ def test_an_unlinked_reason_is_as_good_as_a_goal() -> None:
             )
         ]
     )
+
+
+def test_check_goal_exists_names_a_task_pointing_at_nothing() -> None:
+    """
+    A link to a goal nobody entered is not a link.
+
+    Pure, with no session at all: the set of known ids arrives as an argument,
+    which is what keeps the whole truth table of this rule testable in
+    milliseconds alongside the rest of the module.
+    """
+    with pytest.raises(PlanRejected) as error:
+        check_goal_exists(
+            [_facts(kind="task", code="W1", quarter_goal_id=99)], frozenset()
+        )
+
+    assert error.value.error == "goal_does_not_exist"
+    assert error.value.code == "W1"
+
+
+def test_check_goal_exists_lets_a_known_goal_through() -> None:
+    check_goal_exists(
+        [_facts(kind="task", code="W1", quarter_goal_id=3)], frozenset({3})
+    )
+
+
+def test_check_goal_exists_reads_the_goal_named_in_the_header_of_the_plan() -> None:
+    """«Ради чего сегодня» has no code — it is the day, not a line of it."""
+    with pytest.raises(PlanRejected) as error:
+        check_goal_exists([], frozenset(), plan_goal_id=99)
+
+    assert error.value.error == "goal_does_not_exist"
+    assert error.value.code is None
 
 
 # --------------------------------------------------------------------------

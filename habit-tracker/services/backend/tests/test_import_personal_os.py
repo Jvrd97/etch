@@ -13,11 +13,12 @@ again gives the same plan.
 The fixture under `tests/fixtures/personal_os/` is the live 28 August — the
 `.md`, the `.html` a person actually ticked, and the `.report.md`
 `plan_server.py` wrote beside them — plus two small days written for the cases
-the live data does not contain.
+the live data does not contain, and three live `summaries/**` for the verdicts
+`#90` imports as prose.
 """
 
-# [review:need-review] PHASE-03/89
-# summary: tests of the personal-os import — the markdown grammar, the mark keys of a rendered page (schedule rows included), idempotence at row level, the calendar without holes, the labels that survive, and the export/import round trip
+# [review:need-review] PHASE-03/89, PHASE-03/90
+# summary: tests of the personal-os import — the markdown grammar, the mark keys of a rendered page (schedule rows included), idempotence at row level, the calendar without holes, the labels that survive, the export/import round trip, and the summaries whose verdicts arrive as prose and are never recomputed
 import hashlib
 import shutil
 from collections.abc import AsyncGenerator
@@ -34,6 +35,8 @@ from app.core.daytime import day_bounds
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import summary as summary_crud
+from app.day.evaluate import VERDICT_LOST
 from app.exports.personal_os import export_day
 from app.imports.md_parser import match_key, parse_plan, split_window
 from app.imports.personal_os import (
@@ -41,6 +44,7 @@ from app.imports.personal_os import (
     build_document,
     collect_days,
     import_root,
+    read_verdict,
 )
 from app.imports.plan_state import (
     is_exported_report,
@@ -50,6 +54,7 @@ from app.imports.plan_state import (
 from app.models.import_source import ImportSource
 from app.models.mark import PlanMark
 from app.models.plan import DayPlan, PlanItem, PlanSection
+from app.models.summary import SOURCE_IMPORT, DaySummary
 
 FIXTURES = Path(__file__).parent / "fixtures" / "personal_os"
 PLANS = FIXTURES / "plans" / "2026" / "08"
@@ -57,6 +62,11 @@ PLANS = FIXTURES / "plans" / "2026" / "08"
 LIVE_DAY = date(2026, 8, 28)
 UNOPENED_DAY = date(2026, 8, 26)
 STALE_MARK_DAY = date(2026, 8, 24)
+
+# The three summaries in the fixture. 14 August was lived under the legacy canon
+# (ceiling of ten hours, bar of 80%), the other two under the current one.
+LEGACY_SUMMARY = date(2026, 8, 14)
+OFF_SUMMARY = date(2026, 8, 20)
 
 
 @pytest.fixture(autouse=True)
@@ -647,3 +657,164 @@ async def test_the_sections_and_items_of_the_live_day_are_all_stored(
     ]
     assert len(items.scalars().all()) > 30
     assert len(marks.scalars().all()) == 17
+
+
+# ------------------------------------------------------------- the summaries
+
+
+def test_the_verdict_is_read_out_of_the_first_bold_fragment_of_the_line() -> None:
+    """
+    The one regular expression that reads a verdict, and where it stops.
+
+    `life.py` matched `\\*\\*(да|нет)` — the bold had to *start* with the word.
+    «**Формально — нет.**» is the verdict of 28 August and would have fallen
+    through into `None`, which is the answer for a day nobody judged. So the
+    search is for да/нет *inside* the first bold fragment of the line, and a
+    line with no bold at all — «Вне игры (выходной)» — still has no verdict.
+    """
+    assert read_verdict("## День выигран?\n\n**Нет.** Якоря 1/5\n") == VERDICT_LOST
+    assert read_verdict("## День выигран?\n\n**Формально — нет.** Задачи 4/4\n") == (
+        VERDICT_LOST
+    )
+    assert read_verdict("## День выигран?\n\n**Да.** Всё закрыто\n") == "won"
+    assert (
+        read_verdict("## День выигран?\n\nВне игры (выходной). Учебная — да\n") is None
+    )
+    assert read_verdict("# План\n\nникакого раздела нет\n") is None
+
+
+async def test_the_summaries_of_august_arrive_with_their_prose_and_their_verdicts(
+    db_session: AsyncSession, root: Path
+) -> None:
+    report = await import_root(db_session, root)
+
+    stored = {
+        row.day_date: row
+        for row in (await db_session.execute(select(DaySummary))).scalars().all()
+    }
+
+    assert report.summaries_written == 3
+    assert set(stored) == {LEGACY_SUMMARY, OFF_SUMMARY, LIVE_DAY}
+    assert stored[LIVE_DAY].verdict == VERDICT_LOST
+    assert "Формально — нет" in stored[LIVE_DAY].body_md
+    # «Вне игры (выходной)» — никто не судил этот день, и это не проигрыш.
+    assert stored[OFF_SUMMARY].verdict is None
+    assert all(row.source == SOURCE_IMPORT for row in stored.values())
+
+
+async def test_an_imported_summary_names_the_canon_the_day_was_lived_under(
+    db_session: AsyncSession, root: Path
+) -> None:
+    """
+    `day_summary.rule_set_id` совпадает с `day.rule_set_id` той же даты.
+
+    ADR-0014 says imported verdicts carry `rule_set = legacy`, and that reading
+    would be a lie for 20 and 28 August: they were lived after 2026-08-17, under
+    the current canon. «Не пересчитывать» is expressed by `source='import'`, and
+    it holds for every date rather than only for the ones before the change.
+    """
+    await import_root(db_session, root)
+
+    for on in (LEGACY_SUMMARY, OFF_SUMMARY, LIVE_DAY):
+        day = await day_crud.get_day(db_session, on)
+        stored = await summary_crud.get_summary(db_session, on)
+        assert day is not None and stored is not None
+        assert stored.rule_set_id == day.rule_set_id, on.isoformat()
+
+    legacy = await summary_crud.get_summary(db_session, LEGACY_SUMMARY)
+    current = await summary_crud.get_summary(db_session, LIVE_DAY)
+    assert legacy is not None and current is not None
+    assert legacy.rule_set_id != current.rule_set_id
+
+
+async def test_a_recompute_never_rewrites_a_verdict_that_arrived_as_prose(
+    db_session: AsyncSession, root: Path
+) -> None:
+    """
+    Пересчёт истории дважды подряд оставляет те же значения.
+
+    An imported day has no marks and no measured work: re-judging it would
+    replace a person's sentence with zeros. Only `streak_after` — derived by
+    definition — is written onto such a row.
+    """
+    await import_root(db_session, root)
+    before = await verdicts(db_session)
+
+    await summary_crud.recompute_history(db_session)
+    once = await verdicts(db_session)
+    await summary_crud.recompute_history(db_session)
+
+    assert once == before
+    assert await verdicts(db_session) == before
+
+
+async def test_a_second_run_of_the_import_changes_no_summary_either(
+    db_session: AsyncSession, root: Path
+) -> None:
+    await import_root(db_session, root)
+    before = await verdicts(db_session)
+
+    second = await import_root(db_session, root)
+
+    assert second.summaries_written == 0
+    assert await verdicts(db_session) == before
+
+
+async def test_the_prose_of_a_summary_is_findable_by_a_phrase_from_it(
+    db_session: AsyncSession, root: Path
+) -> None:
+    """«Поиск по прозе итогов находит день по фразе» — раздел «куда разъехался день»."""
+    await import_root(db_session, root)
+
+    found = await summary_crud.search(db_session, "срыв отбоя стоял в плане дня")
+
+    assert [row.day_date for row in found] == [LIVE_DAY]
+    assert await summary_crud.search(db_session, "квантовая хромодинамика") == []
+
+
+async def verdicts(session: AsyncSession) -> list[tuple[Any, ...]]:
+    """Every summary as plain values — verdict, reason, counters, streak."""
+    result = await session.execute(select(DaySummary).order_by(DaySummary.day_date))
+    return [
+        (
+            row.day_date,
+            row.verdict,
+            row.verdict_reason,
+            row.rule_set_id,
+            row.tasks_done,
+            row.tasks_total,
+            row.streak_after,
+            row.body_md,
+        )
+        for row in result.scalars().all()
+    ]
+
+
+def test_the_summaries_of_the_fixture_are_the_three_files_it_holds(root: Path) -> None:
+    found = sorted(
+        date.fromisoformat(path.stem) for path in (root / "summaries").rglob("*.md")
+    )
+
+    assert found == [LEGACY_SUMMARY, OFF_SUMMARY, LIVE_DAY]
+
+
+def test_only_the_importer_reads_a_verdict_out_of_prose() -> None:
+    """
+    Ни один код вне `app/imports/` не разбирает вердикт регуляркой.
+
+    That was the whole complaint of `#90`: `life.py` and `plan_server.py` each
+    had their own copy, and the criterion itself existed in three incompatible
+    versions. Here the prose is read in exactly one file, and everything
+    downstream works with the value.
+    """
+    app_root = Path(__file__).parent.parent / "app"
+    # The alternation of the two words is what a verdict parser is made of;
+    # prose *about* the heading (`app/day/evaluate.py` explains where the
+    # criterion came from) is not a second parser.
+    offenders = [
+        str(path.relative_to(app_root))
+        for path in sorted(app_root.rglob("*.py"))
+        if "imports" not in path.parts and "да|нет" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

@@ -10,11 +10,10 @@ mark; two tabs do not resurrect an old value; and the notebook stays a single
 entry per date.
 """
 
-# [review:need-review] PHASE-03/88
-# summary: API and logic tests for the mark cycle, the mark that survives an edit of the plan, the append-only event log, the four states of "empty", the task counter that ignores `skipped`, and the notebook as one journal entry per date
+# [review:need-review] PHASE-03/88, PHASE-03/90, PHASE-03/93
+# summary: API and logic tests for the mark cycle, the mark that survives an edit of the plan, the append-only event log, the four states of "empty", the task counter that ignores `skipped`, and the notebook as one journal entry per date; the day under test is today, because since #90 only today and yesterday can be opened
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import date
 from typing import Any
 
 import pytest
@@ -22,6 +21,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import today_local
 from app.crud import day as day_crud
 from app.crud import plan as plan_crud
 from app.day.marks import MARK_CYCLE, TaskCounts, count_tasks, next_state
@@ -30,15 +30,26 @@ from app.models.mark import MARK_DONE, MARK_FAILED, MARK_SKIPPED, PlanMarkEvent
 
 DAY_URL = "/api/v1/day"
 
-# A Monday under the current canon, the same one `#87`'s tests use.
-MARK_DAY = date(2026, 8, 31)
+# Today, by the day boundary of the canon — not a date pinned in the file.
+# `#90` closed the debt where `opened_at` was set on any day a browser rendered,
+# so the assertions below about opening a day only hold inside the open window
+# («сегодня и вчера»), and «today» is a fact about the run rather than about
+# 2026-08-31. Что бывает с исторической датой — `tests/test_day_close.py`.
+MARK_DAY = today_local()
 DAY_PATH = f"{DAY_URL}/{MARK_DAY.isoformat()}"
 PLAN_URL = f"{DAY_PATH}/plan"
 
 
 @pytest.fixture(autouse=True)
-async def seeded_rules(db_session: AsyncSession) -> AsyncGenerator[None, None]:
-    """The rule table as a migrated database has it; `create_all` has no seed."""
+async def seeded_rules(
+    db_session: AsyncSession, seeded_goal: int
+) -> AsyncGenerator[None, None]:
+    """
+    The rule table as a migrated database has it; `create_all` has no seed.
+
+    `seeded_goal` comes with it: every task below names goal 1 of the quarter,
+    and since `#93` that column has a foreign key.
+    """
     await day_crud.seed_rules(db_session)
     yield
 
@@ -60,7 +71,7 @@ def task(code: str, window: str = "09:00-10:00", **overrides: Any) -> dict[str, 
 def document(*items: dict[str, Any]) -> dict[str, Any]:
     """A plan of one work section holding `items`."""
     return {
-        "title": "План 2026-08-31 (пн)",
+        "title": f"План {MARK_DAY.isoformat()}",
         "sections": [{"kind": "work", "title": "Работа", "items": list(items)}],
     }
 

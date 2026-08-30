@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/107, PHASE-03/86
-# summary: the single day boundary — local_date()/day_bounds() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC
+# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90
+# summary: the single day boundary — local_date()/day_bounds() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC; since #90 nothing in app/ counts days any other way
 """
 The one answer to "which day does this moment belong to".
 
@@ -37,10 +37,11 @@ date it already has, and re-answering an old moment under an old boundary would
 move rows between days years after the fact. Should the boundary hour ever
 actually change, the past keeps the dates it was recorded with.
 
-Consumers: `#86` (a moment's day), `#91` (work intervals), `#97` (a signal's
-`local_date`), `#121` (quick marks), `#124` (undo), `#127` (challenges),
-`#134`/`#135` (role minutes), `#146` (day signals). `compute_streak` still
-counts UTC days — a debt named in ADR-0014 and paid by `#90`.
+Consumers: `#86` (a moment's day), `#90` (the verdict of a day and the streak of
+categories), `#91` (work intervals), `#97` (a signal's `local_date`), `#121`
+(quick marks), `#124` (undo), `#127` (challenges), `#134`/`#135` (role minutes),
+`#146` (day signals). Since `#90` there is no second arithmetic of days left in
+`app/`: `app.crud.streak` counted UTC ones and now asks here like everyone else.
 
 Related: ADR-0014 (day in postgres), ADR-0016 (external inbox), ADR-0018
 (challenges and quick marks).

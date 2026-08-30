@@ -2,17 +2,19 @@
 Tests for category streak_mode and the streak endpoint.
 """
 
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
-# summary: tests for streak_mode create/patch/422 and streak calculation matrix
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/90
+# summary: tests for streak_mode create/patch/422, the streak calculation matrix, and the day boundary the streak now counts by — `today_local()`, the same one the plan uses
 
 import logging
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import today_local
 from app.crud.streak import StreakStats, compute_streak, is_relapse_value
 from app.models import Category
 from app.models.field import FieldType
@@ -187,7 +189,7 @@ class TestStreakEndpoint:
     ) -> None:
         """RMO case: a 'Quantity 0' record is a clean day, not a relapse."""
         category_id, quantity_id, _ = await self._create_rmo(client)
-        today = date.today()
+        today = today_local()
         await self._add_entry(
             client, category_id, today - timedelta(days=4), {quantity_id: "0"}
         )
@@ -206,7 +208,7 @@ class TestStreakEndpoint:
     ) -> None:
         """Relapse on day-6 (number > 0) and day-2 (boolean true)."""
         category_id, quantity_id, relapse_id = await self._create_rmo(client)
-        today = date.today()
+        today = today_local()
         await self._add_entry(
             client, category_id, today - timedelta(days=9), {quantity_id: "0"}
         )
@@ -238,3 +240,41 @@ class TestStreakEndpoint:
 
         response = await client.get(f"/api/v1/categories/{category_id}/streak")
         assert response.status_code == 409
+
+
+class TestOneDayBoundary:
+    """
+    The debt `#90` pays: `app/crud/streak.py` counted UTC days of its own.
+
+    A mark made at 00:30 landed in one day for the plan and in the next one for
+    the streak, which is the single known disagreement `#107` left behind. After
+    this ticket there is no second arithmetic of days anywhere in `app/`.
+    """
+
+    def test_the_streak_asks_the_one_boundary_what_today_is(self) -> None:
+        """`today=None` means `today_local()`, not the process's UTC calendar."""
+        entry_days = {today_local() - timedelta(days=3)}
+
+        by_default = compute_streak(entry_days, set(), today=today_local())
+
+        assert by_default.current_streak == 4
+
+    def test_no_second_arithmetic_of_days_is_left_in_the_module(self) -> None:
+        """
+        The acceptance case as it is written: a grep, not a promise.
+
+        `TODO(#90)` named the debt and a UTC clock reading was it. The module
+        no longer imports `timezone` at all — it asks `app.core.daytime` like
+        every other consumer — and a future edit that brings either back fails
+        here rather than in production at 00:30.
+        """
+        source = (
+            Path(__file__).parent.parent / "app" / "crud" / "streak.py"
+        ).read_text(encoding="utf-8")
+        code = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
+        )
+
+        assert "TODO(#90)" not in source
+        assert "timezone" not in code
+        assert "today_local()" in code

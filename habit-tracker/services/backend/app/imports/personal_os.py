@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/89
-# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, the calendar filled so no day is a hole, and everything unread named in the report
+# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/93
+# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, summaries carried into `day_summary` with their verdicts read as prose and never recomputed, the calendar filled so no day is a hole, `goal.md` read into the goal tables by `app.imports.goal_md`, and everything unread named in the report
 """
 The history of `personal-os` moved into the database, once and repeatably.
 
@@ -65,8 +65,11 @@ from app.core.daytime import current_boundary, day_bounds
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import summary as summary_crud
+from app.day.evaluate import VERDICT_LOST, VERDICT_WON
 from app.day.plan_validate import PlanRejected, resolve_window
 from app.exports.personal_os import SECTION_TITLE_BY_KIND
+from app.imports import goal_md
 from app.imports import plan_state as state_reader
 from app.imports.md_parser import (
     FORM_LIST_ITEM,
@@ -80,12 +83,15 @@ from app.imports.md_parser import (
     parse_plan,
 )
 from app.models.import_source import (
+    KIND_GOAL_MD,
     KIND_PLAN_HTML,
     KIND_PLAN_MD,
     KIND_PLAN_REPORT_MD,
+    KIND_SUMMARY_MD,
     ImportSource,
 )
 from app.models.plan import DayPlan, PlanItem, PlanSection
+from app.models.summary import SOURCE_IMPORT, DaySummary
 from app.schemas.plan import PlanDocument, PlanItemIn, PlanSectionIn
 
 __all__ = [
@@ -94,15 +100,39 @@ __all__ = [
     "ImportedDay",
     "ImportWarning",
     "collect_days",
+    "collect_summaries",
     "import_day",
     "import_root",
+    "import_summary",
     "main",
+    "read_verdict",
 ]
 
 # `plans/2026/08/2026-08-28.md`. Anything else in that directory — a `.bak`, a
 # `notes 13.08.2026.md`, the `.report.md` beside it — is matched separately or
 # not at all.
 PLAN_GLOB = "plans/*/*/????-??-??.md"
+
+# `summaries/2026/08/2026-08-28.md` — the итог of a day, written by hand.
+SUMMARY_GLOB = "summaries/*/*/????-??-??.md"
+
+# `goal.md` — the levels, the milestones and the goals of the quarter. One file,
+# at the root, and not a day: read once per run rather than per `--date`.
+GOAL_FILE = "goal.md"
+
+# The heading the verdict of a day is written under, and the reading of what is
+# written there. **This is the only place in the codebase that parses a verdict
+# out of prose** — `evaluate_day`, the crud and the API all work with the value.
+#
+# The bold fragment is searched *inside*, not matched from its start: `life.py`
+# used `\*\*(да|нет)` and «**Формально — нет.**» — the verdict of 28 August —
+# fell through it into "nobody judged this day", which is a different fact and
+# the wrong one. A line with no bold at all («Вне игры (выходной)») still has no
+# verdict, and that is right: nothing judged that day either.
+VERDICT_HEAD_RE = re.compile(r"^##\s*День выигран\?\s*$", re.MULTILINE)
+VERDICT_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+VERDICT_VALUE_RE = re.compile(r"\b(да|нет)\b", re.IGNORECASE)
+VERDICT_BY_WORD = {"да": VERDICT_WON, "нет": VERDICT_LOST}
 
 # Written into `plan_item.unlinked_reason` for every imported task. A task has to
 # name a quarter goal or the reason it names none (`#87`), and the goals
@@ -185,6 +215,14 @@ class ImportReport:
     gaps_filled: list[date] = field(default_factory=list)
     warnings: list[ImportWarning] = field(default_factory=list)
     files_read: int = 0
+    # Summaries are counted apart from days: a day is a plan, and a summary can
+    # exist for a date that never had one (20 August was a day off).
+    summaries_written: int = 0
+    summaries_unchanged: int = 0
+    # `goal.md` is one file rather than a countable set, so it reports as a
+    # yes/no: it was read, it was already current, or the repository has none.
+    goals_written: bool = False
+    goals_unchanged: bool = False
 
     def _count(self, action: str) -> int:
         return sum(1 for one in self.days if one.action == action)
@@ -220,9 +258,21 @@ class ImportReport:
             f"отказано: {self.failed}",
             f"пунктов: {self.items_written}",
             f"отметок: {self.marks_written}",
+            f"итогов записано: {self.summaries_written}",
+            f"итогов без изменений: {self.summaries_unchanged}",
+            f"goal.md: {_goal_state(self)}",
             f"дней без плана заведено: {len(self.gaps_filled)}",
             f"предупреждений: {len(self.warnings)}",
         ]
+
+
+def _goal_state(report: ImportReport) -> str:
+    """How the run treated `goal.md`, in one word for the CLI."""
+    if report.goals_written:
+        return "прочитан"
+    if report.goals_unchanged:
+        return "без изменений"
+    return "нет файла"
 
 
 def collect_days(root: Path) -> list[DayFiles]:
@@ -249,6 +299,39 @@ def collect_days(root: Path) -> list[DayFiles]:
             )
         )
     return found
+
+
+def collect_summaries(root: Path) -> list[tuple[date, Path]]:
+    """Every day `root` has an итог for, oldest first."""
+    found: list[tuple[date, Path]] = []
+    for path in sorted(root.glob(SUMMARY_GLOB)):
+        try:
+            found.append((date.fromisoformat(path.stem), path))
+        except ValueError:
+            continue
+    return found
+
+
+def read_verdict(text: str) -> str | None:
+    """
+    The verdict a summary states, or None when it states none.
+
+    Looks under `## День выигран?` for the first bold fragment of the first line
+    that has one, and for да/нет inside it. «**Формально — нет.**» is a verdict;
+    «Вне игры (выходной)» is not, and answering `lost` for it would invent a
+    loss on a day that was deliberately outside the game.
+    """
+    head = VERDICT_HEAD_RE.search(text)
+    if head is None:
+        return None
+    # Only as far as the next heading: the sentence about the streak two
+    # paragraphs down is about a different day.
+    section = text[head.end() :].split("\n## ", 1)[0]
+    for bold in VERDICT_BOLD_RE.finditer(section):
+        word = VERDICT_VALUE_RE.search(bold.group(1))
+        if word is not None:
+            return VERDICT_BY_WORD[word.group(1).lower()]
+    return None
 
 
 def _digest(text: str) -> str:
@@ -895,6 +978,60 @@ def _pin_local(on: date, at: time) -> datetime:
     return resolve_window(on, at, at, current_boundary()).starts_at
 
 
+async def import_summary(
+    db: AsyncSession,
+    on: date,
+    path: Path,
+    *,
+    root: Path,
+    warnings: list[ImportWarning],
+) -> None:
+    """
+    Read one `summaries/**/*.md` into `day_summary` as it is written.
+
+    **Вердикт переносится, а не пересчитывается.** The row is marked
+    `source='import'`, and `recompute_history` never rewrites the judgement of
+    such a row: the day it describes has no marks and no measured work, so
+    re-judging it would replace a person's sentence with zeros. Смена канона
+    2026-08-17 иначе переписала бы задним числом всё, что было до неё.
+
+    `rule_set_id` is the rule that was in force on the date — the same one
+    `day.rule_set_id` carries — rather than the `legacy` row ADR-0014 names. 20
+    and 28 August were lived under the current canon, and pointing them at
+    `legacy` would make one date claim two different canons. "Не пересчитывать"
+    is what `source` expresses, and it holds for every date rather than only for
+    the ones before the change.
+
+    The counters stay at zero and `work_minutes` at NULL on purpose: nothing
+    counted them, and a zero that means "не измерено" is the lie this schema is
+    built to avoid. The numbers a person did write are in `body_md`.
+    """
+    where = str(path.relative_to(root))
+    text = path.read_text(encoding="utf-8")
+    day = await day_crud.ensure_day(db, on)
+    rule = await day_crud.rule_for_date(db, on)
+
+    values = {
+        "day_date": day.day_date,
+        "rule_set_id": rule.id,
+        "verdict": read_verdict(text),
+        "verdict_reason": "",
+        "body_md": _rewrite_links(text, warnings, where),
+        "source": SOURCE_IMPORT,
+    }
+    statement = pg_insert(DaySummary).values(**values)
+    await db.execute(
+        statement.on_conflict_do_update(
+            index_elements=[DaySummary.day_date],
+            set_={key: statement.excluded[key] for key in values if key != "day_date"},
+        )
+    )
+    await _remember_file(
+        db, kind=KIND_SUMMARY_MD, path=where, text=text, digest=_digest(text)
+    )
+    await db.flush()
+
+
 async def import_root(
     db: AsyncSession,
     root: Path,
@@ -926,7 +1063,64 @@ async def import_root(
         )
 
     report.gaps_filled = await _fill_calendar(db, [one.day_date for one in days])
+    await _import_summaries(db, root, report, force=force, only=only)
+    await _import_goals(db, root, report, force=force)
+    # Fills `streak_after` on every итог, imported ones included: the streak is
+    # derived by definition, so it is the one number a recompute may write onto
+    # a verdict that arrived as prose.
+    await summary_crud.recompute_history(db)
     return report
+
+
+async def _import_summaries(
+    db: AsyncSession,
+    root: Path,
+    report: ImportReport,
+    *,
+    force: bool,
+    only: date | None,
+) -> None:
+    """Read every `summaries/**/*.md`, skipping the files that have not changed."""
+    for on, path in collect_summaries(root):
+        if only is not None and on != only:
+            continue
+        report.files_read += 1
+        where = str(path.relative_to(root))
+        digest = _digest(path.read_text(encoding="utf-8"))
+        stored = await _stored_digests(db, [where])
+        known = await summary_crud.get_summary(db, on) is not None
+        if not force and known and stored.get(where) == digest:
+            report.summaries_unchanged += 1
+            continue
+        await import_summary(db, on, path, root=root, warnings=report.warnings)
+        report.summaries_written += 1
+
+
+async def _import_goals(
+    db: AsyncSession, root: Path, report: ImportReport, *, force: bool
+) -> None:
+    """
+    Read `goal.md`, unless it is not there or has not changed since the last run.
+
+    Not tied to `--date`: the goals are not a day. A repository without the file
+    imports its days as before — the goals are one part of `personal-os`, not a
+    precondition for the rest of it.
+    """
+    path = root / GOAL_FILE
+    if not path.is_file():
+        return
+    report.files_read += 1
+    where = str(path.relative_to(root))
+    text = path.read_text(encoding="utf-8")
+    digest = _digest(text)
+    stored = await _stored_digests(db, [where])
+    if not force and stored.get(where) == digest:
+        report.goals_unchanged = True
+        return
+    await goal_md.import_goals(db, text)
+    await _remember_file(db, kind=KIND_GOAL_MD, path=where, text=text, digest=digest)
+    await db.flush()
+    report.goals_written = True
 
 
 async def _fill_calendar(db: AsyncSession, known: Sequence[date]) -> list[date]:

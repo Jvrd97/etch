@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan and its marks, and writes back a whole plan, a single mark or the day's notebook
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -350,6 +350,20 @@ export const dayAPI = {
       `/day/${date}/notebook`,
       { method: 'PUT', body: JSON.stringify({ content }) }
     );
+  },
+
+  /**
+   * Close the day: the server judges it and writes the итог.
+   *
+   * The whole day goes in one request — the minutes of work, the prose and the
+   * override are read together or the verdict is wrong, and a field-at-a-time
+   * API would leave a day half closed with nothing saying so.
+   */
+  close: async (date: string, draft: DayCloseDraft) => {
+    return fetcher<DaySummary>(`/day/${date}/close`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
   },
 };
 
@@ -861,6 +875,66 @@ export interface PlanDocument {
   sections: PlanSectionDraft[];
 }
 
+/** Whether the day was won. `null` is "не закрыл", which is not "проиграл". */
+export type Verdict = 'won' | 'lost';
+
+/**
+ * Which condition of the canon was not met.
+ *
+ * Ordered on the server as `not_closed → overtime → anchors → tasks`, which is
+ * the priority of `config.md`: здоровье > работа > отношения. An empty string
+ * means every condition was met.
+ */
+export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
+
+/** What the day could not be judged on. `work_minutes` is "не измерено". */
+export type MissingData = 'work_minutes';
+
+/**
+ * The итог of a day: the verdict, what it stands on, and the prose beside it.
+ *
+ * `closed` is false while nobody has closed the day; the counters are then a
+ * live recount, `verdict` is null and `verdict_reason` is `not_closed`. That is
+ * what keeps «не закрыл» a different answer from «проиграл».
+ */
+export interface DaySummary {
+  day_date: string;
+  closed: boolean;
+  /** The canon this day was judged by — it changed on 2026-08-17. */
+  rule_set_id: number;
+  verdict: Verdict | null;
+  verdict_reason: VerdictReason | '';
+  verdict_override: boolean;
+  verdict_override_note: string | null;
+  anchors_done: number;
+  anchors_total: number;
+  tasks_done: number;
+  tasks_total: number;
+  /** null means the work was never measured, not that it was zero. */
+  work_minutes: number | null;
+  streak_after: number | null;
+  wrote_from_scratch: number | null;
+  education_debt: number | null;
+  reviewed_today: number | null;
+  body_md: string;
+  missing_data: MissingData[];
+  /** Texts of the anchors that were neither closed nor set aside. */
+  missing_anchors: string[];
+  source: 'close' | 'import';
+}
+
+/** What closing a day says about it. */
+export interface DayCloseDraft {
+  work_minutes?: number | null;
+  body_md?: string;
+  wrote_from_scratch?: number | null;
+  education_debt?: number | null;
+  reviewed_today?: number | null;
+  /** Requires a note; the server refuses the pair without one. */
+  verdict_override?: boolean;
+  verdict_override_note?: string | null;
+}
+
 /** One day, the rule it is judged by, and its plan when there is one. */
 export interface DayDetail {
   day: Day;
@@ -872,6 +946,8 @@ export interface DayDetail {
   task_counts: TaskCounts;
   /** The day's free text, or null when nothing was written. */
   notebook: string | null;
+  /** Always present — a live recount while the day is not closed. */
+  summary: DaySummary;
 }
 
 /** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */
@@ -911,3 +987,68 @@ export interface MarkDraft {
   note?: string | null;
   source?: MarkSource;
 }
+
+// -- Goals -----------------------------------------------------------------
+
+/** One `## Уровень N` block of `goal.md`. */
+export interface GoalLevel {
+  level: number;
+  title: string;
+  body_md: string;
+  /** The `⚠ подтверди` lines: what the author guessed rather than confirmed. */
+  open_questions: string[];
+}
+
+/** The four states a milestone can be in, as the database spells them. */
+export type MilestoneStatus = 'open' | 'in-progress' | 'done' | 'dropped';
+
+export interface Milestone {
+  code: string;
+  title: string;
+  done_criterion: string | null;
+  when_text: string | null;
+  ord: number;
+  status: MilestoneStatus;
+  /** Filled the day the milestone was closed; null while it is not. */
+  done_on: string | null;
+  /** Codes this milestone waits on — `["M8", "M9"]` for M10, not a sentence. */
+  depends_on: string[];
+}
+
+export interface QuarterGoal {
+  id: number;
+  quarter: string;
+  ord: number;
+  text_md: string;
+  milestone_code: string | null;
+  status: string;
+}
+
+/** The whole goal board, as one request answers it. */
+export interface GoalsPayload {
+  levels: GoalLevel[];
+  milestones: Milestone[];
+  /** The quarter the server's day boundary says is running — `2026-Q3`. */
+  quarter: string;
+  goals: QuarterGoal[];
+}
+
+export const goalsAPI = {
+  get: async () => {
+    return fetcher<GoalsPayload>('/goals');
+  },
+
+  /**
+   * Move one milestone to another status.
+   *
+   * `done` is what dates it, and the date is the server's day rather than the
+   * browser's: the day runs from 04:00, and a milestone closed at half past
+   * midnight belongs to the day that is still running.
+   */
+  patchMilestone: async (code: string, status: MilestoneStatus) => {
+    return fetcher<Milestone>(`/goals/milestones/${code}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  },
+};

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86, PHASE-03/88
-// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day
+// [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/90
+// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day (whether the server honours it is the server's call since #90)
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -35,6 +35,28 @@ const DAY: DayDetail = {
   marks: [],
   task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
   notebook: null,
+  summary: {
+    day_date: '2026-08-30',
+    closed: false,
+    rule_set_id: 2,
+    verdict: null,
+    verdict_reason: 'not_closed',
+    verdict_override: false,
+    verdict_override_note: null,
+    anchors_done: 0,
+    anchors_total: 0,
+    tasks_done: 0,
+    tasks_total: 0,
+    work_minutes: null,
+    streak_after: null,
+    wrote_from_scratch: null,
+    education_debt: null,
+    reviewed_today: null,
+    body_md: '',
+    missing_data: ['work_minutes'],
+    missing_anchors: [],
+    source: 'close',
+  },
 };
 
 let getToday: ReturnType<typeof mock>;

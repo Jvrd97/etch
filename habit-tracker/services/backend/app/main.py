@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/86
-# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning and the day boundary read from day_rule_set on startup
+# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93
+# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals router in the API-key perimeter
 """
 Сборка FastAPI-приложения.
 
@@ -18,6 +18,7 @@ from app.api import (
     daily_summary,
     day,
     entries,
+    goals,
     health,
     insights,
     journal,
@@ -68,6 +69,7 @@ API_ROUTERS = (
     daily_summary.router,
     health.router,
     day.router,
+    goals.router,
 )
 
 

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/88
-# summary: the mark cycle (пусто → done → failed → пусто) and the count of a day's tasks, decided without a database so that "skipped is neither closed nor failed" is one testable sentence
+# [review:need-review] PHASE-03/88, PHASE-03/90
+# summary: the mark cycle (пусто → done → failed → пусто) and the count of a day's lines by kind — tasks and, since #90, anchors — decided without a database so that "skipped is neither closed nor failed" is one testable sentence written once
 """
 What a mark means, decided without a database.
 
@@ -29,12 +29,13 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from app.day.plan_validate import KIND_TASK
+from app.day.plan_validate import KIND_ANCHOR, KIND_TASK
 from app.models.mark import MARK_DONE, MARK_FAILED, MARK_SKIPPED
 
 __all__ = [
     "MARK_CYCLE",
     "TaskCounts",
+    "count_anchors",
     "count_tasks",
     "next_state",
 ]
@@ -48,6 +49,13 @@ MARK_CYCLE: tuple[str | None, ...] = (None, MARK_DONE, MARK_FAILED)
 # `#87` counts against the bar when it accepts the plan — anchors, steps and
 # minimums are marked too, and none of them is what "3 из 4" is measuring.
 COUNTED_KIND = KIND_TASK
+
+# What the verdict counts as anchors (`#90`). Пункты плана, а не справочник:
+# `anchor_kind`/`day_anchor` приезжают с `#92`, and until then the lines of the
+# plan are the only place an anchor exists. Все виды весят одинаково — у
+# `relationship` нет отдельной причины вердикта, иначе третий приоритет
+# оказался бы важнее первых двух.
+ANCHOR_KIND = KIND_ANCHOR
 
 
 def next_state(current: str | None) -> str | None:
@@ -69,7 +77,7 @@ class TaskCounts:
     """
     The day's work tasks, split by what happened to them.
 
-    `planned` counts every task of the plan, `skipped` included; `done`,
+    `planned` counts every line of that kind, `skipped` included; `done`,
     `failed` and `pending` add up to `planned - skipped`. Kept as four numbers
     rather than a ratio because the screen shows "3 из 4" and `#90`'s verdict
     needs the same four to decide whether the day was won.
@@ -82,20 +90,24 @@ class TaskCounts:
     pending: int
 
 
-def count_tasks(
-    kinds: Mapping[uuid.UUID, str], states: Mapping[uuid.UUID, str]
+def _count(
+    kinds: Mapping[uuid.UUID, str], states: Mapping[uuid.UUID, str], of_kind: str
 ) -> TaskCounts:
     """
-    Count the tasks of one plan against the marks it has.
+    Count the lines of one kind against the marks the plan has.
 
     Takes two mappings rather than ORM rows so that the rule can be read and
     tested without a session: `kinds` is every item of the plan by id, `states`
     every mark by item id. An item in `states` that is not in `kinds` is
     ignored — a mark whose line has been deleted counts towards nothing.
+
+    Tasks and anchors share this body on purpose: «skipped выходит из
+    знаменателя» is one sentence, and a second copy of it would be one edit away
+    from the counters disagreeing with the verdict.
     """
     planned = done = failed = skipped = 0
     for item_id, kind in kinds.items():
-        if kind != COUNTED_KIND:
+        if kind != of_kind:
             continue
         planned += 1
         state = states.get(item_id)
@@ -112,3 +124,17 @@ def count_tasks(
         skipped=skipped,
         pending=planned - done - failed - skipped,
     )
+
+
+def count_tasks(
+    kinds: Mapping[uuid.UUID, str], states: Mapping[uuid.UUID, str]
+) -> TaskCounts:
+    """The day's work tasks — what "3 из 4" in the header measures."""
+    return _count(kinds, states, COUNTED_KIND)
+
+
+def count_anchors(
+    kinds: Mapping[uuid.UUID, str], states: Mapping[uuid.UUID, str]
+) -> TaskCounts:
+    """The day's anchors — the edges the verdict weighs before it weighs work."""
+    return _count(kinds, states, ANCHOR_KIND)

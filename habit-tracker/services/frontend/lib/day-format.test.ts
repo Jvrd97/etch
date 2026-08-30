@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86
-// summary: tests for the day labels — weekday names in week order, minutes read as hours, the ratio as a percentage, and the rule's validity interval spelled out
+// [review:need-review] PHASE-03/86, PHASE-03/90
+// summary: tests for the day labels — weekday names in week order, minutes read as hours, the ratio as a percentage, the rule's validity interval spelled out, and the verdict of a day with the condition it failed on and the streak in countable Russian
 
 import { describe, expect, it } from 'bun:test';
 import type { Day, DayRuleSet } from '@/lib/api';
@@ -8,8 +8,12 @@ import {
   formatClock,
   formatMinutes,
   formatRatio,
+  missingDataLabel,
   ruleLines,
   ruleValidity,
+  streakLabel,
+  verdictLabel,
+  verdictReasonLabel,
   weekdayNames,
 } from './day-format';
 
@@ -124,5 +128,41 @@ describe('ruleValidity', () => {
     expect(ruleValidity({ ...RULE, valid_to: '2026-08-17' })).toBe(
       'действовало с 2026-08-17 по 2026-08-17'
     );
+  });
+});
+
+describe('the verdict of a day', () => {
+  it('names the condition that was not met, not "день не выигран"', () => {
+    // The whole complaint of `#90`: a reader told only that the day was lost
+    // has to guess which of three things to fix.
+    expect(verdictReasonLabel('tasks')).toBe('задачи');
+    expect(verdictReasonLabel('anchors')).toBe('якоря');
+    expect(verdictReasonLabel('overtime')).toBe('переработка');
+    expect(verdictReasonLabel('not_closed')).toBe('день не закрыт');
+  });
+
+  it('says nothing where every condition was met', () => {
+    expect(verdictReasonLabel('')).toBe('');
+  });
+
+  it('reads a verdict, and reads its absence as "не закрыт"', () => {
+    expect(verdictLabel('won')).toBe('День выигран');
+    expect(verdictLabel('lost')).toBe('День проигран');
+    expect(verdictLabel(null)).toBe('День не закрыт');
+  });
+
+  it('says what could not be judged in Russian, not in codes', () => {
+    expect(missingDataLabel('work_minutes')).toBe('время не измерено');
+  });
+
+  it('counts the streak the way Russian counts', () => {
+    expect(streakLabel(0)).toBe('0 дней');
+    expect(streakLabel(1)).toBe('1 день');
+    expect(streakLabel(2)).toBe('2 дня');
+    expect(streakLabel(5)).toBe('5 дней');
+    expect(streakLabel(11)).toBe('11 дней');
+    expect(streakLabel(21)).toBe('21 день');
+    expect(streakLabel(22)).toBe('22 дня');
+    expect(streakLabel(112)).toBe('112 дней');
   });
 });

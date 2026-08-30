@@ -2,8 +2,8 @@
 Test configuration and fixtures.
 """
 
-# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests
+# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
@@ -17,6 +17,7 @@ from app.core import daytime
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
+from app.models.goal import QuarterGoal
 
 # Test database URL: default targets the docker-compose network ("postgres"
 # host); override via env for local runs (e.g. localhost:5432).
@@ -85,6 +86,27 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     async with TestSessionLocal() as session:
         yield session
         await session.rollback()
+
+
+@pytest.fixture(scope="function")
+async def seeded_goal(db_session: AsyncSession) -> AsyncGenerator[int, None]:
+    """
+    The goal of the quarter every test plan points at, under the id it points at.
+
+    The tests of the plan write `quarter_goal_id=1` because that is what a real
+    plan carries, and `#93` gave the column its foreign key. The id is spelled
+    out rather than taken from the sequence: the tests name the number, and a
+    fixture returning 7 would make them all pass by accident of ordering.
+    """
+    goal = QuarterGoal(
+        id=1,
+        quarter="2026-Q3",
+        ord=1,
+        text_md="Денежный контур Talvior работает end-to-end.",
+    )
+    db_session.add(goal)
+    await db_session.flush()
+    yield goal.id
 
 
 @pytest.fixture(scope="function")
