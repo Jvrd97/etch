@@ -224,7 +224,7 @@ def _facts(**overrides: object) -> ItemFacts:
         "text_plain": "пункт",
     }
     fields.update(overrides)
-    return ItemFacts(**fields)  # type: ignore[arg-type]
+    return ItemFacts(**fields)  # type: ignore[arg-type]  # **fields is dict[str, object], not the typed kwargs
 
 
 def _task(code: str) -> ItemFacts:
@@ -258,14 +258,14 @@ def test_the_fifth_task_is_named_not_just_counted() -> None:
     tasks = [_task(f"W{n}") for n in range(1, 6)]
 
     with pytest.raises(PlanRejected) as error:
-        check_task_bar(tasks, _Rule(max_work_tasks=4))  # type: ignore[arg-type]
+        check_task_bar(tasks, _Rule(max_work_tasks=4))  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
 
     assert error.value.error == "too_many_tasks"
     assert error.value.code == "W5"
 
 
 def test_four_tasks_are_exactly_at_the_bar_and_pass() -> None:
-    check_task_bar([_task(f"W{n}") for n in range(1, 5)], _Rule())  # type: ignore[arg-type]
+    check_task_bar([_task(f"W{n}") for n in range(1, 5)], _Rule())  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
 
 
 def test_bullets_do_not_count_towards_the_bar() -> None:
@@ -278,7 +278,7 @@ def test_a_task_cannot_declare_itself_immovable() -> None:
     hard_task = _facts(kind="task", rigidity="hard", code="W1")
 
     with pytest.raises(PlanRejected) as error:
-        check_hard_rigidity([hard_task], _Rule())  # type: ignore[arg-type]
+        check_hard_rigidity([hard_task], _Rule())  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
 
     assert error.value.error == "hard_is_not_an_edge"
     assert error.value.code == "W1"
@@ -288,7 +288,7 @@ def test_a_hard_anchor_has_to_be_one_the_canon_names() -> None:
     stray = _facts(kind="anchor", rigidity="hard", code="кофе")
 
     with pytest.raises(PlanRejected) as error:
-        check_hard_rigidity([stray], _Rule(anchors=("подъём", "отбой")))  # type: ignore[arg-type]
+        check_hard_rigidity([stray], _Rule(anchors=("подъём", "отбой")))  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
 
     assert error.value.error == "hard_anchor_is_not_in_canon"
 
@@ -296,7 +296,7 @@ def test_a_hard_anchor_has_to_be_one_the_canon_names() -> None:
 def test_an_anchor_from_the_canon_may_be_hard() -> None:
     check_hard_rigidity(
         [_facts(kind="anchor", rigidity="hard", code="подъём")],
-        _Rule(anchors=("подъём", "отбой")),  # type: ignore[arg-type]
+        _Rule(anchors=("подъём", "отбой")),  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
     )
 
 
@@ -304,7 +304,7 @@ def test_a_hard_point_may_be_hard_without_being_an_anchor() -> None:
     """A commitment at a clock time is what that kind is for."""
     check_hard_rigidity(
         [_facts(kind="hard_point", rigidity="hard", code="Sylvia")],
-        _Rule(),  # type: ignore[arg-type]
+        _Rule(),  # type: ignore[arg-type]  # _Rule is a duck-typed DayRuleSet
     )
 
 
