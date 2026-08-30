@@ -26,6 +26,9 @@ dependencies = [
     "tzdata>=2024.1",
     "gunicorn>=26.0.0",
     "anthropic>=0.117.1",
+    # The one background scheduler (app/worker.py, PHASE-03/108). 3.x, not the
+    # 4.x pre-releases: 4.x rewrites the API and is not released as stable
+    "apscheduler>=3.10,<4",
 ]
 
 [dependency-groups]
@@ -53,3 +56,12 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_decorators = false
+
+# APScheduler 3.x ships without a py.typed marker and has no stubs on typeshed.
+# The alternative to this override is a `# type: ignore` on the import line of
+# app/worker.py, which silences the same thing while saying less. The surface
+# actually used is four calls wide (add_job/start/pause/shutdown) and lives in
+# that one module.
+[[tool.mypy.overrides]]
+module = "apscheduler.*"
+ignore_missing_imports = true

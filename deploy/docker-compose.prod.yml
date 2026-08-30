@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/96
-# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), and the backups directory mounted so the weekly md export lands on the host disk
+# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108
+# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job
 # Usage (on VPS, from habit-tracker/):
 #   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
 services:
@@ -39,6 +39,26 @@ services:
       # BACKUP_DIR/exports. Without this mount the export lands in a container
       # layer and dies with the next `up --build`.
       - ${BACKUP_DIR:-/opt/habit-tracker/backups}:/backups
+
+  # The one background scheduler (PHASE-03/108). `replicas: 1` is written out
+  # rather than left to the default: two instances would poll the same source
+  # twice, and the advisory lock inside each job is the belt, not the braces.
+  worker:
+    restart: always
+    command: python -m app.worker
+    deploy:
+      replicas: 1
+    environment:
+      # The same perimeter as the backend: a prod container refuses to start on
+      # an empty API_KEY, and this one shares the image and the settings module.
+      ENVIRONMENT: prod
+      API_KEY: ${API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      LLM_BACKEND: ${LLM_BACKEND:-cli}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
 
   frontend:
     restart: always
