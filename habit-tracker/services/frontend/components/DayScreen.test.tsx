@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94
 // summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -146,6 +146,13 @@ let state: {
 // mocking one export keeps this suite out of the shared `@/lib/api` registry.
 mock.module('@/hooks/useDay', () => ({
   useDay: () => state,
+}));
+
+// The screen carries the shared day navigation since `#94`; it fetches a range
+// of its own, and this test is about the day rather than about the list beside it.
+mock.module('@/hooks/useDays', () => ({
+  useDays: () => ({ days: [], loading: false, error: null, reload: () => {} }),
+  LOAD_DAYS_ERROR: 'Не удалось загрузить дни',
 }));
 
 const { default: DayScreen } = await import('./DayScreen');

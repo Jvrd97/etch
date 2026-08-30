@@ -1128,3 +1128,74 @@ Feedback loops: `bun test` **765/765 green** (было 752), `bunx tsc --noEmit`
 
 Feedback loops: `bun test` **769/769 green** (было 765), `bunx tsc --noEmit` clean,
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+## 2026-08-30 — PHASE-03/94 (страница `/life` и неделя)
+
+Тикет `94-week-days-endpoint-and-life-page`: `/life` вместо `life.html`, страница недели,
+общая боковая навигация. Тронуто 16 файлов фронтенда.
+
+- `lib/life.ts` — **new** (+тест): чистые помощники таймлайна — `dayStatus` (пять состояний,
+  из них три главных: выигран / проигран / не закрыт), `lifeCounter` (та же арифметика, что
+  считал `life.html`, вплоть до `52.1775` и дефолтов 2000-05-11 / 97 лет), `isoWeekCode`
+  по правилу четверга, `groupByYearAndMonth` для боковой навигации.
+- `lib/date.ts` — **mod**: `fromISODate` — обратная к `toISODate`. Заведена здесь, а не в
+  `lib/life.ts`, чтобы у «строки `YYYY-MM-DD` → Date» остался один ответ на приложение.
+- `components/life/DaySquare.tsx` — **new** (+тест): квадрат дня. Три состояния различаются
+  заливкой, а не оттенком: выигран — залит лаймом, проигран — залит серым, не закрыт —
+  контур с пустой серединой. Сам квадрат — ссылка на `/day/{date}`.
+- `components/life/LifeGrid.tsx` — **new** (+тест): пять видов жизнь → год → месяц → неделя →
+  день над одним диапазоном дней, счётчик оставшихся недель, рамка жизни в localStorage.
+- `components/day/DaySidebar.tsx` — **new** (+тест): боковая навигация год → месяц; раскрыт
+  месяц читаемого дня, а не календарный. Один компонент на `/day` и на `/life` — `side.js`
+  был вторым списком, и они разъехались.
+- `components/week/WeekScreen.tsx` — **new** (+тест): страница недели — выигранные дни, стрик
+  на конец, когда сняты счётчики, семь квадратов, чеклист, ретро. Неделя без ретро
+  открывается и говорит об этом.
+- `hooks/useDays.ts`, `hooks/useWeek.ts` — **new**: один запрос диапазона дней и один — недели.
+- `app/life/page.tsx`, `app/m/life/page.tsx`, `app/week/page.tsx`, `app/week/[iso]/page.tsx`,
+  `app/m/week/page.tsx`, `app/m/week/[iso]/page.tsx` — **new**: `/m`-пары обоих экранов.
+  Голый `/week` — текущая неделя по границе суток сервера, а не по календарю браузера.
+- `lib/api.ts` — **mod**: `daysAPI.range`, `weeksAPI` и типы `DayListItem`, `Week`,
+  `WeekReviewItem`, `WeekDraft`.
+- `lib/routes.ts` + `lib/routes.test.ts`, `components/route-icons.ts` — **mod**: экраны Life и
+  Week в реестре, оба под «More».
+- `components/DayScreen.tsx` + `components/DayScreen.test.tsx` — **mod**: боковая навигация
+  рядом с днём; в тесте замокан `@/hooks/useDays` — `bun` фиксирует имена экспортов при первой
+  линковке, и без этого `daysAPI` пропадал для следующего файла.
+
+Feedback loops: `bun test` **711/711 green** (было 685), `bunx tsc --noEmit` clean,
+`bunx eslint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+Долг, названный вслух: боковая навигация скрыта на узких экранах (`hidden lg:block`) — в
+мобильном шелле её нет вовсе; редактирование ретро недели из UI не сделано, `PUT /weeks/{iso}`
+существует и зовётся только импортом и тестами.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка на обоих шеллах)
+
+Тронуто 8 файлов фронта (плюс 24 тестовых файла — в каждом моке `@/lib/api` добавлен
+`quickMarksAPI`: `bun` фиксирует имена экспортов при первой линковке, и мок без него удаляет
+экспорт для всех следующих файлов).
+
+- `lib/quick-marks.ts` + `lib/quick-marks.test.ts` — **new**: чистое чтение справочника —
+  подпись кнопки, свёртка ответа тапа обратно в список (это и есть «один вызов на тап»),
+  множество категорий, которые справочник уже закрывает.
+- `components/QuickMarkRow.tsx` + `components/QuickMarkRow.test.tsx` — **new**: ряд кнопок.
+  Тап отправляет только id кнопки; что она значит — ответ сервера. Пустой справочник рисует
+  `null`, а не заглушку.
+- `lib/api.ts` — **mod**: `quickMarksAPI` (`list`, `tap`) и типы `QuickMark`, `QuickMarkEvent`,
+  `QuickMarkKind`, `QuickMarkSource`, `QuickMarkTap`. Дата в `list` не шлётся: какой день идёт,
+  решает сервер.
+- `hooks/useToday.ts` + `hooks/useToday.test.ts` — **mod**: справочник в снапшоте Today,
+  `tapQuickMark` перерисовывает из ответа тапа и не перезапрашивает список; `nothingToTrack`
+  учитывает справочник.
+- `app/today/page.tsx` + `app/today/page.test.tsx` (**new**), `app/m/today/page.tsx` +
+  `app/m/today/page.test.tsx` — **mod**: секция «Быстрые отметки» первой; категория, у которой
+  есть кнопка, теряет старую карточку `QuickNumberRow` — двух путей к одному полю на одном
+  экране быть не должно. Категория без кнопки карточку сохраняет, поэтому пустой справочник
+  ничего не ломает.
+
+Feedback loops: `bun test` **743/743 green** (было 718), `bunx tsc --noEmit` clean.
+`any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+Долг, названный вслух: хоткеи (#122) не сделаны — колонка `hotkey` приезжает в типах и в
+справочнике, клавиатуры на странице нет. `QuickNumberRow` не удалён: справочник заводится
+руками и до первой кнопки он пуст.

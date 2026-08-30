@@ -1,14 +1,16 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/121
+// summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, and a tap on a remaining quick-input card opens the full entry modal for today's record in that category
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import QuickMarkRow from '@/components/QuickMarkRow';
 import EntryForm from '@/components/EntryForm';
 import { booleanFields } from '@/lib/today-categories';
+import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { useToday } from '@/hooks/useToday';
@@ -19,6 +21,7 @@ export default function TodayPage() {
     date,
     entries,
     groups,
+    quickMarks,
     checked,
     streaks,
     loading,
@@ -27,6 +30,7 @@ export default function TodayPage() {
     setError,
     toggleField,
     addNumber,
+    tapQuickMark,
     reloadStreak,
     reload,
   } = useToday();
@@ -39,8 +43,15 @@ export default function TodayPage() {
   const {
     avoid: avoidCategories,
     checklist: checklistCategories,
-    quickForm: quickFormCategories,
+    quickForm: allQuickFormCategories,
   } = groups;
+  // A category the directory already answers for loses its legacy card: two
+  // ways to add to the same field on one screen is one too many. An empty
+  // directory covers nothing, so the screen stays exactly as it was.
+  const covered = categoriesWithQuickMark(quickMarks);
+  const quickFormCategories = allQuickFormCategories.filter(
+    ({ category }) => !covered.has(category.id)
+  );
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -66,6 +77,18 @@ export default function TodayPage() {
         </div>
       ) : (
         <>
+          {quickMarks.length > 0 && (
+            <section>
+              <div className="flex items-center gap-3 mb-4">
+                <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
+                  Быстрые отметки
+                </span>
+                <div className="flex-1 h-px bg-white/5" />
+              </div>
+              <QuickMarkRow marks={quickMarks} onTap={(id) => void tapQuickMark(id)} />
+            </section>
+          )}
+
           {avoidCategories.length > 0 && (
             <section>
               <div className="flex items-center gap-3 mb-4">

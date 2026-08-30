@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.insights import get_llm_client
 from app.core.config import settings
+from app.core.daytime import today_local
 from app.llm.client import InsightsClient, LLMError
 from app.llm.context import build_period_context
 from app.main import app
@@ -191,9 +192,10 @@ class TestBuildPeriodContext:
         category = category_response.json()
         field_id = category["fields"][0]["id"]
 
-        from datetime import date
-
-        today = date.today().isoformat()
+        # The same answer the context builder asks for: the window it reports is
+        # `today_local()`-based, and between midnight and the boundary hour
+        # `date.today()` is one day ahead of it.
+        today = today_local().isoformat()
         entry_response = await client.post(
             "/api/v1/entries",
             json={

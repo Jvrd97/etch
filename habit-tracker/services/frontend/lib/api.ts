@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/134
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/134
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
@@ -1513,5 +1513,176 @@ export const chatAPI = {
     } finally {
       reader.releaseLock();
     }
+  },
+};
+
+// -- Days range and weeks ---------------------------------------------------
+
+/**
+ * One day of a range, in the shape the old `/api/days` answered with.
+ *
+ * `verdict` carries three states, not two: `won`, `lost` and `null` — «день не
+ * закрыт». The square of the timeline is painted from this field alone, which
+ * is what `life.py` could not do while it was reading prose with a regexp.
+ */
+export interface DayListItem {
+  date: string;
+  /** Title of the day's plan; empty when there is no plan or it had none. */
+  title: string;
+  verdict: Verdict | null;
+  /** Work tasks closed, and work tasks planned. */
+  done: number;
+  total: number;
+}
+
+/** One line of «На разбор в воскресенье», with its own tick. */
+export interface WeekReviewItem {
+  id: string;
+  ord: number;
+  text_md: string;
+  done: boolean;
+}
+
+/**
+ * One week as a fixed snapshot: counters taken at `computed_at`, prose beside
+ * them. Reopening a day moves the counters and leaves the prose alone.
+ */
+export interface Week {
+  iso_code: string;
+  starts_on: string;
+  ends_on: string;
+  won_days: number;
+  total_days: number;
+  /** null when no day of the week was closed — not the same as a streak of 0. */
+  streak_end: number | null;
+  retro_md: string;
+  blockers_md: string;
+  mgmt_retro_md: string;
+  weekly_number_md: string;
+  review_items: WeekReviewItem[];
+  computed_at: string;
+}
+
+/** What a week write says. The counters are the server's and cannot be sent. */
+export interface WeekDraft {
+  retro_md?: string;
+  blockers_md?: string;
+  mgmt_retro_md?: string;
+  weekly_number_md?: string;
+  review_items?: { text_md: string; done: boolean }[];
+}
+
+export const daysAPI = {
+  /**
+   * The days of `[from, to]`, oldest first.
+   *
+   * One request for a whole range rather than one per square: the timeline
+   * draws a year at a time and the sidebar the whole history.
+   */
+  range: async (from: string, to: string) => {
+    return fetcher<DayListItem[]>(`/days?from=${from}&to=${to}`);
+  },
+};
+
+export const weeksAPI = {
+  /** One week by its ISO code. A week nobody wrote about answers too. */
+  get: async (iso: string) => {
+    return fetcher<Week>(`/weeks/${iso}`);
+  },
+
+  /** The week the server's day boundary says is running. */
+  getCurrent: async () => {
+    return fetcher<Week>('/weeks');
+  },
+
+  /** Replace the retro of a week; the counters stay the server's. */
+  put: async (iso: string, draft: WeekDraft) => {
+    return fetcher<Week>(`/weeks/${iso}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+};
+
+/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
+export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
+
+/** Which client a tap came from; the backend records it on every event. */
+export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
+
+/**
+ * One button of the directory, already carrying the state of the day it was
+ * read for.
+ *
+ * `today_total` is null for a tick — a box is not a quantity — and `done` is
+ * the field both kinds answer. The client never sees `category_id` as a thing
+ * to act on: what the button means is the server's business, and the only id a
+ * tap sends is `id`.
+ */
+export interface QuickMark {
+  id: number;
+  label: string;
+  category_id: number;
+  field_id: number;
+  kind: QuickMarkKind;
+  step: number | null;
+  unit_label: string | null;
+  icon: string | null;
+  color: string | null;
+  hotkey: string | null;
+  order: number;
+  show_in_agent: boolean;
+  is_active: boolean;
+  entry_date: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** The recorded tap and the state it produced — one call per tap, no refetch. */
+export interface QuickMarkEvent {
+  event_id: number;
+  quick_mark_id: number;
+  entry_id: number | null;
+  entry_date: string;
+  occurred_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** What a tap says beyond the button's own id. */
+export interface QuickMarkTap {
+  /** Overrides the button's step; for a tick, 0 unticks. */
+  value?: number;
+  source?: QuickMarkSource;
+  utc_offset_minutes?: number;
+}
+
+export const quickMarksAPI = {
+  /**
+   * The directory with today's state on it.
+   *
+   * No date is sent: which day is running is the server's answer
+   * (`local_date()`), and a browser that computed its own would disagree with
+   * it between midnight and the boundary hour.
+   */
+  list: async () => {
+    return fetcher<QuickMark[]>('/quick-marks');
+  },
+
+  /**
+   * Tap one button.
+   *
+   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
+   * and never decides the day it lands in.
+   */
+  tap: async (id: number, tap: QuickMarkTap = {}) => {
+    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'web',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+        ...tap,
+      }),
+    });
   },
 };

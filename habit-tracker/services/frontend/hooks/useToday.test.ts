@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: tests for useToday — silent visibility refetch, and the optimistic number increment with per-tap rollback
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121
+// summary: tests for useToday — silent visibility refetch, the optimistic number increment with per-tap rollback, and the quick-mark tap that costs one request and repaints from its own answer
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry, Field } from '@/lib/api';
+import type { Category, Entry, Field, QuickMark, QuickMarkEvent } from '@/lib/api';
 import { numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
@@ -71,10 +71,52 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
+let listQuickMarks: ReturnType<typeof mock>;
+let tapQuickMarkApi: ReturnType<typeof mock>;
+
+/** The «+250 мл» button, as the directory returns it. */
+const WATER_MARK: QuickMark = {
+  id: 3,
+  label: '+250 мл',
+  category_id: CATEGORY.id,
+  field_id: GLASSES_FIELD.id,
+  kind: 'increment',
+  step: 250,
+  unit_label: 'мл',
+  icon: null,
+  color: null,
+  hotkey: null,
+  order: 0,
+  show_in_agent: true,
+  is_active: true,
+  entry_date: TODAY,
+  today_total: null,
+  done: false,
+};
+
+/** What the one POST of a tap answers with. */
+function tapAnswer(total: number): QuickMarkEvent {
+  return {
+    event_id: 1,
+    quick_mark_id: WATER_MARK.id,
+    entry_id: 42,
+    entry_date: TODAY,
+    occurred_at: TIMESTAMP,
+    today_total: total,
+    done: true,
+  };
+}
 
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one never calls them.
 mock.module('@/lib/api', () => ({
+  // The quick-mark directory and its one write path (#121). Present in every
+  // api mock for the reason named above: bun fixes a module's export names on
+  // first link, so a mock that omits an export deletes it for whoever links next.
+  quickMarksAPI: {
+    list: () => listQuickMarks(),
+    tap: (id: number) => tapQuickMarkApi(id),
+  },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.
@@ -123,6 +165,8 @@ beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
+  listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+  tapQuickMarkApi = mock(() => Promise.resolve(tapAnswer(250)));
 });
 
 afterEach(() => {
@@ -274,5 +318,57 @@ describe('useToday.addNumber', () => {
     });
 
     await waitFor(() => expect(totalOf(result.current.entries)).toBe(3));
+  });
+});
+
+
+describe('useToday.tapQuickMark', () => {
+  it('repaints from the tap\'s own answer, without asking the directory again', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.quickMarks[0].today_total).toBeNull();
+
+    const listCallsBefore = listQuickMarks.mock.calls.length;
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(tapQuickMarkApi).toHaveBeenCalledTimes(1);
+    expect(tapQuickMarkApi.mock.calls[0][0]).toBe(WATER_MARK.id);
+    // One call per tap: the directory is not fetched again.
+    expect(listQuickMarks.mock.calls.length).toBe(listCallsBefore);
+    expect(result.current.quickMarks[0].today_total).toBe(250);
+    expect(result.current.quickMarks[0].done).toBe(true);
+  });
+
+  it('shows the failure instead of a total that was never written', async () => {
+    tapQuickMarkApi = mock(() => Promise.reject(new Error('server exploded')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(result.current.error).toBe('server exploded');
+    expect(result.current.quickMarks[0].today_total).toBeNull();
+  });
+
+  it('has nothing to track when both the directory and the categories are empty', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    listQuickMarks = mock(() => Promise.resolve([]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.quickMarks).toEqual([]);
+    expect(result.current.nothingToTrack).toBe(true);
+  });
+
+  it('has something to track when only the directory has rows', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.nothingToTrack).toBe(false);
   });
 });

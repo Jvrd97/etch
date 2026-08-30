@@ -1,12 +1,20 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: Today-screen state for both shells — snapshot fetching plus the optimistic checklist flip and number increment, each rolled back on its own failure
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121
+// summary: Today-screen state for both shells — snapshot fetching (categories, entries and the quick-mark directory), the optimistic checklist flip and number increment each rolled back on its own failure, and the quick-mark tap that repaints from its own answer
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
-import { categoriesAPI, entriesAPI, type Category, type Entry } from '@/lib/api';
+import {
+  categoriesAPI,
+  entriesAPI,
+  quickMarksAPI,
+  type Category,
+  type Entry,
+  type QuickMark,
+} from '@/lib/api';
 import { todayISO } from '@/lib/date';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
+import { applyQuickMarkEvent } from '@/lib/quick-marks';
 import {
   buildCheckedMap,
   isFieldChecked,
@@ -23,6 +31,12 @@ export interface UseTodayResult {
   date: string;
   entries: Entry[];
   groups: TodayGroups;
+  /**
+   * The quick-mark directory with today's state on it, in the order the server
+   * gave. Empty is the normal starting state — buttons are entered by hand —
+   * and an empty list means the screen shows no quick-mark section at all.
+   */
+  quickMarks: QuickMark[];
   checked: CheckedMap;
   streaks: StreakMap;
   loading: boolean;
@@ -38,6 +52,12 @@ export interface UseTodayResult {
    * on failure, so the caller can keep whatever it would have to retype.
    */
   addNumber: (categoryId: number, fieldId: number, amount: number) => Promise<boolean>;
+  /**
+   * Tap one quick mark. What the button means is the server's answer, so the
+   * id is all that is sent; the response carries the new total and the screen
+   * repaints from it without a second request.
+   */
+  tapQuickMark: (quickMarkId: number) => Promise<void>;
   /** Re-fetch one avoid category's streak, e.g. after a relapse was logged. */
   reloadStreak: (categoryId: number) => Promise<void>;
   /**
@@ -50,6 +70,7 @@ export interface UseTodayResult {
 export function useToday(): UseTodayResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [quickMarks, setQuickMarks] = useState<QuickMark[]>([]);
   // Entries this session logged that the last snapshot did not (yet) contain:
   // in flight, or saved after the snapshot was taken. Kept apart from `entries`
   // so a refetch can replace the snapshot without discarding them.
@@ -73,12 +94,17 @@ export function useToday(): UseTodayResult {
     try {
       if (showSpinner) setLoading(true);
       const date = todayISO();
-      const [categoriesData, entriesData] = await Promise.all([
+      const [categoriesData, entriesData, quickMarksData] = await Promise.all([
         categoriesAPI.getAll(),
         entriesAPI.getAll({ startDate: date, endDate: date }),
+        // No date is sent: which day is running is the server's answer, and a
+        // browser computing its own would disagree with it between midnight
+        // and the boundary hour.
+        quickMarksAPI.list(),
       ]);
       setCategories(categoriesData);
       setEntries(entriesData);
+      setQuickMarks(quickMarksData);
       // Whatever the snapshot now carries is no longer ours to hold; dropping it
       // here is what keeps a saved increment from being counted twice.
       const fetchedIds = new Set(entriesData.map((entry) => entry.id));
@@ -102,6 +128,21 @@ export function useToday(): UseTodayResult {
   const reload = useCallback(async () => {
     await loadData();
   }, [loadData]);
+
+  /**
+   * One tap, one call. The answer already carries `today_total` and `done` for
+   * the button that was pressed, so the directory is patched from it rather
+   * than fetched again — that single request is what the acceptance case
+   * measures on the network log.
+   */
+  const tapQuickMark = useCallback(async (quickMarkId: number) => {
+    try {
+      const event = await quickMarksAPI.tap(quickMarkId);
+      setQuickMarks((prev) => applyQuickMarkEvent(prev, event));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to record the mark');
+    }
+  }, []);
 
   const reloadStreak = useCallback(async (categoryId: number) => {
     const streak = await categoriesAPI.getStreak(categoryId).catch(() => null);
@@ -180,12 +221,16 @@ export function useToday(): UseTodayResult {
 
   const groups = partitionTodayCategories(categories);
   const nothingToTrack =
-    groups.avoid.length === 0 && groups.checklist.length === 0 && groups.quickForm.length === 0;
+    quickMarks.length === 0 &&
+    groups.avoid.length === 0 &&
+    groups.checklist.length === 0 &&
+    groups.quickForm.length === 0;
 
   return {
     date: todayISO(),
     entries: mergeOptimisticEntries(entries, optimisticEntries),
     groups,
+    quickMarks,
     checked,
     streaks,
     loading,
@@ -194,6 +239,7 @@ export function useToday(): UseTodayResult {
     setError,
     toggleField,
     addNumber,
+    tapQuickMark,
     reloadStreak,
     reload,
   };

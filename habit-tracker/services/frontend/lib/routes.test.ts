@@ -55,6 +55,8 @@ describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
       'day',
+      'life',
+      'week',
       'goals',
       'roles',
       'chat',

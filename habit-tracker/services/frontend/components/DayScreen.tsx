@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91
-// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayNotebook from '@/components/day/DayNotebook';
+import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayVerdict from '@/components/day/DayVerdict';
 import WorkIntervals from '@/components/day/WorkIntervals';
@@ -73,7 +74,12 @@ export default function DayScreen({ date }: DayScreenProps) {
   const KindIcon = day.kind === 'work' ? Sun : Moon;
 
   return (
-    <div className="space-y-8 animate-fade-rise">
+    <div className="lg:grid lg:grid-cols-[16rem_1fr] lg:gap-8">
+      {/* The same navigation `/life` draws, so the two screens cannot drift. */}
+      <aside className="hidden lg:block">
+        <DaySidebar activeDate={day.date} />
+      </aside>
+      <div className="space-y-8 animate-fade-rise">
       <div>
         <h1 className="text-4xl font-bold text-text-primary tracking-tight">
           {day.date}
@@ -191,6 +197,7 @@ export default function DayScreen({ date }: DayScreenProps) {
           </p>
         )}
       </section>
+      </div>
     </div>
   );
 }

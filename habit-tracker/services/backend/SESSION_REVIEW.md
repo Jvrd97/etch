@@ -1223,3 +1223,100 @@ Feedback loops (backend): pytest **757 passed, 1 failed**. Упавший —
 `habit_tracker_test_fast1` (в общей `habit_tracker_test` лежит таблица `quick_mark_events`
 из соседней ветки, и `drop_all` по метаданным этой ветки на ней падает). Миграций тикет
 не заводит.
+## 2026-08-30 — PHASE-03/94 (неделя и диапазон дней)
+
+Тикет `94-week-days-endpoint-and-life-page`: таблица `week` со снимком счётчиков,
+`GET /api/v1/days?from&to` в форме прежнего `/api/days`, `GET/PUT /api/v1/weeks/{iso}`,
+импорт `weeks/**/*.md`. Тронуто 12 файлов бэкенда.
+
+- `app/day/week.py` — **new**: чистая ISO-арифметика недели (`iso_code`, `week_bounds`,
+  `week_codes`). Часы здесь не читаются: «какое сегодня число» остаётся за
+  `app/core/daytime.py`, а неделя выводится из переданной даты. `date.isocalendar()`, а не
+  ручной `weekday()` + `timedelta`, — иначе 2027-01-01 не попадает в `2026-W53`.
+- `app/models/week.py` — **new**: `week` (снимок с `computed_at`, четыре колонки прозы,
+  генерируемый `search`) и `week_review_item` (воскресный чеклист строками, а не `- [ ]`
+  внутри прозы).
+- `app/crud/week.py` — **new**: `recompute_week` пишет только `won_days`, `total_days`,
+  `streak_end` и `computed_at`; прозу не трогает никогда. `list_days` отвечает диапазоном,
+  считая задачи через `app.crud.mark.task_counts` — второго определения «skipped выходит из
+  знаменателя» в SQL не заводится. `get_week` идёт с `populate_existing`: оба писателя
+  обходят ORM (upsert и bulk delete), и без этого чтение после записи вернуло бы состояние до неё.
+- `app/schemas/week.py` — **new**: `DayListItem` ровно в пяти полях прежнего `/api/days`,
+  `WeekIn` с `extra="forbid"` — счётчики прислать нельзя.
+- `app/api/week.py` — **new**: `days_router` и `weeks_router`. Код, который не называет неделю
+  (`2026-W99`), — 404; неделя без ретро — 200 с пустой прозой. Диапазон шире пяти лет
+  отклоняется 422, а не сканируется.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_week.py` — **new**: `down_revision`
+  `c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки; `downgrade` сносит обе таблицы
+  и оба индекса.
+- `app/imports/week_md.py` — **new**: файл недели по блокам — «Что мешало» и «Mgmt-ретро» в
+  свои колонки, чеклист в строки, всё остальное в `retro_md`. Счётчики из прозы не берутся:
+  «0 из 7» остаётся предложением, а колонки считает `recompute_week`.
+- `app/imports/personal_os.py` — **mod**: `collect_weeks`, `_import_weeks`, `_recompute_weeks`,
+  счётчики недель в отчёте, `WEEK_LINK_RE` — ссылка в `weeks/` теперь переписывается в
+  `/week/2026-W35`, потому что у недели появился экран.
+- `app/models/import_source.py` — **mod**: вид `week_md`.
+- `app/main.py`, `app/models/__init__.py` — **mod**: роутеры в периметр API-key, модели в реестр.
+- `tests/test_week.py` — **new**: 18 тестов — ISO-арифметика с краями года, неделя без ретро,
+  пересчёт двигает счётчики и `computed_at` и не трогает текст, PUT заменяет чеклист,
+  разбор файла недели.
+- `tests/test_days_range.py` — **new**: 8 тестов — форма прежнего `/api/days` (набор полей
+  сверяется как множество), три состояния вердикта, `done`/`total` по рабочим задачам,
+  пустой и слишком широкий диапазон, ключ API.
+- `tests/test_import_personal_os.py` — **mod**: три теста импорта недели плюс правка теста
+  ссылок — ссылка в `weeks/` больше не остаётся текстом.
+- `tests/fixtures/personal_os/weeks/2026/2026-W35.md` — **new**: фикстура недели.
+
+Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов),
+`alembic heads` — одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком
+**не отрабатывал**. Тесты шли против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
+ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
+обход коллизии параллельных веток, не свойство тикета.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка: справочник + один эндпоинт записи)
+
+Тронуто 9 файлов бэкенда.
+
+- `app/models/quick_mark.py` — **new**: `quick_marks` (кнопка: подпись, `(category_id, field_id)`,
+  `kind`, `step`, `unit_label`, `hotkey`, порядок, флаги) и `quick_mark_events` (журнал: дельта
+  или галка, источник, `idempotency_key`, `undone_at` под #124). Словари `kind`/`source` —
+  константы модуля, из них же собраны CHECK-констрейнты и текст миграции. Уникальность хоткея —
+  именованный частичный индекс `uq_quick_mark_hotkey` (`WHERE hotkey IS NOT NULL`): у постгреса
+  частичного UNIQUE-констрейнта не существует вовсе.
+- `app/schemas/quick_mark.py` — **new**: `QuickMarkCreate`, `QuickMarkResponse`,
+  `QuickMarkTodayResponse` (справочник + состояние дня), `QuickMarkEventRequest`,
+  `QuickMarkEventResponse`. В теле тапа нет ни `category_id`, ни `field_id`, ни `display_mode`.
+- `app/crud/quick_mark.py` — **new**: валидация справочника списком причин (образец —
+  `validate_metric_ops`), накопление инкремента через `entry_crud.checklist_entry_id` и
+  `values.format_number`, срыв отдельной записью, состояние дня и запись события. День берётся
+  вызовом `core.daytime.local_date(at)`; часов этот модуль не читает вообще — момент приходит
+  аргументом, поэтому тест «00:30» проверяем без подмены времени.
+- `app/api/quick_marks.py` — **new**: `GET /quick-marks?date=`, `POST /quick-marks`,
+  `POST /quick-marks/{id}/events` с `Idempotency-Key` (повтор — 200 и то же `event_id`).
+  Клиентский `entry_date` — сверка часов, а не адрес: расхождение с `local_date()` — 409.
+- `app/models/entry.py` — **mod**: `ix_entries_category_date` — прямая цена горячего пути.
+- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_quick_marks.py` — **new**: обе таблицы, четыре
+  индекса и индекс на `entries`; `downgrade` снимает всё это и не трогает данные.
+  `down_revision = d5a7c9e1f3b6` — фактическая голова ветки на момент реализации.
+- `app/main.py`, `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: роутер в периметр
+  API-key, модели и DTO в реестры.
+- `tests/test_quick_marks.py` — **new**: 25 тестов — пять тапов в одну строку, сумма в ответе,
+  повтор ключа, срыв записью на тап, четыре отказа справочника (чужое поле, галка на числе,
+  срыв на `build`, инкремент без шага), занятый хоткей, тап в 00:30 против `local_date()`,
+  пустой справочник, состояние дня в справочнике, журнал, offline-SQL миграции в обе стороны,
+  grep-тесты на PII и на отсутствие второй даты.
+
+Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff check` clean,
+`ruff format --check` clean (138 файлов), `mypy --strict app` clean (100 файлов),
+`alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не работает, `make check` целиком
+**не отрабатывал**. Тесты — против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4` (в общей `habit_tracker_test` по-прежнему лежат таблицы других
+веток, и `drop_all` фикстуры падает на их внешних ключах). Обратимость миграции проверена не
+только offline-SQL: на отдельной базе `habit_migrate_fast4` прогнаны `upgrade head` →
+`downgrade -1` → `upgrade head`, и `alembic check` не видит расхождений между моделью и схемой
+по новым таблицам.
+
+Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
+кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.

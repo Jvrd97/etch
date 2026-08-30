@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/59-previousday-mixed-utc-local
-// summary: single source of truth for the `YYYY-MM-DD` date strings the API speaks — local calendar date
+// [review:need-review] PHASE-01/59-previousday-mixed-utc-local, PHASE-03/94
+// summary: single source of truth for the `YYYY-MM-DD` date strings the API speaks — local calendar date, and since #94 the inverse the timeline needs to step through weeks and months
 
 /** Width of the zero-padded month/day fields in a `YYYY-MM-DD` string. */
 export const ISO_DATE_PAD = 2;
@@ -27,4 +27,17 @@ export function toISODate(d: Date): string {
  */
 export function todayISO(now: Date = new Date()): string {
   return toISODate(now);
+}
+
+/**
+ * A `YYYY-MM-DD` string as a Date at **local** midnight.
+ *
+ * Parsed field by field rather than through `new Date(string)`, which the
+ * specification reads as UTC: east of Greenwich that lands the previous evening,
+ * and a square of the timeline would then sit in the wrong week. The inverse of
+ * `toISODate`, and here for the same reason it is — so there is one answer.
+ */
+export function fromISODate(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day);
 }
