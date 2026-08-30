@@ -20,6 +20,7 @@ from app.api.deps import get_chat_llm_client, get_session_factory
 from app.crud import chat as chat_crud
 from app.llm.chat.client import ChatChunk, ChatLLMClient
 from app.llm.chat.prompt import CHAT_SYSTEM_PROMPT, ChatTurn
+from app.llm.chat.session import ResumeHint
 from app.llm.client import LLMError
 from app.main import app
 from app.models.chat import (
@@ -58,17 +59,23 @@ class FakeChatClient(ChatLLMClient):
         self.calls = 0
         self.seen_prompt: str | None = None
         self.seen_turns: list[ChatTurn] = []
+        self.seen_resume: ResumeHint | None = None
 
     @property
     def cwd(self) -> str | None:
         return "/tmp/fake-chat-workspace"
 
     async def stream_turn(
-        self, *, system_prompt: str, turns: Sequence[ChatTurn]
+        self,
+        *,
+        system_prompt: str,
+        turns: Sequence[ChatTurn],
+        resume: ResumeHint | None = None,
     ) -> AsyncIterator[ChatChunk]:
         self.calls += 1
         self.seen_prompt = system_prompt
         self.seen_turns = list(turns)
+        self.seen_resume = resume
         for piece in self._pieces:
             yield ChatChunk.delta(piece)
         if self._fail:
@@ -440,11 +447,15 @@ class TestSessionAndInterruption:
 
         class WatchingClient(FakeChatClient):
             async def stream_turn(
-                self, *, system_prompt: str, turns: Sequence[ChatTurn]
+                self,
+                *,
+                system_prompt: str,
+                turns: Sequence[ChatTurn],
+                resume: ResumeHint | None = None,
             ) -> AsyncIterator[ChatChunk]:
                 seen_while_streaming.append(open_scopes)
                 async for chunk in super().stream_turn(
-                    system_prompt=system_prompt, turns=turns
+                    system_prompt=system_prompt, turns=turns, resume=resume
                 ):
                     yield chunk
 
@@ -486,6 +497,7 @@ class TestSessionAndInterruption:
             conversation_id=conversation.id,
             answer_seq=1,
             turns=[ChatTurn(MESSAGE_ROLE_USER, "вопрос")],
+            resume=ResumeHint(session_id=None, cwd=None, context_version=1),
         )
         first = await events.__anext__()
         assert "первый" in first

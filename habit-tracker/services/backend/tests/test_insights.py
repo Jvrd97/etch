@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.insights import get_llm_client
 from app.core.config import settings
 from app.llm.client import InsightsClient, LLMError
+from app.core.daytime import today_local
 from app.llm.context import build_period_context
 from app.main import app
 from app.models.ai_report import AIReport
@@ -191,9 +192,11 @@ class TestBuildPeriodContext:
         category = category_response.json()
         field_id = category["fields"][0]["id"]
 
-        from datetime import date
-
-        today = date.today().isoformat()
+        # Не `date.today()`: окно контекста считает `today_local()`, и между
+        # полуночью и часом начала дня календарь машины называет уже завтра —
+        # запись такого числа в окно не попадает, и тест краснеет по времени
+        # суток, а не по коду.
+        today = today_local().isoformat()
         entry_response = await client.post(
             "/api/v1/entries",
             json={

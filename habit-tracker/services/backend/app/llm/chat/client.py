@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111
-# summary: ChatLLMClient.stream_turn — the second transport method beside LLMClient.generate; the CLI implementation runs `claude -p` under the full isolation flag set with its own CLAUDE_CONFIG_DIR and a fixed empty cwd, the API one streams messages.stream, and both hand back the same ChatChunk stream
+# [review:need-review] PHASE-03/111, PHASE-03/112
+# summary: ChatLLMClient.stream_turn — the second transport method beside LLMClient.generate; the CLI implementation runs `claude -p` under the full isolation flag set with its own CLAUDE_CONFIG_DIR and a fixed empty cwd, choosing per turn between `--resume` of a live session and a full replay of the stored dialogue, the API one streams messages.stream, and both hand back the same ChatChunk stream
 """
 Транспорт многоходового разговора.
 
@@ -26,6 +26,13 @@
 **Содержимое разговора не попадает ни в лог, ни в текст исключения.** stderr
 процесса уходит в `/dev/null`: там эхо промпта, а прочитанный и залогированный
 stderr — ровно тот путь, которым тексты дневника оказываются в логах.
+
+**Второй ход дешевле первого — и это выбор внутри одного метода.** Снаружи
+`stream_turn` отдаёт тот же поток кусков; внутри он либо продолжает сессию
+CLI (`--resume`), либо пересобирает разговор из таблицы одним промптом. Условия
+продолжения считает `app.llm.chat.session`, и ни одно из них не имеет права
+уронить ход: файл сессии удалили, том потеряли, cwd сменился, системный промпт
+переписали — разговор в каждом из этих случаев идёт реплеем, дороже, но верно.
 """
 
 from __future__ import annotations
@@ -36,11 +43,22 @@ import os
 import shutil
 import time
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from app.core.config import settings
-from app.llm.chat.prompt import ChatTurn, render_transcript
+from app.llm.chat.prompt import (
+    CHAT_CONTEXT_VERSION,
+    ChatTurn,
+    render_resume,
+    render_transcript,
+)
+from app.llm.chat.session import (
+    ResumeHint,
+    TurnStrategy,
+    can_resume,
+    choose_strategy,
+)
 from app.llm.cli import CLI_BINARY, CLI_MODEL_LABEL
 from app.llm.client import (
     INSIGHTS_MODEL,
@@ -158,10 +176,30 @@ class ChatLLMClient:
         """
         return None
 
+    def resumes(self, hint: ResumeHint | None) -> bool:
+        """
+        Продолжит ли следующий ход прежнюю сессию, а не пересоберёт разговор.
+
+        Спрашивается не только транспортом: шапка разговора показывает человеку,
+        чем обойдётся следующий ход, и берёт ответ здесь, а не считает условия
+        заново. Бэкенд без сессий отвечает «нет» и не обязан объяснять почему.
+        """
+        return False
+
     def stream_turn(
-        self, *, system_prompt: str, turns: Sequence[ChatTurn]
+        self,
+        *,
+        system_prompt: str,
+        turns: Sequence[ChatTurn],
+        resume: ResumeHint | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        """Отправить разговор целиком и отдавать ответ кусками по мере прихода."""
+        """
+        Отправить ход и отдавать ответ кусками по мере прихода.
+
+        `resume` — подсказка из таблицы о сессии прошлого хода. Она может быть
+        пустой, неверной или указывать на файл, которого больше нет: реализация
+        обязана в каждом из этих случаев ответить правильно, просто дороже.
+        """
         raise NotImplementedError
 
 
@@ -236,6 +274,20 @@ def _parse_result(event: dict[str, Any]) -> ChatChunk:
     )
 
 
+def _with_session(chunk: ChatChunk, strategy: TurnStrategy) -> ChatChunk:
+    """
+    Итог хода с id сессии, под которым ход и запускался.
+
+    CLI называет сессию в финальном `result`, но не обязан: обрыв, ошибка или
+    незнакомая форма события оставляют поле пустым. Тогда в таблицу пишется тот
+    id, что ушёл в `--session-id`, — иначе первый ход не оставляет ничего, что
+    мог бы продолжить второй, и resume не включается никогда.
+    """
+    if chunk.kind != CHUNK_USAGE or chunk.session_id:
+        return chunk
+    return replace(chunk, session_id=strategy.session_id)
+
+
 class CliChatClient(ChatLLMClient):
     """
     Разговор через залогиненный бинарник `claude`, изолированный от хоста.
@@ -265,8 +317,29 @@ class CliChatClient(ChatLLMClient):
         """Рабочий каталог процесса — он же ключ файла сессии CLI."""
         return self._cwd
 
-    def build_argv(self, system_prompt: str) -> list[str]:
-        """Полная командная строка одного хода."""
+    def resumes(self, hint: ResumeHint | None) -> bool:
+        """Все четыре условия продолжения разом; считает их `chat.session`."""
+        return can_resume(
+            hint=hint,
+            cwd=self._cwd,
+            config_dir=self._config_dir,
+            context_version=CHAT_CONTEXT_VERSION,
+        )
+
+    def build_argv(self, system_prompt: str, strategy: TurnStrategy) -> list[str]:
+        """
+        Полная командная строка одного хода.
+
+        Первый ход открывает сессию под нашим uuid (`--session-id`), а не под
+        тем, что придумает CLI: id, известный до запуска, записывается в таблицу
+        даже тогда, когда финальный `result` до нас не доехал. Последующие
+        продолжают её (`--resume`).
+
+        Системный промпт передаётся в обоих случаях. Он же префикс кеша: ход,
+        запущенный без него, разошёлся бы с сессией ровно в том месте, ради
+        которого сессия и продолжается.
+        """
+        session_flag = "--resume" if strategy.resumes else "--session-id"
         return [
             self._binary,
             "-p",
@@ -274,6 +347,8 @@ class CliChatClient(ChatLLMClient):
             *ISOLATION_ARGS,
             "--system-prompt",
             system_prompt,
+            session_flag,
+            strategy.session_id,
         ]
 
     def build_env(self) -> dict[str, str]:
@@ -283,14 +358,30 @@ class CliChatClient(ChatLLMClient):
         return env
 
     async def stream_turn(
-        self, *, system_prompt: str, turns: Sequence[ChatTurn]
+        self,
+        *,
+        system_prompt: str,
+        turns: Sequence[ChatTurn],
+        resume: ResumeHint | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        """Запустить ход и отдавать куски по мере того, как их печатает CLI."""
-        prompt = render_transcript(turns)
+        """
+        Запустить ход и отдавать куски по мере того, как их печатает CLI.
+
+        Здесь и стоит развилка тикета. Продолжение сессии платит только за новую
+        реплику: остальное уже в кеше процесса. Реплей платит за весь разговор
+        и потому собирает промпт из всей истории.
+        """
+        strategy = choose_strategy(
+            hint=resume,
+            cwd=self._cwd,
+            config_dir=self._config_dir,
+            context_version=CHAT_CONTEXT_VERSION,
+        )
+        prompt = render_resume(turns) if strategy.resumes else render_transcript(turns)
         try:
             os.makedirs(self._cwd, exist_ok=True)
             process = await asyncio.create_subprocess_exec(
-                *self.build_argv(system_prompt),
+                *self.build_argv(system_prompt, strategy),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 # Не PIPE: stderr CLI повторяет промпт, а непрочитанный PIPE
@@ -328,7 +419,7 @@ class CliChatClient(ChatLLMClient):
                     break
                 chunk = parse_stream_line(line)
                 if chunk is not None:
-                    yield chunk
+                    yield _with_session(chunk, strategy)
 
             code = await process.wait()
             if code != 0:
@@ -346,7 +437,7 @@ class AnthropicChatClient(ChatLLMClient):
     Разговор через Messages API: тот же поток кусков, полный список сообщений.
 
     Сессий у API нет, поэтому каждый ход уходит целиком; `session_id` в итоге
-    хода не заполняется, и `--resume` (`#112`) на этом бэкенде не включается.
+    хода не заполняется, и `--resume` на этом бэкенде не включается никогда.
     """
 
     model: str = INSIGHTS_MODEL
@@ -358,9 +449,19 @@ class AnthropicChatClient(ChatLLMClient):
         self._api = AnthropicInsightsClient(api_key=api_key)
 
     async def stream_turn(
-        self, *, system_prompt: str, turns: Sequence[ChatTurn]
+        self,
+        *,
+        system_prompt: str,
+        turns: Sequence[ChatTurn],
+        resume: ResumeHint | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        """Отправить весь диалог и отдавать текст по мере генерации."""
+        """
+        Отправить весь диалог и отдавать текст по мере генерации.
+
+        `resume` принимается и игнорируется: у Messages API сессий нет, и каждый
+        ход уходит целиком. Разговор на этом бэкенде живёт с пустым
+        `cli_session_id`, и это не сбой, а его нормальное состояние.
+        """
         messages = _api_messages(turns)
         try:
             async with self._api.sdk.messages.stream(

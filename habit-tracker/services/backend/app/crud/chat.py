@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111
-# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, and the append that records what a turn cost
+# [review:need-review] PHASE-03/111, PHASE-03/112
+# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, the append that records what a turn cost, and the CLI-session hint written from a finished turn or dropped when the system prompt it was built under is gone
 """
 Доступ к таблицам разговора.
 
@@ -12,6 +12,12 @@
 **Заголовок ставит сервер по первой реплике человека.** Просить его у модели —
 это лишний ход, который к тому же не состоится ровно тогда, когда ход не удался,
 и лента останется без имени именно у сломанных разговоров.
+
+**Подсказка о сессии стирается здесь же, где пишется.** `--resume` продолжает
+сессию, собранную под прежним системным промптом; когда `CHAT_CONTEXT_VERSION`
+уезжает вперёд, `cli_session_id` обнуляется до хода, а не после. Разговор от
+этого не теряет ни реплики: история лежит в `chat_messages`, и следующий ход
+просто уходит реплеем.
 """
 
 from __future__ import annotations
@@ -175,12 +181,21 @@ async def touch_conversation(
     llm_backend: str | None = None,
     cli_session_id: str | None = None,
     cli_cwd: str | None = None,
+    context_version: int | None = None,
 ) -> ChatConversation:
     """
     Отметить разговор ходом: время последнего сообщения и подсказки о сессии.
 
     Заголовок ставится один раз — первой репликой человека. Переписывать его на
     каждом ходу значило бы менять имя разговора в ленте по ходу разговора.
+
+    Пустые подсказки не затирают заполненные: ход на API-бэкенде приезжает без
+    `cli_session_id`, и обнулять им сессию CLI, которой отвечали вчера, нечестно.
+    Стирает сессию одна функция — `drop_stale_session`.
+
+    `context_version` записывается вместе с id сессии: версия без сессии ничего
+    не значит, а сессия без версии — это `--resume` под системным промптом,
+    которого уже нет.
     """
     conversation.last_message_at = at
     if title is not None and conversation.title is None:
@@ -189,7 +204,30 @@ async def touch_conversation(
         conversation.llm_backend = llm_backend
     if cli_session_id is not None:
         conversation.cli_session_id = cli_session_id
+        if context_version is not None:
+            conversation.context_version = context_version
     if cli_cwd is not None:
         conversation.cli_cwd = cli_cwd
     await db.flush()
     return conversation
+
+
+async def drop_stale_session(
+    db: AsyncSession, conversation: ChatConversation, *, context_version: int
+) -> bool:
+    """
+    Обнулить подсказку о сессии, собранной под другим системным промптом.
+
+    Возвращает, случилось ли обнуление. Версия при этом переписывается на
+    текущую вместе с id: иначе следующий ход стирал бы уже пустое поле снова и
+    снова, а таблица так и показывала бы версию, которой больше нет.
+
+    Разговор с уже совпадающей версией не трогается вовсе — ни записи, ни
+    лишнего flush.
+    """
+    if conversation.context_version == context_version:
+        return False
+    conversation.cli_session_id = None
+    conversation.context_version = context_version
+    await db.flush()
+    return True

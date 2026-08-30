@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111
-# summary: the chat system prompt and CHAT_CONTEXT_VERSION, plus the one way a stored dialogue is rendered back into a single prompt for the replay path
+# [review:need-review] PHASE-03/111, PHASE-03/112
+# summary: the chat system prompt and CHAT_CONTEXT_VERSION, plus the two ways a stored dialogue is rendered — the whole transcript for the replay path and only the tail the session has not seen for the resume one
 """
 Системный промпт чата и версия контекста.
 
@@ -100,3 +100,38 @@ def render_transcript(turns: Sequence[ChatTurn]) -> str:
         label = _ROLE_LABELS.get(turn.role, _UNKNOWN_ROLE_LABEL)
         lines.append(f"{label}: {turn.content}")
     return "\n\n".join(lines)
+
+
+def resume_tail(turns: Sequence[ChatTurn]) -> Sequence[ChatTurn]:
+    """
+    Реплики, которых продолжаемая сессия ещё не видела.
+
+    Граница — последняя реплика модели: всё, что стоит после неё, появилось
+    после того, как сессия отработала свой прошлый ход. Обычно это ровно одна
+    новая реплика человека, но между ходами могла лечь и заметка сервера, и
+    терять её нельзя.
+
+    Пустой хвост невозможен: ход начинается с реплики человека, дописанной перед
+    вызовом. Если он всё же пуст, отдаётся весь разговор — дороже, но не молча
+    пустой промпт.
+    """
+    for index in range(len(turns) - 1, -1, -1):
+        if turns[index].role == MESSAGE_ROLE_ASSISTANT:
+            tail = turns[index + 1 :]
+            return tail if tail else turns
+    return turns
+
+
+def render_resume(turns: Sequence[ChatTurn]) -> str:
+    """
+    Хвост разговора для сессии, которая помнит остальное.
+
+    Одинокая реплика человека уходит как есть: в продолжаемой сессии это
+    настоящая реплика пользователя, и подпись «Человек:» перед ней была бы
+    текстом, которого человек не писал. Хвост из нескольких реплик подписывается
+    ролями — там без подписей не разобрать, где чья.
+    """
+    tail = resume_tail(turns)
+    if len(tail) == 1 and tail[0].role == MESSAGE_ROLE_USER:
+        return tail[0].content
+    return render_transcript(tail)

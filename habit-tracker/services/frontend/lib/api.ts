@@ -1389,6 +1389,13 @@ export interface ChatMessage {
 /** A conversation read back with its messages — what a reload of `/chat` draws. */
 export interface ChatConversationDetail extends ChatConversation {
   messages: ChatMessage[];
+  /**
+   * Whether the next turn continues the CLI session or rebuilds the dialogue
+   * from the table. Computed by the server on every read: the session file can
+   * disappear between two turns, and four conditions the browser cannot see
+   * stand behind this one flag.
+   */
+  resume_ready: boolean;
 }
 
 export const chatAPI = {

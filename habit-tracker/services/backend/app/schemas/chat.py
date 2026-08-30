@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111
-# summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, and the body of a turn; the SSE events are described here as constants so the frontend parser and the server cannot drift
+# [review:need-review] PHASE-03/111, PHASE-03/112
+# summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, the body of a turn, and the one flag that says whether the next turn continues a CLI session or rebuilds the dialogue; the SSE events are described here as constants so the frontend parser and the server cannot drift
 """
 Типы провода для чата.
 
@@ -96,6 +96,14 @@ class ConversationDetail(ConversationResponse):
     """Разговор вместе с сообщениями — то, что рисует экран после перезагрузки."""
 
     messages: list[MessageResponse]
+    resume_ready: bool = Field(
+        description=(
+            "Продолжит ли следующий ход сессию CLI (`--resume`) или пересоберёт "
+            "разговор из таблицы целиком. Считается на месте: сессия могла "
+            "исчезнуть с диска между двумя ходами. Ответ разговора от этого не "
+            "меняется — меняется его цена."
+        )
+    )
 
 
 class MessageCreate(BaseModel):
