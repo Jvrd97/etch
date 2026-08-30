@@ -2,21 +2,28 @@
 Tests for the CLI LLM backend (claude -p) and backend selection.
 """
 
-# [review:need-review] PHASE-01/26-llm-cli-backend
-# summary: unit tests for CliInsightsClient (mocked subprocess: success, exit!=0, timeout, no binary) + backend selection
+# [review:need-review] PHASE-01/26-llm-cli-backend, PHASE-03/120
+# summary: unit tests for CliInsightsClient (mocked subprocess: success, exit!=0, timeout, no binary) + backend selection + the isolation of the one-shot call (flag set whole, own CLAUDE_CONFIG_DIR, fixed cwd, own system prompt)
 import asyncio
 import shutil
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from app.core.config import settings
-from app.llm.cli import CliInsightsClient
+from app.llm.cli import (
+    CLAUDE_CONFIG_DIR_ENV,
+    ISOLATION_FLAGS,
+    TEXT_OUTPUT_ARGS,
+    CliInsightsClient,
+)
 from app.llm.client import (
     AnthropicInsightsClient,
     LLMError,
     resolve_insights_client,
 )
+from app.llm.prompts import ONESHOT_SYSTEM_PROMPT
 
 
 class FakeProcess:
@@ -50,10 +57,17 @@ class FakeExecFactory:
     def __init__(self, process: FakeProcess) -> None:
         self.process = process
         self.argv: tuple[str, ...] | None = None
+        self.kwargs: dict[str, Any] = {}
 
     async def __call__(self, *args: str, **kwargs: Any) -> FakeProcess:
         self.argv = args
+        self.kwargs = kwargs
         return self.process
+
+    def argv_or_fail(self) -> tuple[str, ...]:
+        """The recorded argv, or a failed assertion instead of an Optional dance."""
+        assert self.argv is not None
+        return self.argv
 
 
 @pytest.mark.asyncio
@@ -125,6 +139,70 @@ class TestCliInsightsClient:
 
         with pytest.raises(LLMError):
             await CliInsightsClient().generate("ctx")
+
+
+class TestOneShotIsolation:
+    """
+    Одноходовой вызов отрезан от личной конфигурации хоста ровно так же, как чат.
+
+    Инсайты, онбординг категорий и разбор дня ходят через `generate`. Без этих
+    флагов каждый из них тащит в запрос глобальный CLAUDE.md, хуки, MCP-серверы
+    и скиллы владельца машины — замер ADR-0017: 52 555 токенов префикса против
+    282, плюс прогон, в котором модель отработала личный скилл `/set`.
+    """
+
+    @pytest.mark.parametrize("flag,value", ISOLATION_FLAGS)
+    def test_every_isolation_flag_is_present(
+        self, flag: str, value: str | None, tmp_path: Path
+    ) -> None:
+        """Набор проверяется целиком: пропажа любого флага валит тест."""
+        argv = CliInsightsClient(cwd=str(tmp_path)).build_argv()
+
+        assert argv[0] == "claude"
+        assert "-p" in argv
+        assert flag in argv
+        if value is not None:
+            assert argv[argv.index(flag) + 1] == value
+
+    def test_own_system_prompt_replaces_the_cli_preamble(self, tmp_path: Path) -> None:
+        """Свой промпт передаётся `--system-prompt`, а не дописывается к чужому."""
+        argv = CliInsightsClient(cwd=str(tmp_path)).build_argv()
+
+        assert argv[argv.index("--system-prompt") + 1] == ONESHOT_SYSTEM_PROMPT
+        assert "--append-system-prompt" not in argv
+
+    def test_text_output_is_kept(self, tmp_path: Path) -> None:
+        """Формат ответа прежний: три юзкейса разбирают голый текст."""
+        argv = CliInsightsClient(cwd=str(tmp_path)).build_argv()
+
+        for flag in TEXT_OUTPUT_ARGS:
+            assert flag in argv
+
+    def test_config_dir_points_at_its_own_directory(self, tmp_path: Path) -> None:
+        """CLAUDE_CONFIG_DIR ведёт в свой каталог, а не в личный `~/.claude`."""
+        env = CliInsightsClient(
+            config_dir=str(tmp_path / "cfg"), cwd=str(tmp_path)
+        ).build_env()
+
+        assert env[CLAUDE_CONFIG_DIR_ENV] == str(tmp_path / "cfg")
+
+    @pytest.mark.asyncio
+    async def test_process_gets_the_config_dir_and_the_fixed_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Каталог конфигурации и рабочий каталог доезжают до самого процесса."""
+        workspace = tmp_path / "workspace"
+        fake = FakeExecFactory(FakeProcess(returncode=0, stdout=b"ok"))
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+        client = CliInsightsClient(config_dir=str(tmp_path / "cfg"), cwd=str(workspace))
+
+        await client.generate("ctx")
+
+        assert fake.kwargs["cwd"] == str(workspace)
+        assert fake.kwargs["env"][CLAUDE_CONFIG_DIR_ENV] == str(tmp_path / "cfg")
+        # Каталог создаётся: пустой рабочий каталог — предусловие, а не надежда.
+        assert workspace.is_dir()
+        assert "--setting-sources" in fake.argv_or_fail()
 
 
 class TestBackendSelection:

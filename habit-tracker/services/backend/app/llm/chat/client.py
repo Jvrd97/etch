@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111
-# summary: ChatLLMClient.stream_turn — the second transport method beside LLMClient.generate; the CLI implementation runs `claude -p` under the full isolation flag set with its own CLAUDE_CONFIG_DIR and a fixed empty cwd, the API one streams messages.stream, and both hand back the same ChatChunk stream
+# [review:need-review] PHASE-03/111, PHASE-03/120
+# summary: ChatLLMClient.stream_turn — the second transport method beside LLMClient.generate; the CLI implementation runs `claude -p` through the shared IsolatedCli of app/llm/cli.py (isolation flags, CLAUDE_CONFIG_DIR, fixed empty cwd), the API one streams messages.stream, and both hand back the same ChatChunk stream
 """
 Транспорт многоходового разговора.
 
@@ -16,6 +16,9 @@
 `~/.claude` смонтирован в контейнер, то есть без флагов это происходит уже
 сейчас. Поэтому `ISOLATION_ARGS` — не оптимизация, а условие приёмки, и на него
 стоит отдельный тест: набор проверяется целиком, а не «хотя бы `--tools`».
+Живёт он одним экземпляром в `app/llm/cli.py` — там же, где его берёт
+одноходовой `generate`, потому что второй список флагов означал бы юзкейс,
+тихо ходящий без изоляции.
 
 **Личный конфиг заменяется своим, а не отключается наполовину.**
 `--setting-sources ""` убирает источники настроек, `CLAUDE_CONFIG_DIR`
@@ -32,7 +35,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -41,7 +43,7 @@ from typing import Any, cast
 
 from app.core.config import settings
 from app.llm.chat.prompt import ChatTurn, render_transcript
-from app.llm.cli import CLI_BINARY, CLI_MODEL_LABEL
+from app.llm.cli import CLI_BINARY, CLI_MODEL_LABEL, IsolatedCli
 from app.llm.client import (
     INSIGHTS_MODEL,
     LLM_TIMEOUT_SECONDS,
@@ -58,18 +60,6 @@ BACKEND_API = "api"
 CHUNK_DELTA = "delta"
 CHUNK_USAGE = "usage"
 
-# Полный набор флагов изоляции. Живёт одной константой, потому что проверяется
-# тестом целиком: набор, из которого выпал один флаг, стоит десятки тысяч
-# токенов на каждом ходу и утекает личной конфигурацией в каждый запрос.
-ISOLATION_ARGS: tuple[str, ...] = (
-    # Модель ничего не исполняет: у чата нет инструментов вовсе.
-    "--tools",
-    "",
-    # Ни хуков, ни глобального CLAUDE.md, ни чужих MCP-серверов.
-    "--setting-sources",
-    "",
-)
-
 # Флаги потока. `--include-partial-messages` работает только вместе с
 # `--output-format stream-json`, поэтому они и стоят рядом.
 STREAM_ARGS: tuple[str, ...] = (
@@ -77,9 +67,6 @@ STREAM_ARGS: tuple[str, ...] = (
     "stream-json",
     "--include-partial-messages",
 )
-
-# Переменная окружения, которой CLI указывают его собственный каталог конфигурации.
-CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 
 # Коды отказа. Машинные: в `chat_messages.error_code` пишется одно из них, а не
 # текст, в котором мог бы оказаться кусок разговора.
@@ -255,32 +242,23 @@ class CliChatClient(ChatLLMClient):
         config_dir: str | None = None,
         cwd: str | None = None,
     ) -> None:
-        self._binary = binary
         self._timeout = timeout
-        self._config_dir = config_dir or settings.CHAT_CLAUDE_CONFIG_DIR
-        self._cwd = cwd or settings.CHAT_CLI_CWD
+        self._cli = IsolatedCli(binary=binary, config_dir=config_dir, cwd=cwd)
 
     @property
     def cwd(self) -> str:
         """Рабочий каталог процесса — он же ключ файла сессии CLI."""
-        return self._cwd
+        return self._cli.cwd
 
     def build_argv(self, system_prompt: str) -> list[str]:
         """Полная командная строка одного хода."""
-        return [
-            self._binary,
-            "-p",
-            *STREAM_ARGS,
-            *ISOLATION_ARGS,
-            "--system-prompt",
-            system_prompt,
-        ]
+        return self._cli.build_argv(
+            system_prompt=system_prompt, output_args=STREAM_ARGS
+        )
 
     def build_env(self) -> dict[str, str]:
         """Окружение процесса: свой каталог конфигурации поверх текущего."""
-        env = dict(os.environ)
-        env[CLAUDE_CONFIG_DIR_ENV] = self._config_dir
-        return env
+        return self._cli.build_env()
 
     async def stream_turn(
         self, *, system_prompt: str, turns: Sequence[ChatTurn]
@@ -288,16 +266,12 @@ class CliChatClient(ChatLLMClient):
         """Запустить ход и отдавать куски по мере того, как их печатает CLI."""
         prompt = render_transcript(turns)
         try:
-            os.makedirs(self._cwd, exist_ok=True)
-            process = await asyncio.create_subprocess_exec(
-                *self.build_argv(system_prompt),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
+            process = await self._cli.spawn(
+                system_prompt=system_prompt,
+                output_args=STREAM_ARGS,
                 # Не PIPE: stderr CLI повторяет промпт, а непрочитанный PIPE
                 # ещё и подвешивает процесс на переполнении буфера.
                 stderr=asyncio.subprocess.DEVNULL,
-                cwd=self._cwd,
-                env=self.build_env(),
             )
         except OSError as exc:
             # Имя каталога и класс ошибки — всё, что уходит наружу.

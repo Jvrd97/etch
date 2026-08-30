@@ -2,7 +2,7 @@
 Tests for the AI insights endpoint (POST /api/v1/insights/).
 """
 
-# [review:need-review] PHASE-01/25-ai-reports-history
+# [review:need-review] PHASE-01/25-ai-reports-history, PHASE-03/120
 # summary: + tests for reports history (GET list newest-first with preview, GET by id, 404)
 import pytest
 from httpx import AsyncClient
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.insights import get_llm_client
 from app.core.config import settings
+from app.core.daytime import today_local
 from app.llm.client import InsightsClient, LLMError
 from app.llm.context import build_period_context
 from app.main import app
@@ -191,9 +192,10 @@ class TestBuildPeriodContext:
         category = category_response.json()
         field_id = category["fields"][0]["id"]
 
-        from datetime import date
-
-        today = date.today().isoformat()
+        # Не `date.today()`: контекст периода строится по границе суток
+        # (`app/core/daytime`), и между полуночью и DAY_START_HOUR календарная
+        # дата уже завтрашняя — запись оказывалась бы за окном периода.
+        today = today_local().isoformat()
         entry_response = await client.post(
             "/api/v1/entries",
             json={
