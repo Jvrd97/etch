@@ -1,6 +1,8 @@
-# [review:need-review] PHASE-03/106, PHASE-03/107
+# [review:need-review] PHASE-03/106, PHASE-03/107, PHASE-03/111, PHASE-03/116
 # summary: ENVIRONMENT + CORS_ORIGINS allowlist; in prod an empty API_KEY or a "*" origin kills the start
 # summary: APP_TIMEZONE + DAY_START_HOUR — the temporary source of the one day boundary, validated at build
+# summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a chat turn from the host configuration is configuration, not a constant
+# summary: CHAT_TURN_TIMEOUT_SECONDS + CHAT_FIRST_DELTA_TIMEOUT_SECONDS + CHAT_MAX_CONCURRENT_TURNS + CHAT_SLOT_WAIT_SECONDS — the ceilings of one turn, tunable because the right numbers are learned in production
 """
 Настройки приложения.
 
@@ -88,6 +90,39 @@ class Settings(BaseSettings):
     # LLM backend: "cli" (claude CLI binary) or "api" (Anthropic API).
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""
+
+    # Chat (ADR-0017). A chat turn on the CLI backend runs under its own
+    # configuration directory and inside a fixed empty working directory, never
+    # under the host's `~/.claude`: otherwise the process loads the personal
+    # CLAUDE.md, hooks, MCP servers and skills of whoever owns the machine —
+    # measured at 52 555 prefix tokens per turn against 282 with them off. The
+    # working directory doubles as the key of the CLI session file, which is
+    # what `--resume` (#112) is looked up by, so it is a setting and not a
+    # temporary directory picked per call.
+    CHAT_CLAUDE_CONFIG_DIR: str = "/data/claude-chat"
+    CHAT_CLI_CWD: str = "/data/claude-chat/workspace"
+    # Ceiling on the day card #113 will put into the prompt. Declared here
+    # already so that slice is code and not another pass over compose files.
+    CHAT_CONTEXT_MAX_CHARS: int = Field(default=20_000, ge=1_000)
+    # Ceilings of one turn (#116). The overall deadline is 180 and not the 120
+    # the single-shot use cases inherited: a conversation about a whole day is
+    # a longer answer than an insight, and 120 cut it mid-sentence. Its prod
+    # precondition is `gunicorn --timeout` raised in #119 — a worker killed at
+    # 120 makes this setting a lie.
+    CHAT_TURN_TIMEOUT_SECONDS: int = Field(default=180, ge=1)
+    # A separate, much shorter deadline on the first `delta`. A CLI that has
+    # said nothing at all is usually not going to: it failed to authenticate or
+    # is waiting for something that will not come. Waiting the full turn for it
+    # holds a slot and a connection for a turn already dead.
+    CHAT_FIRST_DELTA_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    # How many turns may run at once in one worker. Each `cli` turn is its own
+    # Node process, the system has one user, and two workers times three
+    # dialogues is memory nobody budgeted.
+    CHAT_MAX_CONCURRENT_TURNS: int = Field(default=2, ge=1)
+    # How long a third turn waits for a free slot before it is refused. Zero
+    # means "refuse at once"; an unbounded queue would be a worker held by a
+    # turn its author stopped waiting for.
+    CHAT_SLOT_WAIT_SECONDS: int = Field(default=30, ge=0)
 
     # The one day boundary — see `app/core/daytime.py`. A day runs from
     # DAY_START_HOUR local wall clock to that hour of the next date, so a

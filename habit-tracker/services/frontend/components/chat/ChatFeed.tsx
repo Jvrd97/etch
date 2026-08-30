@@ -1,18 +1,43 @@
 'use client';
-// [review:need-review] PHASE-03/118
-// summary: the conversation feed both shells draw — stored messages as bubbles, the turn in flight growing delta by delta, the machine error code turned into a sentence, and the bottom anchor that keeps the newest line in view while the answer arrives
+// [review:need-review] PHASE-03/118, PHASE-03/116
+// summary: PHASE-03/116 draws a stored turn by its status — partial text under a note for `interrupted`, the machine code spelled out for `failed`, an unclosed `streaming` row named as such with the button that unsticks it; the conversation feed both shells draw — stored messages as bubbles, the turn in flight growing delta by delta, the machine error code turned into a sentence, and the bottom anchor that keeps the newest line in view while the answer arrives
 
 import { useEffect, useRef } from 'react';
 import { MessagesSquare } from 'lucide-react';
 import Markdown from '@/components/Markdown';
 import type { ChatMessage } from '@/lib/api';
-import { TURN_ERROR_FALLBACK, TURN_ERROR_TEXT, type ChatTurn } from '@/hooks/useChat';
+import {
+  MESSAGE_STATUS_NOTE,
+  TURN_ERROR_FALLBACK,
+  TURN_ERROR_TEXT,
+  type ChatTurn,
+} from '@/hooks/useChat';
 
 export interface ChatFeedProps {
   messages: ChatMessage[];
   turn: ChatTurn;
   /** Подсказка на пустой ленте. Разная на широком и на узком экране. */
   emptyHint: string;
+  /** Расклинить разговор. Кнопка появляется только у незакрытого хода. */
+  onReset?: () => void;
+}
+
+export const RESET_LABEL = 'Сбросить зависший ход';
+
+/**
+ * Пометка под сохранённым сообщением, либо null у обычного ответа.
+ *
+ * Оборванный ход показывается своим текстом с пояснением, а не пустотой и не
+ * словом «ошибка»: то, что успело прийти, человек уже читал, и отнимать это у
+ * него из-за закрытой вкладки не за что.
+ */
+export function statusNote(message: ChatMessage): string | null {
+  if (message.status === 'failed') {
+    return message.error_code === null
+      ? TURN_ERROR_FALLBACK
+      : (TURN_ERROR_TEXT[message.error_code] ?? TURN_ERROR_FALLBACK);
+  }
+  return MESSAGE_STATUS_NOTE[message.status] ?? null;
 }
 
 function Bubble({ role, children }: { role: string; children: React.ReactNode }) {
@@ -45,7 +70,12 @@ function Bubble({ role, children }: { role: string; children: React.ReactNode })
  * разметка (открытый блок кода, начатая таблица) на каждом куске перерисовывала
  * бы абзац в мигающий мусор.
  */
-export default function ChatFeed({ messages, turn, emptyHint }: ChatFeedProps) {
+export default function ChatFeed({
+  messages,
+  turn,
+  emptyHint,
+  onReset,
+}: ChatFeedProps) {
   const bottom = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -63,15 +93,36 @@ export default function ChatFeed({ messages, turn, emptyHint }: ChatFeedProps) {
         </div>
       )}
 
-      {messages.map((message) => (
-        <Bubble key={message.id} role={message.role}>
-          {message.role === 'user' ? (
-            <span className="whitespace-pre-wrap">{message.content}</span>
-          ) : (
-            <Markdown content={message.content} />
-          )}
-        </Bubble>
-      ))}
+      {messages.map((message) => {
+        const note = statusNote(message);
+        return (
+          <Bubble key={message.id} role={message.role}>
+            {message.role === 'user' ? (
+              <span className="whitespace-pre-wrap">{message.content}</span>
+            ) : (
+              // Незавершённый ответ остаётся простым текстом: недописанная
+              // разметка рисуется мусором, а не тем, что человек читал.
+              message.status === 'complete' ? (
+                <Markdown content={message.content} />
+              ) : (
+                <span className="whitespace-pre-wrap">{message.content}</span>
+              )
+            )}
+            {note !== null && (
+              <p className="mt-2 text-xs text-text-disabled">{note}</p>
+            )}
+            {message.status === 'streaming' && onReset && (
+              <button
+                type="button"
+                onClick={onReset}
+                className="mt-2 text-xs text-lime underline underline-offset-2"
+              >
+                {RESET_LABEL}
+              </button>
+            )}
+          </Bubble>
+        );
+      })}
 
       {turn.phase !== 'idle' && (
         <>

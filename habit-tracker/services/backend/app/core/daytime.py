@@ -60,10 +60,22 @@ __all__ = [
     "current_boundary",
     "day_bounds",
     "local_date",
+    "now_utc",
     "reset_boundary",
     "today_local",
     "use_boundary",
 ]
+
+
+def now_utc() -> datetime:
+    """
+    The current moment, aware and in UTC.
+
+    Here rather than at each call site so that nobody spells it `datetime.now()`
+    without a zone: `local_date()` refuses a naive datetime by design, and the
+    fix for that refusal is worth having in exactly one spelling.
+    """
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)

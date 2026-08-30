@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/111, PHASE-03/118
+// [review:need-review] PHASE-03/111, PHASE-03/118, PHASE-03/116
 // summary: /chat screen — markup only now: the conversation named by the link (or the latest one), its feed and its message field come from the pieces the mobile screen draws too, so a change to either is a change in one place
 
 import { Suspense } from 'react';
@@ -15,8 +15,18 @@ const EMPTY_HINT = 'Напиши сообщение — ответ придёт 
 
 function ChatScreen() {
   const conversationId = conversationIdFrom(useSearchParams());
-  const { screen, messages, turn, draft, setDraft, send, busy, canSend, dismissError } =
-    useChat({ conversationId });
+  const {
+    screen,
+    messages,
+    turn,
+    draft,
+    setDraft,
+    send,
+    busy,
+    canSend,
+    reset,
+    dismissError,
+  } = useChat({ conversationId });
 
   if (screen.status === 'loading') return <LoadingSpinner size="lg" />;
   if (screen.status === 'failed') {
@@ -35,7 +45,7 @@ function ChatScreen() {
         </p>
       </div>
 
-      <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} />
+      <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} onReset={reset} />
 
       <div className="sticky bottom-4">
         <ChatComposer

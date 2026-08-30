@@ -1,8 +1,8 @@
 'use client';
-// [review:need-review] PHASE-03/118
-// summary: chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
+// [review:need-review] PHASE-03/118, PHASE-03/116
+// summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { chatAPI, type ChatMessage } from '@/lib/api';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import {
@@ -31,12 +31,31 @@ export type ChatTurn =
   | { phase: 'streaming'; question: string; text: string }
   | { phase: 'failed'; question: string; text: string; code: string };
 
-/** Что читает человек, когда бэкенд отказал ходу, по машинному коду. */
+/**
+ * Машинный код отказа, когда сервер отдал его кодом ответа, а не событием.
+ *
+ * 409 — единственный случай, у которого своего кода в теле нет: диалог занят,
+ * и это состояние диалога, а не поломка хода.
+ */
+export const TURN_IN_FLIGHT = 'turn_in_flight';
+
+/** Что читает человек, когда ход не удался, по машинному коду. */
 export const TURN_ERROR_TEXT: Record<string, string> = {
   backend_failed: 'Бэкенд не смог ответить. Ход записан как неудавшийся.',
+  first_delta_timeout: 'Бэкенд не сказал ни слова и был остановлен.',
+  turn_timeout: 'Ход не уложился в отведённое время и был остановлен.',
+  chat_slots_busy: 'Сейчас идут другие разговоры. Попробуйте через минуту.',
+  [TURN_IN_FLIGHT]:
+    'В этом разговоре ещё идёт ход. Дождитесь ответа или сбросьте зависший.',
 };
 
 export const TURN_ERROR_FALLBACK = 'Ход не удался.';
+
+/** Что читает человек рядом с сохранённым сообщением, по его статусу. */
+export const MESSAGE_STATUS_NOTE: Record<string, string> = {
+  interrupted: 'Ответ оборван — показано то, что успело прийти.',
+  streaming: 'Ход не закрыт: похоже, бэкенд перезапустили. Сбросьте разговор.',
+};
 
 export interface UseChatOptions {
   /**
@@ -63,8 +82,47 @@ export interface UseChatResult {
   busy: boolean;
   /** True, когда есть что отправить и ход не идёт. */
   canSend: boolean;
+  /**
+   * Разговор заперт незакрытым ходом, которого никто уже не ведёт.
+   *
+   * Отдельно от `busy`: занятость проходит сама, а это — состояние, которое
+   * само не рассосётся, и лечится оно кнопкой, а не ожиданием.
+   */
+  stuck: boolean;
+  /** Расклинить разговор: незакрытые ходы становятся оборванными. */
+  reset: () => void;
   /** Забыть ошибку экрана и попробовать загрузиться заново. */
   dismissError: () => void;
+}
+
+/**
+ * Машинный код отказа из ответа сервера.
+ *
+ * У 429 и 502 в `detail` лежит сам код — сервер отдаёт машинный код и там, где
+ * поток ещё не начался. У 409 своего кода нет, потому что это не поломка.
+ */
+function refusalCode(error: unknown): string | null {
+  const status = statusOf(error);
+  if (status === null) return null;
+  if (status === 409) return TURN_IN_FLIGHT;
+  if (status === 429 || status === 502) return (error as Error).message;
+  return null;
+}
+
+/**
+ * Ответ сервера с кодом состояния, узнанный по форме, а не по классу.
+ *
+ * `instanceof APIError` был бы точнее, но требует, чтобы класс приехал из того
+ * же экземпляра модуля `@/lib/api`. В тестах модуль подменяется целиком, а
+ * реестр подмен общий на весь прогон: достаточно одного файла, забывшего
+ * положить в подмену класс, — и отказ сервера идёт по ветке «экран сломался» в
+ * чужом тесте. Форма — имя ошибки и числовой `status` — не зависит от того,
+ * чей это экземпляр класса.
+ */
+function statusOf(error: unknown): number | null {
+  if (!(error instanceof Error) || error.name !== 'APIError') return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === 'number' ? status : null;
 }
 
 function errorText(error: unknown): string {
@@ -162,8 +220,24 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
           }
         });
       } catch (error) {
-        setTurn({ phase: 'idle' });
-        setScreen({ status: 'failed', message: errorText(error) });
+        // Отказ ручки — не поломка экрана. 409, 429 и 502 говорят о ходе, а
+        // разговор при этом цел и читается; ронять всю ленту в «ошибка» значило
+        // бы прятать за ней и уже написанное.
+        const code = refusalCode(error);
+        if (code === null) {
+          setTurn({ phase: 'idle' });
+          setScreen({ status: 'failed', message: errorText(error) });
+          return;
+        }
+        setTurn((current) =>
+          current.phase === 'streaming' ? { ...current, phase: 'failed', code } : current
+        );
+        // 409 означает строку, которую никто не закроет: её видно в ленте
+        // после перечитывания, и она же запирает разговор.
+        if (code === TURN_IN_FLIGHT) {
+          const detail = await chatAPI.get(id);
+          setMessages(detail.messages);
+        }
         return;
       }
 
@@ -184,8 +258,30 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
     []
   );
 
-  const busy = turn.phase === 'streaming';
+  // Незакрытый ход, приехавший из базы: воркер умер вместе с процессом CLI, и
+  // строка осталась в `streaming`. Сервер на такой разговор отвечает 409, так
+  // что запирать поле ввода надо до отправки, а не после отказа.
+  const stuck = useMemo(
+    () => messages.some((message) => message.status === 'streaming'),
+    [messages]
+  );
+  const busy = turn.phase === 'streaming' || stuck;
   const canSend = screen.status === 'ready' && !busy && draft.trim().length > 0;
+
+  const reset = useCallback(() => {
+    if (screen.status !== 'ready') return;
+    const id = screen.conversationId;
+    void (async () => {
+      try {
+        await chatAPI.reset(id);
+        const detail = await chatAPI.get(id);
+        setMessages(detail.messages);
+        setTurn({ phase: 'idle' });
+      } catch (error) {
+        setScreen({ status: 'failed', message: errorText(error) });
+      }
+    })();
+  }, [screen]);
 
   const send = useCallback(() => {
     if (screen.status !== 'ready' || busy) return;
@@ -207,5 +303,17 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
     setAttempt((current) => current + 1);
   }, []);
 
-  return { screen, messages, turn, draft, setDraft, send, busy, canSend, dismissError };
+  return {
+    screen,
+    messages,
+    turn,
+    draft,
+    setDraft,
+    send,
+    busy,
+    canSend,
+    stuck,
+    reset,
+    dismissError,
+  };
 }

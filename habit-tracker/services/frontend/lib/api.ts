@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/111, PHASE-03/118
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/116
+// summary: PHASE-03/116 adds chatAPI.reset and exports APIError so a refused turn keeps its status; entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -11,7 +11,7 @@ import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 // app reachable from any device on the LAN without host-specific config.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
-class APIError extends Error {
+export class APIError extends Error {
   constructor(public status: number, message: string) {
     super(message);
     this.name = 'APIError';
@@ -1422,6 +1422,20 @@ export const chatAPI = {
 
   get: async (id: number) => {
     return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /**
+   * Unstick a dialogue whose turn nobody will ever close.
+   *
+   * The case is narrow and real: the worker died together with the CLI
+   * process, so the answer row stayed `streaming` and every later POST is a
+   * 409. Returns how many turns were reset — zero means the dialogue was free
+   * all along, which is worth showing rather than hiding behind a 204.
+   */
+  reset: async (id: number) => {
+    return fetcher<{ reset: number }>(`/chat/conversations/${id}/reset`, {
+      method: 'POST',
+    });
   },
 
   /**

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/92, PHASE-03/93
-# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals and training routers in the API-key perimeter
+# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/92, PHASE-03/93, PHASE-03/111
+# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, training and chat routers in the API-key perimeter
 """
 Сборка FastAPI-приложения.
 
@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     categories,
+    chat,
     daily_summary,
     day,
     entries,
@@ -72,6 +73,7 @@ API_ROUTERS = (
     day.router,
     goals.router,
     training.router,
+    chat.router,
 )
 
 

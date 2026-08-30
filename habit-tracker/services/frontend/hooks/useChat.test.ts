@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/118
-// summary: tests for the chat state both shells share — a half-written reply survives the screen being torn down and mounted again (the app backgrounded on a phone), a successful send leaves the draft empty on screen and in storage, the link's conversation wins over "the latest one", and a turn is not startable twice
+// [review:need-review] PHASE-03/118, PHASE-03/116
+// summary: PHASE-03/116 adds the refusals — a busy dialogue answered 409 keeps the feed readable, an exhausted slot ceiling carries its machine code, a stored turn left `streaming` locks the field until reset clears it; tests for the chat state both shells share — a half-written reply survives the screen being torn down and mounted again (the app backgrounded on a phone), a successful send leaves the draft empty on screen and in storage, the link's conversation wins over "the latest one", and a turn is not startable twice
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -9,14 +9,34 @@ let listConversations: ReturnType<typeof mock>;
 let createConversation: ReturnType<typeof mock>;
 let getConversation: ReturnType<typeof mock>;
 let streamMessage: ReturnType<typeof mock>;
+let resetConversation: ReturnType<typeof mock>;
+
+/**
+ * Stand-in for the error class the API client throws.
+ *
+ * The module is mocked wholesale, so the class has to come from the mock too:
+ * `refusalCode` narrows on `instanceof`, and a plain Error would take every
+ * refusal down the "the screen is broken" path instead.
+ */
+class FakeAPIError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = 'APIError';
+  }
+}
 
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
 mock.module('@/lib/api', () => ({
+  APIError: FakeAPIError,
   chatAPI: {
     list: (limit?: number) => listConversations(limit),
     create: (options?: unknown) => createConversation(options),
     get: (id: number) => getConversation(id),
+    reset: (id: number) => resetConversation(id),
     streamMessage: (id: number, content: string, onEvent: unknown) =>
       streamMessage(id, content, onEvent),
   },
@@ -50,7 +70,7 @@ mock.module('@/lib/api', () => ({
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
 }));
 
-const { useChat } = await import('./useChat');
+const { useChat, TURN_IN_FLIGHT } = await import('./useChat');
 const { chatDraftKey } = await import('@/lib/chat-draft');
 
 const CONVERSATION = 5;
@@ -81,6 +101,7 @@ beforeEach(() => {
   createConversation = mock(() => Promise.resolve({ id: LATEST_CONVERSATION }));
   getConversation = mock((id: number) => Promise.resolve(detail(id)));
   streamMessage = mock(() => Promise.resolve(undefined));
+  resetConversation = mock(() => Promise.resolve({ reset: 1 }));
 });
 
 afterEach(cleanup);
@@ -237,5 +258,115 @@ describe('useChat: sending', () => {
     await waitFor(() => expect(view.result.current.turn.phase).toBe('failed'));
     const turn = view.result.current.turn;
     expect(turn.phase === 'failed' ? turn.code : null).toBe('backend_failed');
+  });
+});
+
+/** One stored message, shaped as the server sends it. */
+function storedMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    seq: 2,
+    role: 'assistant',
+    content: 'первый ',
+    status: 'complete',
+    error_code: null,
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_tokens: null,
+    latency_ms: null,
+    model: null,
+    created_at: '2026-08-30T10:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('useChat: a refused turn', () => {
+  it('keeps the feed readable when the dialogue is already busy', async () => {
+    // 409 — состояние диалога, а не поломка экрана: ронять ленту в «ошибка»
+    // значило бы спрятать за ней и уже написанное. Отказ приходит с сервера, а
+    // не от собственной блокировки: ход начали из второй вкладки, и здесь про
+    // него узнают только по коду ответа.
+    streamMessage = mock(() =>
+      Promise.reject(new FakeAPIError(409, 'turn 3 is still running'))
+    );
+    let reads = 0;
+    getConversation = mock((id: number) => {
+      reads += 1;
+      return Promise.resolve(
+        reads === 1 ? detail(id) : detail(id, [storedMessage({ status: 'streaming' })])
+      );
+    });
+    const view = await mountChat(fakeStorage());
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+
+    act(() => view.result.current.send());
+
+    await waitFor(() => expect(view.result.current.turn.phase).toBe('failed'));
+    const turn = view.result.current.turn;
+    expect(turn.phase === 'failed' ? turn.code : null).toBe(TURN_IN_FLIGHT);
+    expect(view.result.current.screen.status).toBe('ready');
+    // Перечитанная лента показывает ту самую строку, из-за которой 409.
+    await waitFor(() => expect(view.result.current.stuck).toBe(true));
+  });
+
+  it('carries the machine code when the slot ceiling is full', async () => {
+    streamMessage = mock(() =>
+      Promise.reject(new FakeAPIError(429, 'chat_slots_busy'))
+    );
+    const view = await mountChat(fakeStorage());
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+
+    act(() => view.result.current.send());
+
+    await waitFor(() => expect(view.result.current.turn.phase).toBe('failed'));
+    const turn = view.result.current.turn;
+    expect(turn.phase === 'failed' ? turn.code : null).toBe('chat_slots_busy');
+  });
+
+  it('shows the screen error for a failure that is not about the turn', async () => {
+    streamMessage = mock(() => Promise.reject(new Error('сеть отвалилась')));
+    const view = await mountChat(fakeStorage());
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+
+    act(() => view.result.current.send());
+
+    await waitFor(() => expect(view.result.current.screen.status).toBe('failed'));
+  });
+});
+
+describe('useChat: a turn nobody will close', () => {
+  it('locks the field while a stored turn is still streaming', async () => {
+    // Воркер умер вместе с процессом CLI: строка осталась в `streaming`, и
+    // сервер ответит 409 на любую отправку. Запирать поле надо до неё.
+    getConversation = mock((id: number) =>
+      Promise.resolve(detail(id, [storedMessage({ status: 'streaming' })]))
+    );
+    const view = await mountChat(fakeStorage());
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+
+    await waitFor(() => expect(view.result.current.stuck).toBe(true));
+    expect(view.result.current.busy).toBe(true);
+    expect(view.result.current.canSend).toBe(false);
+  });
+
+  it('unsticks the dialogue on reset and reads it back', async () => {
+    let stuck = true;
+    getConversation = mock((id: number) =>
+      Promise.resolve(
+        detail(id, [storedMessage({ status: stuck ? 'streaming' : 'interrupted' })])
+      )
+    );
+    resetConversation = mock((id: number) => {
+      stuck = false;
+      return Promise.resolve({ reset: 1, id });
+    });
+    const view = await mountChat(fakeStorage());
+    await waitFor(() => expect(view.result.current.stuck).toBe(true));
+
+    act(() => view.result.current.reset());
+
+    await waitFor(() => expect(view.result.current.stuck).toBe(false));
+    expect(resetConversation).toHaveBeenCalledTimes(1);
+    expect(view.result.current.messages[0]?.status).toBe('interrupted');
   });
 });

@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/118
+// [review:need-review] PHASE-03/118, PHASE-03/116
 // summary: /m/chat screen — the same feed, message field and state as the desktop chat, wrapped in the mobile shell's FullScreenSheet so the bar and the field follow the visual viewport instead of disappearing under the on-screen keyboard
 
 import { Suspense } from 'react';
@@ -39,8 +39,18 @@ const MOBILE_COMPOSER_ROWS = 1;
 function MobileChatScreen() {
   const router = useRouter();
   const conversationId = conversationIdFrom(useSearchParams());
-  const { screen, messages, turn, draft, setDraft, send, busy, canSend, dismissError } =
-    useChat({ conversationId });
+  const {
+    screen,
+    messages,
+    turn,
+    draft,
+    setDraft,
+    send,
+    busy,
+    canSend,
+    reset,
+    dismissError,
+  } = useChat({ conversationId });
 
   // Выход из листа — в «More», а не `router.back()`: по ссылке из чужого
   // сообщения истории у вкладки нет, и «назад» в ней никуда не ведёт.
@@ -62,7 +72,7 @@ function MobileChatScreen() {
       // без вранья в подписи.
       doneDisabled={!canSend}
     >
-      <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} />
+      <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} onReset={reset} />
       {/* Прилипает ко дну прокручиваемой области листа, а сама область
           повторяет визуальный viewport — поэтому поле стоит прямо над
           клавиатурой, а не под ней. Фон непрозрачный: иначе лента проезжает

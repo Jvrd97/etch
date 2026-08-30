@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: CLI backend now pipes the caller's prompt verbatim (no baked insights system prompt)
+# [review:need-review] PHASE-01/52-text-to-category-plan, PHASE-03/116
+# summary: CLI backend now pipes the caller's prompt verbatim (no baked insights system prompt); terminate_process is the one kill+wait every exit path of a CLI turn goes through
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,40 @@ from app.llm.client import LLM_TIMEOUT_SECONDS, LLMClient, LLMError
 CLI_BINARY = "claude"
 # Recorded as AIReport.model: the CLI decides the actual model itself.
 CLI_MODEL_LABEL = "claude-cli"
+
+
+# Сколько ждать завершения убитого процесса, прежде чем перестать его ждать.
+# Отмена хода не должна зависать на процессе, который уже получил SIGKILL.
+KILL_WAIT_SECONDS = 5.0
+
+
+async def terminate_process(process: asyncio.subprocess.Process) -> None:
+    """
+    Убить процесс и дождаться его — но не дольше `KILL_WAIT_SECONDS`.
+
+    Одной функцией, потому что порознь `kill` и `wait` и забывают: `kill` без
+    `wait` оставляет зомби, `wait` без предела подвешивает отмену хода.
+
+    `shield` здесь несущий. Функция вызывается в том числе из `finally`,
+    раскручиваемого отменой, а обычный `await` внутри отменяемого кода получает
+    `CancelledError` немедленно и оставляет процесс жить дальше — ровно тот
+    случай, ради которого `#116` и требует гарантированного убийства.
+    """
+    if process.returncode is not None:
+        return
+    try:
+        process.kill()
+    except ProcessLookupError:
+        # Успел завершиться сам между проверкой и сигналом — ждать нечего.
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(process.wait()), timeout=KILL_WAIT_SECONDS
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # Процесс уже получил SIGKILL; ядро доберёт его без нас, а держать ход
+        # ради этого ожидания смысла нет.
+        return
 
 
 class CliInsightsClient(LLMClient):
@@ -48,8 +82,7 @@ class CliInsightsClient(LLMClient):
                 process.communicate(prompt.encode()), timeout=self._timeout
             )
         except asyncio.TimeoutError as exc:
-            process.kill()
-            await process.wait()
+            await terminate_process(process)
             raise LLMError("claude CLI timed out") from exc
 
         if process.returncode != 0:
