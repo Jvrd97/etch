@@ -584,3 +584,27 @@ Feedback loops: pytest 311/311 green, `ruff check` clean, `ruff format --check` 
 - `tests/test_entries.py` — **mod**: `TestEntrySort` — записи создаются в обратном порядке к их датам, иначе оба порядка дали бы одну и ту же выдачу и тест прошёл бы, не переключив сортировку.
 
 Feedback loops: pytest 315/315 green, `ruff check` clean, `ruff format --check` clean, `mypy app` clean (58 файлов). Миграций нет. Прогон против постгреса на порту 5434.
+
+## 2026-08-30 — PHASE-03/106 периметр API: CORS-allowlist и запрет пустого ключа в проде
+
+Дата 2026-08-30, тикет `106-tighten-api-perimeter-for-inbox`. Два удобных в разработке значения — пустой `API_KEY` и `allow_origins=["*"]` — были зашиты так, что в проде их держала только дисциплина. Теперь их держит отказ стартовать: `ENVIRONMENT=prod` плюс пустой ключ или `*` в `CORS_ORIGINS` роняет сборку настроек с сообщением, называющим переменную, до первого запроса.
+
+Приложение собирается функцией `create_app(config)`, а не на импорте: список origin'ов и наличие схемы API зависят от настроек, и тест обязан уметь поднять приложение с другим `Settings`, не подменяя глобальный объект. Точка входа `app.main:app` не изменилась.
+
+Сравнение ключей переехало в bytes. Это не косметика: `secrets.compare_digest` кидает TypeError на не-ASCII `str`, Starlette декодирует заголовки как latin-1 — и заголовок с кириллицей отдавал 500 вместо 401, то есть неаутентифицированный вызывающий отличал кривой ключ от неверного по коду ответа.
+
+Warning про выключенную auth переехал на старт (`warn_if_auth_disabled`, once-семантика). Строка, повторяющаяся на каждый запрос, перестаёт читаться через минуту dev-сессии.
+
+`/docs`, `/redoc` и `openapi.json` в проде выключены целиком: Swagger UI грузится браузером и заголовок `X-API-Key` послать не может, так что «закрыть ключом» для него не работает. Решение записано в `deploy/README.md`.
+
+Тронутые файлы: 7 (1 new, 6 mod), из них 2 вне сервиса.
+
+- `app/core/config.py` — **mod**: `ENVIRONMENT`, `CORS_ORIGINS: list[str]`, `PerimeterError`, `docs_enabled`, валидатор `_enforce_prod_perimeter`; источники env/dotenv подменены на читающие списки как `a,b,c` (JSON в compose-файле — источник ошибок).
+- `app/core/auth.py` — **mod**: сравнение в bytes, `warn_if_auth_disabled()`, из `require_api_key` убран per-request warning.
+- `app/main.py` — **mod**: `create_app(config)`, CORS из настроек, docs по `config.docs_enabled`, вызов `warn_if_auth_disabled()` на старте.
+- `tests/test_perimeter.py` — **new**: 14 тестов, ни один не трогает базу — периметр проверяется до того, как запрос дойдёт до ручки, и тест периметра, которому нужен постгрес, перестаёт запускаться.
+- `tests/test_auth.py` — **mod**: `test_empty_api_key_env_disables_auth` — единственный тест, описывавший старое поведение (warning на каждый запрос); теперь требует тишины.
+- `deploy/docker-compose.prod.yml` — **mod**: `ENVIRONMENT: prod`, `CORS_ORIGINS: ${CORS_ORIGINS:-}`.
+- `deploy/README.md` — **mod**: раздел «Периметр», решение по `/docs`, проверка acceptance курлом вместо Swagger.
+
+Feedback loops: pytest 329/329 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (58 файлов). Миграций нет, голова Alembic прежняя — `a7c9e1b3d5f8`. Docker-демон на машине не поднят, поэтому штатный `make check` не отработал бы целиком: прогон шёл против постгреса на 5432 с той же базой `habit_tracker_test`.

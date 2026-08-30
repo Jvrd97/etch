@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/02-deploy-vps-tailscale
-# summary: production override — restart policies, no host port for postgres, API key required
+# [review:need-review] PHASE-03/106
+# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start)
 # Usage (on VPS, from habit-tracker/):
 #   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
 services:
@@ -14,7 +14,17 @@ services:
     # shorter worker timeout would kill it before the CLI returns.
     command: gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 50 --graceful-timeout 30 --timeout 180 --access-logfile - --error-logfile -
     environment:
+      # prod is the switch that turns dev conveniences into a startup failure:
+      # an empty API_KEY or a "*" in CORS_ORIGINS and the container dies with a
+      # message naming the variable (app/core/config.py).
+      ENVIRONMENT: prod
       API_KEY: ${API_KEY:-}
+      # Browser origins allowed to call the API, comma-separated, no JSON:
+      #   CORS_ORIGINS=http://habit.tailnet:3000
+      # Empty is a valid answer and the safest default — the Next.js frontend
+      # proxies /api/v1 server-side (API_PROXY_TARGET), so the browser never
+      # makes a cross-origin call. Fill it in only for a client that does.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       LLM_BACKEND: ${LLM_BACKEND:-cli}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     # The claude CLI login has to come from the host: the binary is baked
