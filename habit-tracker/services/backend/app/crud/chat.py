@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/111
+# [review:need-review] PHASE-03/111, PHASE-03/117
 # summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, and the append that records what a turn cost
+# summary: PHASE-03/117 adds the delete that takes the four tables and the CLI session file with it, and the usage rollup that sums a conversation's tokens without reading one `content`
 """
 Доступ к таблицам разговора.
 
@@ -12,22 +13,46 @@
 **Заголовок ставит сервер по первой реплике человека.** Просить его у модели —
 это лишний ход, который к тому же не состоится ровно тогда, когда ход не удался,
 и лента останется без имени именно у сломанных разговоров.
+
+**Удаление разговора — одна транзакция и один запрос.** Строки `chat_messages`,
+`chat_plans` и `chat_retrievals` уносит `ON DELETE CASCADE` из миграции `#111`,
+а не три отдельных `DELETE` в питоне: три запроса можно оборвать посередине и
+оставить разговор наполовину удалённым. Файл сессии CLI сносится **после**
+коммита и никогда не мешает удалению строк — состояние диска не имеет права
+оставить кнопку удаления враньём наполовину.
+
+**Расход считает база, а не питон.** `usage_by_conversation` суммирует токены
+и берёт медиану задержки одним запросом с `GROUP BY`, не выбирая `content`:
+лента из пятидесяти разговоров иначе тянула бы через сеть весь их текст ради
+трёх чисел в шапке.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.llm.chat.session_files import (
+    OUTCOME_ABSENT,
+    OUTCOME_NO_SESSION,
+    OUTCOME_REMOVED,
+    remove_session_file,
+)
 from app.models.chat import (
     CONVERSATION_KIND_GENERAL,
     MESSAGE_STATUS_COMPLETE,
     ChatConversation,
     ChatMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 # Длина колонки `title`. Заголовок режется по ней здесь, а не полагается на
 # отказ базы: обрезанная лента лучше, чем ход, упавший на длинном первом вопросе.
@@ -193,3 +218,137 @@ async def touch_conversation(
         conversation.cli_cwd = cli_cwd
     await db.flush()
     return conversation
+
+
+@dataclass(frozen=True)
+class ConversationUsage:
+    """
+    Чем обошёлся разговор целиком.
+
+    Медиана, а не среднее: один ход с длинным ответом сдвигает среднее так, что
+    «сколько обычно ждать» по нему прочитать нельзя. `latency_ms_median` пуст,
+    пока в разговоре нет ни одного хода с замеренной задержкой.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    message_count: int
+    latency_ms_median: int | None
+
+
+# Расход пустого разговора. Ноль, а не None: разговор без сообщений стоил
+# ровно ничего, и шапке нечего скрывать.
+EMPTY_USAGE = ConversationUsage(
+    input_tokens=0,
+    output_tokens=0,
+    cache_read_tokens=0,
+    message_count=0,
+    latency_ms_median=None,
+)
+
+# Квантиль медианы. Именованная константа, потому что 0.5 внутри `percentile_cont`
+# читается как магическое число ровно до того момента, когда кто-то захочет P95.
+MEDIAN_QUANTILE = 0.5
+
+
+async def usage_by_conversation(
+    db: AsyncSession, conversation_ids: Iterable[int]
+) -> dict[int, ConversationUsage]:
+    """
+    Свёртка расхода по нескольким разговорам одним запросом.
+
+    В ответе только те разговоры, у которых есть хоть одно сообщение; пустые
+    вызывающий берёт из `EMPTY_USAGE`. `content` в запрос не входит: шапке
+    нужны три числа, а не текст разговора.
+    """
+    ids = list(conversation_ids)
+    if not ids:
+        return {}
+
+    result = await db.execute(usage_statement(ids))
+    return {
+        row[0]: ConversationUsage(
+            input_tokens=int(row[1]),
+            output_tokens=int(row[2]),
+            cache_read_tokens=int(row[3]),
+            message_count=int(row[4]),
+            latency_ms_median=None if row[5] is None else round(float(row[5])),
+        )
+        for row in result.all()
+    }
+
+
+def usage_statement(conversation_ids: Sequence[int]) -> Select[Any]:
+    """
+    Запрос свёртки — отдельно от выполнения, чтобы тест мог его прочитать.
+
+    Утверждение «`content` в свёртку не входит» проверяется по этому запросу, а
+    не по чтению кода: колонку легко дописать, а лента из пятидесяти разговоров
+    после этого тянет весь их текст ради трёх чисел.
+    """
+    return (
+        select(
+            ChatMessage.conversation_id,
+            func.coalesce(func.sum(ChatMessage.input_tokens), 0),
+            func.coalesce(func.sum(ChatMessage.output_tokens), 0),
+            func.coalesce(func.sum(ChatMessage.cache_read_tokens), 0),
+            func.count(ChatMessage.id),
+            # `within_group` приходит из SQLAlchemy без аннотаций — упорядоченные
+            # агрегаты стабами не покрыты, и mypy зовёт вызов нетипизированным.
+            # Замена — та же агрегация строкой `text()`, которая не проверяется
+            # вообще ничем.
+            func.percentile_cont(MEDIAN_QUANTILE).within_group(  # type: ignore[no-untyped-call]
+                ChatMessage.latency_ms.asc()
+            ),
+        )
+        .where(ChatMessage.conversation_id.in_(list(conversation_ids)))
+        .group_by(ChatMessage.conversation_id)
+    )
+
+
+async def usage_of(db: AsyncSession, conversation_id: int) -> ConversationUsage:
+    """Расход одного разговора; у разговора без сообщений — нули."""
+    rollup = await usage_by_conversation(db, [conversation_id])
+    return rollup.get(conversation_id, EMPTY_USAGE)
+
+
+async def delete_conversation(db: AsyncSession, conversation: ChatConversation) -> str:
+    """
+    Снести разговор целиком и вернуть машинный код исхода по файлу сессии.
+
+    Строки — одной транзакцией: каскад миграции `#111` уносит `chat_messages`,
+    а за ними `chat_plans` и `chat_retrievals`. Файл сессии сносится после
+    коммита, и любой его исход остаётся кодом в логе: разговора в базе уже нет,
+    а осиротевший `.jsonl` — мусор, на который некому сослаться.
+    """
+    session_id = conversation.cli_session_id
+    cwd = conversation.cli_cwd
+    conversation_id = conversation.id
+
+    await db.execute(
+        delete(ChatConversation).where(ChatConversation.id == conversation_id)
+    )
+    await db.commit()
+
+    outcome = remove_session_file(
+        config_dir=settings.CHAT_CLAUDE_CONFIG_DIR,
+        cwd=cwd,
+        session_id=session_id,
+    )
+    if outcome in (OUTCOME_REMOVED, OUTCOME_ABSENT, OUTCOME_NO_SESSION):
+        logger.info(
+            "chat session file after delete: %s (conversation %s)",
+            outcome,
+            conversation_id,
+        )
+    else:
+        # `outside_config_dir` и `remove_failed` — то, ради чего исход вообще
+        # возвращается наружу. Ни имени файла, ни `cli_session_id` в логе нет:
+        # значение пришло из базы, и подделанное оно испортило бы строку лога.
+        logger.warning(
+            "chat session file after delete: %s (conversation %s)",
+            outcome,
+            conversation_id,
+        )
+    return outcome

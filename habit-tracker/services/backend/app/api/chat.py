@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/111
+# [review:need-review] PHASE-03/111, PHASE-03/117
 # summary: the chat router — conversations created, listed and read back with their messages, and one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context
+# summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 """
 Ручки разговора.
 
@@ -18,6 +19,10 @@
 
 **Ни одна строка содержимого не попадает в лог.** Наружу и в базу уходит
 машинный `error_code`; текст модели живёт ровно в `chat_messages.content`.
+
+**Удаление отвечает 204 и тогда, когда файла сессии на диске нет.** Исход по
+файлу — машинный код в логе, а не статус ответа: разговор либо удалён целиком,
+либо не удалён вовсе, и третьего состояния у кнопки нет.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import time
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +61,7 @@ from app.schemas.chat import (
     ConversationCreate,
     ConversationDetail,
     ConversationResponse,
+    ConversationUsage,
     MessageCreate,
     MessageResponse,
 )
@@ -91,12 +98,32 @@ def _sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _feed_item(
+    conversation: ChatConversation, usage: chat_crud.ConversationUsage
+) -> ConversationResponse:
+    """Строка ленты — DTO, а не доменная модель наружу."""
+    return ConversationResponse(
+        id=conversation.id,
+        title=conversation.title,
+        started_on=conversation.started_on,
+        kind=conversation.kind,
+        llm_backend=conversation.llm_backend,
+        context_version=conversation.context_version,
+        last_message_at=conversation.last_message_at,
+        archived=conversation.archived,
+        created_at=conversation.created_at,
+        usage=ConversationUsage.model_validate(usage),
+    )
+
+
 def _detail(
-    conversation: ChatConversation, messages: list[MessageResponse]
+    conversation: ChatConversation,
+    messages: list[MessageResponse],
+    usage: chat_crud.ConversationUsage,
 ) -> ConversationDetail:
-    """Разговор с сообщениями — DTO, а не доменная модель наружу."""
+    """Разговор с сообщениями и расходом — DTO, а не доменная модель наружу."""
     return ConversationDetail(
-        **ConversationResponse.model_validate(conversation).model_dump(),
+        **_feed_item(conversation, usage).model_dump(),
         messages=messages,
     )
 
@@ -109,7 +136,7 @@ def _detail(
 async def create_conversation(
     payload: ConversationCreate | None = None,
     db: AsyncSession = Depends(get_db),
-) -> ChatConversation:
+) -> ConversationResponse:
     """
     Завести разговор.
 
@@ -123,12 +150,14 @@ async def create_conversation(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"kind must be one of {', '.join(CONVERSATION_KINDS)}",
         )
-    return await chat_crud.create_conversation(
+    conversation = await chat_crud.create_conversation(
         db,
         started_on=request.started_on or today_local(),
         kind=request.kind,
         title=request.title,
     )
+    # Расход нового разговора — нули, и спрашивать их у базы нечего.
+    return _feed_item(conversation, chat_crud.EMPTY_USAGE)
 
 
 @router.get("/conversations", response_model=list[ConversationResponse])
@@ -136,9 +165,23 @@ async def list_conversations(
     limit: int = Query(default=chat_crud.DEFAULT_FEED_LIMIT, ge=1, le=FEED_MAX_LIMIT),
     archived: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
-) -> list[ChatConversation]:
-    """Лента разговоров, свежие сверху."""
-    return list(await chat_crud.list_conversations(db, limit=limit, archived=archived))
+) -> list[ConversationResponse]:
+    """
+    Лента разговоров, свежие сверху, каждый со своим расходом.
+
+    Расход собирается одним запросом на всю ленту, а не запросом на строку:
+    пятьдесят разговоров — это пятьдесят обращений к базе ради трёх чисел.
+    """
+    conversations = await chat_crud.list_conversations(
+        db, limit=limit, archived=archived
+    )
+    rollup = await chat_crud.usage_by_conversation(
+        db, [one.id for one in conversations]
+    )
+    return [
+        _feed_item(one, rollup.get(one.id, chat_crud.EMPTY_USAGE))
+        for one in conversations
+    ]
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
@@ -153,9 +196,39 @@ async def get_conversation(
             detail=f"conversation {conversation_id} not found",
         )
     messages = await chat_crud.list_messages(db, conversation_id)
+    usage = await chat_crud.usage_of(db, conversation_id)
     return _detail(
-        conversation, [MessageResponse.model_validate(one) for one in messages]
+        conversation,
+        [MessageResponse.model_validate(one) for one in messages],
+        usage,
     )
+
+
+@router.delete(
+    "/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_conversation(
+    conversation_id: int, db: AsyncSession = Depends(get_db)
+) -> Response:
+    """
+    Удалить разговор целиком: строки четырёх таблиц и файл сессии CLI.
+
+    Отвечает 204, и 404 — только на разговор, которого нет. Отсутствие файла
+    сессии на диске отказом не считается: у разговора по API-бэкенду его не
+    было никогда, у разговора после пересоздания тома — уже нет.
+
+    Записи, сделанные применением плана (квитанция дня, запись в журнале),
+    остаются: у `chat_plans.applied_summary_id` внешнего ключа нет намеренно —
+    удаление разговора стирает разговор, а не сделанную по нему работу.
+    """
+    conversation = await chat_crud.get_conversation(db, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conversation {conversation_id} not found",
+        )
+    await chat_crud.delete_conversation(db, conversation)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 async def _record_question(

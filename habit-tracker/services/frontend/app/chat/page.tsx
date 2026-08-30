@@ -1,15 +1,27 @@
 'use client';
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/117
 // summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, and one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end
+// summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessagesSquare, SendHorizonal } from 'lucide-react';
+import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
-import { chatAPI, type ChatMessage } from '@/lib/api';
+import { chatAPI, type ChatMessage, type ChatUsage } from '@/lib/api';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
+import { turnCost } from '@/lib/chat-usage';
 import { entryInputClass } from '@/lib/ui-constants';
+
+/** Расход разговора, у которого ещё не было ни одного хода. */
+const EMPTY_USAGE: ChatUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_read_tokens: 0,
+  message_count: 0,
+  latency_ms_median: null,
+};
 
 /**
  * What the screen is doing right now.
@@ -62,8 +74,11 @@ function Bubble({ role, children }: { role: string; children: React.ReactNode })
 export default function ChatPage() {
   const [screen, setScreen] = useState<Screen>({ status: 'loading' });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [usage, setUsage] = useState<ChatUsage>(EMPTY_USAGE);
   const [turn, setTurn] = useState<Turn>({ phase: 'idle' });
+  const [removal, setRemoval] = useState<DeleteState>('idle');
   const [draft, setDraft] = useState('');
+  const [reloads, setReloads] = useState(0);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -77,6 +92,7 @@ export default function ChatPage() {
         const detail = await chatAPI.get(conversation.id);
         if (cancelled) return;
         setMessages(detail.messages);
+        setUsage(detail.usage);
         setScreen({ status: 'ready', conversationId: conversation.id });
       } catch (error) {
         if (!cancelled) setScreen({ status: 'failed', message: errorText(error) });
@@ -85,6 +101,26 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
+  }, [reloads]);
+
+  const remove = useCallback(async (conversationId: number) => {
+    setRemoval('deleting');
+    try {
+      await chatAPI.remove(conversationId);
+    } catch (error) {
+      setRemoval('idle');
+      setScreen({ status: 'failed', message: errorText(error) });
+      return;
+    }
+    // Экран не остаётся на разговоре, которого больше нет: тот же путь, что и
+    // при первом заходе, — свежий разговор или новый, если ни одного не
+    // осталось.
+    setMessages([]);
+    setUsage(EMPTY_USAGE);
+    setTurn({ phase: 'idle' });
+    setRemoval('idle');
+    setScreen({ status: 'loading' });
+    setReloads((count) => count + 1);
   }, []);
 
   useEffect(() => {
@@ -127,9 +163,11 @@ export default function ChatPage() {
       }
 
       // Перечитывание вместо склейки в памяти: строки таблицы и есть разговор,
-      // и именно они переживут перезагрузку.
+      // и именно они переживут перезагрузку. Расход приезжает тем же ответом:
+      // считает его база, и второй его источник во фронте был бы догадкой.
       const detail = await chatAPI.get(conversationId);
       setMessages(detail.messages);
+      setUsage(detail.usage);
       setTurn({ phase: 'idle' });
     },
     []
@@ -149,15 +187,13 @@ export default function ChatPage() {
 
   return (
     <div className="space-y-6 animate-fade-rise">
-      <div>
-        <h1 className="text-4xl font-bold text-text-primary tracking-tight">
-          Chat
-          <span className="text-lime">.</span>
-        </h1>
-        <p className="mt-2 text-text-secondary">
-          Разговор о дне. История живёт на сервере и переживает перезапуск.
-        </p>
-      </div>
+      <ChatHeader
+        usage={usage}
+        state={removal}
+        onAsk={() => setRemoval('confirming')}
+        onCancel={() => setRemoval('idle')}
+        onConfirm={() => void remove(screen.conversationId)}
+      />
 
       <div className="space-y-4">
         {messages.length === 0 && turn.phase === 'idle' && (
@@ -169,15 +205,21 @@ export default function ChatPage() {
           </div>
         )}
 
-        {messages.map((message) => (
-          <Bubble key={message.id} role={message.role}>
-            {message.role === 'user' ? (
-              <span className="whitespace-pre-wrap">{message.content}</span>
-            ) : (
-              <Markdown content={message.content} />
-            )}
-          </Bubble>
-        ))}
+        {messages.map((message) => {
+          const cost = turnCost(message);
+          return (
+            <Bubble key={message.id} role={message.role}>
+              {message.role === 'user' ? (
+                <span className="whitespace-pre-wrap">{message.content}</span>
+              ) : (
+                <Markdown content={message.content} />
+              )}
+              {cost !== null && (
+                <p className="mt-2 text-[11px] text-text-disabled">{cost}</p>
+              )}
+            </Bubble>
+          );
+        })}
 
         {turn.phase !== 'idle' && (
           <>

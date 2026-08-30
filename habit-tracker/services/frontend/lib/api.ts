@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/109, PHASE-03/111, PHASE-03/134
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/134
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
@@ -1367,6 +1367,21 @@ export type ChatRole = 'user' | 'assistant' | 'system_note';
  */
 export type ChatMessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
 
+/**
+ * What one conversation has cost the subscription so far.
+ *
+ * Three counters rather than one total: a token read from the cache is not
+ * priced like a fresh input token, and the sum would hide the very effect the
+ * number is shown for — the second turn being cheaper than the first.
+ */
+export interface ChatUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  message_count: number;
+  latency_ms_median: number | null;
+}
+
 export interface ChatConversation {
   id: number;
   title: string | null;
@@ -1377,6 +1392,7 @@ export interface ChatConversation {
   last_message_at: string | null;
   archived: boolean;
   created_at: string;
+  usage: ChatUsage;
 }
 
 export interface ChatMessage {
@@ -1416,6 +1432,18 @@ export const chatAPI = {
   },
 
   /**
+   * Delete one conversation — rows and the CLI session file both.
+   *
+   * 204 carries no body, and `fetcher` is fine with that; what the server does
+   * to the `.jsonl` on disk is a machine code in its log, not a status here.
+   */
+  remove: async (id: number) => {
+    return fetcher<Record<string, never>>(`/chat/conversations/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
    * Send one turn and read the answer as it is produced.
    *
    * Not `fetcher`: that one waits for the whole body, which is exactly what
@@ -1432,6 +1460,9 @@ export const chatAPI = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
+      // Same as every `fetcher` call: the browser authenticates by the session
+      // cookie of #109, and a turn sent without it is a 401 in mid-conversation.
+      credentials: 'include',
       signal,
     });
 

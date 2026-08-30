@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/111
+# [review:need-review] PHASE-03/111, PHASE-03/117
 # summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, and the body of a turn; the SSE events are described here as constants so the frontend parser and the server cannot drift
+# summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
 """
 Типы провода для чата.
 
@@ -10,6 +11,10 @@
 
 Планы и выборки в этот срез не входят (`#114`, `#115`): ответ читается лентой
 сообщений, и `GET /conversations/{id}` отдаёт только их.
+
+**Расход едет в обеих ручках, а не только в детальной.** Лента показывает, во
+что обошёлся каждый разговор, — иначе «дорогой» разговор виден лишь после того,
+как в него зашли, а до первого 429 такой обход никто не сделает.
 """
 
 from __future__ import annotations
@@ -52,8 +57,28 @@ class ConversationCreate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
 
 
+class ConversationUsage(BaseModel):
+    """
+    Расход подписки на один разговор.
+
+    Три счётчика, а не один: прочитанный из кеша токен стоит иначе, чем
+    свежий входной, и сумма «всего токенов» скрыла бы ровно тот эффект, ради
+    которого расход и показывается — второй ход дешевле первого.
+
+    `latency_ms_median` пуст у разговора, в котором ни один ход не замерялся.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    message_count: int
+    latency_ms_median: int | None
+
+
 class ConversationResponse(BaseModel):
-    """Разговор в ленте: чем отвечали и когда трогали в последний раз."""
+    """Разговор в ленте: чем отвечали, когда трогали и во что он обошёлся."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -66,6 +91,7 @@ class ConversationResponse(BaseModel):
     last_message_at: datetime | None
     archived: bool
     created_at: datetime
+    usage: ConversationUsage
 
 
 class MessageResponse(BaseModel):
