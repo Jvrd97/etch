@@ -1,8 +1,11 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/109
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
+
+import { loginRedirectTarget } from './auth';
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -16,6 +19,21 @@ class APIError extends Error {
   }
 }
 
+/**
+ * Send an unauthenticated reader to the login screen.
+ *
+ * A hard navigation rather than the router: the app is on a screen whose data
+ * it could not load, and every hook holding stale state has to go with it.
+ * No-op on the server and on the login screen itself, where a 401 is the
+ * message "wrong key" and a redirect would be a reload loop.
+ */
+function redirectToLoginIfNeeded(status: number): void {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  const target = loginRedirectTarget(status, pathname, search);
+  if (target !== null) window.location.assign(target);
+}
+
 async function fetcher<T>(
   endpoint: string,
   options?: RequestInit
@@ -24,6 +42,10 @@ async function fetcher<T>(
 
   const response = await fetch(url, {
     ...options,
+    // The browser authenticates with an HttpOnly session cookie and holds no
+    // key of its own; without this the cookie is left at home on a cross-origin
+    // deployment and every screen answers 401.
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -31,6 +53,7 @@ async function fetcher<T>(
   });
 
   if (!response.ok) {
+    redirectToLoginIfNeeded(response.status);
     const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
     throw new APIError(response.status, error.detail || 'An error occurred');
   }
@@ -42,6 +65,36 @@ async function fetcher<T>(
 
   return response.json();
 }
+
+/** What the server says about the current browser session. Never carries the key. */
+export interface SessionState {
+  authenticated: boolean;
+  expires_in_s: number | null;
+}
+
+/**
+ * The session endpoints — the only place the key touches the browser.
+ *
+ * `login` sends it once and forgets it: the answer is a cookie the page cannot
+ * read, so nothing here writes to localStorage, and nothing here returns the
+ * key to its caller.
+ */
+export const authAPI = {
+  login: async (apiKey: string) => {
+    return fetcher<SessionState>('/auth/session', {
+      method: 'POST',
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  },
+
+  status: async () => {
+    return fetcher<SessionState>('/auth/session');
+  },
+
+  logout: async () => {
+    return fetcher<SessionState>('/auth/session', { method: 'DELETE' });
+  },
+};
 
 // Categories API
 export const categoriesAPI = {

@@ -7,8 +7,9 @@ what happens before a request reaches a handler, and a perimeter test that
 needs postgres to run is a perimeter test that stops being run.
 """
 
-# [review:need-review] PHASE-03/106
+# [review:need-review] PHASE-03/106, PHASE-03/109
 # summary: startup refusal in prod (empty key, "*" origin), CORS allowlist, non-ASCII key header -> 401, once-only dev warning
+# summary: prod settings now also carry SESSION_SECRET — the browser-session secret is part of the same perimeter (its own refusal lives in test_session_auth.py)
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -23,6 +24,7 @@ PROTECTED_URL = "/api/v1/categories"
 FRONTEND_ORIGIN = "http://habit.tailnet:3000"
 FOREIGN_ORIGIN = "http://evil.example"
 PROD_KEY = "prod-key-for-tests-only"
+PROD_SESSION_SECRET = "prod-session-secret-for-tests-only"
 
 
 def prod_settings(**overrides: object) -> Settings:
@@ -30,6 +32,7 @@ def prod_settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "ENVIRONMENT": "prod",
         "API_KEY": PROD_KEY,
+        "SESSION_SECRET": PROD_SESSION_SECRET,
         "CORS_ORIGINS": [FRONTEND_ORIGIN],
     }
     values.update(overrides)
@@ -61,7 +64,9 @@ def test_prod_with_explicit_origins_and_a_key_starts() -> None:
 
 
 def test_dev_keeps_the_permissive_defaults() -> None:
-    config = Settings(ENVIRONMENT="dev", API_KEY="", CORS_ORIGINS=["*"])
+    config = Settings(
+        ENVIRONMENT="dev", API_KEY="", SESSION_SECRET="", CORS_ORIGINS=["*"]
+    )
     assert config.CORS_ORIGINS == ["*"]
     assert config.docs_enabled is True
 

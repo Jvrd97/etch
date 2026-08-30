@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-01/44-mobile-journal
-// summary: "More" screen of the mobile shell — links to the screens missing from the tab bar (a screen with a mobile version opens its /m twin, e.g. Journal) plus an escape hatch to the desktop version of the current screen
+// [review:need-review] PHASE-01/44-mobile-journal, PHASE-03/109
+// summary: "More" screen of the mobile shell — links to the screens missing from the tab bar (a screen with a mobile version opens its /m twin, e.g. Journal) plus an escape hatch to the desktop version of the current screen and "Выйти"
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { ChevronRight, Monitor } from 'lucide-react';
+import LogoutButton from '@/components/LogoutButton';
 import { MORE_ROUTES } from '@/lib/routes';
 import { routeIcon } from '@/components/route-icons';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
@@ -58,6 +59,10 @@ export default function MoreSheet() {
         <span className="flex-1 text-left text-sm font-medium">Desktop version</span>
         <ChevronRight className="w-4 h-4 text-text-disabled" strokeWidth={2} />
       </button>
+
+      <LogoutButton
+        className={`${ROW_CLASS} text-text-secondary`}
+      />
     </div>
   );
 }

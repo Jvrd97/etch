@@ -958,3 +958,46 @@ Feedback loops: `bun test` 580/580 green, `bunx tsc --noEmit` clean, `bun run li
 Feedback loops: `bun test` 664/664 green (было 574 до волны), `bunx tsc --noEmit` clean, `bun run lint` 0 problems. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль. Бэкенд той же волны: pytest 455/455, `ruff check`, `ruff format --check`, `mypy --strict app`, одна голова Alembic `e0b2d4f6a8c1`. `make check` целиком не прогонялся ни разу: его цель `test` поднимает постгрес в docker, а демон на машине не отвечает — тесты шли против локального постгреса на 5432, база `habit_tracker_test`.
 
 Известные долги экрана, зафиксированные приёмкой волны: `DayScreen` и `MobileDayScreen` зовут `useDay(date, true)` без разбора даты, поэтому листание истории проставляет `opened_at` историческим дням и стирает разницу между непрожитым днём и прожитым пусто (чинится в [#90]); `MobileDayScreen` не покрыт тестами и дублирует шапку десктопного шелла.
+
+---
+
+## 2026-08-30 — PHASE-03/109: вход по ключу, дальше — кука
+
+Тикет: ключ вводится один раз на `/login`, обменивается на `HttpOnly`-куку и в браузере не
+хранится нигде. Затронуто 9 файлов (5 new, 4 mod) плюс `package.json`, `Dockerfile` и `Makefile`.
+
+- `lib/auth.ts` — **new** (+тест): `LOGIN_PATH`, `isSafeReturnPath`, `loginHref`, `afterLoginHref`,
+  `shouldRedirectToLogin`, `loginRedirectTarget`. Возврат после входа отфильтрован от открытого
+  редиректа: `//evil.example` браузер читает как абсолютный URL, поэтому проверки на ведущий слэш
+  мало, и без второго условия человек с только что введённым ключом уезжал бы на чужой сайт.
+- `lib/api.ts` — **mod**: у каждого запроса `credentials: 'include'`; 401 уводит на `/login`
+  жёсткой навигацией (экран не смог загрузить данные — вместе с ним обязано уехать и всё состояние
+  хуков), кроме самого `/login`, где 401 значит «ключ не тот» и обязан остаться сообщением формы.
+  Добавлен `authAPI` (`login`, `status`, `logout`) и тип `SessionState`. Заголовок `X-API-Key`
+  фронтенд не слал и раньше — снимать было нечего.
+- `app/login/page.tsx` — **new**: форма с полем `type="password"`, `autoComplete="off"`. Ключ живёт
+  в состоянии одного компонента до отправки и стирается сразу после — ни в `localStorage`, ни в
+  URL он не попадает. `useSearchParams` обёрнут в `Suspense`, иначе маршрут перестаёт быть
+  статическим.
+- `components/LogoutButton.tsx` — **new**: «Выйти» одной кнопкой для обеих шкур. Куку стирает
+  сервер, поэтому провал `DELETE` не проглатывается: сессия жива, и притвориться вышедшим значит
+  соврать.
+- `components/AppShell.tsx` — **mod**: `/login` рисуется без навигации — меню, ведущее на экраны,
+  которые все отвечают 401, хуже отсутствующего меню.
+- `components/Navigation.tsx`, `components/mobile/MoreSheet.tsx` — **mod**: «Выйти» справа в
+  десктопной навигации и последней строкой мобильного «More».
+- `lib/bundle-scan.ts` — **new** (+тест): обход дерева и два правила — «файл содержит секрет
+  дословно» и «файл читает переменную вида `NEXT_PUBLIC_*KEY/SECRET/TOKEN`». Второе сильнее
+  первого: оно не требует ни сборки, ни знания текущего ключа, поэтому гоняется на каждом
+  `bun test` и держит инвариант против будущих правок.
+- `scripts/check-bundle.ts` — **new** + `package.json` script `check:bundle` + цель `front-check`
+  в `habit-tracker/Makefile`: `bun run build && bun run check:bundle <ключ>` роняется, если ключ
+  найден в `.next`, и роняется так же, если `.next` нет — проверка, молча зеленеющая, когда
+  смотреть не на что, хуже отсутствующей. Само значение ключа в вывод не печатается: он уходит в
+  логи CI.
+- `Dockerfile` — **mod**: комментарий, почему в сборочном слое нет и не будет переменной с ключом.
+
+Feedback loops: `bun test` **704/704 green** (было 682), `bunx tsc --noEmit` clean, `bun run lint`
+0 problems, `make front-check API_KEY=<тестовый>` — сборка и `check-bundle: no key in .next`.
+Проверено обратной пробой: тот же скрипт на строке, которая в бандле действительно есть, находит
+её в 15 файлах и выходит с кодом 1. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль.

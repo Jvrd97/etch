@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108
-# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job
+# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109
+# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job, and SESSION_SECRET — empty kills the start the same way an empty API_KEY does
 # Usage (on VPS, from habit-tracker/):
 #   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
 services:
@@ -19,6 +19,19 @@ services:
       # message naming the variable (app/core/config.py).
       ENVIRONMENT: prod
       API_KEY: ${API_KEY:-}
+      # Signing key of the browser session (PHASE-03/109). Empty and the
+      # container dies with a message naming the variable, exactly like an empty
+      # API_KEY: a publicly known signing key means a forgeable session cookie.
+      # Changing it logs every browser out at once — that is the whole revocation
+      # story, and it is on purpose (no session table exists).
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Lifetime of that cookie, seconds. Default 30 days.
+      SESSION_MAX_AGE_S: ${SESSION_MAX_AGE_S:-2592000}
+      # `Secure` on the session cookie, on by default. Serving the frontend over
+      # plain http (a tailnet address without a certificate, ADR-0003) means the
+      # browser stores no Secure cookie at all — set this to false there, and
+      # know that the tailnet is then the only thing encrypting the transport.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       # Browser origins allowed to call the API, comma-separated, no JSON:
       #   CORS_ORIGINS=http://habit.tailnet:3000
       # Empty is a valid answer and the safest default — the Next.js frontend
@@ -53,6 +66,9 @@ services:
       # an empty API_KEY, and this one shares the image and the settings module.
       ENVIRONMENT: prod
       API_KEY: ${API_KEY:-}
+      # Same settings module, same refusal: without SESSION_SECRET this
+      # container does not start either, even though it serves no browser.
+      SESSION_SECRET: ${SESSION_SECRET:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       LLM_BACKEND: ${LLM_BACKEND:-cli}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}

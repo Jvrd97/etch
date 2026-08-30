@@ -29,6 +29,7 @@ dependencies = [
     # The one background scheduler (app/worker.py, PHASE-03/108). 3.x, not the
     # 4.x pre-releases: 4.x rewrites the API and is not released as stable
     "apscheduler>=3.10,<4",
+    "itsdangerous>=2.2",
 ]
 
 [dependency-groups]

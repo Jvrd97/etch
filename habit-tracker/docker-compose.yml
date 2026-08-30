@@ -33,6 +33,15 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       API_KEY: ${API_KEY:-}
+      # Browser session (PHASE-03/109): the web client trades API_KEY for an
+      # HttpOnly cookie signed with this secret. Empty is fine in development —
+      # the app falls back to a publicly known dev secret; prod refuses to start
+      # on an empty value. Changing it logs every browser out at once.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Attach `Secure` to that cookie. `http://localhost` is a secure context
+      # in every current browser, so the default works for the laptop; set it to
+      # false to reach the dev server from a phone over plain http on the LAN.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       # cli | api | empty (auto). cli shells out to the `claude` binary
       # baked into the image and uses the mounted host login below.
       LLM_BACKEND: ${LLM_BACKEND:-cli}

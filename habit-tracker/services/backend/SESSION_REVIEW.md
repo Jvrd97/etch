@@ -916,3 +916,56 @@ Feedback loops (backend): pytest **600/600 green** (было 574 в этой в�
 напечатано, настоящий `SIGTERM` в середине полуторасекундного задания дал выход через 1.13 с,
 `job smoke done in 1.5s`. Фронтенд не тронут; `bun test` (682) и `bunx tsc --noEmit` прогнаны на
 всякий случай, оба зелёные, `frontend/SESSION_REVIEW.md` не менялся.
+
+---
+
+## 2026-08-30 — PHASE-03/109: сессия для веб-клиента
+
+Тикет: браузер меняет `API_KEY` на `HttpOnly`-куку и дальше ключа не видит; `X-API-Key` остаётся
+рабочим для iOS, mac-агента и скиллов. Затронуто 8 файлов бэкенда (3 new, 5 mod) плюс два
+compose-файла и `deploy/README.md`.
+
+- `app/core/session.py` — **new**: подписанный сессионный токен на `itsdangerous.TimestampSigner`
+  (соль `habit-tracker.web-session`, полезная нагрузка — константа `web` и метка времени) плюс
+  установка и стирание куки. `session_token_is_valid` возвращает `False` на любую негодную строку:
+  значение куки приходит от клиента, и испорченная подпись обязана дать 401, а не 500. Часы
+  подписчика фиксируются параметром `issued_at` — ради теста «кука старше срока не пускает»,
+  который иначе спит месяц или патчит `time.time` глобально.
+- `app/api/auth.py` — **new**: `POST/GET/DELETE /api/v1/auth/session`. Роутер подключён **вне**
+  периметра `require_api_key`: войти обязан клиент, у которого ещё нет ни ключа, ни куки. Ключ
+  приходит телом, а не строкой запроса — та попадает в логи прокси и в историю браузера. В теле
+  ответа нет ни ключа, ни токена, только `authenticated` и `expires_in_s`.
+- `app/schemas/auth.py` — **new**: `SessionOpenRequest` (`api_key`, `min_length=1`) и `SessionState`.
+- `app/core/auth.py` — **mod**: `require_api_key` принимает валидный `X-API-Key` **или** валидную
+  куку; текст отказа один на обе схемы (`UNAUTHORIZED_DETAIL`), иначе по сообщению различались бы
+  «ключ не тот» и «кука протухла». Выделены `auth_is_disabled`, `api_key_is_valid`,
+  `session_cookie_is_valid` — ими же пользуется ручка входа.
+- `app/core/config.py` — **mod**: `SESSION_SECRET`, `SESSION_MAX_AGE_S` (30 суток, `gt=0`),
+  `SESSION_COOKIE_SECURE` (по умолчанию `true`). Пустой `SESSION_SECRET` при `ENVIRONMENT=prod`
+  роняет сборку настроек тем же способом и тем же видом сообщения, что пустой `API_KEY` в `#106`.
+  В разработке подставляется заведомо публичный `DEV_SESSION_SECRET` — иначе страница входа не
+  работает из коробки.
+- `app/main.py` — **mod**: роутер `auth` под общим префиксом и вне зависимости `require_api_key`.
+- `tests/test_session_auth.py` — **new**, 25 тестов: обмен ключа на куку, отказ на неверном ключе,
+  атрибуты по сырому `Set-Cookie` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Max-Age`, `Path`),
+  подделанная на один символ подпись, мусор вместо токена, чужой секрет, просроченная кука,
+  повторный вход, `X-API-Key` без куки и поверх дохлой куки, статус, выход и повторный выход,
+  отказ старта в проде. `base_url` у клиента — `https`: кука выпускается с `Secure`, и по http её
+  не отправила бы ни банка httpx, ни браузер. Замена куки идёт через `replace_cookie` (очистка +
+  установка): `cookies.set` кладёт вторую куку рядом с живой, и тест на подделку зеленел бы по
+  неправильной причине.
+- `tests/test_perimeter.py` — **mod**: `prod_settings` несёт `SESSION_SECRET` — иначе продовый
+  периметр `#106` перестал бы собираться.
+- `pyproject.toml` — **mod**: `itsdangerous>=2.2` в основных зависимостях (пакет с `py.typed`).
+- `habit-tracker/docker-compose.yml`, `deploy/docker-compose.prod.yml`, `deploy/README.md` —
+  **mod**: `SESSION_SECRET`, `SESSION_MAX_AGE_S`, `SESSION_COOKIE_SECURE`; раздел «Сессия
+  браузера» — что смена секрета гасит все сессии разом (списка сессий не хранит никто) и почему
+  `Secure` придётся выключить, если фронтенд отдаётся по http внутри tailnet.
+
+Миграции тикет не заводит: сессия подписанная, таблицы под неё нет.
+
+Feedback loops (backend): pytest **625/625 green** (было 600 в этой ветке), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов), `alembic heads` —
+одна голова `c4f6b8d0e2a5`. Docker-демон не поднят, `make check` целиком не отрабатывал; тесты
+шли против локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая
+`habit_tracker_test` держит таблицу `work_interval` из чужой ветки и роняет `drop_all`).

@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93
+# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93, PHASE-03/109
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals router in the API-key perimeter
+# summary: the auth router is mounted OUTSIDE that perimeter — logging in is what a client without a key or a cookie has to be able to do
 """
 Сборка FastAPI-приложения.
 
@@ -14,6 +15,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
+    auth,
     categories,
     daily_summary,
     day,
@@ -123,6 +125,11 @@ def create_app(config: Settings) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Sessions live outside the perimeter on purpose: a browser with neither a
+    # key nor a cookie must still be able to log in and to ask whether it is
+    # logged in. The three handlers return a boolean and a lifetime, nothing else.
+    app.include_router(auth.router, prefix=config.API_V1_PREFIX)
 
     api_key_dependencies = [Depends(require_api_key)]
     for router in API_ROUTERS:
