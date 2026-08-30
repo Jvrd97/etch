@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "habit-tracker-web",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "cd habit-tracker/services/frontend && API_PROXY_TARGET=http://localhost:8010 bun run dev --port 3010"],
+      "port": 3010
+    }
+  ]
+}
