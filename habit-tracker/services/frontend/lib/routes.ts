@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Journal/Table/Insights/Onboarding reached through "More"
 
 /**
@@ -59,6 +59,19 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 0,
+  },
+  {
+    id: 'day',
+    name: 'Day',
+    href: '/day',
+    hasMobile: true,
+    // `/day/2026-08-30` is a real screen on both shells, and the bare `/day`
+    // is the same screen for today — the nesting flag is what carries the date
+    // across when the reader switches shells.
+    hasMobileNested: true,
+    // Under "More": the day screen is opened on purpose, from a link with a
+    // date on it, and the tab bar's five slots are already spoken for.
+    inTabBar: null,
   },
   {
     id: 'daily-summary',

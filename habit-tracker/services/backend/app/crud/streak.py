@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107
 # summary: avoid-streak calculation over full entry history (current/best/last relapse)
+# summary: its UTC day boundary is now documented as the one debt left over from the single boundary, closed by #90
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -84,10 +85,12 @@ async def get_category_streak(
     """
     Compute the streak of a category from every entry it ever had.
 
-    The day boundary is UTC. That is the whole product's convention: the
-    frontend parses `last_relapse_date` as a UTC instant (lib/streak-format.ts),
-    so deriving "today" from the server's local timezone here would let the two
-    sides disagree by a day. `today` can be passed in to pin the timeline.
+    The day boundary here is UTC, and after PHASE-03/107 this is the only place
+    in `app/` that disagrees with `app/core/daytime.local_date()`. It stays that
+    way on purpose: the frontend parses `last_relapse_date` as a UTC instant
+    (lib/streak-format.ts), so moving the server alone would make the two sides
+    disagree by a day. TODO(#90): move both sides onto `local_date()` — the debt
+    is named in ADR-0014. `today` can be passed in to pin the timeline.
     """
     result = await db.execute(
         select(

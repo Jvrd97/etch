@@ -2,8 +2,8 @@
 Test configuration and fixtures.
 """
 
-# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics)
+# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
@@ -13,6 +13,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.core import daytime
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
@@ -55,6 +56,21 @@ def api_key() -> Generator[str, None, None]:
     settings.API_KEY = TEST_API_KEY
     yield TEST_API_KEY
     settings.API_KEY = original
+
+
+@pytest.fixture(scope="function", autouse=True)
+def day_boundary() -> Generator[None, None, None]:
+    """
+    Forget the day boundary published from `day_rule_set` after every test.
+
+    It lives in a module-level variable of `app.core.daytime` — process-wide by
+    design, so that nine consumers cannot disagree about which day it is — and a
+    rule row inserted by one test would otherwise decide what "today" means for
+    every test that runs after it.
+    """
+    daytime.reset_boundary()
+    yield
+    daytime.reset_boundary()
 
 
 @pytest.fixture(scope="function")

@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-01/adhoc-makefile
-# summary: containerless backend run — gunicorn with uvicorn workers, db in docker
+# [review:need-review] PHASE-01/adhoc-makefile, PHASE-03/85-phase-03-bookkeeping
+# summary: containerless backend run — gunicorn with uvicorn workers, db in docker;
+# summary: `check` also guards the migration chain against a second alembic head
 
 # Postgres runs in docker published on host 5433 (5432 is taken by another dev instance)
 DB_ENV = POSTGRES_HOST=localhost POSTGRES_PORT=5433
@@ -10,7 +11,7 @@ WORKERS ?= 4
 PORT ?= 8000
 PID_FILE = .gunicorn.pid
 
-.PHONY: db migrate run dev test lint type check stop
+.PHONY: db migrate run dev test lint type heads check stop
 
 ## start postgres container (the only docker piece)
 db:
@@ -45,7 +46,19 @@ lint:
 type:
 	uv run mypy --strict app
 
-check: lint type test
+## the revision chain must be linear: exactly one head. Two heads mean two themes
+## branched from the same parent and someone will have to hand-write a merge
+## revision — reads the versions directory only, no database needed.
+heads:
+	@count=$$(uv run alembic heads 2>/dev/null | grep -c .); \
+	if [ "$$count" -ne 1 ]; then \
+		echo "alembic: expected exactly one head, found $$count:"; \
+		uv run alembic heads; \
+		echo "whoever branched second rebases their down_revision onto the other head."; \
+		exit 1; \
+	fi
+
+check: lint type heads test
 
 ## stop everything: gunicorn (pidfile, fallback pkill), dev uvicorn, all docker containers
 stop:

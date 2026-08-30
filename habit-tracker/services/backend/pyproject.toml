@@ -19,6 +19,11 @@ dependencies = [
     "python-dotenv==1.0.0",
     "python-multipart==0.0.6",
     "python-dateutil==2.8.2",
+    # zoneinfo has no zone database of its own: without a system one it raises
+    # ZoneInfoNotFoundError, and python:3.10-slim carries no guarantee of
+    # shipping one. The single day boundary (app/core/daytime.py) must not
+    # depend on what the base image happens to include
+    "tzdata>=2024.1",
     "gunicorn>=26.0.0",
     "anthropic>=0.117.1",
 ]

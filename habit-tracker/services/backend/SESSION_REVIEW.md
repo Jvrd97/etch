@@ -584,3 +584,144 @@ Feedback loops: pytest 311/311 green, `ruff check` clean, `ruff format --check` 
 - `tests/test_entries.py` — **mod**: `TestEntrySort` — записи создаются в обратном порядке к их датам, иначе оба порядка дали бы одну и ту же выдачу и тест прошёл бы, не переключив сортировку.
 
 Feedback loops: pytest 315/315 green, `ruff check` clean, `ruff format --check` clean, `mypy app` clean (58 файлов). Миграций нет. Прогон против постгреса на порту 5434.
+
+## 2026-08-30 — PHASE-03/106 периметр API: CORS-allowlist и запрет пустого ключа в проде
+
+Дата 2026-08-30, тикет `106-tighten-api-perimeter-for-inbox`. Два удобных в разработке значения — пустой `API_KEY` и `allow_origins=["*"]` — были зашиты так, что в проде их держала только дисциплина. Теперь их держит отказ стартовать: `ENVIRONMENT=prod` плюс пустой ключ или `*` в `CORS_ORIGINS` роняет сборку настроек с сообщением, называющим переменную, до первого запроса.
+
+Приложение собирается функцией `create_app(config)`, а не на импорте: список origin'ов и наличие схемы API зависят от настроек, и тест обязан уметь поднять приложение с другим `Settings`, не подменяя глобальный объект. Точка входа `app.main:app` не изменилась.
+
+Сравнение ключей переехало в bytes. Это не косметика: `secrets.compare_digest` кидает TypeError на не-ASCII `str`, Starlette декодирует заголовки как latin-1 — и заголовок с кириллицей отдавал 500 вместо 401, то есть неаутентифицированный вызывающий отличал кривой ключ от неверного по коду ответа.
+
+Warning про выключенную auth переехал на старт (`warn_if_auth_disabled`, once-семантика). Строка, повторяющаяся на каждый запрос, перестаёт читаться через минуту dev-сессии.
+
+`/docs`, `/redoc` и `openapi.json` в проде выключены целиком: Swagger UI грузится браузером и заголовок `X-API-Key` послать не может, так что «закрыть ключом» для него не работает. Решение записано в `deploy/README.md`.
+
+Тронутые файлы: 7 (1 new, 6 mod), из них 2 вне сервиса.
+
+- `app/core/config.py` — **mod**: `ENVIRONMENT`, `CORS_ORIGINS: list[str]`, `PerimeterError`, `docs_enabled`, валидатор `_enforce_prod_perimeter`; источники env/dotenv подменены на читающие списки как `a,b,c` (JSON в compose-файле — источник ошибок).
+- `app/core/auth.py` — **mod**: сравнение в bytes, `warn_if_auth_disabled()`, из `require_api_key` убран per-request warning.
+- `app/main.py` — **mod**: `create_app(config)`, CORS из настроек, docs по `config.docs_enabled`, вызов `warn_if_auth_disabled()` на старте.
+- `tests/test_perimeter.py` — **new**: 14 тестов, ни один не трогает базу — периметр проверяется до того, как запрос дойдёт до ручки, и тест периметра, которому нужен постгрес, перестаёт запускаться.
+- `tests/test_auth.py` — **mod**: `test_empty_api_key_env_disables_auth` — единственный тест, описывавший старое поведение (warning на каждый запрос); теперь требует тишины.
+- `deploy/docker-compose.prod.yml` — **mod**: `ENVIRONMENT: prod`, `CORS_ORIGINS: ${CORS_ORIGINS:-}`.
+- `deploy/README.md` — **mod**: раздел «Периметр», решение по `/docs`, проверка acceptance курлом вместо Swagger.
+
+Feedback loops: pytest 329/329 green, `ruff check` clean, `ruff format --check` clean, `mypy --strict app` clean (58 файлов). Миграций нет, голова Alembic прежняя — `a7c9e1b3d5f8`. Docker-демон на машине не поднят, поэтому штатный `make check` не отработал бы целиком: прогон шёл против постгреса на 5432 с той же базой `habit_tracker_test`.
+
+## 2026-08-30 — PHASE-03/107 одна граница суток: `local_date()` как единственный ответ
+
+Дата 2026-08-30, тикет `107-single-day-boundary`. Девять тикетов фазы приписывают данные дню, и до этой правки в проекте было два разных ответа на вопрос «которому дню принадлежит момент»: час старта суток у одних, календарная дата по Берлину у других. Отметка в 00:30 попала бы в разные дни на одном экране. Теперь ответ один — `app/core/daytime.local_date(at)`, день идёт от `DAY_START_HOUR` местных часов до того же часа следующей даты.
+
+Функции не принимают ни пояс, ни час старта параметрами, и это не забывчивость: `#86` переносит источник настроек в версионированный `day_rule_set`, и параметр превратил бы перенос в правку всех вызовов. Сигнатура закреплена тестом, а не только комментарием.
+
+Наивный `datetime` отвергается `ValueError` вместо молчаливого чтения как UTC — этот дефект модуль и заведён предотвращать. `APP_TIMEZONE` проверяется при сборке настроек, поэтому опечатка роняет старт процесса, а не первый запрос.
+
+Переходы на летнее и зимнее время покрыты не примерами, а свойством: тест проходит обе даты поминутно и требует, чтобы `local_date` и `day_bounds` совпадали на каждом моменте. Здесь же вскрылась неточность в тексте тикета: 23-часовые сутки при границе 04:00 — это **2026-03-28**, а не 2026-03-29, потому что перевод в 02:00 попадает в предыдущий логический день. Тест написан по правилу, а не по тексту.
+
+Тронутые файлы: 6 (3 new, 3 mod), из них 1 вне сервиса.
+
+- `app/core/daytime.py` — **new**: `local_date(at)`, `today_local()`, `day_bounds(d)`; ни базы, ни FastAPI, ни сети.
+- `app/core/config.py` — **mod**: `APP_TIMEZONE`, `DAY_START_HOUR` (`ge=0, le=23`), валидатор `_timezone_must_resolve` — временный источник правила до `#86`.
+- `app/llm/context.py` — **mod**: `date.today()` → `today_local()`; период инсайтов кончался календарной датой сервера, а не днём пользователя.
+- `app/crud/streak.py` — **mod**: только докстринг. UTC-сутки остались (Out of Scope тикета), но перестали называться «конвенцией всего продукта» и помечены `TODO(#90)`.
+- `tests/test_daytime.py` — **new**: 22 теста, базы не трогают; граница с двух сторон, полночь, оба перевода часов поминутно, отказ на наивном `datetime`, тесты на сигнатуры.
+- `habit-tracker/docs/day-boundary.md` — **new**: правило, таблица моментов, что вызывать, что переносит `#86`, единственное известное расхождение.
+
+Feedback loops: pytest 351/351 green, `ruff check` clean, `ruff format --check` clean (80 файлов), `mypy --strict app` clean (59 файлов), `alembic heads` — одна голова `a7c9e1b3d5f8`. Миграций нет: схема не менялась. Docker-демон на машине не поднят, поэтому `make check` целиком не отработал бы — прогон шёл против постгреса на 5432, база `habit_tracker_test`. Фронтенд не менялся: у тикета нет UI-слоя.
+
+## 2026-08-30 — PHASE-03/86 день существует: `day_rule_set`, `day`, `GET /day/{date}` и страница дня
+
+Дата 2026-08-30, тикет `86-day-exists-rule-set-and-day-page`. Первый срез вводит сам предмет: день как строку в базе и канон дня как версионированную строку рядом. Канон менялся дважды за месяц; будь потолок часов константой в модуле, следующая правка переписала бы вердикты всего прошлого и объяснить, почему 14 августа считалось иначе, было бы нечем.
+
+Пересечение интервалов правил отвергает база (`EXCLUDE USING gist (daterange(valid_from, valid_to, '[)') WITH &&)`), а не сервис: проверку в сервисе обходит любой писатель, который через него не идёт — импорт, следующая миграция, сессия `psql`. Интервал полуоткрытый, поэтому смена канона — одна дата, а не пара, которую надо держать согласованной.
+
+`kind` и `is_nocode` материализуются при создании дня. Выводить их на чтении означало бы переписать каждый прошлый вторник при следующей правке расписания недели — ровно то, что версионированный канон и заведён предотвращать.
+
+Источник границы суток переехал с настроек на таблицу, **сигнатура `local_date(at)` не менялась**: `app/crud/day.py` публикует `DayBoundary` действующего правила вызовом `daytime.use_boundary()`, потребители не тронуты. Запасной источник (настройки) остаётся для процесса, который до дня ещё не дошёл; его значения по умолчанию равны сидовой строке.
+
+Ручка отвечает «плана нет» явно (`plan: null`, `has_plan: false`), а не 404: пустой день — ответ, и 404 не дал бы читателю отличить пустой день от неверного URL. 404 остался за датой, которую не покрывает ни одно записанное правило.
+
+Тронутых файлов: 21 (13 new, 8 mod) в бэкенде и фронтенде, плюс 22 тестовых файла фронтенда, куда добавлен `dayAPI` в мок `@/lib/api` (bun фиксирует имена экспортов модуля при первой линковке, поэтому частичный мок удалил бы член у следующего сьюта).
+
+- `app/models/day.py` — **new**: `DayRuleSet` (интервал + GiST-исключение) и `Day` (PK — дата, `kind`/`is_nocode` заморожены при создании, `opened_at` NULL пока день не открывали).
+- `app/day/rules.py` — **new**: чистая логика канона — `covers`, `resolve_rule`, `active_rule`, `day_kind`, `is_nocode_date`, `SEED_RULES`. Базы не трогает.
+- `app/day/__init__.py` — **new**: пакет дня.
+- `app/crud/day.py` — **new**: `list_rules`, `seed_rules`, `rule_for_date`, `get_day`, `ensure_day`, `publish_boundary`, `refresh_day_boundary`. Таблица правил читается целиком: правило «действует на» написано один раз, в Python, а не второй раз в SQL.
+- `app/schemas/day.py` — **new**: `DayResponse`, `DayRuleSetResponse`, `DayDetailResponse`.
+- `app/api/day.py` — **new**: `GET /api/v1/day` (сегодня по границе суток) и `GET /api/v1/day/{date}`.
+- `alembic/versions/2026_08_30_1200-c8e0a2b4d6f9_day_and_rule_set.py` — **new**: обе таблицы, исключающее ограничение и сид двух правил; `downgrade()` проверен на живой базе.
+- `app/core/daytime.py` — **mod**: `DayBoundary`, `use_boundary`, `reset_boundary`, `current_boundary`; `local_date`/`day_bounds` читают опубликованную границу. Сигнатуры не менялись.
+- `app/main.py` — **mod**: роутер дня в `API_ROUTERS`, `_publish_day_boundary()` на старте.
+- `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: реэкспорт.
+- `tests/conftest.py` — **mod**: autouse-фикстура сбрасывает опубликованную границу между тестами — она процессная по замыслу, и вставленное одним тестом правило иначе решало бы, какой сегодня день, для всех следующих.
+- `tests/test_day_rules.py` — **new**: 26 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
+- `tests/test_day.py` — **new**: 11 тестов ручки; вид дня, legacy-правило на 14 августа, `opened_at = null`, «плана нет» вместо 404, `X-API-Key`, неизменность `kind` после новой строки расписания.
+- Фронтенд — **new**: `lib/day-format.ts` (+тест), `hooks/useDay.ts` (+тест), `components/DayScreen.tsx` (+тест), `components/mobile/MobileDayScreen.tsx`, страницы `app/day/page.tsx`, `app/day/[date]/page.tsx`, `app/m/day/page.tsx`, `app/m/day/[date]/page.tsx`; **mod**: `lib/api.ts` (`dayAPI`, типы), `lib/routes.ts` + `lib/routes.test.ts` (экран Day в реестре), `components/route-icons.ts`.
+- `habit-tracker/docs/day-boundary.md` — **mod**: раздел «Откуда берётся правило» переписан — источник теперь таблица, настройки стали запасным.
+
+Feedback loops: pytest 386/386 green (было 351), `ruff check` clean, `ruff format --check` clean (88 файлов), `mypy --strict app` clean (65 файлов), `alembic heads` — одна голова `c8e0a2b4d6f9`. Фронтенд: `bun test` 608/608 green (было 574), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`; миграция проверена отдельно на временной базе — `upgrade`, `downgrade`, `upgrade`, плюс сверка схемы после миграции со схемой после `create_all` (колонки, ограничения и индексы совпали).
+
+## 2026-08-30 — PHASE-03/87 план дня доезжает: `plan_section`/`plan_item` и `POST /day/{date}/plan` с валидацией канона
+
+Дата 2026-08-30, тикет `87-plan-sections-items-and-canon-validation`. Главный срез переезда: план становится строками, а ограничения этих строк — перенесённые правила `config.md`. Сегодня «не перезакручивать» и «у задачи обязаны быть окно и критерий» — проза, которую агент либо вспомнил, либо нет; после среза их отклоняет база и API.
+
+Правила разложены по двум местам, и разделение — суть решения. **Построчные — CHECK-ограничения** `plan_item`: у задачи есть окно и критерий, у пункта свободного блока окна нет, задача называет цель квартала или причину, окно идёт вперёд. Они верны для любого писателя — импорта, миграции, сессии `psql`, — потому что мимо них не пишет никто. **Правила документа — сервис** (`app/day/plan_validate.py`): планка `max_work_tasks` из правила дня и «жёсткими бывают только края дня». Оба — свойства плана, а не строки, и триггер на строку сорвал бы импорт исторических дней ([#89]), которые планку нарушали. Сервис дублирует и построчные проверки, но односторонне: база — гарантия, сервис — формулировка, и каждая его ветка покрыта ещё и тестом, который пишет мимо него прямо в таблицу.
+
+Отказ **называет пункт**: `{"error": "too_many_tasks", "item_code": "W5", "message": …}`. «Validation error» отправил бы автора перечитывать документ, который он только что написал, а планка существует ровно потому, что пятая задача — та, что превращает день в переработку. Отказ ничего не удаляет: документ судится до того, как удалена первая строка прежнего плана.
+
+Окно приезжает как `"23:30-00:30"`, а не парой timestamp: и человек, и `/day-open` думают настенными часами, а знание про пояс и границу суток централизовано в `#107`. Время раньше часа границы принадлежит следующей календарной дате, поэтому `23:30-00:30` даёт 60 минут, а не минус двадцать три часа; сохранился и `+24 ч` из `parse_window` для вырожденного случая.
+
+Порядок — позиция в списке, `ord` ставит сервер. Клиентский номер на одну правку отстоит от двух секций с одним `ord`, и база такой план отвергла бы, хотя в редакторе он выглядел целым.
+
+Наложения окон — самосоединение по `&&` поверх GiST-индекса на генерируемой колонке `window`, а не пересчёт на рендере: экран стал потребителем факта, а не его единственным владельцем.
+
+Найдено по ходу: обратное окно до CHECK `ck_plan_item_window_is_forward` не доходит — генерируемая колонка `window` считается раньше, и `tstzrange(23:30, 00:30)` падает сама, ошибкой диапазона. Ограничение на месте и верно, просто не успевает сработать; записано в тесте и в `docs/day-plan.md`.
+
+- `app/models/plan.py` — **new**: `DayPlan` (один план на день, `day_date` unique FK), `PlanSection` (`UNIQUE(plan_id, ord)`), `PlanItem` — четыре CHECK-а, генерируемые `window tstzrange` и `search tsvector`, индексы `(section_id, ord)`, GiST на `window`, GIN на `search`, `(carried_from_item_id)`, частичный `UNIQUE(section_id, code) WHERE code IS NOT NULL`.
+- `app/day/plan_validate.py` — **new**: базы не трогает. `PlanRejected` с кодом пункта, `ItemFacts`, `validate_plan`, `check_task_bar`, `check_hard_rigidity`, `check_item_shape`, `parse_window`, `resolve_window`, `to_plain`, `count_tasks`.
+- `app/crud/plan.py` — **new**: `prepare_plan` (документ → строки с разрешёнными окнами и `ord` по позиции), `replace_plan`, `get_plan`, `delete_plan`, `find_overlaps` (самосоединение по `&&`), `build_schedule`, `to_response`.
+- `app/schemas/plan.py` — **new**: `PlanDocument`/`PlanSectionIn`/`PlanItemIn` на вход, `PlanResponse`/`PlanSectionResponse`/`PlanItemResponse`/`ScheduleEntry`/`ScheduleOverlap`/`PlanRejection` на выход.
+- `alembic/versions/2026_08_30_1600-d9f1b3c5e7a0_plan_tables.py` — **new**: три таблицы; `upgrade`/`downgrade`/`upgrade` проверены на живой базе, схема после миграции сверена со схемой после `create_all` — колонки, ограничения и индексы совпали.
+- `app/api/day.py` — **mod**: `POST /api/v1/day/{date}/plan` (201, 422 с телом `PlanRejection`); `GET /day` и `GET /day/{date}` отдают план, расписание и наложения.
+- `app/schemas/day.py` — **mod**: `DayDetailResponse.plan` теперь `PlanResponse | None`.
+- `app/models/__init__.py` — **mod**: реэкспорт `DayPlan`, `PlanSection`, `PlanItem`.
+- `tests/test_plan_constraints.py` — **new**: 27 тестов. Половина пишет мимо сервиса прямо в таблицу и требует отказа базы; половина зовёт валидатор без базы.
+- `tests/test_plan_post.py` — **new**: 18 тестов ручки — все acceptance-случаи тикета плюс «отклонённый план не трогает прежний» и `X-API-Key`.
+- Фронтенд — **new**: `lib/plan.ts` (+тест), `components/day/PlanSections.tsx` (+тест), `components/day/DaySchedule.tsx` (+тест); **mod**: `lib/api.ts` (типы `Plan`/`PlanSection`/`PlanItem`/`ScheduleEntry`/`ScheduleOverlap`/`PlanDocument`, `dayAPI.savePlan`), `components/DayScreen.tsx` + его тест, `components/mobile/MobileDayScreen.tsx`.
+- `habit-tracker/docs/day-plan.md` — **new**: форма документа, словарь шести колонок, таблица кодов отказа, где живёт правило на самом деле, наложения.
+
+Тест `DayScreen.test.tsx` «keeps the plan block away once a plan exists» переписан: он задавал `has_plan: true` при `plan: null` — состояние, которого сервер выдать не может, — и держался на том, что экран ветвился по булеву флагу. Экран теперь ветвится по самому плану, а тест рендерит настоящий.
+
+Feedback loops: pytest 431/431 green (было 386), `ruff check` clean, `ruff format --check` clean (94 файла), `mypy --strict app` clean (69 файлов), `alembic heads` — одна голова `d9f1b3c5e7a0`. Фронтенд: `bun test` 633/633 green (было 608), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон на машине не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`.
+
+## 2026-08-30 — PHASE-03/88 отметка трёх состояний с заметкой, блокнот дня и четвёртое «пусто»
+
+Дата 2026-08-30, тикет `88-plan-marks-three-states-and-notebook`. Ради этого весь переезд: отметка перестала висеть на позиции в DOM и перешла на `plan_item.id`. Ключом были `i7`, `t3`, `w1`, поэтому правка одной строки `.md` молча сдвигала соответствие «отметка ↔ пункт», а `.html` с отметками лежал в `.gitignore` — истории отметок не существовало вовсе.
+
+**Четыре «пусто» стали различимы.** `plan_mark` — одна строка на пункт; её отсутствие и есть `pending`. Вместе с `day.opened_at` это отделяет «не открывал» от «открыл и не дошёл», а `state='failed'` от `state='skipped'`. 29 августа — день с нулём отметок — после импорта прочитается как «не открывал», а не как «ничего не сделал». `opened_at` ставит только `GET ...?opened=true` (флаг ставит страница) и отметка с `source='web'`; агент, импорт и cron читают день молча, иначе «не открывал» перестало бы быть устанавливаемым фактом.
+
+**Отметка переживает правку плана.** `POST /plan` заменяет план целиком, поэтому пункт теперь может прислать назад свой `id`: тогда строка сохраняет uuid, а отметка переносится через замену (`snapshot_marks` → `delete_plan` → вставка → `restore_marks`, одна транзакция, `updated_at` отметки не двигается). `id` чужой или отсутствует — новый пункт без отметок; один `id` дважды в документе — 422 `duplicate_item_id` с названным пунктом. Совпадения по тексту нет намеренно: позиционное и текстовое сопоставление и было причиной, по которой отметки терялись.
+
+**Заплатки `plan_server.py` не воспроизведены.** 409 «пустое поверх непустого», подмешивание `localStorage` и перечитывание по `visibilitychange` существовали потому, что запись шла в файл без транзакции. Их место занял `ON CONFLICT (item_id) DO UPDATE`: запрос называет состояние, а не шаг цикла, две вкладки не воскрешают старое значение, побеждает последняя запись, и `updated_at` показывает, какая.
+
+**Цикл — данные, а не if-цепочка**, и записан по обе стороны: `MARK_CYCLE` в `app/day/marks.py` и в `lib/marks.ts`, `пусто → done → failed → пусто`. `skipped` на кольце нет: «стало неактуально» — суждение о плане, а не о работе, и попадать в него четвёртым щелчком человек не должен; в счётчике задач он не считается ни закрытым, ни проваленным.
+
+**`plan_mark_event.item_id` — без внешнего ключа.** Удалённый пункт уносит свою `plan_mark`, и это верно: отметка несуществующей строки не факт ни о чём. Но лог, который забывает, логом не является, поэтому события переживают пункт и читаются по `day_date`.
+
+- `app/models/mark.py` — **new**: `PlanMark` (PK = `item_id`, FK на `plan_item` с CASCADE, CHECK на `state` и `source`), `PlanMarkEvent` (append-only, `from_state`/`to_state` с NULL вместо `pending`, CHECK `from_state IS DISTINCT FROM to_state`, индексы `(item_id, at)` и `(day_date, at)`).
+- `app/day/marks.py` — **new**, базы не трогает: `MARK_CYCLE`, `next_state`, `TaskCounts`, `count_tasks`.
+- `app/crud/mark.py` — **new**: `day_item` (пункт, но только этого дня), `list_marks`, `set_mark` (upsert + событие в той же транзакции), `snapshot_marks`/`restore_marks` (перенос отметок через замену плана), `task_counts`, `to_response`.
+- `app/schemas/mark.py` — **new**: `MarkIn` (словарь состояний проверяется здесь, чтобы опечатка была 422, а не ошибкой ограничения), `MarkResponse`, `TaskCountsResponse`, `NotebookIn`, `NotebookResponse`.
+- `alembic/versions/2026_08_30_2000-e0b2d4f6a8c1_plan_marks.py` — **new**: две таблицы; `upgrade`/`downgrade` проверены на временной базе `habit_mig_check`.
+- `app/api/day.py` — **mod**: `PUT /day/{date}/marks/{item_id}`, `PUT /day/{date}/notebook`, `?opened=` у обоих `GET`; ответ дня несёт `marks`, `task_counts` и `notebook`.
+- `app/crud/day.py` — **mod**: `touch_day`, `get_notebook`, `set_notebook` (через существующий `write_day_journal`, режим `replace`).
+- `app/crud/plan.py` — **mod**: `_stored_item_ids`, `_identity`, `prepare_plan(..., keep)`, перенос отметок в `replace_plan`.
+- `app/schemas/plan.py` — **mod**: `PlanItemIn.id`; `app/schemas/day.py` — **mod**: `marks`, `task_counts`, `notebook`; `app/models/__init__.py` — **mod**: реэкспорт.
+- `tests/test_plan_marks.py` — **new**: 24 теста — цикл, отметка переживает правку текста, четыре «пусто», счётчик со `skipped`, лог событий (включая снятие и переживание удалённого пункта), две вкладки, блокнот одной записью.
+- Фронтенд — **new**: `lib/marks.ts` (+тест), `hooks/useDayMarks.ts` (+тест), `components/day/PlanItemMark.tsx` (+тест), `components/day/DayNotebook.tsx` (+тест); **mod**: `lib/api.ts` (типы `Mark`/`MarkState`/`TaskCounts`, `dayAPI.open`/`openToday`/`setMark`/`saveNotebook`), `lib/plan.ts` (`itemKindsById`), `hooks/useDay.ts` (флаг `opened`) + его тест, `components/day/PlanSections.tsx` (необязательный проп `marking`), `components/DayScreen.tsx` + его тест, `components/mobile/MobileDayScreen.tsx`.
+- `habit-tracker/docs/day-plan.md` — **mod**: раздел «Отметки» — таблица четырёх «пусто», цикл, лог, правило переноса `id`, открытие дня, блокнот.
+
+Найдено по ходу: `useDayMarks` получает список отметок из ответа дня, и вызывающий обычно строит его выражением `detail?.marks ?? []` — новый массив на каждый рендер. Эффект синхронизации ключуется по строке-сигнатуре содержимого, а не по ссылке: иначе экран уходит в цикл, а хук, который работает только когда вызывающий не забыл `useMemo`, — не хук, а ловушка.
+
+Feedback loops: pytest 455/455 green (было 431), `ruff check` clean, `ruff format --check` clean (99 файлов), `mypy --strict app` clean (73 файла), `alembic heads` — одна голова `e0b2d4f6a8c1`. Фронтенд: `bun test` 664/664 green (было 633), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон на машине не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`; миграция проверена отдельно на временной базе `habit_mig_check` — `upgrade`, `\d` обеих таблиц, `downgrade`.

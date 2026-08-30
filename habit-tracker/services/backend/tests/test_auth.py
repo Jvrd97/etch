@@ -53,14 +53,21 @@ async def test_valid_api_key_returns_200(
     assert response.status_code == 200
 
 
-async def test_empty_api_key_env_disables_auth_with_warning(
+async def test_empty_api_key_env_disables_auth(
     bare_client: AsyncClient, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """
+    Dev mode keeps working without a key — and stays quiet while doing it.
+
+    The warning about disabled auth moved to startup in PHASE-03/106, so the
+    per-request line this test used to assert is gone on purpose. Its
+    once-only replacement is checked in `tests/test_perimeter.py`.
+    """
     settings.API_KEY = ""  # autouse api_key fixture restores the value on teardown
     with caplog.at_level("WARNING", logger="app.core.auth"):
         response = await bare_client.get(PROTECTED_URL)
     assert response.status_code == 200
-    assert any("auth" in record.message.lower() for record in caplog.records)
+    assert caplog.records == []
 
 
 async def test_api_key_value_is_never_logged(

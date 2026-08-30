@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan and its marks, and writes back a whole plan, a single mark or the day's notebook
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -281,6 +281,75 @@ export const journalAPI = {
 
   getByDate: async (date: string) => {
     return fetcher<JournalEntry[]>(`/journal/date/${date}`);
+  },
+};
+
+// Day API
+export const dayAPI = {
+  /**
+   * Today, decided by the server's day boundary rather than the browser's
+   * calendar: at 00:30 the day that is still running is yesterday's, and the
+   * screen has to open the same day everything else writes into.
+   */
+  getToday: async () => {
+    return fetcher<DayDetail>('/day');
+  },
+
+  get: async (date: string) => {
+    return fetcher<DayDetail>(`/day/${date}`);
+  },
+
+  /**
+   * The same two reads, but saying that a person is looking at the day.
+   *
+   * `opened=true` is what fills `day.opened_at`. It is a separate call rather
+   * than the default because an agent, an import and a cron job also read days,
+   * and if reading counted as opening, "не открывал" — one of the four kinds of
+   * empty this screen has to tell apart — would stop being establishable.
+   */
+  openToday: async () => {
+    return fetcher<DayDetail>('/day?opened=true');
+  },
+
+  open: async (date: string) => {
+    return fetcher<DayDetail>(`/day/${date}?opened=true`);
+  },
+
+  /**
+   * Send the whole plan of a day, replacing whatever was there.
+   *
+   * Whole rather than per-item: the bar on the number of tasks and "only the
+   * edges of the day may be hard" are properties of a plan, and the server
+   * cannot judge them one line at a time. A rejection comes back as a 422
+   * whose body names the line that broke a rule.
+   */
+  savePlan: async (date: string, document: PlanDocument) => {
+    return fetcher<Plan>(`/day/${date}/plan`, {
+      method: 'POST',
+      body: JSON.stringify(document),
+    });
+  },
+
+  /**
+   * Mark one item of the day, or take its mark off with `state: null`.
+   *
+   * The request names the state rather than asking for "the next one": two open
+   * tabs would otherwise get a result that depends on which of them arrived
+   * first. The cycle a click walks lives in `lib/marks.ts`.
+   */
+  setMark: async (date: string, itemId: string, draft: MarkDraft) => {
+    return fetcher<Mark>(`/day/${date}/marks/${itemId}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Replace the day's notebook text; it stays one entry per date. */
+  saveNotebook: async (date: string, content: string) => {
+    return fetcher<{ day_date: string; content: string; updated_at: string | null }>(
+      `/day/${date}/notebook`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    );
   },
 };
 
@@ -612,4 +681,233 @@ export interface TableDay {
 export interface TableResponse {
   categories: TableCategoryMeta[];
   days: TableDay[];
+}
+
+/** Whether the day is a working one; frozen when the day was created. */
+export type DayKind = 'work' | 'off';
+
+/**
+ * The canon a day is judged by, in force over an interval of dates.
+ *
+ * Versioned on the server: the ceiling and the task bar changed on 2026-08-17,
+ * and a day from before that is read against the numbers it was lived under.
+ */
+export interface DayRuleSet {
+  id: number;
+  valid_from: string;
+  /** First date the rule no longer applies; null while it is still in force. */
+  valid_to: string | null;
+  timezone: string;
+  /** Local hour a day starts at — 4 means 00:30 still belongs to yesterday. */
+  day_start_hour: number;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  /** `HH:MM:SS` wall-clock time work stops at. */
+  work_stop_at: string;
+  max_work_tasks: number;
+  /** Share of planned tasks that has to be closed, as a decimal string. */
+  tasks_required_ratio: string;
+  overtime_disqualifies: boolean;
+  /** ISO weekday numbers, 1 = Monday. */
+  workdays: number[];
+  nocode_days: number[];
+  required_anchors: string[];
+  note_md: string;
+}
+
+export interface Day {
+  date: string;
+  kind: DayKind;
+  is_nocode: boolean;
+  /** When the day was first opened; null when nobody ever came. */
+  opened_at: string | null;
+  last_touched_at: string | null;
+}
+
+/** What kind of line of a plan this is; only `task` counts against the bar. */
+export type PlanItemKind =
+  | 'bullet'
+  | 'step'
+  | 'table_row'
+  | 'task'
+  | 'anchor'
+  | 'hard_point'
+  | 'minimum';
+
+/** How movable a line is. `free` items can carry no window at all. */
+export type PlanRigidity = 'hard' | 'soft' | 'free';
+
+export interface PlanItem {
+  id: string;
+  parent_id: string | null;
+  ord: number;
+  kind: PlanItemKind;
+  rigidity: PlanRigidity;
+  text_md: string;
+  text_plain: string;
+  /** ISO moment, or null when the line claims no piece of the clock. */
+  starts_at: string | null;
+  ends_at: string | null;
+  window_comment: string | null;
+  code: string | null;
+  done_criterion: string | null;
+  why_md: string | null;
+  plan_md: string | null;
+  external_ref: Record<string, unknown> | null;
+  /** Every `Подпись :: значение` without a column of its own. */
+  extra: Record<string, unknown>;
+  quarter_goal_id: number | null;
+  unlinked_reason: string | null;
+  carried_from_item_id: string | null;
+  carry_count: number;
+  children: PlanItem[];
+}
+
+export interface PlanSection {
+  id: string;
+  ord: number;
+  title: string | null;
+  kind: string;
+  items: PlanItem[];
+}
+
+/**
+ * One line of the day's schedule.
+ *
+ * `minutes` is the server's, not a subtraction here: a window that runs past
+ * midnight is sixty minutes only to someone who knows where the day ends.
+ */
+export interface ScheduleEntry {
+  item_id: string;
+  section_id: string;
+  code: string | null;
+  text_plain: string;
+  kind: PlanItemKind;
+  rigidity: PlanRigidity;
+  starts_at: string;
+  ends_at: string;
+  minutes: number;
+  window_comment: string | null;
+}
+
+/** Two lines whose windows intersect, as the database found them. */
+export interface ScheduleOverlap {
+  left_item_id: string;
+  right_item_id: string;
+  overlap_minutes: number;
+}
+
+export interface Plan {
+  id: string;
+  day_date: string;
+  title: string | null;
+  title_marker: string | null;
+  lede: string | null;
+  purpose_md: string | null;
+  quarter_goal_id: number | null;
+  counters: unknown[];
+  condition_tomorrow: string | null;
+  status: 'draft' | 'active' | 'closed';
+  source: 'day-open' | 'import' | 'manual';
+  created_at: string;
+  updated_at: string;
+  sections: PlanSection[];
+  schedule: ScheduleEntry[];
+  overlaps: ScheduleOverlap[];
+}
+
+/**
+ * A plan on its way to the server.
+ *
+ * Neither a section nor an item carries `ord`: the server numbers what it
+ * receives, so the order on screen is the order that was sent and two sections
+ * can never claim the same place. A window goes as `"23:30-00:30"` — wall
+ * clock, because that is what a human and `/day-open` both write.
+ */
+export interface PlanItemDraft {
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md: string;
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  why_md?: string | null;
+  plan_md?: string | null;
+  external_ref?: Record<string, unknown> | null;
+  extra?: Record<string, unknown>;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+  children?: PlanItemDraft[];
+}
+
+export interface PlanSectionDraft {
+  title?: string | null;
+  kind?: string;
+  items?: PlanItemDraft[];
+}
+
+export interface PlanDocument {
+  title?: string | null;
+  title_marker?: string | null;
+  lede?: string | null;
+  purpose_md?: string | null;
+  quarter_goal_id?: number | null;
+  counters?: unknown[];
+  condition_tomorrow?: string | null;
+  status?: Plan['status'];
+  source?: Plan['source'];
+  raw_md?: string | null;
+  sections: PlanSectionDraft[];
+}
+
+/** One day, the rule it is judged by, and its plan when there is one. */
+export interface DayDetail {
+  day: Day;
+  rule: DayRuleSet;
+  plan: Plan | null;
+  has_plan: boolean;
+  /** One entry per item that has a mark; an item missing here is `pending`. */
+  marks: Mark[];
+  task_counts: TaskCounts;
+  /** The day's free text, or null when nothing was written. */
+  notebook: string | null;
+}
+
+/** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */
+export type MarkState = 'done' | 'failed' | 'skipped';
+
+/** Who wrote a mark: a click, the local agent, the import, a suggestion. */
+export type MarkSource = 'web' | 'agent' | 'import' | 'llm';
+
+export interface Mark {
+  item_id: string;
+  /** null after the mark was taken off — the line is back to "не дошёл". */
+  state: MarkState | null;
+  note: string | null;
+  /** When the current state was set; a note edited later does not move it. */
+  marked_at: string | null;
+  updated_at: string | null;
+  source: MarkSource | null;
+}
+
+/**
+ * The day's work tasks split by what happened to them.
+ *
+ * `skipped` is counted apart from both `done` and `failed`: a task that stopped
+ * being relevant was neither closed nor missed.
+ */
+export interface TaskCounts {
+  planned: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+}
+
+/** The body of a mark write; `state: null` takes the mark off. */
+export interface MarkDraft {
+  state: MarkState | null;
+  note?: string | null;
+  source?: MarkSource;
 }
