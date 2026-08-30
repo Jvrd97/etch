@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/107
-# summary: the single day boundary — local_date()/day_bounds() over APP_TIMEZONE and DAY_START_HOUR; a naive datetime is refused, not assumed to be UTC
+# [review:need-review] PHASE-03/107, PHASE-03/86
+# summary: the single day boundary — local_date()/day_bounds() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC
 """
 The one answer to "which day does this moment belong to".
 
@@ -9,21 +9,33 @@ place, a plain calendar date in `Europe/Berlin` in another. A water mark at
 00:30 would then land in one day and a work interval at 00:30 in the previous
 one, and a single day screen would show two different "todays".
 
-So there is one rule and one module. A day runs from `DAY_START_HOUR` local
-wall clock to the same hour of the next calendar date; a moment at 00:30
-belongs to the previous day, everywhere, with no exception for "tracker" data.
-Anyone who needs a local date calls `local_date()`; anyone who needs a range
-for a SQL query calls `day_bounds()`. A second function of this kind appearing
-anywhere in `app/` is a reason to reopen review, not to reconcile the
-difference.
+So there is one rule and one module. A day runs from the boundary hour of local
+wall clock to the same hour of the next calendar date; a moment at 00:30 belongs
+to the previous day, everywhere, with no exception for "tracker" data. Anyone
+who needs a local date calls `local_date()`; anyone who needs a range for a SQL
+query calls `day_bounds()`. A second function of this kind appearing anywhere in
+`app/` is a reason to reopen review, not to reconcile the difference.
 
-**The settings source here is temporary and deliberately narrow.** Until
-`day_rule_set` exists (`#86`), the rule is read from `settings.APP_TIMEZONE`
-and `settings.DAY_START_HOUR`. `#86` moves the source into that versioned
-table *without changing the signature* `local_date(at: datetime) -> date`, so
-none of the nine consumers changes a line. That is also why neither function
-takes a timezone or a start hour as an argument: an argument would turn the
-move of the source into an edit of every call site.
+**Where the boundary comes from.** The zone and the start hour are two columns
+of the `day_rule_set` row in force (`#86`): the canon of a day is data, and the
+boundary is part of that canon. `app.crud.day` reads the row and publishes it
+here with `use_boundary()`; from then on every call in the process reads the
+table's answer. Until something publishes — a process that has not touched the
+day API yet, a database that has not been migrated — the fallback is
+`settings.APP_TIMEZONE` / `settings.DAY_START_HOUR`, whose defaults are the
+seeded row's values.
+
+The boundary is a process-wide value rather than an argument on purpose. Making
+it a parameter would turn a change of source into an edit of every one of the
+nine call sites, and would let two of them disagree; that is exactly the failure
+this module exists to prevent. It is also why the signature
+`local_date(at: datetime) -> date` survived the move of the source.
+
+One consequence worth naming: the boundary is the *current* rule's, not the
+rule's in force on the date being asked about. A day is looked up by the local
+date it already has, and re-answering an old moment under an old boundary would
+move rows between days years after the fact. Should the boundary hour ever
+actually change, the past keeps the dates it was recorded with.
 
 Consumers: `#86` (a moment's day), `#91` (work intervals), `#97` (a signal's
 `local_date`), `#121` (quick marks), `#124` (undo), `#127` (challenges),
@@ -36,33 +48,95 @@ Related: ADR-0014 (day in postgres), ADR-0016 (external inbox), ADR-0018
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 
-__all__ = ["day_bounds", "local_date", "today_local"]
+__all__ = [
+    "DayBoundary",
+    "current_boundary",
+    "day_bounds",
+    "local_date",
+    "reset_boundary",
+    "today_local",
+    "use_boundary",
+]
 
 
-def _zone() -> ZoneInfo:
+@dataclass(frozen=True)
+class DayBoundary:
     """
-    The configured IANA zone.
+    Where one day ends and the next begins: an IANA zone and the hour it turns.
 
-    `ZoneInfo` caches its instances, so this is a dictionary lookup rather than
-    a file read, and reading the setting on every call is what lets `#86` swap
-    the source without touching callers.
+    Two columns of `day_rule_set`, carried as a value so that this module never
+    imports a model, a session or anything that would drag the database into a
+    function three quarters of the codebase calls.
     """
-    return ZoneInfo(settings.APP_TIMEZONE)
+
+    timezone: str
+    day_start_hour: int
+
+
+# The published boundary; None means "nothing has read the table yet", which is
+# the only state in which settings are consulted.
+_boundary: DayBoundary | None = None
+
+
+def use_boundary(boundary: DayBoundary) -> None:
+    """
+    Publish the boundary of the rule in force; every later call reads it.
+
+    Called by `app.crud.day` whenever it loads the rule rows — on startup and on
+    every request that touches a day — so a rule inserted while the process runs
+    takes effect without a restart.
+    """
+    global _boundary
+    _boundary = boundary
+
+
+def reset_boundary() -> None:
+    """Forget the published boundary and fall back to settings. For tests."""
+    global _boundary
+    _boundary = None
+
+
+def current_boundary() -> DayBoundary:
+    """
+    The boundary in force in this process.
+
+    The settings fallback is not a second rule: its defaults are the values of
+    the seeded rule row, so a process that has not read the table yet answers the
+    same thing the table would have answered.
+    """
+    if _boundary is not None:
+        return _boundary
+    return DayBoundary(
+        timezone=settings.APP_TIMEZONE, day_start_hour=settings.DAY_START_HOUR
+    )
+
+
+def _zone(boundary: DayBoundary) -> ZoneInfo:
+    """
+    The boundary's IANA zone.
+
+    `ZoneInfo` caches its instances, so this is a dictionary lookup rather than a
+    file read, and resolving it per call is what lets a newly published rule take
+    effect without touching a caller.
+    """
+    return ZoneInfo(boundary.timezone)
 
 
 def local_date(at: datetime) -> date:
     """
     The day the moment `at` belongs to.
 
-    The day starts at `DAY_START_HOUR` local wall clock: 03:59 belongs to the
-    previous date, 04:00 to the current one. `at` must be timezone-aware — a
-    naive datetime is refused rather than silently read as UTC, because
-    "silently read as UTC" is exactly the bug this module exists to prevent.
+    The day starts at the boundary hour of local wall clock: with the seeded
+    hour of 4, 03:59 belongs to the previous date and 04:00 to the current one.
+    `at` must be timezone-aware — a naive datetime is refused rather than
+    silently read as UTC, because "silently read as UTC" is exactly the bug this
+    module exists to prevent.
     """
     if at.tzinfo is None or at.tzinfo.utcoffset(at) is None:
         raise ValueError(
@@ -71,11 +145,12 @@ def local_date(at: datetime) -> date:
             f"by the local offset. Got {at!r}; use "
             "datetime.now(timezone.utc) or attach the origin's tzinfo."
         )
+    boundary = current_boundary()
     # Wall-clock arithmetic on purpose: aware datetimes subtract inside their
-    # own zone, so this reads the local clock DAY_START_HOUR hours earlier and
+    # own zone, so this reads the local clock `day_start_hour` hours earlier and
     # takes its date. Across a DST transition the intermediate value may carry
     # a stale offset, which does not matter — only `.date()` is used.
-    shifted = at.astimezone(_zone()) - timedelta(hours=settings.DAY_START_HOUR)
+    shifted = at.astimezone(_zone(boundary)) - timedelta(hours=boundary.day_start_hour)
     return shifted.date()
 
 
@@ -99,14 +174,15 @@ def day_bounds(d: date) -> tuple[datetime, datetime]:
     hours of wall clock, which is 23 or 25 real hours on the two days that
     contain a DST transition.
 
-    Assumes `DAY_START_HOUR` is a wall-clock hour that exists on every date in
-    the configured zone. It holds for the default (`Europe/Berlin` switches at
-    02:00/03:00, the day starts at 04:00); a zone that skips the start hour on
+    Assumes the boundary hour is a wall-clock hour that exists on every date in
+    the configured zone. It holds for the seeded rule (`Europe/Berlin` switches
+    at 02:00/03:00, the day starts at 04:00); a zone that skips the start hour on
     a transition date would need the boundary resolved against the transition
     instead of composed from it.
     """
-    zone = _zone()
-    start_hour = time(hour=settings.DAY_START_HOUR)
+    boundary = current_boundary()
+    zone = _zone(boundary)
+    start_hour = time(hour=boundary.day_start_hour)
     start = datetime.combine(d, start_hour, tzinfo=zone)
     end = datetime.combine(d + timedelta(days=1), start_hour, tzinfo=zone)
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)

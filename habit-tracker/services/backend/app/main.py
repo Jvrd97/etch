@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106
-# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning on startup
+# [review:need-review] PHASE-03/106, PHASE-03/86
+# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning and the day boundary read from day_rule_set on startup
 """
 Сборка FastAPI-приложения.
 
@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import (
     categories,
     daily_summary,
+    day,
     entries,
     health,
     insights,
@@ -25,6 +26,8 @@ from app.api import (
 )
 from app.core.auth import require_api_key, warn_if_auth_disabled
 from app.core.config import Settings, settings
+from app.core.database import AsyncSessionLocal
+from app.crud import day as day_crud
 
 API_DESCRIPTION = """
     ## Habit Tracker API
@@ -64,7 +67,32 @@ API_ROUTERS = (
     onboarding.router,
     daily_summary.router,
     health.router,
+    day.router,
 )
+
+
+async def _publish_day_boundary() -> None:
+    """
+    Прочитать действующее правило дня и отдать его границу суток в `daytime`.
+
+    Читается на старте, чтобы `local_date()` отвечал по таблице с первого
+    запроса, а не по настройкам до первого обращения к дню. База может быть
+    недоступна или ещё не мигрирована — это не повод не стартовать: в этом
+    случае остаётся запасной источник (`APP_TIMEZONE`/`DAY_START_HOUR`), чьи
+    значения по умолчанию равны сидовой строке правила.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            if not await day_crud.refresh_day_boundary(session):
+                print(
+                    "⚠️  day_rule_set is empty: the day boundary falls back to "
+                    "APP_TIMEZONE/DAY_START_HOUR until the migration runs"
+                )
+    except Exception as error:  # noqa: BLE001 - старт не зависит от базы
+        print(
+            f"⚠️  could not read day_rule_set at startup ({error!r}); the day "
+            "boundary falls back to APP_TIMEZONE/DAY_START_HOUR"
+        )
 
 
 def create_app(config: Settings) -> FastAPI:
@@ -128,6 +156,7 @@ def create_app(config: Settings) -> FastAPI:
         Действия при запуске приложения.
         """
         warn_if_auth_disabled()
+        await _publish_day_boundary()
         print("🚀 Starting Habit Tracker API...")
         print(f"📚 Documentation: {docs_url or 'disabled (ENVIRONMENT=prod)'}")
 

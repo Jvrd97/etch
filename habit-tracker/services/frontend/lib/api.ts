@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day and the rule it is judged by
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -281,6 +281,22 @@ export const journalAPI = {
 
   getByDate: async (date: string) => {
     return fetcher<JournalEntry[]>(`/journal/date/${date}`);
+  },
+};
+
+// Day API
+export const dayAPI = {
+  /**
+   * Today, decided by the server's day boundary rather than the browser's
+   * calendar: at 00:30 the day that is still running is yesterday's, and the
+   * screen has to open the same day everything else writes into.
+   */
+  getToday: async () => {
+    return fetcher<DayDetail>('/day');
+  },
+
+  get: async (date: string) => {
+    return fetcher<DayDetail>(`/day/${date}`);
   },
 };
 
@@ -612,4 +628,53 @@ export interface TableDay {
 export interface TableResponse {
   categories: TableCategoryMeta[];
   days: TableDay[];
+}
+
+/** Whether the day is a working one; frozen when the day was created. */
+export type DayKind = 'work' | 'off';
+
+/**
+ * The canon a day is judged by, in force over an interval of dates.
+ *
+ * Versioned on the server: the ceiling and the task bar changed on 2026-08-17,
+ * and a day from before that is read against the numbers it was lived under.
+ */
+export interface DayRuleSet {
+  id: number;
+  valid_from: string;
+  /** First date the rule no longer applies; null while it is still in force. */
+  valid_to: string | null;
+  timezone: string;
+  /** Local hour a day starts at — 4 means 00:30 still belongs to yesterday. */
+  day_start_hour: number;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  /** `HH:MM:SS` wall-clock time work stops at. */
+  work_stop_at: string;
+  max_work_tasks: number;
+  /** Share of planned tasks that has to be closed, as a decimal string. */
+  tasks_required_ratio: string;
+  overtime_disqualifies: boolean;
+  /** ISO weekday numbers, 1 = Monday. */
+  workdays: number[];
+  nocode_days: number[];
+  required_anchors: string[];
+  note_md: string;
+}
+
+export interface Day {
+  date: string;
+  kind: DayKind;
+  is_nocode: boolean;
+  /** When the day was first opened; null when nobody ever came. */
+  opened_at: string | null;
+  last_touched_at: string | null;
+}
+
+/** One day and the rule it is judged by. `plan` stays null until #87 lands. */
+export interface DayDetail {
+  day: Day;
+  rule: DayRuleSet;
+  plan: null;
+  has_plan: boolean;
 }

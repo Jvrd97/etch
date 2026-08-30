@@ -64,6 +64,13 @@ let getCategories: ReturnType<typeof mock>;
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
 mock.module('@/lib/api', () => ({
+  // The day screen's client (#86). Present in every api mock for the same
+  // reason the rest of the surface is: bun fixes a module's export names on
+  // first link, so a mock that omits it deletes it for whoever runs next.
+  dayAPI: {
+    getToday: () => Promise.resolve(null),
+    get: () => Promise.resolve(null),
+  },
   dailySummaryAPI: {
     draft: (transcript: string, entryDate: string) => draft(transcript, entryDate),
     apply: (

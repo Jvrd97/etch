@@ -629,3 +629,35 @@ Feedback loops: pytest 329/329 green, `ruff check` clean, `ruff format --check` 
 - `habit-tracker/docs/day-boundary.md` — **new**: правило, таблица моментов, что вызывать, что переносит `#86`, единственное известное расхождение.
 
 Feedback loops: pytest 351/351 green, `ruff check` clean, `ruff format --check` clean (80 файлов), `mypy --strict app` clean (59 файлов), `alembic heads` — одна голова `a7c9e1b3d5f8`. Миграций нет: схема не менялась. Docker-демон на машине не поднят, поэтому `make check` целиком не отработал бы — прогон шёл против постгреса на 5432, база `habit_tracker_test`. Фронтенд не менялся: у тикета нет UI-слоя.
+
+## 2026-08-30 — PHASE-03/86 день существует: `day_rule_set`, `day`, `GET /day/{date}` и страница дня
+
+Дата 2026-08-30, тикет `86-day-exists-rule-set-and-day-page`. Первый срез вводит сам предмет: день как строку в базе и канон дня как версионированную строку рядом. Канон менялся дважды за месяц; будь потолок часов константой в модуле, следующая правка переписала бы вердикты всего прошлого и объяснить, почему 14 августа считалось иначе, было бы нечем.
+
+Пересечение интервалов правил отвергает база (`EXCLUDE USING gist (daterange(valid_from, valid_to, '[)') WITH &&)`), а не сервис: проверку в сервисе обходит любой писатель, который через него не идёт — импорт, следующая миграция, сессия `psql`. Интервал полуоткрытый, поэтому смена канона — одна дата, а не пара, которую надо держать согласованной.
+
+`kind` и `is_nocode` материализуются при создании дня. Выводить их на чтении означало бы переписать каждый прошлый вторник при следующей правке расписания недели — ровно то, что версионированный канон и заведён предотвращать.
+
+Источник границы суток переехал с настроек на таблицу, **сигнатура `local_date(at)` не менялась**: `app/crud/day.py` публикует `DayBoundary` действующего правила вызовом `daytime.use_boundary()`, потребители не тронуты. Запасной источник (настройки) остаётся для процесса, который до дня ещё не дошёл; его значения по умолчанию равны сидовой строке.
+
+Ручка отвечает «плана нет» явно (`plan: null`, `has_plan: false`), а не 404: пустой день — ответ, и 404 не дал бы читателю отличить пустой день от неверного URL. 404 остался за датой, которую не покрывает ни одно записанное правило.
+
+Тронутых файлов: 21 (13 new, 8 mod) в бэкенде и фронтенде, плюс 22 тестовых файла фронтенда, куда добавлен `dayAPI` в мок `@/lib/api` (bun фиксирует имена экспортов модуля при первой линковке, поэтому частичный мок удалил бы член у следующего сьюта).
+
+- `app/models/day.py` — **new**: `DayRuleSet` (интервал + GiST-исключение) и `Day` (PK — дата, `kind`/`is_nocode` заморожены при создании, `opened_at` NULL пока день не открывали).
+- `app/day/rules.py` — **new**: чистая логика канона — `covers`, `resolve_rule`, `active_rule`, `day_kind`, `is_nocode_date`, `SEED_RULES`. Базы не трогает.
+- `app/day/__init__.py` — **new**: пакет дня.
+- `app/crud/day.py` — **new**: `list_rules`, `seed_rules`, `rule_for_date`, `get_day`, `ensure_day`, `publish_boundary`, `refresh_day_boundary`. Таблица правил читается целиком: правило «действует на» написано один раз, в Python, а не второй раз в SQL.
+- `app/schemas/day.py` — **new**: `DayResponse`, `DayRuleSetResponse`, `DayDetailResponse`.
+- `app/api/day.py` — **new**: `GET /api/v1/day` (сегодня по границе суток) и `GET /api/v1/day/{date}`.
+- `alembic/versions/2026_08_30_1200-c8e0a2b4d6f9_day_and_rule_set.py` — **new**: обе таблицы, исключающее ограничение и сид двух правил; `downgrade()` проверен на живой базе.
+- `app/core/daytime.py` — **mod**: `DayBoundary`, `use_boundary`, `reset_boundary`, `current_boundary`; `local_date`/`day_bounds` читают опубликованную границу. Сигнатуры не менялись.
+- `app/main.py` — **mod**: роутер дня в `API_ROUTERS`, `_publish_day_boundary()` на старте.
+- `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: реэкспорт.
+- `tests/conftest.py` — **mod**: autouse-фикстура сбрасывает опубликованную границу между тестами — она процессная по замыслу, и вставленное одним тестом правило иначе решало бы, какой сегодня день, для всех следующих.
+- `tests/test_day_rules.py` — **new**: 26 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
+- `tests/test_day.py` — **new**: 11 тестов ручки; вид дня, legacy-правило на 14 августа, `opened_at = null`, «плана нет» вместо 404, `X-API-Key`, неизменность `kind` после новой строки расписания.
+- Фронтенд — **new**: `lib/day-format.ts` (+тест), `hooks/useDay.ts` (+тест), `components/DayScreen.tsx` (+тест), `components/mobile/MobileDayScreen.tsx`, страницы `app/day/page.tsx`, `app/day/[date]/page.tsx`, `app/m/day/page.tsx`, `app/m/day/[date]/page.tsx`; **mod**: `lib/api.ts` (`dayAPI`, типы), `lib/routes.ts` + `lib/routes.test.ts` (экран Day в реестре), `components/route-icons.ts`.
+- `habit-tracker/docs/day-boundary.md` — **mod**: раздел «Откуда берётся правило» переписан — источник теперь таблица, настройки стали запасным.
+
+Feedback loops: pytest 386/386 green (было 351), `ruff check` clean, `ruff format --check` clean (88 файлов), `mypy --strict app` clean (65 файлов), `alembic heads` — одна голова `c8e0a2b4d6f9`. Фронтенд: `bun test` 608/608 green (было 574), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`; миграция проверена отдельно на временной базе — `upgrade`, `downgrade`, `upgrade`, плюс сверка схемы после миграции со схемой после `create_all` (колонки, ограничения и индексы совпали).
