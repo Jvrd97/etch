@@ -1,13 +1,33 @@
-# habit-tracker/Makefile — deploy & ops shortcuts (run from this dir on the VPS)
+# habit-tracker/Makefile — deploy & ops shortcuts (run from this dir on the VPS),
+# plus the local dev entrypoint (`make dev`) used on a laptop.
 # Prod stack = base compose + prod override + the optional `web` (frontend) profile.
 COMPOSE = docker compose --profile web -f docker-compose.yml -f ../deploy/docker-compose.prod.yml
+# Local stack = base compose only, no prod override.
+DEV_COMPOSE = docker compose -f docker-compose.yml
+
+BACKEND_DIR = services/backend
+FRONTEND_DIR = services/frontend
+# Where the local postgres listens. The machine's own instance sits on 5432;
+# the docker one publishes 5433 — switch per run: `make dev PG_PORT=5433`.
+PG_HOST ?= localhost
+PG_PORT ?= 5432
+# One database per branch would be safest; at minimum override PG_DB when a
+# second checkout of this repo runs migrations from a different branch against
+# the same postgres — a foreign revision leaves the shared database on a
+# version the other branch cannot find.
+PG_DB ?= habit_tracker
+PG_USER = habit_user
+DEV_DB_ENV = POSTGRES_HOST=$(PG_HOST) POSTGRES_PORT=$(PG_PORT) POSTGRES_DB=$(PG_DB)
+BACKEND_PORT ?= 8000
+FRONTEND_PORT ?= 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help up down stop restart logs ps build migrate deploy backup enable-boot
+.PHONY: help up down stop restart logs ps build migrate deploy backup enable-boot \
+        dev dev-back dev-front dev-deps dev-createdb dev-migrate dev-stop dev-db dev-docker
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 up: ## Build and start everything (backend, frontend, postgres), detached
 	$(COMPOSE) up -d --build
@@ -44,3 +64,47 @@ backup: ## Run a one-off DB backup (see deploy/backup.sh)
 enable-boot: ## Make Docker (and restart:always containers) start on system boot
 	sudo systemctl enable --now docker
 	@echo "Docker enabled on boot. Containers use 'restart: always', so they auto-start."
+
+# --- local development ---------------------------------------------------
+# No docker at all: uvicorn and next run straight on the host against a
+# postgres that already runs there. Point PG_HOST/PG_PORT at whichever
+# instance holds the habit_tracker database; the docker one publishes 5433,
+# a brew-installed one listens on 5432.
+# `make dev-db` / `make dev-docker` stay available for the container route.
+
+dev: dev-migrate ## Run backend + frontend on the host; one Ctrl+C stops both
+	@echo "backend  http://localhost:$(BACKEND_PORT)/docs"
+	@echo "frontend http://localhost:$(FRONTEND_PORT)"
+	@trap 'kill 0' INT TERM; \
+	( cd $(BACKEND_DIR) && $(DEV_DB_ENV) uv run uvicorn app.main:app --reload --port $(BACKEND_PORT) 2>&1 | sed 's/^/[back ] /' ) & \
+	( cd $(FRONTEND_DIR) && API_PROXY_TARGET=http://localhost:$(BACKEND_PORT) bun run dev --port $(FRONTEND_PORT) 2>&1 | sed 's/^/[front] /' ) & \
+	wait
+
+dev-back: ## Backend only, hot reload, no container
+	cd $(BACKEND_DIR) && $(DEV_DB_ENV) uv run uvicorn app.main:app --reload --port $(BACKEND_PORT)
+
+dev-front: ## Frontend only, hot reload, proxying /api/v1 to the backend port
+	cd $(FRONTEND_DIR) && API_PROXY_TARGET=http://localhost:$(BACKEND_PORT) bun run dev --port $(FRONTEND_PORT)
+
+dev-deps: ## Install backend (uv) and frontend (bun) dependencies
+	cd $(BACKEND_DIR) && uv sync
+	cd $(FRONTEND_DIR) && bun install
+
+dev-createdb: ## Create the habit_tracker database if the local postgres lacks it
+	@psql -h $(PG_HOST) -p $(PG_PORT) -d postgres -tAc \
+		"select 1 from pg_database where datname='$(PG_DB)'" | grep -q 1 \
+		&& echo "$(PG_DB) already exists" \
+		|| createdb -h $(PG_HOST) -p $(PG_PORT) -O $(PG_USER) $(PG_DB)
+
+dev-migrate: dev-createdb ## Apply migrations against the postgres at PG_HOST:PG_PORT
+	cd $(BACKEND_DIR) && $(DEV_DB_ENV) uv run alembic upgrade head
+
+dev-stop: ## Stop the host dev processes
+	@pkill -f "uvicorn app.main:app" 2>/dev/null && echo "backend stopped" || echo "backend not running"
+	@pkill -f "next dev" 2>/dev/null && echo "frontend stopped" || echo "frontend not running"
+
+dev-db: ## Optional: start postgres in docker (publishes host port 5433)
+	$(DEV_COMPOSE) up -d postgres
+
+dev-docker: ## Optional: the whole stack in docker (base compose, no prod override)
+	$(DEV_COMPOSE) up --build
