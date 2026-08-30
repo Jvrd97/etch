@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/111, PHASE-01/62-mobile-onboarding-twin
+// [review:need-review] PHASE-03/111, PHASE-01/62-mobile-onboarding-twin, PHASE-03/152
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen but Chat has a mobile twin (Chat's is #118), a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
@@ -491,9 +491,13 @@ describe('MOBILE_ROUTES', () => {
     // gets its mobile twin in #118, and until then the mobile shell opens its
     // desktop route — cramped but working, as every screen did before its own
     // twin. The exception is listed rather than dropped, so the next screen
-    // arriving without a twin has to be added here deliberately.
+    // arriving without a twin has to be added here deliberately. `day-rules`
+    // (#152) is the second: the canon is edited from a laptop, not from a
+    // phone, and a half-built mobile form for it would be worse than the
+    // cramped desktop page.
     expect(APP_ROUTES.filter((route) => !route.hasMobile).map((route) => route.id)).toEqual([
       'chat',
+      'day-rules',
     ]);
     const ported = APP_ROUTES.filter((route) => route.hasMobile);
     expect([...MOBILE_ROUTES]).toEqual(ported.map((route) => route.href));

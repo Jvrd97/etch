@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/111
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/111, PHASE-03/152
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; dayRulesAPI reads every version of the day canon and publishes the next one, and has no way to edit one that exists
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -415,6 +415,44 @@ export const dayAPI = {
   },
 };
 
+// Day rules API: the canon of a day, versioned. There is no update and no
+// delete here, and that is the contract rather than an omission — a rule row
+// that has already judged days is never edited, only superseded from a date
+// that has not happened yet.
+export const dayRulesAPI = {
+  /**
+   * Every version, plus the earliest date a new one may start on.
+   *
+   * That date is the server's answer, not `new Date()`: the day turns at the
+   * boundary hour written in the canon itself, so at 00:30 the browser's
+   * «завтра» is still the server's «сегодня» — the one date publishing is not
+   * allowed to start on.
+   */
+  getHistory: async () => {
+    return fetcher<DayRuleSetHistory>('/day-rule-sets');
+  },
+
+  /** The version in force; 404 when the rule table has never been migrated. */
+  getCurrent: async () => {
+    return fetcher<DayRuleSet>('/day-rule-sets/current');
+  },
+
+  /**
+   * Publish a new version from `valid_from` onwards.
+   *
+   * The server closes the version in force at that same date and inserts this
+   * one, in a single transaction. Verdicts of days already lived are not
+   * recomputed: each of them is judged by the rule that covered its date, and
+   * that rule keeps its numbers.
+   */
+  publish: async (payload: DayRuleSetPublish) => {
+    return fetcher<DayRuleSet>('/day-rule-sets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+};
+
 // Types
 export type CategoryDisplayMode = 'form' | 'checklist';
 export type CategoryStreakMode = 'build' | 'avoid';
@@ -775,6 +813,45 @@ export interface DayRuleSet {
   nocode_days: number[];
   required_anchors: string[];
   note_md: string;
+}
+
+/**
+ * A new version of the canon, as the screen sends it.
+ *
+ * No `id` and no `valid_to`: the first would be an edit of a row and the second
+ * a hole in the canon, and a date with no rule covering it has no verdict at
+ * all. The end of an interval is written by the server, when the next version
+ * closes it.
+ */
+export interface DayRuleSetPublish {
+  /** First day lived under the new version; never today or earlier. */
+  valid_from: string;
+  timezone: string;
+  day_start_hour: number;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  /** `HH:MM:SS`. */
+  work_stop_at: string;
+  max_work_tasks: number;
+  /** Decimal string, `1.00` for «закрыты все». */
+  tasks_required_ratio: string;
+  overtime_disqualifies: boolean;
+  workdays: number[];
+  nocode_days: number[];
+  required_anchors: string[];
+  note_md: string;
+}
+
+/** Every version of the canon, and what the screen needs to publish the next. */
+export interface DayRuleSetHistory {
+  /** Today by the day boundary of the rule in force, not by the browser's clock. */
+  today: string;
+  /** Earliest `valid_from` the server will accept — tomorrow. */
+  earliest_valid_from: string;
+  /** id of the version in force; null when the rule table is empty. */
+  current_id: number | null;
+  /** Oldest interval first. */
+  rules: DayRuleSet[];
 }
 
 export interface Day {
