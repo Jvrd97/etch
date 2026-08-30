@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
 # summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, and the body of a turn; the SSE events are described here as constants so the frontend parser and the server cannot drift
 # summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
+# summary: PHASE-03/113 adds ConversationContext — the day card as it went into the prompt, its size, and which sections the ceiling ate
 """
 Типы провода для чата.
 
@@ -11,6 +12,10 @@
 
 Планы и выборки в этот срез не входят (`#114`, `#115`): ответ читается лентой
 сообщений, и `GET /conversations/{id}` отдаёт только их.
+
+**Карточка дня едет отдельной ручкой, а не полем сообщения.** Она про день, а
+не про ход: класть её копию в каждое сообщение значило бы хранить один и тот же
+текст столько раз, сколько было реплик.
 
 **Расход едет в обеих ручках, а не только в детальной.** Лента показывает, во
 что обошёлся каждый разговор, — иначе «дорогой» разговор виден лишь после того,
@@ -128,3 +133,21 @@ class MessageCreate(BaseModel):
     """Тело хода: одна реплика человека."""
 
     content: str = Field(min_length=1, max_length=MESSAGE_MAX_CHARS)
+
+
+class ConversationContext(BaseModel):
+    """
+    Что чат видит: карточка дня ровно тем текстом, каким она ушла в промпт.
+
+    `text` не пересказ и не выжимка — иначе раскрывашка отвечала бы на вопрос
+    «что модель могла увидеть» вместо «что она увидела». `dropped_sections`
+    называет секции, у которых потолок съел строки, в порядке выбывания.
+    """
+
+    conversation_id: int
+    entry_date: date
+    text: str
+    chars: int
+    max_chars: int
+    truncated: bool
+    dropped_sections: list[str]

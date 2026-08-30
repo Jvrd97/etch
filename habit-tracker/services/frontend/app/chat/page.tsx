@@ -1,10 +1,12 @@
 'use client';
-// [review:need-review] PHASE-03/111, PHASE-03/117
+// [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
 // summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, and one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
+// summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessagesSquare, SendHorizonal } from 'lucide-react';
+import ChatContextDisclosure from '@/components/chat/ChatContextDisclosure';
 import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -193,6 +195,13 @@ export default function ChatPage() {
         onAsk={() => setRemoval('confirming')}
         onCancel={() => setRemoval('idle')}
         onConfirm={() => void remove(screen.conversationId)}
+      />
+
+      {/* Раскрывашка живёт на экране, а не внутри шапки: `ChatHeader` рисует
+          то, что ему дали пропсами, и не ходит в сеть сам. */}
+      <ChatContextDisclosure
+        conversationId={screen.conversationId}
+        load={chatAPI.context}
       />
 
       <div className="space-y-4">

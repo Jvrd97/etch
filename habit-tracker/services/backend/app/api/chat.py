@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
 # summary: the chat router — conversations created, listed and read back with their messages, and one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
+# summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
 """
 Ручки разговора.
 
@@ -17,6 +18,13 @@
 `finally` генератора, так что закрытая вкладка оставляет сообщение со статусом
 `interrupted` и уже полученным текстом, а не пустоту.
 
+**Карточка дня строится той же сессией, что записывает вопрос.** Второй заход
+в базу ради контекста означал бы, что вопрос и карточка читают день в разные
+моменты, и ответ мог бы противоречить тому, что человек только что отметил.
+
+**`/context` строит карточку той же функцией, а не хранит её копию.** Карточка —
+это функция дня, и второй её экземпляр рядом с сообщением устаревал бы молча.
+
 **Ни одна строка содержимого не попадает в лог.** Наружу и в базу уходит
 машинный `error_code`; текст модели живёт ровно в `chat_messages.content`.
 
@@ -30,6 +38,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Response
@@ -41,7 +50,12 @@ from app.core.database import get_db
 from app.core.daytime import now_utc, today_local
 from app.crud import chat as chat_crud
 from app.llm.chat.client import CHUNK_DELTA, ChatChunk, ChatLLMClient
-from app.llm.chat.prompt import CHAT_SYSTEM_PROMPT, ChatTurn
+from app.llm.chat.context import build_day_card
+from app.llm.chat.prompt import (
+    CHAT_CONTEXT_VERSION,
+    ChatTurn,
+    compose_system_prompt,
+)
 from app.llm.client import LLMError
 from app.models.chat import (
     CONVERSATION_KINDS,
@@ -58,6 +72,7 @@ from app.schemas.chat import (
     SSE_EVENT_DONE,
     SSE_EVENT_ERROR,
     SSE_EVENT_USAGE,
+    ConversationContext,
     ConversationCreate,
     ConversationDetail,
     ConversationResponse,
@@ -204,6 +219,37 @@ async def get_conversation(
     )
 
 
+@router.get(
+    "/conversations/{conversation_id}/context", response_model=ConversationContext
+)
+async def get_conversation_context(
+    conversation_id: int, db: AsyncSession = Depends(get_db)
+) -> ConversationContext:
+    """
+    Что чат видит: карточка дня тем же текстом, каким она уходит в промпт.
+
+    Карточка собирается той же `build_day_card` по тому же дню разговора, а не
+    достаётся из копии рядом с сообщением: копия устаревала бы молча, и
+    раскрывашка показывала бы вчерашнюю правду сегодняшним ходом.
+    """
+    conversation = await chat_crud.get_conversation(db, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conversation {conversation_id} not found",
+        )
+    card = await build_day_card(db, conversation.started_on)
+    return ConversationContext(
+        conversation_id=conversation_id,
+        entry_date=card.entry_date,
+        text=card.text,
+        chars=card.chars,
+        max_chars=card.max_chars,
+        truncated=card.truncated,
+        dropped_sections=list(card.dropped_sections),
+    )
+
+
 @router.delete(
     "/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT
 )
@@ -231,14 +277,27 @@ async def delete_conversation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@dataclass(frozen=True)
+class _TurnContext:
+    """Всё, что ход берёт из базы до того, как соединение вернётся в пул."""
+
+    turns: list[ChatTurn]
+    answer_seq: int
+    system_prompt: str
+
+
 async def _record_question(
     factory: SessionFactory, conversation_id: int, content: str
-) -> tuple[list[ChatTurn], int]:
+) -> _TurnContext:
     """
     Записать реплику человека и вернуть контекст хода вместе с позицией ответа.
 
     Сессия открывается и закрывается здесь целиком: к моменту, когда начнётся
     генерация, соединение уже возвращено в пул.
+
+    Здесь же разговор приводится к текущей версии контекста: системный промпт с
+    карточкой — не тот, под которым собиралась прежняя сессия CLI, и продолжать
+    её было бы продолжением разговора с другой моделью поведения.
     """
     async with factory() as db:
         conversation = await chat_crud.get_conversation(db, conversation_id)
@@ -247,6 +306,10 @@ async def _record_question(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"conversation {conversation_id} not found",
             )
+        await chat_crud.reset_stale_context(
+            db, conversation, version=CHAT_CONTEXT_VERSION
+        )
+        card = await build_day_card(db, conversation.started_on)
         history = await chat_crud.list_messages(db, conversation_id)
         turns = [ChatTurn(role=one.role, content=one.content) for one in history]
 
@@ -267,7 +330,11 @@ async def _record_question(
         await db.commit()
 
     turns.append(ChatTurn(role=MESSAGE_ROLE_USER, content=content))
-    return turns, seq + 1
+    return _TurnContext(
+        turns=turns,
+        answer_seq=seq + 1,
+        system_prompt=compose_system_prompt(card.text),
+    )
 
 
 async def _record_answer(
@@ -319,6 +386,7 @@ async def _turn_events(
     conversation_id: int,
     answer_seq: int,
     turns: list[ChatTurn],
+    system_prompt: str,
 ) -> AsyncIterator[str]:
     """
     Ход целиком как поток событий SSE.
@@ -337,7 +405,7 @@ async def _turn_events(
     try:
         try:
             async for chunk in client.stream_turn(
-                system_prompt=CHAT_SYSTEM_PROMPT, turns=turns
+                system_prompt=system_prompt, turns=turns
             ):
                 if chunk.kind == CHUNK_DELTA:
                     parts.append(chunk.text)
@@ -421,17 +489,16 @@ async def post_message(
             ),
         )
 
-    turns, answer_seq = await _record_question(
-        factory, conversation_id, payload.content
-    )
+    context = await _record_question(factory, conversation_id, payload.content)
 
     return StreamingResponse(
         _turn_events(
             factory=factory,
             client=client,
             conversation_id=conversation_id,
-            answer_seq=answer_seq,
-            turns=turns,
+            answer_seq=context.answer_seq,
+            turns=context.turns,
+            system_prompt=context.system_prompt,
         ),
         media_type=SSE_MEDIA_TYPE,
         headers=SSE_HEADERS,

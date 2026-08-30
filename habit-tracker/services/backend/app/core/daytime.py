@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90, PHASE-03/91
+# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/113
 # summary: the single day boundary — local_date()/day_bounds()/now_utc() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC; since #90 nothing in app/ counts days any other way
+# summary: PHASE-03/113 adds local_time() — the wall clock of a stored moment, so a card printing a plan window does not open a second zone of its own
 """
 The one answer to "which day does this moment belong to".
 
@@ -60,6 +61,7 @@ __all__ = [
     "current_boundary",
     "day_bounds",
     "local_date",
+    "local_time",
     "now_utc",
     "reset_boundary",
     "today_local",
@@ -165,6 +167,26 @@ def local_date(at: datetime) -> date:
     # a stale offset, which does not matter — only `.date()` is used.
     shifted = at.astimezone(_zone(boundary)) - timedelta(hours=boundary.day_start_hour)
     return shifted.date()
+
+
+def local_time(at: datetime) -> time:
+    """
+    The wall clock a stored moment shows on the boundary's zone.
+
+    Reading is what this is for: a plan window lives in the table as UTC, and a
+    card that printed it raw would say the training starts at 05:30. The zone
+    comes from the same published boundary `local_date()` reads, so nothing here
+    is a second opinion about which clock the person lives on.
+
+    Refuses a naive datetime for the reason `local_date()` does — silently
+    reading it as UTC would shift the printed hour by the local offset.
+    """
+    if at.tzinfo is None or at.tzinfo.utcoffset(at) is None:
+        raise ValueError(
+            "local_time() needs a timezone-aware datetime: a naive one would be "
+            f"silently read as UTC and printed off by the local offset. Got {at!r}."
+        )
+    return at.astimezone(_zone(current_boundary())).time()
 
 
 def today_local() -> date:

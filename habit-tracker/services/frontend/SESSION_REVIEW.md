@@ -1105,3 +1105,26 @@ Feedback loops: `bun test` **713/713 green** (было 701), `bunx tsc --noEmit`
 
 Feedback loops: `bun test` **765/765 green** (было 752), `bunx tsc --noEmit` clean,
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/113 (раскрывашка «что чат видит»)
+
+Тронуто 4 файла фронта: 3 новых, 2 изменённых.
+
+- `components/chat/ChatContextDisclosure.tsx` — **new**: раскрывашка. Карточка читается по
+  первому раскрытию (двадцать тысяч знаков в свёрнутом виде никто не читает), повторное
+  раскрытие не перечитывает, текст рисуется моноширинным `<pre>` дословно — пересказ убил бы
+  единственный смысл экрана. Состояние — union `idle | loading | failed | ready`.
+  Чтение приходит пропсом `load`: подмена модуля `@/lib/api` в bun действует на весь процесс,
+  и статический `import { chatAPI }` в компоненте ломал бы соседние наборы тестов.
+- `lib/chat-context.ts` — **new**: `sectionLabel`, `sizeSummary`, `truncationNote`. Слова
+  пометки об обрезке — решение с тестом, а не разметка внутри JSX. Группировку разрядов даёт
+  `formatTokens` из `lib/chat-usage.ts`, второй такой же форматтер разошёлся бы с ним.
+- `components/chat/ChatContextDisclosure.test.tsx` — **new**: 4 теста — до раскрытия ничего не
+  читается, карточка на экране совпадает с полученной посимвольно, пометка называет выпавшие
+  секции по-русски, повторное раскрытие не шлёт второй запрос.
+- `lib/api.ts` — **mod**: тип `ChatContext` и `chatAPI.context(id)`.
+- `app/chat/page.tsx` — **mod**: раскрывашка под шапкой разговора; `ChatHeader` не тронут —
+  он рисует то, что ему дали пропсами, и в сеть не ходит.
+
+Feedback loops: `bun test` **769/769 green** (было 765), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.

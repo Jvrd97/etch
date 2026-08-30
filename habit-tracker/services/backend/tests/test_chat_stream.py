@@ -2,7 +2,8 @@
 Ход разговора по SSE: порядок событий, запись сообщений и отказы.
 """
 
-# [review:need-review] PHASE-03/111
+# [review:need-review] PHASE-03/111, PHASE-03/113
+# summary: PHASE-03/113 moved the system prompt of a turn to compose_system_prompt(day card), so the prompt assertion checks the composition rather than the bare constant
 # summary: SSE tests over a stubbed ChatLLMClient — event order (delta*, usage, done), the answer written with its token counters, monotonic seq across two turns, the dialogue replayed to the model on the second turn, 503 without a backend leaving no row, and a backend failure landing as `failed` with a machine code rather than as a 500
 import json
 from collections.abc import AsyncIterator, Sequence
@@ -19,7 +20,11 @@ from app.api.chat import ERROR_CODE_BACKEND
 from app.api.deps import get_chat_llm_client, get_session_factory
 from app.crud import chat as chat_crud
 from app.llm.chat.client import ChatChunk, ChatLLMClient
-from app.llm.chat.prompt import CHAT_SYSTEM_PROMPT, ChatTurn
+from app.llm.chat.prompt import (
+    CHAT_SYSTEM_PROMPT,
+    ChatTurn,
+    compose_system_prompt,
+)
 from app.llm.client import LLMError
 from app.main import app
 from app.models.chat import (
@@ -277,7 +282,7 @@ class TestTurn:
     async def test_the_chat_system_prompt_is_the_one_sent(
         self, client: AsyncClient, install_chat: Any
     ) -> None:
-        """Системный промпт приходит из одного места, а не собирается в ручке."""
+        """Системный промпт собирается в одном месте, а не в ручке."""
         fake = FakeChatClient(["ok"])
         install_chat(fake)
         conversation_id = await _new_conversation(client)
@@ -286,7 +291,12 @@ class TestTurn:
             client, f"/api/v1/chat/conversations/{conversation_id}/messages", "привет"
         )
 
-        assert fake.seen_prompt == CHAT_SYSTEM_PROMPT
+        # Правила поведения и карточка дня склеиваются `compose_system_prompt`;
+        # ручка не имеет права добавить к ним ни строки от себя.
+        assert fake.seen_prompt is not None
+        assert fake.seen_prompt.startswith(CHAT_SYSTEM_PROMPT)
+        card = fake.seen_prompt[len(CHAT_SYSTEM_PROMPT) :].lstrip("\n")
+        assert fake.seen_prompt == compose_system_prompt(card)
 
     async def test_dialogue_survives_a_restart(
         self, client: AsyncClient, install_chat: Any
@@ -486,6 +496,7 @@ class TestSessionAndInterruption:
             conversation_id=conversation.id,
             answer_seq=1,
             turns=[ChatTurn(MESSAGE_ROLE_USER, "вопрос")],
+            system_prompt=CHAT_SYSTEM_PROMPT,
         )
         first = await events.__anext__()
         assert "первый" in first

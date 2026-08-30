@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
 # summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, and the append that records what a turn cost
 # summary: PHASE-03/117 adds the delete that takes the four tables and the CLI session file with it, and the usage rollup that sums a conversation's tokens without reading one `content`
+# summary: PHASE-03/113 adds reset_stale_context — a dialogue built under an older system prompt loses its CLI session hint instead of being resumed under a prompt that no longer exists
 """
 Доступ к таблицам разговора.
 
@@ -189,6 +190,28 @@ async def add_message(
     await db.flush()
     await db.refresh(message)
     return message
+
+
+async def reset_stale_context(
+    db: AsyncSession, conversation: ChatConversation, *, version: int
+) -> bool:
+    """
+    Привести разговор к текущей версии контекста, обнулив подсказку сессии CLI.
+
+    `--resume` продолжает сессию, собранную под прежним системным промптом:
+    карточка дня и правила поведения в ней уже другие, а модель об этом не
+    узнает. Поэтому смена версии стоит подсказки, а не разговора — сообщения
+    остаются на месте, следующий ход просто уходит реплеем.
+
+    Возвращает, пришлось ли что-то менять, чтобы вызывающий не писал в базу
+    на каждом ходу уже актуального разговора.
+    """
+    if conversation.context_version == version:
+        return False
+    conversation.context_version = version
+    conversation.cli_session_id = None
+    await db.flush()
+    return True
 
 
 async def touch_conversation(

@@ -2,7 +2,7 @@
  * API Client for Habit Tracker Backend
  */
 // [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/134
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
@@ -1415,6 +1415,23 @@ export interface ChatConversationDetail extends ChatConversation {
   messages: ChatMessage[];
 }
 
+/**
+ * Что чат видит: карточка дня тем же текстом, каким она ушла в системный промпт.
+ *
+ * `text` не пересказ — раскрывашка «что чат видит» существует ровно затем, чтобы
+ * фразу из ответа модели можно было найти здесь глазами. `dropped_sections`
+ * называет секции, у которых потолок съел строки.
+ */
+export interface ChatContext {
+  conversation_id: number;
+  entry_date: string;
+  text: string;
+  chars: number;
+  max_chars: number;
+  truncated: boolean;
+  dropped_sections: string[];
+}
+
 export const chatAPI = {
   list: async (limit = 50) => {
     return fetcher<ChatConversation[]>(`/chat/conversations?limit=${limit}`);
@@ -1429,6 +1446,11 @@ export const chatAPI = {
 
   get: async (id: number) => {
     return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /** Карточка дня разговора — то, что модель увидела перед ответом. */
+  context: async (id: number) => {
+    return fetcher<ChatContext>(`/chat/conversations/${id}/context`);
   },
 
   /**
