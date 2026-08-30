@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106
-# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start)
+# [review:need-review] PHASE-03/106, PHASE-03/96
+# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), and the backups directory mounted so the weekly md export lands on the host disk
 # Usage (on VPS, from habit-tracker/):
 #   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
 services:
@@ -34,6 +34,11 @@ services:
     volumes:
       - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
       - ${HOME}/.claude.json:/root/.claude.json
+      # The weekly `.md` export (deploy/export-md.sh) runs inside this container
+      # and writes to /backups/exports; the host reads the same bytes under
+      # BACKUP_DIR/exports. Without this mount the export lands in a container
+      # layer and dies with the next `up --build`.
+      - ${BACKUP_DIR:-/opt/habit-tracker/backups}:/backups
 
   frontend:
     restart: always
