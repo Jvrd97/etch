@@ -12,3 +12,6 @@ refs/
 # Generated knowledge graph (graphify)
 graphify-out/
 docs/design/
+
+# Состояние ночного прогона: списки волн, результаты сессий, логи, локи (bashs/issue-night.sh)
+.night/
