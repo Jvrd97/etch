@@ -29,7 +29,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -440,9 +440,3 @@ async def import_training_state(db: AsyncSession, text: str) -> TrainingImportRe
 
     await db.flush()
     return report
-
-
-def latest_date(days: Iterable[date]) -> date | None:
-    """The last date a parse knows, or None for an empty file."""
-    known = list(days)
-    return max(known) if known else None
