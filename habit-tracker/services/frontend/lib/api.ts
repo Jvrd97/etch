@@ -1,8 +1,10 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/111
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
+
+import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -1167,5 +1169,117 @@ export const goalsAPI = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     });
+  },
+};
+
+// ============ Chat ============
+
+/** Why a conversation was started. Mirrors `CONVERSATION_KINDS` on the server. */
+export type ConversationKind = 'general' | 'day_open' | 'day_close';
+
+/** Who said it. `system_note` is the server speaking, not the model. */
+export type ChatRole = 'user' | 'assistant' | 'system_note';
+
+/**
+ * State of one message.
+ *
+ * `interrupted` and `failed` are different facts: the first has the text that
+ * arrived before the connection died, the second has no text and a machine code.
+ */
+export type ChatMessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
+
+export interface ChatConversation {
+  id: number;
+  title: string | null;
+  started_on: string;
+  kind: ConversationKind;
+  llm_backend: string | null;
+  context_version: number;
+  last_message_at: string | null;
+  archived: boolean;
+  created_at: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  seq: number;
+  role: ChatRole;
+  content: string;
+  status: ChatMessageStatus;
+  error_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  latency_ms: number | null;
+  model: string | null;
+  created_at: string;
+}
+
+/** A conversation read back with its messages — what a reload of `/chat` draws. */
+export interface ChatConversationDetail extends ChatConversation {
+  messages: ChatMessage[];
+}
+
+export const chatAPI = {
+  list: async (limit = 50) => {
+    return fetcher<ChatConversation[]>(`/chat/conversations?limit=${limit}`);
+  },
+
+  create: async (kind: ConversationKind = 'general') => {
+    return fetcher<ChatConversation>('/chat/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ kind }),
+    });
+  },
+
+  get: async (id: number) => {
+    return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /**
+   * Send one turn and read the answer as it is produced.
+   *
+   * Not `fetcher`: that one waits for the whole body, which is exactly what
+   * this endpoint exists to avoid. `signal` lets the screen abandon a turn;
+   * the server still stores what it had, with status `interrupted`.
+   */
+  streamMessage: async (
+    id: number,
+    content: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    const response = await fetch(`${API_BASE_URL}/chat/conversations/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
+      throw new APIError(response.status, error.detail || 'An error occurred');
+    }
+    if (!response.body) {
+      throw new APIError(response.status, 'Поток ответа недоступен в этом браузере');
+    }
+
+    const reader = response.body.getReader();
+    // `stream: true` on the decoder is what keeps a multi-byte character whole
+    // when a chunk ends in the middle of it — Russian text splits routinely.
+    const decoder = new TextDecoder();
+    const parser = new ChatStreamParser();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+          onEvent(event);
+        }
+      }
+      for (const event of parser.flush()) onEvent(event);
+    } finally {
+      reader.releaseLock();
+    }
   },
 };

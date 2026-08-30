@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen now has a mobile twin (insights was the last), a nested route of a flat screen is the no-mobile example
+// [review:need-review] PHASE-03/111, PHASE-01/62-mobile-onboarding-twin
+// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen but Chat has a mobile twin (Chat's is #118), a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
 import { APP_ROUTES } from './routes';
@@ -486,11 +486,18 @@ describe('MOBILE_ROUTES', () => {
     expect(MOBILE_ROUTES).toContain('/insights');
   });
 
-  it('now covers every screen in the registry — the mobile port is complete', () => {
-    // The final slice (insights) lands here: no desktop screen is left without
-    // a mobile twin, so the view-mode toggle maps every registry route across.
-    expect([...MOBILE_ROUTES]).toEqual(APP_ROUTES.map((route) => route.href));
-    expect(APP_ROUTES.every((route) => hasMobileVersion(route.href))).toBe(true);
+  it('covers every screen except the ones still waiting for their mobile slice', () => {
+    // Held for every screen from the insights slice until Chat landed: `/chat`
+    // gets its mobile twin in #118, and until then the mobile shell opens its
+    // desktop route — cramped but working, as every screen did before its own
+    // twin. The exception is listed rather than dropped, so the next screen
+    // arriving without a twin has to be added here deliberately.
+    expect(APP_ROUTES.filter((route) => !route.hasMobile).map((route) => route.id)).toEqual([
+      'chat',
+    ]);
+    const ported = APP_ROUTES.filter((route) => route.hasMobile);
+    expect([...MOBILE_ROUTES]).toEqual(ported.map((route) => route.href));
+    expect(ported.every((route) => hasMobileVersion(route.href))).toBe(true);
   });
 });
 

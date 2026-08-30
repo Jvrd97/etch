@@ -984,3 +984,29 @@ Feedback loops: `bun test` **701/701 green** (было 682), `bunx tsc --noEmit`
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
 Бэкенд того же тикета: pytest 603/603, `ruff`, `mypy --strict`, одна голова `d5a7c9e1f3b6`.
 `make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-30 — PHASE-03/111: экран `/chat`
+
+- `lib/chat-stream.ts` — **new**: чистый разборщик SSE. Состояние здесь неслучайно — сетевой
+  кусок кончается там, где решил TCP, регулярно посреди кадра. `ChatStreamEvent` —
+  размеченное объединение: `delta`, `usage`, `done`, `error`. Незнакомое имя события и битый
+  JSON пропускаются, а не роняют ход.
+- `lib/chat-stream.test.ts` — **new**, 12 тестов: порядок кусков, кадр, разрезанный пополам,
+  переводы строк внутри ответа, CRLF, `flush` последнего кадра без пустой строки, пропуск
+  незнакомого имени и `done` без id.
+- `lib/api.ts` — **mod**: типы `ChatConversation`, `ChatMessage`, `ChatConversationDetail` и
+  `chatAPI`. `streamMessage` идёт мимо `fetcher`: тот ждёт всё тело, ради отказа от чего ручка
+  и существует. `TextDecoder({stream: true})` — то, что не рвёт русскую букву пополам.
+- `app/chat/page.tsx` — **new**: лента сообщений, поле ввода, ответ по кускам. Состояния экрана
+  и хода — объединения, не булевы флаги. После закрытия хода разговор перечитывается с сервера:
+  строки таблицы и есть разговор.
+- `lib/routes.ts`, `components/route-icons.ts` — **mod**: экран в реестре под «More», глиф
+  `MessagesSquare`. `hasMobile: false` — мобильный близнец это `#118`.
+- `lib/routes.test.ts`, `lib/view-mode.test.ts` — **mod**: список «More» пополнился, а
+  инвариант «мобильный порт полон» переписан на «полон, кроме перечисленных» и называет `chat`
+  поимённо — чтобы следующий экран без близнеца добавляли сюда осознанно, а не мимо теста.
+
+Feedback loops: `bun test` **713/713 green** (было 701), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 638/638, `ruff`, `mypy --strict`, одна голова `e6b8d0f2a4c7`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.

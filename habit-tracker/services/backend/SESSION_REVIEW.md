@@ -913,3 +913,54 @@ Feedback loops (backend): pytest **603/603 green** (было 575), `ruff check` 
 одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком **не отрабатывал**:
 тесты шли против постгреса на localhost:5432, база `habit_tracker_test`; миграция проверена
 отдельно на `habit_mig_91` тем же постгресом.
+
+## 2026-08-30 — PHASE-03/111: чат отвечает одним ходом и переживает перезапуск
+
+Тронуто 11 файлов бэкенда: 8 new, 3 mod (плюс `app/llm/client.py`, `app/api/deps.py`,
+`app/main.py`, `app/core/config.py`, `app/models/__init__.py`, `app/crud/__init__.py`).
+
+- `app/models/chat.py` — **new**: четыре таблицы темы. `chat_conversations` (день разговора,
+  вид, подсказки `cli_session_id`/`cli_cwd`/`context_version` — заводятся здесь, включает `#112`),
+  `chat_messages` (порядок несёт `seq`, а не `created_at`; `uq_chat_message_seq` делает дубль
+  позиции ошибкой базы), `chat_plans` (`message_id` unique; `applied_summary_id` намеренно без
+  внешнего ключа), `chat_retrievals`. Словари — плоские строки без PG-enum и CHECK, по образцу
+  `display_mode`.
+- `alembic/versions/…-e6b8d0f2a4c7_chat_conversation_tables.py` — **new**: одна ревизия на всю
+  тему, `down_revision = d5a7c9e1f3b6` (фактическая голова ветки). Проверена вживую на отдельной
+  базе `habit_tracker_migr`: upgrade → downgrade → upgrade; после downgrade ни одной из четырёх
+  таблиц нет. `alembic check` на мигрированной базе не показывает расхождений по chat-таблицам —
+  модель и миграция совпадают колонка в колонку.
+- `app/llm/chat/client.py` — **new**: `ChatLLMClient.stream_turn(...) -> AsyncIterator[ChatChunk]`
+  рядом с нетронутым `LLMClient.generate`. `ISOLATION_ARGS` — отдельная константа, потому что
+  проверяется тестом целиком: `--tools ""` и `--setting-sources ""` вместе со значениями, плюс
+  `CLAUDE_CONFIG_DIR` и фиксированный пустой cwd из настроек. stderr процесса — `DEVNULL`:
+  там эхо промпта. Парсер `stream_event/content_block_delta/text_delta` и финального `result`;
+  `input_tokens` = `input + cache_creation`, иначе проверка «первый ход дешевле тысячи» врёт.
+  API-реализация — `messages.stream` через `AnthropicInsightsClient.sdk`.
+- `app/llm/chat/prompt.py` — **new**: системный промпт чата, `CHAT_CONTEXT_VERSION`, `ChatTurn` и
+  `render_transcript` (реплей одним промптом с подписями ролей).
+- `app/crud/chat.py`, `app/schemas/chat.py`, `app/api/chat.py` — **new**: лента, разговор с
+  сообщениями, ход по SSE. Ход не берёт `get_db`: контекст читается своей сессией, сессия
+  отпускается, ответ пишется новой — это же закрывает долг
+  `concern-charts-ai-followups.md`. 503 проверяется **до** записи реплики.
+- `app/llm/client.py` — **mod**: подпись `generate` не тронута. Добавлены свойство `sdk` и
+  ре-экспорт `AnthropicAPIError`, чтобы `app/llm/chat/` стримил без второго `import anthropic`:
+  инвариант «SDK импортируется ровно в одном файле» держится грепом, а не памятью.
+- `app/api/deps.py` — **mod**: `get_chat_llm_client` и `get_session_factory` (фабрика сессий для
+  единственной ручки, которой нельзя держать соединение всю генерацию).
+- `tests/test_chat_stream.py` — **new**, 15 тестов: порядок событий `delta*/usage/done`, ответ с
+  счётчиками токенов, `seq` 1..4 на двух ходах, реплей всего разговора на втором ходу, чтение
+  разговора после «перезапуска», 503 без бэкенда не оставляет строк, сбой бэкенда даёт `failed`
+  с машинным кодом и сохраняет полученный текст, в событии `error` нет ни куска разговора; плюс
+  два несущих: во время генерации не открыто ни одной сессии БД, и закрытый генератор пишет
+  `interrupted` с уже полученным текстом.
+- `tests/test_chat_cli_args.py` — **new**, 20 тестов: набор флагов изоляции целиком (включая
+  дословную сверку состава — замер 282 против 52 555 токенов сделан именно на нём),
+  `CLAUDE_CONFIG_DIR` и cwd доезжают до процесса, разговор уходит stdin, ненулевой код не
+  протекает содержимым, разбор потока и игнор незнакомых строк.
+
+Feedback loops (backend): pytest **638/638 green** (было 603; 35 из них — новые тесты чата),
+`ruff check` clean, `ruff format --check` clean (139 файлов), `mypy --strict app`
+clean (101 файл), `alembic heads` — одна голова `e6b8d0f2a4c7`. Docker-демон не поднят,
+`make check` целиком **не отрабатывал**: тесты шли против постгреса на localhost:5432
+(`habit_tracker_test`), миграция — на `habit_tracker_migr` тем же постгресом.

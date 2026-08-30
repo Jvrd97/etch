@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan
-# summary: neutral LLMClient.generate(prompt) — no baked system prompt; InsightsClient kept as alias, both backends preserved
+# [review:need-review] PHASE-01/52-text-to-category-plan, PHASE-03/111
+# summary: neutral LLMClient.generate(prompt) — no baked system prompt; InsightsClient kept as alias, both backends preserved; the SDK handle and its error class are exposed so app/llm/chat can stream without a second `import anthropic`
 from __future__ import annotations
 
 import shutil
@@ -7,6 +7,11 @@ import shutil
 import anthropic
 
 from app.core.config import settings
+
+# Upstream error class, re-exported. `app/llm/chat/` needs to tell an API
+# failure apart from a bug in its own parser, and this file stays the only one
+# in `app/` that imports the SDK — an invariant checked by grep, not by memory.
+AnthropicAPIError = anthropic.APIError
 
 INSIGHTS_MODEL = "claude-sonnet-5"
 # Generous timeout: a month-of-data report or an onboarding plan is a long request.
@@ -52,6 +57,16 @@ class AnthropicInsightsClient(LLMClient):
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key, timeout=LLM_TIMEOUT_SECONDS
         )
+
+    @property
+    def sdk(self) -> anthropic.AsyncAnthropic:
+        """
+        The configured SDK handle, for callers that need a call `generate` is
+        not — streaming a chat turn, say. Exposed rather than duplicated: a
+        second `anthropic.AsyncAnthropic(...)` elsewhere would be a second
+        place the timeout and the key are configured.
+        """
+        return self._client
 
     async def generate(self, prompt: str) -> str:
         try:
