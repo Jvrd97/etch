@@ -60,6 +60,13 @@ const DAY: DayDetail = {
     missing_anchors: [],
     source: 'close',
   },
+  work: {
+    day_date: '2026-08-30',
+    intervals: [],
+    // «Не измерено», not zero: the day has no intervals at all.
+    work_minutes: null,
+    running: false,
+  },
 };
 
 // A plan as the server answers with one: sections in order, a schedule the

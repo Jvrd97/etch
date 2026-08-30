@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
-# summary: day DTOs — the day itself, the rule it is judged by, the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, and the итог with the verdict of the day
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91
+# summary: day DTOs — the day itself, the rule it is judged by, the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, the итог with the verdict of the day, and the intervals of work with their sum — and no window title, because the table has no column for one
 """
 Wire types of the day.
 
@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
 from app.schemas.summary import DaySummaryResponse
+from app.schemas.work_interval import WorkDayResponse
 
 
 class DayRuleSetResponse(BaseModel):
@@ -115,5 +116,13 @@ class DayDetailResponse(BaseModel):
             "Итог дня: вердикт, невыполненное условие, счётчики, стрик и проза. "
             "День не закрыт — `closed: false`, `verdict: null` и живой пересчёт, "
             "а не «проиграл»"
+        ),
+    )
+    work: WorkDayResponse = Field(
+        ...,
+        description=(
+            "Интервалы работы дня и их сумма. `work_minutes: null` — ни одного "
+            "интервала, то есть «не измерено», а не ноль. Заголовков окон здесь "
+            "нет: `work_interval` их не хранит"
         ),
     )

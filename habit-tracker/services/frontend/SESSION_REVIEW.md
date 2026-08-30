@@ -958,3 +958,29 @@ Feedback loops: `bun test` 580/580 green, `bunx tsc --noEmit` clean, `bun run li
 Feedback loops: `bun test` 664/664 green (было 574 до волны), `bunx tsc --noEmit` clean, `bun run lint` 0 problems. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль. Бэкенд той же волны: pytest 455/455, `ruff check`, `ruff format --check`, `mypy --strict app`, одна голова Alembic `e0b2d4f6a8c1`. `make check` целиком не прогонялся ни разу: его цель `test` поднимает постгрес в docker, а демон на машине не отвечает — тесты шли против локального постгреса на 5432, база `habit_tracker_test`.
 
 Известные долги экрана, зафиксированные приёмкой волны: `DayScreen` и `MobileDayScreen` зовут `useDay(date, true)` без разбора даты, поэтому листание истории проставляет `opened_at` историческим дням и стирает разницу между непрожитым днём и прожитым пусто (чинится в [#90]); `MobileDayScreen` не покрыт тестами и дублирует шапку десктопного шелла.
+
+## 2026-08-30 — PHASE-03/91: время работы на экране дня
+
+- `lib/work-intervals.ts` — **new** (+тест): `momentOf` (настенное `HH:MM` дня → момент со
+  смещением машины), `crossesMidnight`, `clockOf`, `spanLabel`, `proposedLabel`, `sourceLabel`,
+  строки блока. Какому дню принадлежит интервал, здесь не решается никогда — это ответ сервера.
+- `hooks/useWorkIntervals.ts` — **new**: интервалы дня, `add`/`edit`/`remove`, множество
+  `saving`. Оптимистичных правок нет намеренно: длину открытого интервала считает сервер
+  (до `now`, но не дальше конца суток), и локальная догадка дала бы на экране одно число, а в
+  вердикте рядом — другое.
+- `components/day/WorkIntervals.tsx` — **new** (+тест, 8 штук): список интервалов с суммой,
+  ручной ввод по настенным часам, кнопка «Остановить» у идущего, «Убрать» у любого.
+  Исправленный интервал показывает и своё значение, и «Агент предлагал: …». День без интервалов
+  говорит «время не измерено», а не «0 ч».
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: блок стоит над
+  «Итогом дня», потому что вердикт стоит на его сумме; после любой правки день перечитывается.
+- `lib/api.ts` — **mod**: типы `WorkInterval`, `WorkDay`, `WorkIntervalDraft`,
+  `WorkIntervalPatch`, `DayDetail.work`; методы `workIntervals`, `addWorkInterval`,
+  `updateWorkInterval`, `deleteWorkInterval`. Поля под заголовок окна в типах нет.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts` — **mod**: фикстура дня получила блок
+  `work` с `work_minutes: null` — честное «не измерено» для дня без интервалов.
+
+Feedback loops: `bun test` **701/701 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 603/603, `ruff`, `mypy --strict`, одна голова `d5a7c9e1f3b6`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.

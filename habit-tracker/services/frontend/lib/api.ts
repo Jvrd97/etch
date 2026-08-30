@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -341,6 +341,52 @@ export const dayAPI = {
     return fetcher<Mark>(`/day/${date}/marks/${itemId}`, {
       method: 'PUT',
       body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * The intervals of measured work of a day, and their sum.
+   *
+   * `work_minutes: null` is «не измерено», not zero: the day then skips the
+   * overtime check instead of reading as comfortably short.
+   */
+  workIntervals: async (date: string) => {
+    return fetcher<WorkDay>(`/day/${date}/work-intervals`);
+  },
+
+  /**
+   * Add one interval. Manual entry is the first-class path, not the fallback:
+   * `source` defaults to `manual` and an interval typed by hand is no lesser a
+   * measurement than one the agent proposed.
+   */
+  addWorkInterval: async (date: string, draft: WorkIntervalDraft) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Edit one interval; the server keeps what the agent proposed beside it.
+   *
+   * Only the keys present move, so an edit of the note cannot reopen an
+   * interval that finished hours ago.
+   */
+  updateWorkInterval: async (
+    date: string,
+    intervalId: string,
+    patch: WorkIntervalPatch
+  ) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Remove one interval; deleting the last returns the day to «не измерено». */
+  deleteWorkInterval: async (date: string, intervalId: string) => {
+    return fetcher<void>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'DELETE',
     });
   },
 
@@ -948,6 +994,77 @@ export interface DayDetail {
   notebook: string | null;
   /** Always present — a live recount while the day is not closed. */
   summary: DaySummary;
+  /** The intervals the day's measured time is made of, and their sum. */
+  work: WorkDay;
+}
+
+/** Who put an interval there; `corrected` is a state, not a writer. */
+export type WorkIntervalSource = 'manual' | 'agent' | 'corrected';
+
+/** What the interval says the person was doing; only `work` adds up. */
+export type WorkMode = 'work' | 'off';
+
+/**
+ * One recorded stretch of work or pause.
+ *
+ * `auto_started_at`/`auto_ended_at` hold what the agent proposed before a
+ * person moved it, so a corrected interval can show both values at once —
+ * «исправил руками» and «агент так и посчитал» have to stay tellable apart.
+ *
+ * There is no field for a window title, and there is no column behind one: the
+ * privacy line of the day model runs through this table. Screenshots do not
+ * exist anywhere in this system.
+ */
+export interface WorkInterval {
+  id: string;
+  day_date: string;
+  started_at: string;
+  /** null means the interval is running right now. */
+  ended_at: string | null;
+  running: boolean;
+  /** Length as the server counts it; an open interval is measured to now. */
+  minutes: number;
+  source: WorkIntervalSource;
+  mode: WorkMode;
+  auto_started_at: string | null;
+  auto_ended_at: string | null;
+  app_bundle_id: string | null;
+  note: string | null;
+  /** When a person intervened; null means nobody has. */
+  edited_at: string | null;
+}
+
+/** The work of one day: its intervals and what they add up to. */
+export interface WorkDay {
+  day_date: string;
+  intervals: WorkInterval[];
+  /** null means «не измерено» — no intervals at all — and never zero. */
+  work_minutes: number | null;
+  running: boolean;
+}
+
+/** A new interval. `corrected` cannot be declared: it is reached by editing. */
+export interface WorkIntervalDraft {
+  started_at: string;
+  ended_at?: string | null;
+  source?: 'manual' | 'agent';
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
+}
+
+/**
+ * An edit of an interval; only the keys present are touched.
+ *
+ * `ended_at: null` reopens a closed interval, an absent `ended_at` leaves it
+ * alone — which is why this is a partial object rather than the whole row.
+ */
+export interface WorkIntervalPatch {
+  started_at?: string;
+  ended_at?: string | null;
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
 }
 
 /** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */

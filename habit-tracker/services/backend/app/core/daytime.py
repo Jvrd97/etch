@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90
-# summary: the single day boundary — local_date()/day_bounds() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC; since #90 nothing in app/ counts days any other way
+# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90, PHASE-03/91
+# summary: the single day boundary — local_date()/day_bounds()/now_utc() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC; since #90 nothing in app/ counts days any other way
 """
 The one answer to "which day does this moment belong to".
 
@@ -60,10 +60,22 @@ __all__ = [
     "current_boundary",
     "day_bounds",
     "local_date",
+    "now_utc",
     "reset_boundary",
     "today_local",
     "use_boundary",
 ]
+
+
+def now_utc() -> datetime:
+    """
+    The current moment, aware and in UTC.
+
+    Here rather than at each call site so that nobody spells it `datetime.now()`
+    without a zone: `local_date()` refuses a naive datetime by design, and the
+    fix for that refusal is worth having in exactly one spelling.
+    """
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -163,7 +175,7 @@ def today_local() -> date:
     do not each write their own `datetime.now(...)` and drift apart on which
     clock they read.
     """
-    return local_date(datetime.now(timezone.utc))
+    return local_date(now_utc())
 
 
 def day_bounds(d: date) -> tuple[datetime, datetime]:

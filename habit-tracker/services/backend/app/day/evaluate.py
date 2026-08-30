@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/90
+# [review:need-review] PHASE-03/90, PHASE-03/91
 # summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero
 """
 Whether a day was won, decided without a database.
@@ -23,10 +23,11 @@ all rather than a lost one: nobody has said what happened to it yet, and a
 `lost` written by a clock rather than by a person is the one reading that makes
 the whole record untrustworthy.
 
-**`work_minutes IS NULL` means "не измерено", never zero.** Intervals of work
-arrive with `#91`; until then most days carry no number. Such a day skips the
-overtime check and says so in `missing_data`, because calling it clean would be
-exactly as wrong as calling it overtime.
+**`work_minutes IS NULL` means "не измерено", never zero.** Since `#91` the
+number is measured by the `work_interval` rows of the day; a day with none of
+them carries no number at all. Such a day skips the overtime check and says so
+in `missing_data`, because calling it clean would be exactly as wrong as calling
+it overtime.
 
 Nothing here touches the session, FastAPI or `app.crud`, by the same reasoning
 as `app.health.aggregate`: the whole truth table runs in milliseconds under
@@ -85,9 +86,9 @@ class DayFacts:
     Everything the verdict is decided from, as plain values.
 
     Assembled by `app.crud.summary` out of rows that already exist: the marks of
-    the plan for both counters, and `work_minutes` from outside — the day's
-    intervals of work are `#91`, and until then the number arrives in the body
-    of `POST /close` or not at all.
+    the plan for both counters, and `work_minutes` from the day's `work_interval`
+    rows (`#91`). A day with no intervals falls back to the number `POST /close`
+    carried, and to `None` when it carried none either.
     """
 
     closed: bool
