@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/142
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/92, PHASE-03/142
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); all three plan writes claim `opened_at` only inside the open window
 from datetime import date
 from uuid import UUID
 
@@ -8,14 +8,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import today_local
+from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
+from app.crud import training as training_crud
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
+from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
+from app.schemas.anchor import (
+    DayAnchorResponse,
+    DayAnchorsIn,
+    DayAnchorsResponse,
+)
 from app.schemas.day import (
     DayDetailResponse,
     DayEdgeResponse,
@@ -32,6 +40,7 @@ from app.schemas.mark import (
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
+from app.schemas.training import TrainingDayIn, TrainingDayResponse
 
 router = APIRouter(prefix="/day", tags=["day"])
 
@@ -121,6 +130,7 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
     marks = await mark_crud.list_marks(db, day.day_date)
     counts = mark_crud.task_counts(stored, marks)
     notebook = await day_crud.get_notebook(db, day.day_date)
+    training = await training_crud.get_training_day(db, day.day_date)
     return DayDetailResponse(
         day=_day(day),
         rule=DayRuleSetResponse.model_validate(rule),
@@ -130,7 +140,53 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
+        anchors=await _anchors(db, day.day_date, rule),
+        training=(
+            None if training is None else TrainingDayResponse.model_validate(training)
+        ),
         summary=await summary_crud.summary_for(db, day.day_date, rule, stored, marks),
+    )
+
+
+async def _anchors(db: AsyncSession, on: date, rule: DayRuleSet) -> DayAnchorsResponse:
+    """
+    The anchors of one day: one entry per kind of the catalogue, state included.
+
+    Every kind is listed, not only the ones with a row, because «вечера с
+    близкими сегодня не было» has to be different from «про вечер с близкими не
+    спрашивали» — and the second reading is what the anchor of the third
+    priority spent its whole existence in. `required_today` says which of them
+    this day is actually judged by: the canon of July names five kinds, the
+    catalogue holds six.
+    """
+    kinds: list[AnchorKind] = await anchor_crud.list_kinds(db)
+    stored: dict[str, DayAnchor] = {
+        row.kind: row for row in await anchor_crud.list_day_anchors(db, on)
+    }
+    required = tuple(rule.anchors or ())
+    entries = [
+        DayAnchorResponse(
+            kind=kind.code,
+            title=kind.title,
+            ord=kind.ord,
+            counts_for_verdict=kind.counts_for_verdict,
+            required_in_nonwork_evening=kind.required_in_nonwork_evening,
+            state=stored[kind.code].state if kind.code in stored else None,
+            note=stored[kind.code].note if kind.code in stored else None,
+            item_id=stored[kind.code].item_id if kind.code in stored else None,
+            required_today=kind.code in required,
+        )
+        for kind in kinds
+    ]
+    counts = anchor_crud.anchor_counts(rule, list(stored.values()))
+    return DayAnchorsResponse(
+        day_date=on.isoformat(),
+        anchors=entries,
+        done=0 if counts is None else counts.done + counts.skipped,
+        total=len(required),
+        missing=anchor_crud.missing_anchor_titles(
+            kinds, required, list(stored.values())
+        ),
     )
 
 
@@ -231,6 +287,9 @@ async def post_plan(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=rejected.as_detail(),
         ) from rejected
+    # Point each anchor of the day at the line it is written on. Only the link:
+    # a plan rewritten at 14:00 must not tick or untick anything.
+    await anchor_crud.sync_from_plan(db, day.day_date)
     await day_crud.touch_day(db, day, opened=False)
     return await plan_crud.to_response(db, stored)
 
@@ -334,3 +393,114 @@ async def post_close(
     """
     day, _ = await _resolve(db, on)
     return await summary_crud.close_day(db, day.day_date, body)
+
+
+@router.get("/{on}/anchors", response_model=DayAnchorsResponse)
+async def get_anchors(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> DayAnchorsResponse:
+    """
+    Якоря дня — по пункту на каждый вид справочника.
+
+    Вид якоря — строка `anchor_kind`, а не значение enum: состав меняется
+    `INSERT`-ом и новой строкой правила, и никакой вид не зашит в код. `relationship`
+    («вечер с близкими») стоит в этом списке наравне с якорями здоровья, потому
+    что третий приоритет `config.md` до `#92` не был выражен ничем.
+
+    `required_today` говорит, судится ли день этим якорем: канон до 2026-08-17
+    называет пять видов, справочник держит шесть.
+    """
+    day, rule = await _resolve(db, on)
+    return await _anchors(db, day.day_date, rule)
+
+
+@router.put("/{on}/anchors", response_model=DayAnchorsResponse)
+async def put_anchors(
+    on: date, body: DayAnchorsIn, db: AsyncSession = Depends(get_db)
+) -> DayAnchorsResponse:
+    """
+    Отметить якоря дня: `done`, `failed`, `skipped` или `null` — снять отметку.
+
+    Запрос называет вид якоря, а не позицию в списке: порядок — свойство
+    отображения, и запрос, опирающийся на него, ломается от `INSERT`-а в
+    справочник. Несколько якорей едут одним запросом, потому что вечер закрывает
+    три штуки одним движением.
+
+    Второй якорь того же вида на ту же дату не появляется никогда: `UNIQUE(day_date,
+    kind)` в базе, а не проверка в сервисе, — запись ложится на ту строку,
+    которая уже есть, кто бы ни писал.
+
+    422 — неизвестный вид якоря или состояние вне списка. 404 остаётся за датой,
+    которую не покрывает ни одно правило.
+    """
+    day, rule = await _resolve(db, on)
+    known = await anchor_crud.known_codes(db)
+    for entry in body.anchors:
+        if entry.kind not in known:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Вида якоря «{entry.kind}» нет в справочнике. Состав якорей "
+                    "меняется INSERT-ом в `anchor_kind`, а не запросом отметки."
+                ),
+            )
+        if entry.state is not None and entry.state not in ANCHOR_STATES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Состояние якоря — одно из {list(ANCHOR_STATES)} или null.",
+            )
+        await anchor_crud.set_anchor(
+            db, day.day_date, entry.kind, state=entry.state, note=entry.note
+        )
+    await day_crud.touch_day(db, day, opened=_person_is_here(day.day_date))
+    return await _anchors(db, day.day_date, rule)
+
+
+@router.get("/{on}/training", response_model=TrainingDayResponse | None)
+async def get_training(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> TrainingDayResponse | None:
+    """
+    Тренировка дня: что запланировано, что сделано, минимум и его пункт плана.
+
+    `null` — на эту дату ничего не записано. Это не то же самое, что пропуск:
+    пропуск — это `skipped: true`, и он двигает счётчик `skipped_days`.
+    """
+    day, _ = await _resolve(db, on)
+    row = await training_crud.get_training_day(db, day.day_date)
+    return None if row is None else TrainingDayResponse.model_validate(row)
+
+
+@router.put("/{on}/training", response_model=TrainingDayResponse)
+async def put_training(
+    on: date, body: TrainingDayIn, db: AsyncSession = Depends(get_db)
+) -> TrainingDayResponse:
+    """
+    Записать тренировку дня. Не названное поле не трогается.
+
+    Утро пишет план, вечер пишет факт, и замена строки целиком дала бы второму
+    возможность стереть первое умолчанием.
+
+    `minimum_item_id` — пункт плана, на котором минимум отмечается **своей**
+    галкой. 29 августа показало, чего стоит минимум без неё: он был сформулирован
+    правильно, стоял в нужном дне и не был выполнен, потому что закрывать его
+    было нечем.
+    """
+    day, _ = await _resolve(db, on)
+    row = await training_crud.upsert_training_day(
+        db,
+        day.day_date,
+        patterns=body.patterns,
+        heavy_patterns=body.heavy_patterns,
+        planned_md=body.planned_md,
+        done_md=body.done_md,
+        skipped=body.skipped,
+        outdoor_done=body.outdoor_done,
+        near_failure=body.near_failure,
+        note_md=body.note_md,
+        minimum_md=body.minimum_md,
+        minimum_item_id=body.minimum_item_id,
+        sets=body.sets,
+    )
+    await day_crud.touch_day(db, day, opened=False)
+    return TrainingDayResponse.model_validate(row)

@@ -32,6 +32,10 @@ let push: ReturnType<typeof mock>;
 // so a partial mock here would delete the other APIs for whichever file loads
 // later.
 mock.module('@/lib/api', () => ({
+  // The training client (#92). Present in every api mock for the same reason
+  // the rest of the surface is: bun fixes a module's export names on first
+  // link, so a mock that omits it deletes it for whoever runs next.
+  trainingAPI: { getState: () => Promise.resolve(null) },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.

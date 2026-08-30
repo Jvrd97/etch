@@ -36,6 +36,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.day.evaluate import verdict_reasons
+from app.models.anchor import LEGACY_ANCHOR_CODES
 from app.models.day import (
     DEFAULT_ANCHORS,
     DEFAULT_DAYS_OFF,
@@ -94,19 +95,14 @@ HISTORY_STARTS_ON = date(2020, 1, 1)
 # How far back an open window reaches: сегодня и вчера. See `is_openable`.
 OPEN_WINDOW_DAYS = 1
 
-REQUIRED_ANCHORS: tuple[str, ...] = (
-    "подъём",
-    "спорт",
-    "старт работы",
-    "ревью",
-    "отбой",
-)
-
-# The anchor of the third priority — «вечер с близкими». Named here because the
-# seed of the current row includes it and the legacy row does not: the evening
-# with the family became part of the canon with `#142`, and a day lived before
-# that is not judged by it.
-ANCHOR_RELATIONSHIP = "relationship"
+# The two compositions of anchors, read off the catalogue in
+# `app.models.anchor` rather than spelled out here. **Ни один вид якоря не
+# назван в `app/day/`** (`#92`): what a kind of anchor is belongs to the
+# catalogue table, which day is judged by which of them belongs to the rule row,
+# and this module only carries the two seeds. The legacy row keeps the five
+# edges it was lived under — «вечер с близкими» became part of the canon with
+# `#142`, and a day of July is not judged by a rule written in September.
+REQUIRED_ANCHORS: tuple[str, ...] = LEGACY_ANCHOR_CODES
 
 # Codes of the edges of the day, machine-readable. The Russian a person reads is
 # a label of the screen, the same way `mark.state` is handled.

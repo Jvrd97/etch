@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -339,6 +339,39 @@ export const dayAPI = {
    */
   setMark: async (date: string, itemId: string, draft: MarkDraft) => {
     return fetcher<Mark>(`/day/${date}/marks/${itemId}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Mark the anchors of a day, by kind rather than by position.
+   *
+   * The kind is what a write names: the order of the list is a property of the
+   * screen, and a request that leaned on it would break the first time a kind
+   * is added to the catalogue. Several anchors travel in one request because
+   * the evening closes three of them in one gesture.
+   */
+  setAnchors: async (date: string, anchors: AnchorMarkDraft[]) => {
+    return fetcher<DayAnchors>(`/day/${date}/anchors`, {
+      method: 'PUT',
+      body: JSON.stringify({ anchors }),
+    });
+  },
+
+  /** Read the anchors of a day on their own, without the rest of the day. */
+  getAnchors: async (date: string) => {
+    return fetcher<DayAnchors>(`/day/${date}/anchors`);
+  },
+
+  /**
+   * Write the training of a day; an absent field is left alone.
+   *
+   * The morning writes the plan and the evening writes the fact, so a
+   * whole-row replace would let the second erase the first by omission.
+   */
+  saveTraining: async (date: string, draft: TrainingDayDraft) => {
+    return fetcher<TrainingDay>(`/day/${date}/training`, {
       method: 'PUT',
       body: JSON.stringify(draft),
     });
@@ -1005,6 +1038,10 @@ export interface DayDetail {
   task_counts: TaskCounts;
   /** The day's free text, or null when nothing was written. */
   notebook: string | null;
+  /** One entry per kind of the catalogue, including the ones nobody answered. */
+  anchors: DayAnchors;
+  /** null when nothing is recorded for this date — not the same as a skip. */
+  training: TrainingDay | null;
   /** Always present — a live recount while the day is not closed. */
   summary: DaySummary;
 }
@@ -1109,5 +1146,202 @@ export const goalsAPI = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     });
+  },
+};
+
+// -- Anchors and training --------------------------------------------------
+
+/**
+ * What an anchor of a day can say. Absence of an answer is `null`, not a word.
+ *
+ * The same three words a plan mark uses, and deliberately the same type: the
+ * anchor box and the mark box sit one above the other on the day screen, walk
+ * the same ring, and a second vocabulary that happened to coincide would be one
+ * edit away from not coinciding.
+ */
+export type AnchorState = MarkState;
+
+/**
+ * One anchor of one day.
+ *
+ * Every kind of the catalogue arrives, answered or not: «вечера с близкими
+ * сегодня не было» has to read differently from «про вечер с близкими не
+ * спрашивали», and the second is where the third priority of `config.md` spent
+ * its whole existence.
+ */
+export interface DayAnchor {
+  kind: string;
+  title: string;
+  ord: number;
+  counts_for_verdict: boolean;
+  /** True for `relationship`: the canon expects it in an evening that is not work. */
+  required_in_nonwork_evening: boolean;
+  state: AnchorState | null;
+  note: string | null;
+  /** The line of the plan this anchor is written on, when there is one. */
+  item_id: string | null;
+  /** Whether the canon of *this* day is judged by this kind at all. */
+  required_today: boolean;
+}
+
+export interface DayAnchors {
+  day_date: string;
+  anchors: DayAnchor[];
+  done: number;
+  total: number;
+  /** Titles of the anchors the day neither closed nor set aside. */
+  missing: string[];
+}
+
+/** A write of one anchor; `state: null` takes the mark off. */
+export interface AnchorMarkDraft {
+  kind: string;
+  state: AnchorState | null;
+  note?: string | null;
+}
+
+/** What one date planned, did and set aside as its minimum. */
+export interface TrainingDay {
+  day_date: string;
+  patterns: string[];
+  heavy_patterns: string[];
+  planned_md: string | null;
+  done_md: string | null;
+  skipped: boolean;
+  outdoor_done: boolean | null;
+  near_failure: boolean;
+  note_md: string | null;
+  minimum_md: string | null;
+  /** The plan line the minimum is ticked on — its own tick, not the training's. */
+  minimum_item_id: string | null;
+  sets: Record<string, number>;
+}
+
+/** A write of one date's training; an absent field is left alone. */
+export interface TrainingDayDraft {
+  patterns?: string[];
+  heavy_patterns?: string[];
+  planned_md?: string | null;
+  done_md?: string | null;
+  skipped?: boolean;
+  outdoor_done?: boolean | null;
+  near_failure?: boolean;
+  note_md?: string | null;
+  minimum_md?: string | null;
+  minimum_item_id?: string | null;
+  sets?: Record<string, number>;
+}
+
+/** One complaint — a symptom that gates a suggestion, never a diagnosis. */
+export interface BodyComplaint {
+  id: string;
+  opened_on: string;
+  area: string;
+  context: string | null;
+  severity: string | null;
+  status: 'open' | 'closed';
+  closed_on: string | null;
+  closed_reason: string | null;
+}
+
+export interface PersonalRecord {
+  id: string;
+  exercise: string;
+  variant: string | null;
+  sets: string | null;
+  best_plain: number | null;
+  achieved_on: string;
+  target: string | null;
+}
+
+/** One movement that will not be suggested today, and the gate that removed it. */
+export interface TrainingExclusion {
+  exercise: string;
+  gate: string;
+  reason: string;
+}
+
+export interface TrainingGate {
+  code: string;
+  reason: string;
+}
+
+/**
+ * What may be trained today, and why the list is what it is.
+ *
+ * The exclusions travel beside the offer rather than being subtracted in
+ * silence: «сегодня без подтягиваний, плечо open с 10.08» is a sentence a
+ * person can disagree with; a shorter list with no explanation is one that
+ * gets ignored.
+ */
+export interface TrainingSuggestion {
+  exercises: string[];
+  excluded: TrainingExclusion[];
+  gates: TrainingGate[];
+  rir: string;
+  volume_factor: number;
+}
+
+/** The derived snapshot of the body, recomputed on every read. */
+export interface TrainingState {
+  as_of: string;
+  last_heavy_pull: string | null;
+  last_heavy_push: string | null;
+  last_legs: string | null;
+  last_run: string | null;
+  last_outdoor: string | null;
+  last_cardio: string | null;
+  near_failure_days: string[];
+  week_sets: Record<string, number>;
+  progression_stage: Record<string, string>;
+  skipped_days: number;
+  /** When the snapshot was folded — it is derived, and says so. */
+  recomputed_at: string;
+  open_complaints: BodyComplaint[];
+  /** Personal records, most recent first — each with its date and its target. */
+  records: PersonalRecord[];
+  suggestion: TrainingSuggestion;
+}
+
+export const trainingAPI = {
+  /** The state, its suggestion and the open complaints, in one request. */
+  getState: async () => {
+    return fetcher<TrainingState>('/training/state');
+  },
+
+  /** Write the one authored part of the state — where the progression stands. */
+  setProgression: async (progression_stage: Record<string, string>) => {
+    return fetcher<TrainingState>('/training/state', {
+      method: 'PUT',
+      body: JSON.stringify({ progression_stage }),
+    });
+  },
+
+  complaints: async (openOnly = false) => {
+    return fetcher<BodyComplaint[]>(`/body-complaints?open_only=${openOnly}`);
+  },
+
+  openComplaint: async (draft: {
+    area: string;
+    context?: string | null;
+    severity?: string | null;
+    opened_on?: string | null;
+  }) => {
+    return fetcher<BodyComplaint>('/body-complaints', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Close a complaint — and return the movements it was taking out. */
+  closeComplaint: async (id: string, closed_reason?: string) => {
+    return fetcher<BodyComplaint>(`/body-complaints/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'closed', closed_reason }),
+    });
+  },
+
+  records: async () => {
+    return fetcher<PersonalRecord[]>('/personal-records');
   },
 };

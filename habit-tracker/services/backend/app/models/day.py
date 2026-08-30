@@ -28,6 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+from app.models.anchor import DEFAULT_ANCHOR_CODES
 
 # The half-open interval a rule row is in force on, as PostgreSQL spells it.
 # `[)` is what makes a rule change a single date: the new row's `valid_from`
@@ -45,19 +46,12 @@ KIND_LENGTH = 10
 # wants to be immovable has to become an anchor first, in the open.
 DEFAULT_HARD_EDGE_KINDS: tuple[str, ...] = ("anchor", "hard_point")
 
-# The anchors a won day has to close. The first five are the edges `config.md`
-# names; `relationship` — «вечер с близкими» — is the third priority of
-# `config.md` becoming measurable, and arrives as a row of `anchor_kind` in
-# `#92`. Composition is data precisely so that adding a sixth anchor is an
-# INSERT rather than an edit of `app.day.evaluate`.
-DEFAULT_ANCHORS: tuple[str, ...] = (
-    "подъём",
-    "спорт",
-    "старт работы",
-    "ревью",
-    "отбой",
-    "relationship",
-)
+# The anchors a won day has to close, taken from the catalogue rather than
+# retyped: since `#92` the kinds of anchor are rows of `anchor_kind`, and a
+# second list here would be the copy that drifts. Composition is data precisely
+# so that adding a seventh anchor is an INSERT rather than an edit of
+# `app.day.evaluate`.
+DEFAULT_ANCHORS: tuple[str, ...] = DEFAULT_ANCHOR_CODES
 
 # The verdict formula: which conditions lower a day, in the order they are
 # weighed. The order is the priority of `config.md` — здоровье > работа >

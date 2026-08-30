@@ -76,6 +76,14 @@ const DAY: DayDetail = {
   marks: [],
   task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
   notebook: null,
+  anchors: {
+    day_date: '2026-08-30',
+    anchors: [],
+    done: 0,
+    total: 0,
+    missing: [],
+  },
+  training: null,
   summary: {
     day_date: '2026-08-30',
     closed: false,
@@ -109,6 +117,10 @@ let openDay: ReturnType<typeof mock>;
 // the first time anything links against it and shares that registry across the
 // run, so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // The training client (#92). Present in every api mock for the same reason
+  // the rest of the surface is: bun fixes a module's export names on first
+  // link, so a mock that omits it deletes it for whoever runs next.
+  trainingAPI: { getState: () => Promise.resolve(null) },
   dailySummaryAPI: {
     draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
     apply: () => Promise.resolve({ entry_ids: [] }),

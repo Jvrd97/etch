@@ -26,6 +26,9 @@ dependencies = [
     "tzdata>=2024.1",
     "gunicorn>=26.0.0",
     "anthropic>=0.117.1",
+    # frontmatter of `training/state.md` (`#92`); already in the tree via
+    # uvicorn[standard], declared here because the import reads it directly
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -36,6 +39,7 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.4",
     "asyncpg-stubs>=0.29",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.uv]

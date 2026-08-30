@@ -13,19 +13,22 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 # What kind of file a row keeps. The importer of `#89` reads three, `#90`
-# adds the summaries and `#93` adds `goal.md`; later tickets (`#94` weeks, `#95`
-# feedback) add their own rather than widening the meaning of these.
+# adds the summaries, `#93` adds `goal.md` and `#92` adds `training/state.md`;
+# later tickets (`#94` weeks, `#95` feedback) add their own rather than widening
+# the meaning of these.
 KIND_PLAN_MD = "plan_md"
 KIND_PLAN_HTML = "plan_html"
 KIND_PLAN_REPORT_MD = "plan_report_md"
 KIND_SUMMARY_MD = "summary_md"
 KIND_GOAL_MD = "goal_md"
+KIND_TRAINING_STATE_MD = "training_state_md"
 IMPORT_KINDS: tuple[str, ...] = (
     KIND_PLAN_MD,
     KIND_PLAN_HTML,
     KIND_PLAN_REPORT_MD,
     KIND_SUMMARY_MD,
     KIND_GOAL_MD,
+    KIND_TRAINING_STATE_MD,
 )
 
 

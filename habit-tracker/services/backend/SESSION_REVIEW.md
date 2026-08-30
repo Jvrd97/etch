@@ -917,3 +917,68 @@ Feedback loops (backend): pytest **593/593 green**, `ruff check app tests` clean
 против постгреса на localhost:5432 в отдельной базе `habit_tracker_test_fast2` — в общей
 `habit_tracker_test` лежит `work_interval` из параллельной ветки, и `drop_all` спотыкается о
 её внешний ключ на `day`.
+
+## 2026-08-30 — PHASE-03/92: якоря и тренировка
+
+Якорь перестал быть буллетом, который узнают по тексту, и стал строкой. Тренировка перестала
+быть таблицей, свёрнутой в ключи frontmatter, и стала строками. Оба перехода — про одно: факт,
+который нельзя запросить, нельзя и проверить.
+
+**Схема (new)**
+
+- `app/models/anchor.py` — **new**: `anchor_kind` (справочник строкой, прецедент
+  `health_metrics`) и `day_anchor` с `UNIQUE(day_date, kind)`. **Единственное место, где
+  перечислены виды якорей** — `ANCHOR_KIND_SEED`; `app/day/` не называет ни одного, а
+  `app/models/day.DEFAULT_ANCHORS` и `app/day/rules.REQUIRED_ANCHORS` теперь читают этот
+  каталог вместо собственных копий.
+- `app/models/training.py` — **new**: `training_day` (день тренировки; `patterns` отдельно от
+  `heavy_patterns`, `minimum_item_id` — своя галка минимума, `note_md` — датированная заметка),
+  `training_state` (снимок, единственная авторская колонка `progression_stage`),
+  `body_complaint`, `personal_record`.
+- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_anchors_and_training.py` — **new**: шесть
+  таблиц, сид каталога из `required_anchors` действующего правила плюс строка `relationship`.
+  Проверена прогоном upgrade → downgrade → upgrade на чистой базе; downgrade не заглушка.
+
+**Сервис (new/mod)**
+
+- `app/training/state.py` — **new**: чистый `recompute(days, complaints, as_of)`. Дни позже
+  `as_of` не считаются — запись на завтра это план, а не факт.
+- `app/training/gates.py` — **new**: пять гейтов `/train` над снимком. Жалоба сопоставляется
+  областью («плечо» входит в «левое плечо»), а не названием упражнения.
+- `app/crud/anchor.py`, `app/crud/training.py` — **new**. `app/day/marks.py` — **mod**:
+  `count_day_anchors` считает якоря против состава, который называет правило.
+- `app/crud/summary.py` — **mod**: `facts_of` берёт якоря из `day_anchor`; строки плана
+  остаются запасным чтением ровно для дней, у которых якорей-строк нет (импортированный июль).
+- `app/imports/training_state.py` — **new**, подключён к CLI из [#89]. Даты `last_*` не
+  переносятся в снимок, а проставляются на дни, которые они называют, — иначе снимок снова
+  стал бы тем, чему надо верить на слово.
+
+**API и UI (new/mod)**
+
+- `app/api/training.py` — **new**: `GET/PUT /training/state`, `GET/POST/PATCH /body-complaints`,
+  `GET/POST /personal-records`. `app/api/day.py` — **mod**: `GET/PUT /day/{date}/anchors`,
+  `GET/PUT /day/{date}/training`, блоки `anchors` и `training` в ответе дня.
+- `app/schemas/anchor.py`, `app/schemas/training.py` — **new**; `app/schemas/day.py`,
+  `app/main.py`, `app/models/__init__.py`, `app/models/import_source.py`, `app/crud/day.py` —
+  **mod**.
+- Фронт: `components/day/DayAnchors.tsx`, `components/day/DayTraining.tsx`,
+  `hooks/useTrainingState.ts` — **new**; `lib/api.ts`, `components/DayScreen.tsx`,
+  `components/mobile/MobileDayScreen.tsx` — **mod**. Кольцо отметки якоря — то же
+  `lib/marks.nextMarkState`, а не копия: `AnchorState` объявлен как `MarkState`.
+
+**Тесты (new)**: `tests/test_training_state.py`, `tests/test_training_gates.py`,
+`tests/test_day_anchors.py`, `tests/test_training_api.py`, `tests/test_import_training_state.py`,
+плюс `components/day/DayAnchors.test.tsx` и `components/day/DayTraining.test.tsx`.
+Механически тронуты 24 фронтовых тест-файла: bun фиксирует набор экспортов `@/lib/api` при
+первой линковке, и мок без `trainingAPI` удалял его у той сьюты, что загрузилась позже.
+
+Что стоит назвать вслух: `skipped_days: 0` из живого `training/state.md` **не переносится**.
+В файле он стоит нулём при трёх ключах `skipped_*` подряд — счётчик поддерживался руками и
+разошёлся с собственными данными. Значение выводится из строк; тест на это есть.
+
+Feedback loops (backend): pytest **652/652 green**, `ruff check app tests` clean,
+`ruff format --check` clean, `mypy --strict app` clean (101 файл), `alembic heads` — одна голова
+`e6b8d0f2a4c7`, миграция обратима на живой базе. `make check` целиком не отрабатывал: docker не
+поднимается. Тесты шли против постгреса на localhost:5432 в отдельной базе `habit_test_92` —
+общая `habit_tracker_test` содержит `work_interval` из параллельной ветки, и `drop_all` падает
+на её внешнем ключе к `day`.

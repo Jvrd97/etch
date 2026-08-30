@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/88, PHASE-03/90
-# summary: the mark cycle (пусто → done → failed → пусто) and the count of a day's lines by kind — tasks and, since #90, anchors — decided without a database so that "skipped is neither closed nor failed" is one testable sentence written once
+# [review:need-review] PHASE-03/88, PHASE-03/90, PHASE-03/92
+# summary: the mark cycle (пусто → done → failed → пусто) and the count of a day's lines by kind — tasks, anchors as plan lines (#90) and, since #92, anchors as rows of `day_anchor` counted against the composition the rule names — decided without a database so that "skipped is neither closed nor failed" is one testable sentence written once
 """
 What a mark means, decided without a database.
 
@@ -29,6 +29,8 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from collections.abc import Sequence
+
 from app.day.plan_validate import KIND_ANCHOR, KIND_TASK
 from app.models.mark import MARK_DONE, MARK_FAILED, MARK_SKIPPED
 
@@ -36,6 +38,7 @@ __all__ = [
     "MARK_CYCLE",
     "TaskCounts",
     "count_anchors",
+    "count_day_anchors",
     "count_tasks",
     "next_state",
 ]
@@ -138,3 +141,38 @@ def count_anchors(
 ) -> TaskCounts:
     """The day's anchors — the edges the verdict weighs before it weighs work."""
     return _count(kinds, states, ANCHOR_KIND)
+
+
+def count_day_anchors(
+    required: Sequence[str], states: Mapping[str, str | None]
+) -> TaskCounts:
+    """
+    The anchors of the canon against the rows of `day_anchor` (`#92`).
+
+    The denominator is the composition the rule names, not the number of rows:
+    an anchor nobody created a row for is an anchor the day did not close, and
+    counting rows would let a missing «вечер с близкими» disappear instead of
+    lowering the day.
+
+    Kinds outside `required` are ignored on purpose. The catalogue may carry a
+    kind this canon does not weigh — that is exactly what
+    `day_rule_set.anchors` is for — and a row for it must not move the counter
+    of a day judged by five.
+    """
+    done = failed = skipped = 0
+    for kind in required:
+        state = states.get(kind)
+        if state == MARK_DONE:
+            done += 1
+        elif state == MARK_FAILED:
+            failed += 1
+        elif state == MARK_SKIPPED:
+            skipped += 1
+    planned = len(required)
+    return TaskCounts(
+        planned=planned,
+        done=done,
+        failed=failed,
+        skipped=skipped,
+        pending=planned - done - failed - skipped,
+    )

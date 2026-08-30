@@ -979,3 +979,23 @@ Feedback loops: `bun test` 664/664 green (было 574 до волны), `bunx t
 
 Feedback loops: `bun test` **687/687 green** (было 682), `bunx tsc --noEmit` clean,
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/92: якоря и тренировка на странице дня
+
+- `components/day/DayAnchors.tsx` — **new**: секция якорей. По строке на каждый вид справочника,
+  включая те, по которым ещё ничего не сказано, — «вечера с близкими не было» обязано отличаться
+  от «про вечер с близкими не спрашивали». `relationship` стоит в списке наравне с якорями
+  здоровья и отмечается тем же кольцом. Кольцо взято из `lib/marks.nextMarkState`, не скопировано:
+  `AnchorState` объявлен как `MarkState`, потому что коробка якоря и коробка пункта плана стоят
+  одна над другой.
+- `components/day/DayTraining.tsx` — **new**: план, факт, минимум (с прямым ответом, есть ли у
+  него свой отмечаемый пункт), пропуски подряд, открытая жалоба рядом с предложением, причина у
+  каждого снятого движения, личные рекорды с датой и целью.
+- `hooks/useTrainingState.ts` — **new**: снимок состояния; ошибка чтения даёт `null`, а не баннер
+  поверх дня, который загрузился.
+- `lib/api.ts`, `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**.
+- `components/day/DayAnchors.test.tsx`, `components/day/DayTraining.test.tsx` — **new** (16 тестов).
+- 24 тест-файла — **mod, механически**: в `mock.module('@/lib/api', …)` добавлена заглушка
+  `trainingAPI` (bun фиксирует набор экспортов при первой линковке).
+
+Feedback loops (frontend): `bun test` **704/704 green**, `bunx tsc --noEmit` clean.

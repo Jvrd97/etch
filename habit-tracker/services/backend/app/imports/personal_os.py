@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/93
-# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, summaries carried into `day_summary` with their verdicts read as prose and never recomputed, the calendar filled so no day is a hole, `goal.md` read into the goal tables by `app.imports.goal_md`, and everything unread named in the report
+# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/92, PHASE-03/93
+# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, summaries carried into `day_summary` with their verdicts read as prose and never recomputed, the calendar filled so no day is a hole, `goal.md` read into the goal tables by `app.imports.goal_md`, `training/state.md` unrolled into `training_day`, complaints and records by `app.imports.training_state`, and everything unread named in the report
 """
 The history of `personal-os` moved into the database, once and repeatably.
 
@@ -71,6 +71,7 @@ from app.day.plan_validate import PlanRejected, resolve_window
 from app.exports.personal_os import SECTION_TITLE_BY_KIND
 from app.imports import goal_md
 from app.imports import plan_state as state_reader
+from app.imports import training_state
 from app.imports.md_parser import (
     FORM_LIST_ITEM,
     FORM_TABLE_ROW,
@@ -84,6 +85,7 @@ from app.imports.md_parser import (
 )
 from app.models.import_source import (
     KIND_GOAL_MD,
+    KIND_TRAINING_STATE_MD,
     KIND_PLAN_HTML,
     KIND_PLAN_MD,
     KIND_PLAN_REPORT_MD,
@@ -119,6 +121,10 @@ SUMMARY_GLOB = "summaries/*/*/????-??-??.md"
 # `goal.md` — the levels, the milestones and the goals of the quarter. One file,
 # at the root, and not a day: read once per run rather than per `--date`.
 GOAL_FILE = "goal.md"
+
+# `training/state.md` — the folded table of training. Also one file and also not
+# a day: it names dozens of dates at once, so `--date` does not narrow it.
+TRAINING_FILE = "training/state.md"
 
 # The heading the verdict of a day is written under, and the reading of what is
 # written there. **This is the only place in the codebase that parses a verdict
@@ -223,6 +229,14 @@ class ImportReport:
     # yes/no: it was read, it was already current, or the repository has none.
     goals_written: bool = False
     goals_unchanged: bool = False
+    # `training/state.md` is one file too, and reports the same way; the counts
+    # of what it wrote are its own because a day of training can exist for a
+    # date that never had a plan.
+    training_written: bool = False
+    training_unchanged: bool = False
+    training_days: int = 0
+    training_complaints: int = 0
+    training_records: int = 0
 
     def _count(self, action: str) -> int:
         return sum(1 for one in self.days if one.action == action)
@@ -261,6 +275,10 @@ class ImportReport:
             f"итогов записано: {self.summaries_written}",
             f"итогов без изменений: {self.summaries_unchanged}",
             f"goal.md: {_goal_state(self)}",
+            f"training/state.md: {_training_state(self)}",
+            f"дней тренировки: {self.training_days}",
+            f"жалоб: {self.training_complaints}",
+            f"рекордов: {self.training_records}",
             f"дней без плана заведено: {len(self.gaps_filled)}",
             f"предупреждений: {len(self.warnings)}",
         ]
@@ -271,6 +289,15 @@ def _goal_state(report: ImportReport) -> str:
     if report.goals_written:
         return "прочитан"
     if report.goals_unchanged:
+        return "без изменений"
+    return "нет файла"
+
+
+def _training_state(report: ImportReport) -> str:
+    """How the run treated `training/state.md`, in one word for the CLI."""
+    if report.training_written:
+        return "прочитан"
+    if report.training_unchanged:
         return "без изменений"
     return "нет файла"
 
@@ -1065,6 +1092,7 @@ async def import_root(
     report.gaps_filled = await _fill_calendar(db, [one.day_date for one in days])
     await _import_summaries(db, root, report, force=force, only=only)
     await _import_goals(db, root, report, force=force)
+    await _import_training(db, root, report, force=force)
     # Fills `streak_after` on every итог, imported ones included: the streak is
     # derived by definition, so it is the one number a recompute may write onto
     # a verdict that arrived as prose.
@@ -1121,6 +1149,40 @@ async def _import_goals(
     await _remember_file(db, kind=KIND_GOAL_MD, path=where, text=text, digest=digest)
     await db.flush()
     report.goals_written = True
+
+
+async def _import_training(
+    db: AsyncSession, root: Path, report: ImportReport, *, force: bool
+) -> None:
+    """
+    Read `training/state.md`, unless it is not there or has not changed.
+
+    Not tied to `--date` for the same reason `goal.md` is not: the file names
+    dozens of dates at once, and importing «only the 30th» out of it would leave
+    the recompute reading a week with holes in it.
+    """
+    path = root / TRAINING_FILE
+    if not path.is_file():
+        return
+    report.files_read += 1
+    where = str(path.relative_to(root))
+    text = path.read_text(encoding="utf-8")
+    digest = _digest(text)
+    stored = await _stored_digests(db, [where])
+    if not force and stored.get(where) == digest:
+        report.training_unchanged = True
+        return
+    written = await training_state.import_training_state(db, text)
+    await _remember_file(
+        db, kind=KIND_TRAINING_STATE_MD, path=where, text=text, digest=digest
+    )
+    await db.flush()
+    report.training_written = True
+    report.training_days = written.days
+    report.training_complaints = written.complaints
+    report.training_records = written.records
+    for line in written.unread:
+        report.warnings.append(ImportWarning(kind="training", message=line, path=where))
 
 
 async def _fill_calendar(db: AsyncSession, known: Sequence[date]) -> list[date]:
