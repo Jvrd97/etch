@@ -36,6 +36,7 @@ from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
+from app.crud import week as week_crud
 from app.day.evaluate import VERDICT_LOST
 from app.exports.personal_os import export_day
 from app.imports.md_parser import match_key, parse_plan, split_window
@@ -497,7 +498,8 @@ async def test_a_link_to_another_plan_becomes_a_link_to_that_day(
 ) -> None:
     plan = parse_plan(
         "# План 2026-08-24 (пн)\n\n## Якоря\n\n"
-        "- Завтра — [план](2026-08-25.md), неделя — [W35](../../../weeks/2026/2026-W35.md)\n",
+        "- Завтра — [план](2026-08-25.md), неделя — [W35](../../../weeks/2026/2026-W35.md),"
+        " цель — [goal](../../../goal.md)\n",
         STALE_MARK_DAY,
     )
     report = ImportReport(root=Path("."))
@@ -505,7 +507,12 @@ async def test_a_link_to_another_plan_becomes_a_link_to_that_day(
 
     text = document.sections[0].items[0].text_md
     assert "](/day/2026-08-25)" in text
-    assert "](../../../weeks/2026/2026-W35.md)" in text
+    # Since `#94` a week has a screen of its own, so the link goes to it.
+    assert "](/week/2026-W35)" in text
+    # `goal.md` has no screen the link could name, so it stays the text it was
+    # and is reported: a link to a page that does not exist is worse than a
+    # plain one.
+    assert "](../../../goal.md)" in text
     assert any(one.kind == "ссылка не переписана" for one in report.warnings)
 
 
@@ -818,3 +825,57 @@ def test_only_the_importer_reads_a_verdict_out_of_prose() -> None:
     ]
 
     assert offenders == []
+
+
+# --- weeks/ ------------------------------------------------------------------
+
+
+async def test_the_week_file_becomes_a_week_with_its_blocks_split(
+    db_session: AsyncSession, root: Path
+) -> None:
+    """
+    `weeks/2026/2026-W35.md` arrives as a row, blocks in their own columns.
+
+    The checklist becomes rows rather than staying `- [ ]` inside prose, which
+    is what makes «вопрос закрыт» countable instead of grepable.
+    """
+    await import_root(db_session, root)
+
+    week = await week_crud.get_week(db_session, "2026-W35")
+    assert week is not None
+    assert week.starts_on == date(2026, 8, 24)
+    assert "День без отметок" in week.blockers_md
+    assert "Средний горизонт" in week.mgmt_retro_md
+    assert "Выигранные дни" in week.retro_md
+    assert [item.done for item in week.review_items] == [True, False]
+
+
+async def test_the_counters_of_a_week_are_computed_not_read_from_its_prose(
+    db_session: AsyncSession, root: Path
+) -> None:
+    """
+    The file says «0 из 7»; the columns say what the days say.
+
+    The fixture holds three plans and one won day, so the денominator is the
+    days that exist rather than the seven the sentence claims. The sentence
+    itself survives in `retro_md` — it is a statement about the moment it was
+    written.
+    """
+    await import_root(db_session, root)
+
+    week = await week_crud.get_week(db_session, "2026-W35")
+    assert week is not None
+    assert "**0 из 7.**" in week.retro_md
+    assert week.total_days > 0
+    assert week.computed_at is not None
+
+
+async def test_a_second_run_of_the_import_rewrites_no_week(
+    db_session: AsyncSession, root: Path
+) -> None:
+    first = await import_root(db_session, root)
+    second = await import_root(db_session, root)
+
+    assert first.weeks_written == 1
+    assert second.weeks_written == 0
+    assert second.weeks_unchanged == 1

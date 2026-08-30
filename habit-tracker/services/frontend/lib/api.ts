@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/94
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; daysAPI reads a range of days in the shape the old /api/days had and weeksAPI reads and writes one week
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -1049,6 +1049,94 @@ export const goalsAPI = {
     return fetcher<Milestone>(`/goals/milestones/${code}`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
+    });
+  },
+};
+
+// -- Days range and weeks ---------------------------------------------------
+
+/**
+ * One day of a range, in the shape the old `/api/days` answered with.
+ *
+ * `verdict` carries three states, not two: `won`, `lost` and `null` — «день не
+ * закрыт». The square of the timeline is painted from this field alone, which
+ * is what `life.py` could not do while it was reading prose with a regexp.
+ */
+export interface DayListItem {
+  date: string;
+  /** Title of the day's plan; empty when there is no plan or it had none. */
+  title: string;
+  verdict: Verdict | null;
+  /** Work tasks closed, and work tasks planned. */
+  done: number;
+  total: number;
+}
+
+/** One line of «На разбор в воскресенье», with its own tick. */
+export interface WeekReviewItem {
+  id: string;
+  ord: number;
+  text_md: string;
+  done: boolean;
+}
+
+/**
+ * One week as a fixed snapshot: counters taken at `computed_at`, prose beside
+ * them. Reopening a day moves the counters and leaves the prose alone.
+ */
+export interface Week {
+  iso_code: string;
+  starts_on: string;
+  ends_on: string;
+  won_days: number;
+  total_days: number;
+  /** null when no day of the week was closed — not the same as a streak of 0. */
+  streak_end: number | null;
+  retro_md: string;
+  blockers_md: string;
+  mgmt_retro_md: string;
+  weekly_number_md: string;
+  review_items: WeekReviewItem[];
+  computed_at: string;
+}
+
+/** What a week write says. The counters are the server's and cannot be sent. */
+export interface WeekDraft {
+  retro_md?: string;
+  blockers_md?: string;
+  mgmt_retro_md?: string;
+  weekly_number_md?: string;
+  review_items?: { text_md: string; done: boolean }[];
+}
+
+export const daysAPI = {
+  /**
+   * The days of `[from, to]`, oldest first.
+   *
+   * One request for a whole range rather than one per square: the timeline
+   * draws a year at a time and the sidebar the whole history.
+   */
+  range: async (from: string, to: string) => {
+    return fetcher<DayListItem[]>(`/days?from=${from}&to=${to}`);
+  },
+};
+
+export const weeksAPI = {
+  /** One week by its ISO code. A week nobody wrote about answers too. */
+  get: async (iso: string) => {
+    return fetcher<Week>(`/weeks/${iso}`);
+  },
+
+  /** The week the server's day boundary says is running. */
+  getCurrent: async () => {
+    return fetcher<Week>('/weeks');
+  },
+
+  /** Replace the retro of a week; the counters stay the server's. */
+  put: async (iso: string, draft: WeekDraft) => {
+    return fetcher<Week>(`/weeks/${iso}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
     });
   },
 };

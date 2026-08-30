@@ -958,3 +958,44 @@ Feedback loops: `bun test` 580/580 green, `bunx tsc --noEmit` clean, `bun run li
 Feedback loops: `bun test` 664/664 green (было 574 до волны), `bunx tsc --noEmit` clean, `bun run lint` 0 problems. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль. Бэкенд той же волны: pytest 455/455, `ruff check`, `ruff format --check`, `mypy --strict app`, одна голова Alembic `e0b2d4f6a8c1`. `make check` целиком не прогонялся ни разу: его цель `test` поднимает постгрес в docker, а демон на машине не отвечает — тесты шли против локального постгреса на 5432, база `habit_tracker_test`.
 
 Известные долги экрана, зафиксированные приёмкой волны: `DayScreen` и `MobileDayScreen` зовут `useDay(date, true)` без разбора даты, поэтому листание истории проставляет `opened_at` историческим дням и стирает разницу между непрожитым днём и прожитым пусто (чинится в [#90]); `MobileDayScreen` не покрыт тестами и дублирует шапку десктопного шелла.
+
+## 2026-08-30 — PHASE-03/94 (страница `/life` и неделя)
+
+Тикет `94-week-days-endpoint-and-life-page`: `/life` вместо `life.html`, страница недели,
+общая боковая навигация. Тронуто 16 файлов фронтенда.
+
+- `lib/life.ts` — **new** (+тест): чистые помощники таймлайна — `dayStatus` (пять состояний,
+  из них три главных: выигран / проигран / не закрыт), `lifeCounter` (та же арифметика, что
+  считал `life.html`, вплоть до `52.1775` и дефолтов 2000-05-11 / 97 лет), `isoWeekCode`
+  по правилу четверга, `groupByYearAndMonth` для боковой навигации.
+- `lib/date.ts` — **mod**: `fromISODate` — обратная к `toISODate`. Заведена здесь, а не в
+  `lib/life.ts`, чтобы у «строки `YYYY-MM-DD` → Date» остался один ответ на приложение.
+- `components/life/DaySquare.tsx` — **new** (+тест): квадрат дня. Три состояния различаются
+  заливкой, а не оттенком: выигран — залит лаймом, проигран — залит серым, не закрыт —
+  контур с пустой серединой. Сам квадрат — ссылка на `/day/{date}`.
+- `components/life/LifeGrid.tsx` — **new** (+тест): пять видов жизнь → год → месяц → неделя →
+  день над одним диапазоном дней, счётчик оставшихся недель, рамка жизни в localStorage.
+- `components/day/DaySidebar.tsx` — **new** (+тест): боковая навигация год → месяц; раскрыт
+  месяц читаемого дня, а не календарный. Один компонент на `/day` и на `/life` — `side.js`
+  был вторым списком, и они разъехались.
+- `components/week/WeekScreen.tsx` — **new** (+тест): страница недели — выигранные дни, стрик
+  на конец, когда сняты счётчики, семь квадратов, чеклист, ретро. Неделя без ретро
+  открывается и говорит об этом.
+- `hooks/useDays.ts`, `hooks/useWeek.ts` — **new**: один запрос диапазона дней и один — недели.
+- `app/life/page.tsx`, `app/m/life/page.tsx`, `app/week/page.tsx`, `app/week/[iso]/page.tsx`,
+  `app/m/week/page.tsx`, `app/m/week/[iso]/page.tsx` — **new**: `/m`-пары обоих экранов.
+  Голый `/week` — текущая неделя по границе суток сервера, а не по календарю браузера.
+- `lib/api.ts` — **mod**: `daysAPI.range`, `weeksAPI` и типы `DayListItem`, `Week`,
+  `WeekReviewItem`, `WeekDraft`.
+- `lib/routes.ts` + `lib/routes.test.ts`, `components/route-icons.ts` — **mod**: экраны Life и
+  Week в реестре, оба под «More».
+- `components/DayScreen.tsx` + `components/DayScreen.test.tsx` — **mod**: боковая навигация
+  рядом с днём; в тесте замокан `@/hooks/useDays` — `bun` фиксирует имена экспортов при первой
+  линковке, и без этого `daysAPI` пропадал для следующего файла.
+
+Feedback loops: `bun test` **711/711 green** (было 685), `bunx tsc --noEmit` clean,
+`bunx eslint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+Долг, названный вслух: боковая навигация скрыта на узких экранах (`hidden lg:block`) — в
+мобильном шелле её нет вовсе; редактирование ретро недели из UI не сделано, `PUT /weeks/{iso}`
+существует и зовётся только импортом и тестами.

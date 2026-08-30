@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding reached through "More"
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding reached through "More"; Life owns the timeline and Week its dated detail route
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -71,6 +71,28 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobileNested: true,
     // Under "More": the day screen is opened on purpose, from a link with a
     // date on it, and the tab bar's five slots are already spoken for.
+    inTabBar: null,
+  },
+  {
+    id: 'life',
+    name: 'Life',
+    href: '/life',
+    hasMobile: true,
+    hasMobileNested: false,
+    // Under "More": the timeline is opened to look at a stretch of days, which
+    // is a weekly act rather than a daily one, and the tab bar's five slots are
+    // already spoken for.
+    inTabBar: null,
+  },
+  {
+    id: 'week',
+    name: 'Week',
+    // The bare `/week` is not a screen: a week is opened by its code, from the
+    // timeline or from a link inside a plan. The entry stays in the registry
+    // because that is what gives `/week/2026-W35` a mobile twin at all.
+    href: '/week',
+    hasMobile: true,
+    hasMobileNested: true,
     inTabBar: null,
   },
   {

@@ -863,3 +863,55 @@ Feedback loops (backend): pytest **511/511 green** (было 481), `ruff check` 
 (13 дней, 432 пункта, 22 отметки, 9 дней без плана; второй прогон — нули; `--dry-run` на пустой
 базе оставляет её пустой) и круговой прогон экспорт → импорт по всем 13 дням. Фронтенд не
 тронут — у тикета нет слоя UI, — `bun test` не гонялся, `frontend/SESSION_REVIEW.md` не менялся.
+
+## 2026-08-30 — PHASE-03/94 (неделя и диапазон дней)
+
+Тикет `94-week-days-endpoint-and-life-page`: таблица `week` со снимком счётчиков,
+`GET /api/v1/days?from&to` в форме прежнего `/api/days`, `GET/PUT /api/v1/weeks/{iso}`,
+импорт `weeks/**/*.md`. Тронуто 12 файлов бэкенда.
+
+- `app/day/week.py` — **new**: чистая ISO-арифметика недели (`iso_code`, `week_bounds`,
+  `week_codes`). Часы здесь не читаются: «какое сегодня число» остаётся за
+  `app/core/daytime.py`, а неделя выводится из переданной даты. `date.isocalendar()`, а не
+  ручной `weekday()` + `timedelta`, — иначе 2027-01-01 не попадает в `2026-W53`.
+- `app/models/week.py` — **new**: `week` (снимок с `computed_at`, четыре колонки прозы,
+  генерируемый `search`) и `week_review_item` (воскресный чеклист строками, а не `- [ ]`
+  внутри прозы).
+- `app/crud/week.py` — **new**: `recompute_week` пишет только `won_days`, `total_days`,
+  `streak_end` и `computed_at`; прозу не трогает никогда. `list_days` отвечает диапазоном,
+  считая задачи через `app.crud.mark.task_counts` — второго определения «skipped выходит из
+  знаменателя» в SQL не заводится. `get_week` идёт с `populate_existing`: оба писателя
+  обходят ORM (upsert и bulk delete), и без этого чтение после записи вернуло бы состояние до неё.
+- `app/schemas/week.py` — **new**: `DayListItem` ровно в пяти полях прежнего `/api/days`,
+  `WeekIn` с `extra="forbid"` — счётчики прислать нельзя.
+- `app/api/week.py` — **new**: `days_router` и `weeks_router`. Код, который не называет неделю
+  (`2026-W99`), — 404; неделя без ретро — 200 с пустой прозой. Диапазон шире пяти лет
+  отклоняется 422, а не сканируется.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_week.py` — **new**: `down_revision`
+  `c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки; `downgrade` сносит обе таблицы
+  и оба индекса.
+- `app/imports/week_md.py` — **new**: файл недели по блокам — «Что мешало» и «Mgmt-ретро» в
+  свои колонки, чеклист в строки, всё остальное в `retro_md`. Счётчики из прозы не берутся:
+  «0 из 7» остаётся предложением, а колонки считает `recompute_week`.
+- `app/imports/personal_os.py` — **mod**: `collect_weeks`, `_import_weeks`, `_recompute_weeks`,
+  счётчики недель в отчёте, `WEEK_LINK_RE` — ссылка в `weeks/` теперь переписывается в
+  `/week/2026-W35`, потому что у недели появился экран.
+- `app/models/import_source.py` — **mod**: вид `week_md`.
+- `app/main.py`, `app/models/__init__.py` — **mod**: роутеры в периметр API-key, модели в реестр.
+- `tests/test_week.py` — **new**: 18 тестов — ISO-арифметика с краями года, неделя без ретро,
+  пересчёт двигает счётчики и `computed_at` и не трогает текст, PUT заменяет чеклист,
+  разбор файла недели.
+- `tests/test_days_range.py` — **new**: 8 тестов — форма прежнего `/api/days` (набор полей
+  сверяется как множество), три состояния вердикта, `done`/`total` по рабочим задачам,
+  пустой и слишком широкий диапазон, ключ API.
+- `tests/test_import_personal_os.py` — **mod**: три теста импорта недели плюс правка теста
+  ссылок — ссылка в `weeks/` больше не остаётся текстом.
+- `tests/fixtures/personal_os/weeks/2026/2026-W35.md` — **new**: фикстура недели.
+
+Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов),
+`alembic heads` — одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком
+**не отрабатывал**. Тесты шли против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
+ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
+обход коллизии параллельных веток, не свойство тикета.
