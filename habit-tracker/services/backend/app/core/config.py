@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/106
+# [review:need-review] PHASE-03/106, PHASE-03/107
 # summary: ENVIRONMENT + CORS_ORIGINS allowlist; in prod an empty API_KEY or a "*" origin kills the start
+# summary: APP_TIMEZONE + DAY_START_HOUR — the temporary source of the one day boundary, validated at build
 """
 Настройки приложения.
 
@@ -16,8 +17,9 @@
 """
 
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -87,6 +89,14 @@ class Settings(BaseSettings):
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""
 
+    # The one day boundary — see `app/core/daytime.py`. A day runs from
+    # DAY_START_HOUR local wall clock to that hour of the next date, so a
+    # moment at 00:30 belongs to the previous day. Temporary home: `#86` moves
+    # the source into the versioned `day_rule_set` without changing the
+    # signature of local_date().
+    APP_TIMEZONE: str = "Europe/Berlin"
+    DAY_START_HOUR: int = Field(default=4, ge=0, le=23)
+
     # API
     API_V1_PREFIX: str = "/api/v1"
     PROJECT_NAME: str = "Habit Tracker API"
@@ -132,6 +142,26 @@ class Settings(BaseSettings):
         остаётся.
         """
         return self.ENVIRONMENT != "prod"
+
+    @field_validator("APP_TIMEZONE")
+    @classmethod
+    def _timezone_must_resolve(cls, value: str) -> str:
+        """
+        Проверяет пояс при сборке настроек, а не при первом вызове.
+
+        Иначе опечатка в `APP_TIMEZONE` доживает до первого запроса и падает
+        внутри `local_date()`. Та же проверка ловит контейнер без базы поясов:
+        `zoneinfo` своей базы не имеет, поэтому `tzdata` стоит в основных
+        зависимостях.
+        """
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"APP_TIMEZONE={value!r} is not a known IANA zone "
+                '(expected something like "Europe/Berlin")'
+            ) from exc
+        return value
 
     @model_validator(mode="after")
     def _enforce_prod_perimeter(self) -> "Settings":

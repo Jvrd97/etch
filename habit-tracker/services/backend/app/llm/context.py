@@ -1,11 +1,13 @@
-# [review:need-review] PHASE-01/24-ai-insights-endpoint-button
+# [review:need-review] PHASE-01/24-ai-insights-endpoint-button, PHASE-03/107
 # summary: builds the LLM context for a period — table aggregates + journal texts
+# summary: the period now ends on today_local(), not on the server's calendar date
 from __future__ import annotations
 
 from datetime import date, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import today_local
 from app.crud import category as category_crud
 from app.crud import journal as journal_crud
 from app.crud import table as table_crud
@@ -23,7 +25,7 @@ async def build_period_context(db: AsyncSession, period_days: int) -> str:
     today]. The output is plain text consumed by the LLM only — it is never
     logged.
     """
-    date_to = date.today()
+    date_to = today_local()
     date_from = date_to - timedelta(days=period_days - 1)
 
     lines: list[str] = [
