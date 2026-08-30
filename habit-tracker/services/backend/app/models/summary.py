@@ -24,6 +24,7 @@ from sqlalchemy.sql import func
 
 from app.core.database import Base
 from app.day.evaluate import VERDICTS
+from app.models.checks import in_list
 
 # The generated column, spelled once so the model and the migration cannot
 # drift. A two-argument `to_tsvector` is immutable, which is what lets postgres
@@ -38,12 +39,6 @@ SEARCH_EXPR = "to_tsvector('russian', body_md)"
 SOURCE_CLOSE = "close"
 SOURCE_IMPORT = "import"
 SUMMARY_SOURCES: tuple[str, ...] = (SOURCE_CLOSE, SOURCE_IMPORT)
-
-
-def _in_list(column: str, values: tuple[str, ...]) -> str:
-    """`verdict IN ('won', 'lost')` — spelled once for the model and the migration."""
-    joined = ", ".join(f"'{value}'" for value in values)
-    return f"{column} IN ({joined})"
 
 
 class DaySummary(Base):
@@ -76,9 +71,9 @@ class DaySummary(Base):
 
     __tablename__ = "day_summary"
     __table_args__ = (
-        CheckConstraint(_in_list("verdict", VERDICTS), name="ck_day_summary_verdict"),
+        CheckConstraint(in_list("verdict", VERDICTS), name="ck_day_summary_verdict"),
         CheckConstraint(
-            _in_list("source", SUMMARY_SOURCES), name="ck_day_summary_source"
+            in_list("source", SUMMARY_SOURCES), name="ck_day_summary_source"
         ),
         CheckConstraint(
             "NOT verdict_override OR verdict_override_note IS NOT NULL",

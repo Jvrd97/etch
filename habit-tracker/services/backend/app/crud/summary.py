@@ -42,10 +42,11 @@ from app.day.streak import step_streak
 from app.models.day import DayRuleSet
 from app.models.mark import PlanMark
 from app.models.plan import DayPlan
-from app.models.summary import SOURCE_CLOSE, DaySummary
+from app.models.summary import SOURCE_CLOSE, SOURCE_IMPORT, DaySummary
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
 
 __all__ = [
+    "ImportedDayIsNotClosable",
     "close_day",
     "facts_of",
     "get_summary",
@@ -53,6 +54,27 @@ __all__ = [
     "search",
     "summary_for",
 ]
+
+
+class ImportedDayIsNotClosable(RuntimeError):
+    """
+    `POST /close` reached a day whose итог arrived as prose.
+
+    A row with `source='import'` carries a judgement a person made in words
+    about a day whose marks were never entered. Letting a close write over it
+    would hand that day to `recompute_history`, which would then re-judge it by
+    marks that do not exist — the one thing this module says out loud it never
+    does. So the write is refused whole rather than applied in part: such a day
+    is edited in `summaries/YYYY/MM/*.md` and imported again.
+    """
+
+    def __init__(self, on: date) -> None:
+        self.day_date = on
+        super().__init__(
+            f"Итог {on.isoformat()} пришёл прозой из personal-os: такой вердикт "
+            "не пересчитывают. Правьте summary этого дня в personal-os и "
+            "импортируйте заново."
+        )
 
 
 def facts_of(
@@ -91,6 +113,15 @@ def _to_response(row: DaySummary, *, missing_anchors: list[str]) -> DaySummaryRe
     and `missing_anchors` are not columns — the first is the existence of this
     row, the second a reading of the plan — and a DTO half-filled by reflection
     and half by hand is the version that quietly drops a field on the next edit.
+
+    **Счётчики — снимок, список якорей — живой, и это видно на экране.**
+    `anchors_done`/`tasks_done` are read off the row as `recompute_history` last
+    wrote them, while `missing_anchors` is recounted from the marks as they are
+    now. Nothing forbids ticking a line of a day already closed, and nothing
+    recomputes the итог when that happens, so «якоря 4/5» beside an empty list
+    of missed anchors is a reachable state. Reconciling the two means deciding
+    whether a closed day may still change its verdict, which is `#143`; until
+    then the difference is named here rather than hidden.
     """
     return DaySummaryResponse(
         day_date=row.day_date,
@@ -159,34 +190,56 @@ async def summary_for(
     return _preview(on, evaluate_day(rule, facts), missing_anchors=missing)
 
 
+async def _stored_source(db: AsyncSession, on: date) -> str | None:
+    """
+    Where the stored итог of `on` came from, or None while there is no row.
+
+    One column rather than `get_summary`, and deliberately so: loading the
+    entity would put it in the identity map, and the `ON CONFLICT` that follows
+    writes past the ORM — `recompute_history` would then re-judge the day from
+    the copy it loaded before the write, using the minutes of work of the
+    previous close.
+    """
+    source: str | None = await db.scalar(
+        select(DaySummary.source).where(DaySummary.day_date == on)
+    )
+    return source
+
+
 async def _store_close(
     db: AsyncSession, on: date, rule_set_id: int, body: DayCloseIn
 ) -> None:
     """
-    Write what the person said about the day, and nothing the machine decides.
+    Write the fields the caller actually named, and no others.
+
+    **Только присланное, а не весь документ.** `POST /close` is used twice over
+    the life of a day: once to close it, and later to переопределить the verdict
+    — and that second request carries two fields. Writing the schema's defaults
+    for the rest would blank `body_md` with one click of «Записать «выигран»»,
+    and «проза итога — половина ценности записи» would be true of a record that
+    no longer has any; `work_minutes` would go with it, so the day would also
+    stop being checked for overtime. `model_fields_set` is what tells «не
+    прислал» from «прислал null», so `verdict_override: false` removes an
+    override and its absence leaves one standing.
 
     The verdict, its reason and the counters are deliberately absent here:
     `recompute_history` writes them for this row along with every other, so the
     judgement is made in exactly one place. A row inserted for the first time
     gets them from the column defaults and is judged a moment later.
+
+    `source` is written on insert and never in `set_`. A row that arrived as
+    prose must not become a closed day by being written over; `close_day`
+    refuses that row outright, and this is the second lock — for a writer that
+    goes past the handle.
     """
-    values = {
-        "day_date": on,
-        "rule_set_id": rule_set_id,
-        "verdict_override": body.verdict_override,
-        "verdict_override_note": body.verdict_override_note,
-        "work_minutes": body.work_minutes,
-        "wrote_from_scratch": body.wrote_from_scratch,
-        "education_debt": body.education_debt,
-        "reviewed_today": body.reviewed_today,
-        "body_md": body.body_md,
-        "source": SOURCE_CLOSE,
-    }
-    statement = pg_insert(DaySummary).values(**values)
+    sent = body.model_dump(exclude_unset=True)
+    statement = pg_insert(DaySummary).values(
+        day_date=on, rule_set_id=rule_set_id, source=SOURCE_CLOSE, **sent
+    )
     await db.execute(
         statement.on_conflict_do_update(
             index_elements=[DaySummary.day_date],
-            set_={key: statement.excluded[key] for key in values if key != "day_date"},
+            set_={key: statement.excluded[key] for key in ("rule_set_id", *sent)},
         )
     )
     await db.flush()
@@ -199,8 +252,17 @@ async def close_day(db: AsyncSession, on: date, body: DayCloseIn) -> DaySummaryR
     The day is judged against the rule it was lived under, not the rule in force
     now — closing yesterday at 00:30 and closing a day of last month have to
     give the same answer they would have given then.
+
+    **День, чей итог пришёл прозой, здесь не закрывается.** A row with
+    `source='import'` is refused with `ImportedDayIsNotClosable` before anything
+    is written. Accepting it would flip `source` to `close` and put the day
+    under `recompute_history`, which would re-judge a lived August by marks
+    nobody ever entered — «импортированные вердикты не пересчитываются» is the
+    promise of this module, and it only holds if there is no way in.
     """
     day = await day_crud.ensure_day(db, on)
+    if await _stored_source(db, day.day_date) == SOURCE_IMPORT:
+        raise ImportedDayIsNotClosable(day.day_date)
     rule = await day_crud.rule_for_date(db, on)
     await _store_close(db, day.day_date, rule.id, body)
     await recompute_history(db)
@@ -225,9 +287,14 @@ async def recompute_history(db: AsyncSession) -> None:
     whose marks were never entered; recomputing it would replace history with
     zeros. Only `streak_after` — derived by definition — is written onto it.
 
-    **Переопределение переживает пересчёт.** `verdict_override` replaces the
-    verdict and leaves `verdict_reason` as the machine reached it: a person
-    re-reading the day in a month has to see what was disagreed with.
+    **Переопределение — пятое правило вердикта, и оно одностороннее.**
+    `evaluate_day` decides four conditions over values; the line below adds the
+    fifth, which no pure function can hold — a person saying «день был выигран,
+    просто я не отметил». It only ever turns `lost` into `won`, never the other
+    way, and it leaves `verdict_reason` as the machine reached it: a person
+    re-reading the day in a month has to see what was disagreed with. The rule
+    lives here rather than in `app.day.evaluate` because it is a fact of the
+    stored row, not of the day's facts.
     """
     rules = await day_crud.list_rules(db)
     result = await db.execute(select(DaySummary).order_by(DaySummary.day_date))
@@ -259,6 +326,12 @@ async def search(db: AsyncSession, query: str) -> list[DaySummary]:
     `plainto_tsquery` rather than `to_tsquery`: the input is a phrase a person
     typed («что мешало вчера»), not an expression with operators, and the
     alternative is a syntax error thrown at a reader who wrote ordinary Russian.
+
+    **Ручки над этим пока нет.** The only callers are the tests. Search over the
+    prose is finished at this layer — generated `tsvector`, GIN index, this
+    function — and `GET /day/search?q=` is not written, because the path would
+    have to be registered ahead of `GET /day/{on}` or a date parser would claim
+    it. Named here so that a reader does not take the feature for shipped.
     """
     result = await db.execute(
         select(DaySummary)

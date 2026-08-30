@@ -881,9 +881,11 @@ export type Verdict = 'won' | 'lost';
 /**
  * Which condition of the canon was not met.
  *
- * Ordered on the server as `not_closed → overtime → anchors → tasks`, which is
- * the priority of `config.md`: здоровье > работа > отношения. An empty string
- * means every condition was met.
+ * Ordered on the server as `not_closed → overtime → anchors → tasks`, by which
+ * one is worth being sent to repair: overtime is named before the anchors
+ * because anchors missed after the ninth hour are its consequence, and pointing
+ * at them would send the reader to fix the wrong thing. An empty string means
+ * every condition was met.
  */
 export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
 
@@ -923,7 +925,15 @@ export interface DaySummary {
   source: 'close' | 'import';
 }
 
-/** What closing a day says about it. */
+/**
+ * What closing a day says about it — only the fields actually filled in.
+ *
+ * The server writes the keys it is given and leaves the rest of the row alone,
+ * so an omitted field is «не сказал», not «обнулить». That is what lets the
+ * override travel as two fields without erasing the prose and the minutes of a
+ * day the agent closed through the CLI. Removing an override is an explicit
+ * `verdict_override: false`.
+ */
 export interface DayCloseDraft {
   work_minutes?: number | null;
   body_md?: string;

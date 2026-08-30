@@ -145,6 +145,17 @@ def _milestones(body: str) -> list[ParsedMilestone]:
                 depends_on=CODE_IN_TEXT_RE.findall(cells[4]),
             )
         )
+    # «Открывается чем» is prose, and prose names codes the graph cannot carry:
+    # a milestone that mentions itself would be an edge `M5 -> M5`, and a number
+    # taken from a sentence rather than from the table (`M11`) has no row to
+    # point at and would fail the foreign key as a raw `IntegrityError`. Both
+    # are dropped here, where the whole table is in hand and «which codes exist»
+    # is answerable.
+    known = {one.code for one in found}
+    for one in found:
+        one.depends_on = [
+            code for code in one.depends_on if code != one.code and code in known
+        ]
     return found
 
 

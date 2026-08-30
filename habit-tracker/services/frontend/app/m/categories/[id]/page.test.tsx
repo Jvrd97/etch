@@ -71,6 +71,13 @@ mock.module('next/navigation', () => ({
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // The goal board's client (#93). Present in every api mock for the same
+  // reason the rest of the surface is: bun fixes a module's export names on
+  // first link, so a mock that omits it deletes it for whoever runs next.
+  goalsAPI: {
+    get: () => Promise.resolve(null),
+    patchMilestone: () => Promise.resolve(null),
+  },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.

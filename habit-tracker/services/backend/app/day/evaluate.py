@@ -11,12 +11,27 @@ skill said anchors and eighty percent, `templates/summary.md` said ten hours.
 Here it is one function over values, and the numbers it compares against come
 from the `day_rule_set` row the day was actually lived under.
 
-**The reasons are ordered, and the order is the priority of `config.md`.**
-`not_closed → overtime → anchors → tasks` — здоровье > работа > отношения. A
-day that failed on both anchors and tasks says `anchors`, because that is the
-one worth fixing first; a day that ran nine hours says `overtime` and stops,
-because anchors missed *after* the ninth hour are a consequence and pointing at
-them would send the reader to repair the wrong thing.
+**The reasons are ordered by which one is worth being sent to repair.**
+`not_closed → overtime → anchors → tasks`. Overtime is named before the anchors
+not because work outranks health but because it *causes* them: anchors missed
+after the ninth hour are a consequence, and pointing at them would send the
+reader to fix the wrong thing. Anchors then come before tasks because a day that
+failed on both is decided by the anchors. The priority of `config.md` (здоровье
+> работа > отношения) is expressed elsewhere: all kinds of anchor weigh the
+same, so the evening with the family drops the day exactly where the missed
+street does.
+
+**«Все якоря» — это все якоря, вписанные в план этого дня.** The denominator is
+counted from lines with `kind='anchor'`, never from `rule.required_anchors`:
+that tuple names the five edges a plan *may* mark as `rigidity='hard'`
+(`app.day.rules`, `check_hard_rigidity`), and it bounds what a plan may harden
+rather than listing what a day must contain. So a day whose plan carries no
+anchor line counts 0/0 and passes, exactly as 0/0 tasks passes. It is a hole and
+it is a deliberate one for now: an anchor exists only as a line of markdown
+until `anchor_kind` / `day_anchor` arrive with `#92`, and a denominator of five
+today would call every imported day of August lost for anchors nobody had
+anywhere to write down. `tests/test_evaluate_day.py` pins both readings, so
+changing this is a decision rather than a side effect.
 
 **«Не закрыл» и «проиграл» — разные факты.** An unclosed day has no verdict at
 all rather than a lost one: nobody has said what happened to it yet, and a
@@ -30,8 +45,12 @@ exactly as wrong as calling it overtime.
 
 Nothing here touches the session, FastAPI or `app.crud`, by the same reasoning
 as `app.health.aggregate`: the whole truth table runs in milliseconds under
-`tests/test_evaluate_day.py`, and there is no second place where a day is
-judged.
+`tests/test_evaluate_day.py`. Four of the five rules of the verdict live here.
+The fifth is `verdict_override` — «день был выигран, просто я не отметил» — and
+it is applied in `app.crud.summary.recompute_history`, because it is a fact of
+the stored row rather than of the day's facts. It is one-directional: it turns
+`lost` into `won` and never the reverse, and it leaves the reason this function
+reached untouched.
 
 Related: ADR-0014 (day in postgres), Р2 and Р8.
 """
@@ -157,6 +176,12 @@ def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
     Returns the verdict, the condition that was not met, and the counters the
     screen shows — so that a reader is never told only "день не выигран" and
     left to guess which of three things went wrong.
+
+    `anchors_done < anchors_total` reads as «закрыты все якоря, вписанные в этот
+    план», not «закрыты все пять якорей канона»: `rule.required_anchors` is
+    deliberately not consulted, and a plan without a single anchor line gives
+    0/0 and passes. The reasoning is in the module docstring; `#92` is where it
+    changes.
     """
     anchors_done, anchors_total = _closed_of(facts.anchors)
     tasks_done, tasks_total = _closed_of(facts.tasks)

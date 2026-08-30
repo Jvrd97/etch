@@ -3,10 +3,13 @@
 """
 Wire types of the итог of a day.
 
-**Закрытие дня — один документ, а не поле за полем.** The verdict is a property
-of the whole day: the minutes of work, the prose and the override are read
-together or the answer is wrong, and a PATCH-shaped API would let a day be half
-closed with nothing saying so.
+**Закрытие дня — один документ, но пишутся только названные поля.** The verdict
+is a property of the whole day: the minutes of work, the prose and the override
+are read together or the answer is wrong, and a handle per field would let a day
+be half closed with nothing saying so. What the shape of the document must not
+mean is «всё, что не прислали, обнулить»: the same handle closes a day and later
+переопределяет its verdict with two fields, so `app.crud.summary` writes by
+`model_fields_set` and an absent field leaves the stored value alone.
 
 **Переопределение без записки не проходит валидатор — и не проходит базу.** The
 validator here is the message a person reads; the CHECK on `day_summary` is the
@@ -28,7 +31,14 @@ from app.day.evaluate import VERDICTS
 
 
 class DayCloseIn(BaseModel):
-    """What closing a day says about it."""
+    """
+    What closing a day says about it — the fields named, and only those.
+
+    Every field carries a default, and every default means «не прислали», not
+    «обнулить»: the writer reads `model_fields_set`. Sending
+    `verdict_override: false` is therefore how an override is removed, and
+    leaving the field out is how it survives.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -70,10 +80,28 @@ class DayCloseIn(BaseModel):
 
     @model_validator(mode="after")
     def _override_needs_a_note(self) -> DayCloseIn:
+        """
+        An override arrives with its note, and a note is never cleared alone.
+
+        The second half exists because the write is partial: clearing the note
+        of a row whose `verdict_override` is still true would leave the pair the
+        `CHECK` forbids, and the reader would get a 500 for a rule the schema is
+        supposed to state. Removing an override is `verdict_override: false`.
+        """
         if self.verdict_override and not (self.verdict_override_note or "").strip():
             raise ValueError(
                 "переопределение вердикта требует записки: "
                 "verdict_override_note не может быть пустой"
+            )
+        sent = self.model_fields_set
+        clears_note = (
+            "verdict_override_note" in sent
+            and not (self.verdict_override_note or "").strip()
+        )
+        if clears_note and "verdict_override" not in sent:
+            raise ValueError(
+                "записку переопределения нельзя стереть отдельно: "
+                "снимайте переопределение полем verdict_override"
             )
         return self
 

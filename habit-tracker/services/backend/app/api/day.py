@@ -262,7 +262,11 @@ async def put_notebook(
     )
 
 
-@router.post("/{on}/close", response_model=DaySummaryResponse)
+@router.post(
+    "/{on}/close",
+    response_model=DaySummaryResponse,
+    responses={409: {"description": "Вердикт этого дня пришёл прозой из personal-os"}},
+)
 async def post_close(
     on: date, body: DayCloseIn, db: AsyncSession = Depends(get_db)
 ) -> DaySummaryResponse:
@@ -282,8 +286,19 @@ async def post_close(
     Переопределение вердикта требует записки. 422 без неё — от схемы, и то же
     самое отвергает `CHECK` в базе: валидатор это сообщение, а правило — база.
 
-    Повторный вызов заменяет итог, а не добавляет второй: закрытие — состояние
-    дня, а не запись в журнале.
+    Повторный вызов **дописывает названные поля**, а не заменяет итог целиком:
+    закрытие — состояние дня, и переопределение вердикта, приходящее сюда же
+    двумя полями, не имеет права стереть прозу и минуты работы, записанные при
+    закрытии. Не прислали поле — прежнее значение осталось.
+
+    409 — день, чей итог пришёл прозой из `personal-os` (`source='import'`).
+    Такой вердикт не пересчитывают: его правят в `summaries/` и импортируют
+    заново, иначе день попал бы под пересчёт по отметкам, которых у него нет.
     """
     day, _ = await _resolve(db, on)
-    return await summary_crud.close_day(db, day.day_date, body)
+    try:
+        return await summary_crud.close_day(db, day.day_date, body)
+    except summary_crud.ImportedDayIsNotClosable as refused:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(refused)
+        ) from refused

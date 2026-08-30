@@ -3,11 +3,16 @@
 """
 Database access for the goals of `goal.md`.
 
-**Замена квартала целиком, а не цель за целью.** `PUT /goals/quarter/{quarter}`
-takes five goals and replaces five goals, the same idiom `replace_plan` already
-uses for a day. A per-goal API would make the ceiling of five a question about
-the row being written, and the row being written is never the one over the bar —
-the ceiling is a property of the set, and the database checks it as one.
+**Квартал приезжает набором, но перезаписывается на месте.**
+`PUT /goals/quarter/{quarter}` takes five goals and stores five goals, the same
+idiom `replace_plan` uses for a day: the ceiling of five is a property of the
+set, and a per-goal API would make it a question about the row being written,
+which is never the one over the bar. What «замена» must not mean is
+delete-and-insert — `quarter_goal.id` is what `plan_item.quarter_goal_id` and
+`day_plan.quarter_goal_id` name, and both are `ondelete='RESTRICT'`. So the
+write is an upsert keyed by `(quarter, ord)`, exactly as `app.imports.goal_md`
+does it, and dropping a position a lived day still points at is refused by name
+and by date instead of by a `ForeignKeyViolation`.
 
 **Статус милстона переживает импорт.** Whether M2 is done is a fact a person
 establishes; `goal.md` does not record it. So `set_milestone_status` is the only
@@ -20,16 +25,20 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.goal import (
     MILESTONE_STATUS_DONE,
+    QUARTER_GOAL_STATUSES,
     GoalLevel,
     Milestone,
     MilestoneDep,
     QuarterGoal,
 )
+from app.models.plan import DayPlan, PlanItem, PlanSection
+from app.schemas.goal import QuarterGoalIn
 
 # Months per quarter — three, and the only reason the number is named is that
 # `(month - 1) // 3` on its own reads as arithmetic rather than as a quarter.
@@ -127,27 +136,135 @@ async def set_milestone_status(
     return milestone
 
 
+class QuarterGoalsRejected(ValueError):
+    """
+    A set the quarter cannot be written from, refused before anything is stored.
+
+    Carries the sentence a person reads; the handle only chooses the status
+    code. Two things are refused, and both are properties of the set rather than
+    of one row: a position claimed twice, and a status outside the three the
+    board draws. The database says the same two things
+    (`uq_quarter_goal_quarter_ord`, `ck_quarter_goal_status`) — but it can no
+    longer be the one to say the first, because an upsert keyed on that pair
+    merges a duplicate instead of colliding with it. Which is the whole trade:
+    the ids survive, so the ceiling gets stated one layer up.
+    """
+
+
+class QuarterGoalInUse(RuntimeError):
+    """
+    A goal the new set drops, that a lived day still points at.
+
+    `plan_item.quarter_goal_id` and `day_plan.quarter_goal_id` are `RESTRICT` on
+    purpose: a task that named a goal must not quietly become somebody else's
+    urgency because the quarter was rewritten. The refusal names the goal and
+    the days, so a reader knows what to unlink instead of decoding a constraint.
+    """
+
+    def __init__(self, goal: QuarterGoal, days: list[date]) -> None:
+        self.goal_id = goal.id
+        self.days = days
+        listed = ", ".join(one.isoformat() for one in days)
+        super().__init__(
+            f"цель {goal.ord} квартала {goal.quarter} нельзя убрать: на неё "
+            f"ссылается план дня — {listed}"
+        )
+
+
+def _check_set(goals: list[QuarterGoalIn]) -> None:
+    """The rules of the whole set, checked before a single row is written."""
+    ords = [one.ord for one in goals]
+    taken_twice = sorted({one for one in ords if ords.count(one) > 1})
+    if taken_twice:
+        raise QuarterGoalsRejected(
+            "цели квартала — не больше пяти, и место занимается один раз; "
+            f"занято дважды: {', '.join(str(one) for one in taken_twice)}"
+        )
+    for one in goals:
+        if one.status not in QUARTER_GOAL_STATUSES:
+            raise QuarterGoalsRejected(
+                f"статус «{one.status}» не из словаря целей квартала: "
+                f"{', '.join(QUARTER_GOAL_STATUSES)}"
+            )
+
+
+async def _days_pointing_at(db: AsyncSession, goal_id: int) -> list[date]:
+    """
+    The dates whose plan names this goal — the whole day, or one of its tasks.
+
+    Two reads rather than a `UNION`: the answer is a handful of dates for an
+    error message, and the two queries have nothing in common beyond the column
+    they end on.
+    """
+    whole_day = select(DayPlan.day_date).where(DayPlan.quarter_goal_id == goal_id)
+    by_task = (
+        select(DayPlan.day_date)
+        .join(PlanSection, PlanSection.plan_id == DayPlan.id)
+        .join(PlanItem, PlanItem.section_id == PlanSection.id)
+        .where(PlanItem.quarter_goal_id == goal_id)
+    )
+    dates: set[date] = set()
+    for statement in (whole_day, by_task):
+        dates.update((await db.execute(statement)).scalars().all())
+    return sorted(dates)
+
+
 async def replace_quarter_goals(
-    db: AsyncSession, quarter: str, goals: list[QuarterGoal]
+    db: AsyncSession, quarter: str, goals: list[QuarterGoalIn]
 ) -> list[QuarterGoal]:
     """
-    Store `goals` as the goals of `quarter`, replacing whatever was there.
+    Store `goals` as the goals of `quarter`, keeping the ids a plan points at.
 
-    The whole set at once, so the ceiling of five is checked by the database
-    over the set rather than by a service counting rows it just read. A sixth
-    goal fails on `ck_quarter_goal_ord` or on `uq_quarter_goal_quarter_ord`, and
-    the transaction takes the other five with it — which is the right outcome:
-    a quarter is five goals or it is not written.
+    An upsert keyed by `(quarter, ord)` — the pair the file itself names, and
+    the key `app.imports.goal_md` already writes by. Delete-and-insert would
+    hand every goal a fresh id and cut a lived day loose from what it was lived
+    for; with `ondelete='RESTRICT'` on both referring columns it would not even
+    get that far, since the `DELETE` fails as soon as one task points at one
+    goal.
+
+    Positions the new set does not name are dropped, and dropping one a plan
+    still points at raises `QuarterGoalInUse` rather than a
+    `ForeignKeyViolation` the caller has to decode.
+
+    Takes the DTOs rather than rows already built: the handle's job is to hand
+    over a parsed document and to name the refusal, exactly as `post_plan` does.
     """
-    await db.execute(delete(QuarterGoal).where(QuarterGoal.quarter == quarter))
+    _check_set(goals)
+    for one in goals:
+        statement = pg_insert(QuarterGoal).values(
+            quarter=quarter,
+            ord=one.ord,
+            text_md=one.text_md,
+            milestone_code=one.milestone_code,
+            status=one.status,
+        )
+        await db.execute(
+            statement.on_conflict_do_update(
+                index_elements=[QuarterGoal.quarter, QuarterGoal.ord],
+                set_={
+                    "text_md": statement.excluded.text_md,
+                    "milestone_code": statement.excluded.milestone_code,
+                    "status": statement.excluded.status,
+                },
+            )
+        )
     await db.flush()
-    for goal in goals:
-        db.add(goal)
+
+    kept = {one.ord for one in goals}
+    for stored in await list_quarter_goals(db, quarter):
+        if stored.ord in kept:
+            continue
+        days = await _days_pointing_at(db, stored.id)
+        if days:
+            raise QuarterGoalInUse(stored, days)
+        await db.delete(stored)
     await db.flush()
     return await list_quarter_goals(db, quarter)
 
 
 __all__ = [
+    "QuarterGoalInUse",
+    "QuarterGoalsRejected",
     "dependencies",
     "existing_goal_ids",
     "get_milestone",

@@ -37,8 +37,23 @@ function plain(text: string): string {
   return text.replace(/\*\*(.+?)\*\*/g, '$1');
 }
 
-/** The status a click on a milestone moves it to. */
-function nextStatus(status: MilestoneStatus): MilestoneStatus {
+/** What the button on a closed milestone does, and what it does on any other. */
+export const REOPEN_ACTION = 'Открыть';
+export const CLOSE_ACTION = 'Закрыть';
+
+/**
+ * The status a click moves a milestone to — closed, or back to open.
+ *
+ * Two of the four statuses are unreachable from here on purpose: `in-progress`
+ * and `dropped` are answers to «что с этим милстоном» that nobody gives by
+ * clicking, and a four-way picker on every row of a reading surface would cost
+ * more attention than the board is worth. They are set through
+ * `PATCH /goals/milestones/{code}`, which takes any of the four. The button is
+ * labelled with what it does rather than with where the milestone is now — the
+ * status is written beside it — because a button labelled «закрыт» reads as a
+ * statement until the moment it is pressed.
+ */
+function toggleDone(status: MilestoneStatus): MilestoneStatus {
   return status === 'done' ? 'open' : 'done';
 }
 
@@ -148,15 +163,20 @@ export default function GoalsBoard({ compact = false }: GoalsBoardProps) {
                     </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => markMilestone(one.code, nextStatus(one.status))}
-                  disabled={saving.has(one.code)}
-                  className="text-xs px-3 py-1 rounded-xl border border-white/10 text-text-secondary disabled:opacity-50"
-                >
-                  {STATUS_LABEL[one.status]}
-                  {one.done_on ? ` · ${one.done_on}` : ''}
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-xs text-text-secondary">
+                    {STATUS_LABEL[one.status]}
+                    {one.done_on ? ` · ${one.done_on}` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => markMilestone(one.code, toggleDone(one.status))}
+                    disabled={saving.has(one.code)}
+                    className="text-xs px-3 py-1 rounded-xl border border-white/10 text-text-secondary disabled:opacity-50"
+                  >
+                    {one.status === 'done' ? REOPEN_ACTION : CLOSE_ACTION}
+                  </button>
+                </div>
               </div>
               <div className="mt-2">
                 <DependencyChips milestone={one} statuses={statuses} />

@@ -1,13 +1,16 @@
 // [review:need-review] PHASE-03/90
-// summary: component tests for the итог block — a lost day names the condition it failed on rather than "не выигран", an unclosed day offers to close instead of reading as a loss, the override button stays dead until a note is typed, and unmeasured work is said out loud
+// summary: component tests for the итог block — a lost day names the condition it failed on rather than "не выигран", an unclosed day offers a form instead of reading as a loss, the closing draft carries only what was filled in, the prose of a closed day is shown, the override button stays dead until a note is typed and is not offered at all on a day whose verdict arrived as prose
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DaySummary } from '@/lib/api';
 import DayVerdict, {
+  BODY_LABEL,
   CLOSE_DAY,
+  IMPORTED_VERDICT,
   OVERRIDE_NOTE_LABEL,
   OVERRIDE_SAVE,
+  WORK_MINUTES_LABEL,
 } from './DayVerdict';
 
 const SUMMARY: DaySummary = {
@@ -131,6 +134,81 @@ describe('DayVerdict', () => {
         },
       ])
     );
+  });
+
+  it('shows the prose of a closed day instead of hiding it in the database', () => {
+    // «Проза итога — половина ценности записи», and until now the screen was
+    // not one of the places it could be read.
+    show({ body_md: 'что мешало: созвон, который был письмом' });
+
+    expect(
+      screen.getByText(/созвон, который был письмом/)
+    ).toBeDefined();
+  });
+
+  it('sends only the fields the closing form was filled in with', async () => {
+    // An empty box is «не сказал»: the server writes what it is given and
+    // leaves the rest of the row alone, so a blank must not travel as a null.
+    const sent: unknown[] = [];
+    render(
+      <DayVerdict
+        summary={{
+          ...SUMMARY,
+          closed: false,
+          verdict: null,
+          verdict_reason: 'not_closed',
+          streak_after: null,
+        }}
+        onClose={(draft) => {
+          sent.push(draft);
+          return Promise.resolve();
+        }}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(BODY_LABEL), {
+      target: { value: 'ровный день' },
+    });
+    fireEvent.click(screen.getByText(CLOSE_DAY));
+
+    await waitFor(() => expect(sent).toEqual([{ body_md: 'ровный день' }]));
+  });
+
+  it('sends the minutes of work when they were typed', async () => {
+    const sent: unknown[] = [];
+    render(
+      <DayVerdict
+        summary={{
+          ...SUMMARY,
+          closed: false,
+          verdict: null,
+          verdict_reason: 'not_closed',
+          streak_after: null,
+        }}
+        onClose={(draft) => {
+          sent.push(draft);
+          return Promise.resolve();
+        }}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(WORK_MINUTES_LABEL), {
+      target: { value: '400' },
+    });
+    fireEvent.click(screen.getByText(CLOSE_DAY));
+
+    await waitFor(() => expect(sent).toEqual([{ work_minutes: 400 }]));
+  });
+
+  it('offers no override on a day whose verdict arrived as prose', () => {
+    // Such a row comes back `closed: true`, so it used to land in the override
+    // branch — and the click erased the imported prose and moved the day under
+    // a recompute by marks it never had. The server answers 409; the screen
+    // says why instead of offering a button that cannot work.
+    show({ source: 'import', body_md: 'день выигран: улица, спорт, вечер' });
+
+    expect(screen.queryByText(OVERRIDE_SAVE)).toBeNull();
+    expect(screen.getByText(IMPORTED_VERDICT)).toBeDefined();
   });
 
   it('keeps the machine reason visible after an override', () => {

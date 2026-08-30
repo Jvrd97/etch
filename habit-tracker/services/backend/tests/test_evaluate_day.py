@@ -8,9 +8,17 @@ and the two days that are judged differently only because the canon changed on
 2026-08-17.
 
 The order of the reasons is the point of half of these tests. `not_closed →
-overtime → anchors → tasks` is not an implementation detail: it is the priority
-of `config.md` — здоровье > работа > отношения — written as code, and a day that
-failed on both anchors and tasks has to say `anchors`.
+overtime → anchors → tasks` is not an implementation detail: overtime causes the
+anchors that follow it to be missed, so naming the anchors would send the reader
+to repair the wrong thing, and a day that failed on both anchors and tasks has
+to say `anchors`.
+
+What «все якоря» means is pinned here too, in
+`test_a_day_whose_plan_has_no_anchor_is_not_lost_by_anchors`: the denominator is
+the anchors of *this plan*, not the five of `rule.required_anchors`. That reading
+is stated in the docstring of `app.day.evaluate` and it is a hole with a name —
+a day nobody wrote an anchor into passes — so the test exists to make changing it
+a decision rather than an accident.
 """
 
 # [review:need-review] PHASE-03/90
@@ -215,6 +223,24 @@ def test_a_day_off_with_no_tasks_planned_is_not_lost_by_tasks() -> None:
 
     assert verdict.verdict == VERDICT_WON
     assert (verdict.tasks_done, verdict.tasks_total) == (0, 0)
+
+
+def test_a_day_whose_plan_has_no_anchor_is_not_lost_by_anchors() -> None:
+    """
+    «Все якоря» — все, вписанные в этот план, а не все пять якорей канона.
+
+    The denominator comes from the lines of the plan, and `rule.required_anchors`
+    is not consulted: it bounds what a plan may mark as `rigidity='hard'`, not
+    what a day must contain. So a plan with no anchor line counts 0/0 and passes,
+    which is the hole `#92` closes by making an anchor a thing rather than a line
+    of markdown. Until then the behaviour is pinned rather than assumed.
+    """
+    verdict = evaluate_day(CURRENT, facts(anchors=counts(0, 0)))
+
+    assert verdict.verdict == VERDICT_WON
+    assert verdict.reason == REASON_NONE
+    assert (verdict.anchors_done, verdict.anchors_total) == (0, 0)
+    assert CURRENT.required_anchors
 
 
 def test_a_skipped_task_leaves_the_denominator() -> None:

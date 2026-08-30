@@ -12,6 +12,7 @@ only has to name the refusal rather than repeat it.
 # summary: the goal board answers six levels, ten milestones with their dependency codes and five goals of the quarter; a sixth goal is refused by two different constraints of the database and comes back as a 422 through the API; closing a milestone dates it and reopening it clears the date
 import shutil
 from collections.abc import AsyncGenerator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,11 @@ FIXTURES = Path(__file__).parent / "fixtures" / "personal_os"
 
 GOALS_URL = "/api/v1/goals"
 QUARTER = "2026-Q3"
+
+# A Monday under the current canon, used by the tests that need a plan pointing
+# at a goal of the quarter. Fixed rather than relative to today: `POST /plan`
+# judges the day it is written for.
+PLAN_DAY = date(2026, 8, 24)
 
 
 @pytest.fixture(autouse=True)
@@ -184,6 +190,148 @@ async def test_a_sixth_goal_through_the_api_answers_422_not_500(
 
     assert response.status_code == 422
     assert QUARTER in response.json()["detail"]
+
+
+async def test_rewriting_the_quarter_keeps_the_ids_a_plan_points_at(
+    client: AsyncClient,
+) -> None:
+    """
+    Цель квартала не перезаводится: на её `id` ссылается прожитый день.
+
+    This is what `PUT` used to break outright. `DELETE` + five inserts fails on
+    `fk_plan_item_quarter_goal_id` (`RESTRICT`) the moment one task names a goal
+    — and had the FK been `SET NULL`, it would instead have handed every goal a
+    new id and cut the day loose from what it was lived for.
+    """
+    body = {"goals": [goal(ord_) for ord_ in range(1, 6)]}
+    before = (await client.put(f"{GOALS_URL}/quarter/{QUARTER}", json=body)).json()
+    ids = [one["id"] for one in before["goals"]]
+
+    plan = await client.post(
+        f"/api/v1/day/{PLAN_DAY.isoformat()}/plan",
+        json={
+            "sections": [
+                {
+                    "kind": "work",
+                    "title": "День",
+                    "items": [
+                        {
+                            "kind": "task",
+                            "code": "W1",
+                            "text_md": "Задача W1",
+                            "window": "09:00-10:00",
+                            "done_criterion": "письмо отправлено",
+                            "quarter_goal_id": ids[0],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    assert plan.status_code == 201, plan.text
+
+    body["goals"][0]["text_md"] = "Цель 1, переписанная"
+    again = await client.put(f"{GOALS_URL}/quarter/{QUARTER}", json=body)
+
+    assert again.status_code == 200, again.text
+    assert [one["id"] for one in again.json()["goals"]] == ids
+    assert again.json()["goals"][0]["text_md"] == "Цель 1, переписанная"
+
+
+async def test_dropping_a_goal_a_plan_names_is_refused_by_name_and_by_date(
+    client: AsyncClient,
+) -> None:
+    """
+    Позицию, которую называет прожитый день, снять нельзя — и отказ это говорит.
+
+    `RESTRICT` is the rule; without this branch the caller would get a raw
+    `ForeignKeyViolation` and have to decode which of the five goals it was.
+    """
+    body = {"goals": [goal(ord_) for ord_ in range(1, 6)]}
+    written = (await client.put(f"{GOALS_URL}/quarter/{QUARTER}", json=body)).json()
+    fifth = next(one for one in written["goals"] if one["ord"] == 5)
+
+    plan = await client.post(
+        f"/api/v1/day/{PLAN_DAY.isoformat()}/plan",
+        json={
+            "sections": [
+                {
+                    "kind": "work",
+                    "title": "День",
+                    "items": [
+                        {
+                            "kind": "task",
+                            "code": "W1",
+                            "text_md": "Задача W1",
+                            "window": "09:00-10:00",
+                            "done_criterion": "письмо отправлено",
+                            "quarter_goal_id": fifth["id"],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    assert plan.status_code == 201, plan.text
+
+    response = await client.put(
+        f"{GOALS_URL}/quarter/{QUARTER}",
+        json={"goals": [goal(ord_) for ord_ in range(1, 5)]},
+    )
+
+    assert response.status_code == 409
+    assert PLAN_DAY.isoformat() in response.json()["detail"]
+    assert len((await client.get(GOALS_URL)).json()["goals"]) == 5
+
+
+async def test_a_position_the_new_set_does_not_name_is_dropped(
+    client: AsyncClient,
+) -> None:
+    """Никто на неё не ссылается — позиция уходит, а не остаётся шестой."""
+    await client.put(
+        f"{GOALS_URL}/quarter/{QUARTER}",
+        json={"goals": [goal(ord_) for ord_ in range(1, 6)]},
+    )
+
+    response = await client.put(
+        f"{GOALS_URL}/quarter/{QUARTER}",
+        json={"goals": [goal(ord_) for ord_ in range(1, 4)]},
+    )
+
+    assert response.status_code == 200
+    assert [one["ord"] for one in response.json()["goals"]] == [1, 2, 3]
+
+
+async def test_a_goal_naming_a_milestone_nobody_entered_is_named_by_its_constraint(
+    client: AsyncClient,
+) -> None:
+    """
+    Ручка называет то ограничение, которое отказало, а не одно на все случаи.
+
+    A foreign key to a milestone that does not exist used to come back as «цели
+    квартала — ровно пять пунктов с местами 1..5», which sends the reader
+    looking for a sixth goal that is not there.
+    """
+    goals = [goal(ord_) for ord_ in range(1, 6)]
+    goals[2]["milestone_code"] = "M42"
+
+    response = await client.put(f"{GOALS_URL}/quarter/{QUARTER}", json={"goals": goals})
+
+    assert response.status_code == 422
+    assert "милстон" in response.json()["detail"]
+
+
+async def test_a_status_outside_the_dictionary_is_refused(
+    client: AsyncClient,
+) -> None:
+    """У цели квартала три состояния, и «почти» не одно из них."""
+    goals = [goal(ord_) for ord_ in range(1, 6)]
+    goals[0]["status"] = "почти"
+
+    response = await client.put(f"{GOALS_URL}/quarter/{QUARTER}", json={"goals": goals})
+
+    assert response.status_code == 422
+    assert "почти" in response.json()["detail"]
 
 
 async def test_replacing_the_quarter_answers_the_board_it_wrote(

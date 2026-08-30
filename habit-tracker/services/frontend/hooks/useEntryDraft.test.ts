@@ -55,6 +55,13 @@ let updateEntry: ReturnType<typeof mock>;
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one only drives create/update.
 mock.module('@/lib/api', () => ({
+  // The goal board's client (#93). Present in every api mock for the same
+  // reason the rest of the surface is: bun fixes a module's export names on
+  // first link, so a mock that omits it deletes it for whoever runs next.
+  goalsAPI: {
+    get: () => Promise.resolve(null),
+    patchMilestone: () => Promise.resolve(null),
+  },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.

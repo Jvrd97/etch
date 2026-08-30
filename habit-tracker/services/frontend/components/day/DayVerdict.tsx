@@ -1,8 +1,9 @@
 'use client';
 // [review:need-review] PHASE-03/90
-// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the button that closes an unclosed day, and the override that stays dead until a note is written
+// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form that closes an unclosed one, and the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose
 
 import { useState } from 'react';
+import Markdown from '@/components/Markdown';
 import type { DayCloseDraft, DaySummary } from '@/lib/api';
 import {
   formatMinutes,
@@ -22,12 +23,22 @@ export const CLOSE_FAILED = 'День не закрылся';
 export const REASON_PREFIX = 'Не выполнено:';
 export const MISSING_ANCHORS_TITLE = 'Не отмечены якоря';
 
+export const BODY_LABEL = 'Что случилось вместо плана, что мешало';
+export const BODY_PLACEHOLDER =
+  'Например: два часа ушли на созвон, который был письмом';
+export const WORK_MINUTES_LABEL = 'Минут работы';
+export const WORK_MINUTES_PLACEHOLDER = 'не измерено';
+export const PROSE_TITLE = 'Как прошло';
+
 export const OVERRIDE_TITLE = 'Переопределить вердикт';
 export const OVERRIDE_NOTE_LABEL = 'Почему день всё-таки выигран';
 export const OVERRIDE_NOTE_PLACEHOLDER =
   'Например: задача сделана, отметить забыл';
 export const OVERRIDE_SAVE = 'Записать «выигран»';
 export const OVERRIDE_MADE = 'Вердикт переопределён вручную:';
+export const IMPORTED_VERDICT =
+  'Вердикт пришёл прозой из personal-os — его не пересчитывают. ' +
+  'Правится в summaries/ и импортируется заново.';
 
 export interface DayVerdictProps {
   summary: DaySummary;
@@ -49,9 +60,23 @@ export interface DayVerdictProps {
  * button stays dead until one is typed. The machine's reason stays on screen
  * afterwards: a person re-reading this in a month has to see what was
  * disagreed with.
+ *
+ * **Каждая кнопка шлёт только то, что человек здесь набрал.** `POST /close`
+ * writes the fields it is given and leaves the rest of the row alone, so the
+ * override sends two fields and the prose of a day the agent closed through the
+ * CLI survives the click. Sending the whole итог back — the shape this block
+ * used to imply — would mean the screen is responsible for keeping columns it
+ * never showed.
+ *
+ * **День, чей вердикт пришёл прозой, здесь не переопределяется.** A row with
+ * `source: 'import'` arrives with `closed: true`, so it would otherwise land in
+ * the override branch; the server answers 409 to that write, and this block says
+ * so instead of offering a button that cannot work.
  */
 export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
   const [note, setNote] = useState('');
+  const [body, setBody] = useState('');
+  const [workMinutes, setWorkMinutes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +94,16 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
 
   const reason = verdictReasonLabel(summary.verdict_reason);
   const showReason = summary.closed && reason !== '';
+  const imported = summary.source === 'import';
+
+  // Only the fields a person filled in travel: an empty box is «не сказал»,
+  // and the server distinguishes that from a null it was handed.
+  const closingDraft = (): DayCloseDraft => {
+    const draft: DayCloseDraft = {};
+    if (body.trim() !== '') draft.body_md = body.trim();
+    if (workMinutes.trim() !== '') draft.work_minutes = Number(workMinutes);
+    return draft;
+  };
 
   return (
     <section className="bg-card border border-white/5 rounded-3xl p-6">
@@ -138,6 +173,15 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
         </div>
       )}
 
+      {summary.body_md !== '' && (
+        <div className="mt-5 pt-5 border-t border-white/5">
+          <p className="text-sm text-text-secondary">{PROSE_TITLE}</p>
+          <div className="mt-2 text-text-primary space-y-2">
+            <Markdown content={summary.body_md} />
+          </div>
+        </div>
+      )}
+
       {summary.verdict_override && summary.verdict_override_note !== null && (
         <p className="mt-5 pt-5 border-t border-white/5 text-sm text-text-secondary">
           {OVERRIDE_MADE} {summary.verdict_override_note}
@@ -145,14 +189,37 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
       )}
 
       {!summary.closed ? (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void run({})}
-          className="mt-5 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
-        >
-          {CLOSE_DAY}
-        </button>
+        <div className="mt-5 pt-5 border-t border-white/5">
+          <textarea
+            rows={3}
+            value={body}
+            aria-label={BODY_LABEL}
+            placeholder={BODY_PLACEHOLDER}
+            onChange={(event) => setBody(event.target.value)}
+            className="w-full bg-surface rounded-2xl px-4 py-2 text-text-primary placeholder:text-text-disabled"
+          />
+          <input
+            type="number"
+            min={0}
+            value={workMinutes}
+            aria-label={WORK_MINUTES_LABEL}
+            placeholder={WORK_MINUTES_PLACEHOLDER}
+            onChange={(event) => setWorkMinutes(event.target.value)}
+            className="mt-3 w-full bg-surface rounded-2xl px-4 py-2 text-text-primary placeholder:text-text-disabled"
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(closingDraft())}
+            className="mt-3 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
+          >
+            {CLOSE_DAY}
+          </button>
+        </div>
+      ) : imported ? (
+        <p className="mt-5 pt-5 border-t border-white/5 text-sm text-text-secondary">
+          {IMPORTED_VERDICT}
+        </p>
       ) : (
         !summary.verdict_override && (
           <div className="mt-5 pt-5 border-t border-white/5">

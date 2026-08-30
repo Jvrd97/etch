@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.checks import in_list
 
 # The four states a milestone of `goal.md` can be in. A CHECK, unlike the
 # vocabulary of section kinds: these four are read by the screen, and a fifth
@@ -36,6 +37,14 @@ GOAL_LEVEL_MAX = 5
 # are also distinct.
 QUARTER_GOAL_MIN_ORD = 1
 QUARTER_GOAL_MAX_ORD = 5
+
+# The three states a goal of the quarter can be in, with the same CHECK a
+# milestone's status has. Three rather than four: `in-progress` says nothing
+# about a goal that runs for a whole quarter — every one of the five is in
+# progress the day it is written — while `dropped` is a real outcome and
+# «квартал закончился, цель не сделана» has to stay distinguishable from it.
+QUARTER_GOAL_STATUSES: tuple[str, ...] = ("open", "done", "dropped")
+QUARTER_GOAL_STATUS_OPEN = "open"
 
 
 class GoalLevel(Base):
@@ -87,8 +96,7 @@ class Milestone(Base):
     __tablename__ = "milestone"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'in-progress', 'done', 'dropped')",
-            name="ck_milestone_status",
+            in_list("status", MILESTONE_STATUSES), name="ck_milestone_status"
         ),
     )
 
@@ -156,6 +164,9 @@ class QuarterGoal(Base):
             name="ck_quarter_goal_ord",
         ),
         UniqueConstraint("quarter", "ord", name="uq_quarter_goal_quarter_ord"),
+        CheckConstraint(
+            in_list("status", QUARTER_GOAL_STATUSES), name="ck_quarter_goal_status"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -168,7 +179,12 @@ class QuarterGoal(Base):
     milestone_code: Mapped[str | None] = mapped_column(
         String(16), ForeignKey("milestone.code", ondelete="SET NULL"), nullable=True
     )
-    status: Mapped[str] = mapped_column(String(16), server_default="open")
+    # Owned by a person, like `Milestone.status`: `goal.md` records no such
+    # thing, so the import never writes it and re-reading the file cannot reopen
+    # a goal that was closed.
+    status: Mapped[str] = mapped_column(
+        String(16), server_default=QUARTER_GOAL_STATUS_OPEN
+    )
 
     def __repr__(self) -> str:
         return f"<QuarterGoal(quarter={self.quarter!r}, ord={self.ord})>"

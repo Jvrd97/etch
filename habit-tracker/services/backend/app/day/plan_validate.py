@@ -35,6 +35,8 @@ from app.models.day import DayRuleSet
 
 __all__ = [
     "HARD_ALLOWED_KINDS",
+    "KIND_ANCHOR",
+    "KIND_HARD_POINT",
     "KIND_TASK",
     "PlanRejected",
     "RIGIDITY_FREE",

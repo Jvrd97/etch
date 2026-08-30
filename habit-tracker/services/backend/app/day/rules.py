@@ -63,11 +63,13 @@ CANON_CHANGED_ON = date(2026, 8, 17)
 # history that has no beginning recorded anywhere.
 HISTORY_STARTS_ON = date(2020, 1, 1)
 
-# The hard edges of the day. Only these may carry `rigidity='hard'` when plans
-# arrive (`#87`); the middle of the evening breathes.
 # How far back an open window reaches: сегодня и вчера. See `is_openable`.
 OPEN_WINDOW_DAYS = 1
 
+# The hard edges of the day. Only these may carry `rigidity='hard'` when plans
+# arrive (`#87`); the middle of the evening breathes. A bound on what a plan may
+# harden, not a checklist the verdict counts against — `app.day.evaluate` reads
+# the anchors of the plan itself and says why.
 REQUIRED_ANCHORS: tuple[str, ...] = (
     "подъём",
     "спорт",

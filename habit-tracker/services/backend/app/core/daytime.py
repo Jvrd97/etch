@@ -40,8 +40,12 @@ actually change, the past keeps the dates it was recorded with.
 Consumers: `#86` (a moment's day), `#90` (the verdict of a day and the streak of
 categories), `#91` (work intervals), `#97` (a signal's `local_date`), `#121`
 (quick marks), `#124` (undo), `#127` (challenges), `#134`/`#135` (role minutes),
-`#146` (day signals). Since `#90` there is no second arithmetic of days left in
-`app/`: `app.crud.streak` counted UTC ones and now asks here like everyone else.
+`#146` (day signals). `app.crud.streak` counted UTC days until `#90` and asks here
+like everyone else now. One second expression of the same rule is still open:
+`app.day.plan_validate._pin` decides which calendar date `00:30` belongs to by
+comparing `at.hour` with `day_start_hour`, where `local_date` subtracts the
+hours instead. The two agree; they are two spellings, and folding `_pin` in here
+as `calendar_date_of(on, at)` is the way that ends.
 
 Related: ADR-0014 (day in postgres), ADR-0016 (external inbox), ADR-0018
 (challenges and quick marks).

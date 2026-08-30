@@ -332,6 +332,134 @@ async def test_an_override_with_a_note_keeps_the_machine_reason_visible(
     assert closed["streak_after"] == 1
 
 
+# --- what a second call may and may not overwrite ---------------------------
+
+
+async def test_an_override_does_not_erase_the_prose_of_a_day_already_closed(
+    client: AsyncClient,
+) -> None:
+    """
+    «Проза итога — половина ценности записи», и она переживает вторую запись.
+
+    The screen sends `{verdict_override, verdict_override_note}` and nothing
+    else, because that is all the person typed. A document-shaped write would
+    blank `body_md` and `work_minutes` with that one click — and the day would
+    also stop being checked for overtime, since a null returns `work_minutes` to
+    `missing_data`.
+    """
+    await a_won_day(client)
+    await close(
+        client,
+        CLOSE_DAY,
+        work_minutes=400,
+        body_md="что мешало: два часа на созвон, который был письмом",
+        wrote_from_scratch=45,
+    )
+
+    await close(
+        client,
+        CLOSE_DAY,
+        verdict_override=True,
+        verdict_override_note="задача сделана, отметить забыл",
+    )
+
+    stored = await summary_of(client, CLOSE_DAY)
+    assert stored["body_md"].startswith("что мешало")
+    assert stored["work_minutes"] == 400
+    assert stored["wrote_from_scratch"] == 45
+    assert stored["missing_data"] == []
+    assert stored["source"] == "close"
+    assert stored["verdict_override"] is True
+
+
+async def test_an_override_is_removed_by_naming_it_false(client: AsyncClient) -> None:
+    """
+    Умолчание поля значит «не прислали», поэтому снятие называется вслух.
+
+    An absent `verdict_override` leaves the one on the row standing — that is
+    the whole point of writing only what was sent — so removing it has to be an
+    explicit `false` rather than a request that happens to omit the field.
+    """
+    await a_won_day(client)
+    await close(client, CLOSE_DAY, work_minutes=NINE_HOURS_MIN)
+    await close(
+        client,
+        CLOSE_DAY,
+        verdict_override=True,
+        verdict_override_note="считаю день выигранным",
+    )
+    assert (await summary_of(client, CLOSE_DAY))["verdict"] == VERDICT_WON
+
+    await close(client, CLOSE_DAY, verdict_override=False)
+
+    stored = await summary_of(client, CLOSE_DAY)
+    assert stored["verdict_override"] is False
+    assert stored["verdict"] == VERDICT_LOST
+    assert stored["work_minutes"] == NINE_HOURS_MIN
+
+
+async def test_the_note_of_an_override_cannot_be_cleared_on_its_own(
+    client: AsyncClient,
+) -> None:
+    """The pair the `CHECK` forbids is refused by the schema, not by a 500."""
+    await a_won_day(client)
+    await close(
+        client,
+        CLOSE_DAY,
+        work_minutes=400,
+        verdict_override=True,
+        verdict_override_note="сделал, отметить забыл",
+    )
+
+    response = await client.post(
+        f"{CLOSE_PATH}/close", json={"verdict_override_note": None}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_closing_a_day_whose_verdict_arrived_as_prose_is_refused(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    Импортированный день не закрывается через API — ни целиком, ни двумя полями.
+
+    `_to_response` answers `closed: true` for such a row, so the screen offers
+    the override on it. Accepting that click used to flip `source` to `close`
+    and hand a lived August to `recompute_history`, which would re-judge it by
+    marks nobody ever entered — the one thing `app.crud.summary` promises never
+    happens. The prose of the day is where its verdict lives; it is edited in
+    `summaries/` and imported again.
+    """
+    await day_crud.ensure_day(db_session, HISTORICAL)
+    rule = await day_crud.rule_for_date(db_session, HISTORICAL)
+    await db_session.execute(
+        insert(DaySummary).values(
+            day_date=HISTORICAL,
+            rule_set_id=rule.id,
+            verdict=VERDICT_WON,
+            verdict_reason="",
+            body_md="день выигран: улица, спорт, вечер с близкими",
+            work_minutes=420,
+            source="import",
+        )
+    )
+    await db_session.flush()
+
+    response = await client.post(
+        f"{DAY_URL}/{HISTORICAL.isoformat()}/close",
+        json={"verdict_override": True, "verdict_override_note": "пусть будет"},
+    )
+
+    assert response.status_code == 409
+    stored = await summary_of(client, HISTORICAL)
+    assert stored["source"] == "import"
+    assert stored["verdict"] == VERDICT_WON
+    assert stored["verdict_override"] is False
+    assert stored["body_md"].startswith("день выигран")
+    assert stored["work_minutes"] == 420
+
+
 # --- the open window -------------------------------------------------------
 
 
