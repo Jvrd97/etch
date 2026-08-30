@@ -813,3 +813,53 @@ Feedback loops (backend): pytest 481/481 green (было 455), `ruff check` clea
 Фронтенд не тронут — у тикета нет слоя UI, — поэтому `bun test` не гонялся и
 `frontend/SESSION_REVIEW.md` не менялся. Ни один скрипт не прогонялся на VPS: docker
 недоступен, боевой машины у сессии нет.
+
+## 2026-08-30 — PHASE-03/89: импорт истории personal-os
+
+Тикет: `issues/PHASE-03/done/89-import-personal-os-plans-and-exporter.md`. Тронуто 8 файлов.
+
+- `app/models/import_source.py` — **new**: таблица `import_source` (`kind`, `path` уникальный,
+  `sha256`, `imported_at`, `raw`). Файл лежит целиком: разбор лоссовый по построению
+  (`<details>`, отметка без строки), и после заморозки personal-os в архив это единственный
+  способ вернуться к оригиналу. `sha256` — то, что делает повторный прогон дешёвым и честным.
+- `alembic/versions/2026_08_31_0900-f1c3e5a7b9d2_import_source.py` — **new**: одна таблица,
+  `down_revision = e0b2d4f6a8c1`. `upgrade`/`downgrade`/`upgrade` проверены на временной базе
+  `habit_mig_check89`, `\d import_source` сверен с моделью — имена ограничений совпадают.
+- `app/models/__init__.py` — **mod**: реэкспорт `ImportSource`.
+- `app/imports/__init__.py` — **new**.
+- `app/imports/md_parser.py` — **new**: грамматика `.md` планов (frontmatter, секции, задачи
+  `### W1 · …`, подписи `Подпись :: значение`, таблицы, шаги, минимумы, продолжения строк).
+  Ничего не судит: канон применяет `app.crud.plan`. Каждый пункт помнит, чем он был на
+  странице (`html_form`) — это то, чем отметка находит свою строку.
+- `app/imports/plan_state.py` — **new**: чтение блока `<script id="plan-state">` из `.html` и
+  отчёта экспортёра из `.report.md`. Ключи разбираются по **странице**, а не по markdown:
+  генерируемое расписание сдвигает `t`-нумерацию (на 28.08 — на семь строк), и пересчёт по
+  `.md` посадил бы отметки не на те строки. Строки расписания помечаются псевдонимами.
+- `app/imports/personal_os.py` — **new**: CLI `python -m app.imports.personal_os --root DIR
+  [--dry-run] [--force] [--date]`. Пропуск дня по совпадению `sha256`, сопоставление отметок по
+  тексту, заполнение календаря без дыр, `opened_at` только по свидетельству, отчёт с
+  предупреждениями. Пишет через `crud.plan.replace_plan` и `crud.mark.set_mark` — второго
+  определения плана не заводится.
+- `app/exports/personal_os.py` — **mod**: дети задачи пишутся с отступом. Без этого строка под
+  `### W1` читается обратно и как шаг задачи, и как следующая строка раздела, и круговой прогон
+  на 28.08 менял вложенность.
+- `tests/test_import_personal_os.py` — **new**: 30 тестов. Фикстуры
+  `tests/fixtures/personal_os/` — живой 28 августа (`.md`, `.html` с настоящими галочками,
+  `.report.md` от `plan_server.py`) плюс два маленьких дня под случаи, которых в живых данных
+  нет: день без отметок и отметка на строке, которой в `.md` больше нет.
+- `tests/test_export_personal_os.py` — **mod**: один assert под новый отступ детей задачи.
+- `habit-tracker/docs/day-plan.md` — **mod**: раздел «Импорт истории personal-os».
+
+Найдено по ходу: `plan_server.py:page_labels` считает строки регуляркой `<tr>` без атрибутов и
+поэтому пропускает `<tr class="clash">` — на страницах с наложением окон его собственный дамп
+отметок съезжает на строку. Браузерный `querySelectorAll("table tbody tr")` их считает; импорт
+следует браузеру.
+
+Feedback loops (backend): pytest **511/511 green** (было 481), `ruff check` clean,
+`ruff format --check` clean (109 файлов), `mypy --strict app` clean (80 файлов),
+`alembic heads` — одна голова `f1c3e5a7b9d2`. Docker-демон не поднят, `make check` целиком не
+отрабатывал: тесты шли против постгреса на localhost:5432, база `habit_tracker_test`. Сверх
+тестов прогнан живой импорт `~/Documents/MyProj/personal-os` в базу `habit_import_check`
+(13 дней, 432 пункта, 22 отметки, 9 дней без плана; второй прогон — нули; `--dry-run` на пустой
+базе оставляет её пустой) и круговой прогон экспорт → импорт по всем 13 дням. Фронтенд не
+тронут — у тикета нет слоя UI, — `bun test` не гонялся, `frontend/SESSION_REVIEW.md` не менялся.

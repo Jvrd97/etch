@@ -1,0 +1,1322 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пятница в дороге</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" href="/icon-192.png" sizes="192x192">
+<meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#181a1e" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+:root{
+  --paper:#fbfaf7; --ink:#1c1c1c; --ink-soft:#6b6b6b; --ink-faint:#b8b8b8;
+  --rule:#2a2a2a; --rule-soft:#dedad2;
+  --accent:#ffe500; --accent-ink:#000000;
+  --fig-fill:rgba(0,0,0,0.025); --focus:#0a5cff;
+  --sans:"Helvetica Neue", Helvetica, Inter, system-ui, Arial, sans-serif;
+  --serif:"Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --mono:"SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --measure:48rem; --wide:68rem; --gap:clamp(2rem, 6vw, 7rem);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#181a1e; --ink:#d6d9de; --ink-soft:#9aa0aa; --ink-faint:#4f555e;
+    --rule:#aeb3bc; --rule-soft:#2b2f35; --accent:#dcc744; --accent-ink:#1b1d20;
+    --fig-fill:rgba(255,255,255,0.05); --focus:#8fb0ff;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#181a1e; --ink:#d6d9de; --ink-soft:#9aa0aa; --ink-faint:#4f555e;
+  --rule:#aeb3bc; --rule-soft:#2b2f35; --accent:#dcc744; --accent-ink:#1b1d20;
+  --fig-fill:rgba(255,255,255,0.05); --focus:#8fb0ff;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--serif); font-size:16px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit; text-decoration:none; border-bottom:1px solid var(--rule-soft)}
+a:hover{border-bottom-color:var(--rule)}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px}
+code{font-family:var(--mono); font-size:.86em; background:var(--fig-fill); padding:.1em .3em}
+
+.sheet{max-width:var(--wide); margin:0 auto; padding:2.25rem var(--gap) 6rem}
+
+.sheet__head{
+  display:grid; grid-template-columns:3rem 1fr 3rem; align-items:baseline;
+  padding-bottom:.9rem; border-bottom:1px solid var(--rule-soft);
+}
+.folio,.runhead,.label,.eyebrow,th,.chip,.status{
+  font-family:var(--sans); font-size:10px; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--ink-soft);
+}
+.runhead{text-align:center}
+.top{padding:2.6rem 0 1.8rem; border-bottom:1px solid var(--rule); max-width:var(--measure); margin:0 auto}
+h1{
+  font-family:var(--serif); font-weight:400; letter-spacing:-0.01em; text-wrap:balance;
+  font-size:clamp(2.4rem,5vw,4rem); line-height:1.08; margin:.4rem 0 1rem;
+}
+h1 em{font-style:normal;
+  background:linear-gradient(transparent 62%, var(--accent) 62%, var(--accent) 92%, transparent 92%);
+}
+.lede{color:var(--ink-soft); max-width:38rem; margin:0 0 1.4rem}
+.counts{display:flex; flex-wrap:wrap; gap:2.2rem; margin-top:1.4rem}
+.count b{display:block; font-family:var(--serif); font-size:1.8rem; font-weight:400; line-height:1}
+.count span{display:block; margin-top:.3rem}
+
+main{max-width:var(--measure); margin:0 auto}
+section{border-top:1px solid var(--rule); margin-top:3.2rem; padding-top:1.2rem}
+h2{font-family:var(--serif); font-weight:400; font-size:1.5rem; letter-spacing:-0.01em; margin:0 0 1.2rem}
+h3{font-family:var(--serif); font-weight:400; font-size:1.12rem; margin:1.9rem 0 .5rem}
+
+ul.plain{list-style:none; margin:0; padding:0}
+ul.plain li{
+  padding:.55rem 0 .55rem 1.9rem; border-bottom:1px solid var(--rule-soft); position:relative;
+}
+ul.plain li{padding-left:0}
+
+/* строка с отметкой */
+.row{display:grid; grid-template-columns:1.5rem 1fr auto; align-items:start; gap:.15rem .4rem}
+.mark{
+  appearance:none; background:transparent; padding:0; cursor:pointer;
+  width:.95rem; height:.95rem; margin-top:.42em;
+  border:1px solid var(--ink-faint); color:var(--ink);
+  display:grid; place-content:center; line-height:1;
+  font-family:var(--sans); font-size:.72rem; font-weight:700;
+}
+.mark[data-state="done"]{border-color:var(--ink); background:var(--accent); color:var(--accent-ink)}
+.mark[data-state="fail"]{border-color:var(--ink); color:var(--ink)}
+.mark:hover{border-color:var(--ink)}
+.row[data-state="done"] > .txt{color:var(--ink-soft); text-decoration:line-through}
+.row[data-state="fail"] > .txt{color:var(--ink-soft)}
+.txt{min-width:0}
+.notebtn{
+  appearance:none; background:transparent; border:0; cursor:pointer; padding:.15rem 0 0 .4rem;
+  font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-faint);
+}
+.notebtn:hover, .notebtn[data-filled="1"]{color:var(--ink-soft)}
+.note-body{grid-column:2 / -1; padding:.35rem 0 .5rem}
+.note-body textarea{
+  width:100%; min-height:3.2em; resize:vertical;
+  background:var(--fig-fill); color:var(--ink);
+  border:0; border-left:2px solid var(--rule-soft); padding:.5rem .7rem;
+  font-family:var(--serif); font-size:.95rem; line-height:1.5;
+}
+.note-body textarea:focus{border-left-color:var(--accent)}
+.note-body[hidden]{display:none}
+
+/* ссылка на задачу в ClickUp */
+.link{display:grid; grid-template-columns:7rem 1fr; gap:.6rem 1rem; padding:.5rem 0;
+  border-bottom:1px solid var(--rule-soft); align-items:baseline}
+.link input{
+  width:100%; background:var(--fig-fill); color:var(--ink); border:0;
+  border-bottom:1px solid var(--rule-soft); padding:.35rem .5rem;
+  font-family:var(--mono); font-size:.82rem;
+}
+.link input:focus{border-bottom-color:var(--accent)}
+.link .edit{
+  appearance:none; background:none; border:0; cursor:pointer; padding:0 0 0 .6rem;
+  font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-faint);
+}
+.link .edit:hover{color:var(--ink-soft)}
+
+/* блокнот дня */
+#daynotes{
+  width:100%; min-height:16em; resize:vertical;
+  background:var(--fig-fill); color:var(--ink);
+  border:0; border-left:2px solid var(--rule-soft); padding:.9rem 1.1rem;
+  font-family:var(--serif); font-size:1rem; line-height:1.65;
+}
+#daynotes:focus{border-left-color:var(--accent)}
+.stamp{
+  appearance:none; background:none; cursor:pointer;
+  font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-soft);
+  border:0; border-bottom:1px solid var(--rule-soft); padding:0 0 1px; margin-top:.8rem;
+}
+.stamp:hover{color:var(--ink); border-bottom-color:var(--rule)}
+
+td.tick{width:1.6rem; padding-right:.4rem}
+td.tick .mark{margin-top:.3em}
+tr[data-state="done"] td:not(.tick){color:var(--ink-soft); text-decoration:line-through}
+tr[data-state="fail"] td:not(.tick){color:var(--ink-soft)}
+/* окно задачи и расписание дня */
+.when{
+  display:block; width:fit-content; margin:.5rem 0 .2rem;
+  font-family:var(--mono); font-size:1rem; font-weight:600; letter-spacing:.01em;
+  color:var(--ink); background:var(--fig-fill);
+  border-left:3px solid var(--accent); padding:.28rem .7rem;
+  white-space:nowrap;
+}
+.when i{
+  font-family:var(--sans); font-style:normal; font-size:11px; font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft);
+  margin-left:.7rem;
+}
+.schedule table{font-size:1.02rem}
+.schedule td:first-child{font-family:var(--mono); font-size:1rem; white-space:nowrap;
+  color:var(--ink); font-weight:600}
+.schedule td:nth-child(2){font-family:var(--sans); font-size:12px; font-weight:600;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); white-space:nowrap}
+.schedule tr.clash td{background:var(--fig-fill)}
+.schedule .warn{
+  font-family:var(--sans); font-size:10px; font-weight:700; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--accent-ink); background:var(--accent);
+  padding:.1rem .35rem; margin-left:.5rem;
+}
+.schedule .gap{font-family:var(--sans); font-size:10px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--ink-faint); margin-left:.5rem}
+h3.task .row{align-items:baseline}
+h3.task .mark{margin-top:0}
+.reset{
+  font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-soft); background:none;
+  border:0; border-bottom:1px solid var(--rule-soft); padding:0 0 1px; cursor:pointer;
+}
+.reset:hover{color:var(--ink); border-bottom-color:var(--rule)}
+.saveinfo{
+  font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-faint); margin-left:1.2rem;
+}
+.saveinfo[data-mode="disk"]{color:var(--ink-soft)}
+
+/* передача дня ассистенту */
+.handoff{max-width:var(--measure); margin:3.2rem auto 0; border-top:1px solid var(--rule);
+  padding-top:1.2rem}
+.bigbtn{
+  appearance:none; cursor:pointer; margin-top:.4rem;
+  background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
+  font-family:var(--sans); font-size:11px; font-weight:700; letter-spacing:.09em;
+  text-transform:uppercase; padding:.7rem 1.3rem;
+}
+.bigbtn:hover{filter:brightness(1.08)}
+.job{padding:.6rem 0 .2rem; border-bottom:1px solid var(--rule-soft)}
+.job:last-child{border-bottom:0}
+.bigbtn[disabled]{background:transparent; color:var(--ink-faint);
+  border-color:var(--rule-soft); cursor:default; filter:none}
+.hstatus{font-family:var(--sans); font-size:12.5px; color:var(--ink-soft); margin:.9rem 0 0}
+.hstatus a{border-bottom:1px solid var(--accent)}
+#hlogbox pre{background:var(--fig-fill); padding:.8rem 1rem; overflow-x:auto;
+  font-family:var(--mono); font-size:.78rem; line-height:1.5; white-space:pre-wrap;
+  max-height:16em; overflow-y:auto}
+ol.steps{margin:0; padding-left:1.2rem}
+ol.steps li{padding:.35rem 0; border-bottom:1px solid var(--rule-soft)}
+
+.field{display:grid; grid-template-columns:7rem 1fr; gap:.6rem 1rem; padding:.5rem 0;
+  border-bottom:1px solid var(--rule-soft)}
+.field .label{padding-top:.35em}
+
+.wide{max-width:var(--wide); margin-inline:auto; overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-size:.95rem}
+th{text-align:left; padding:.5rem .8rem .5rem 0; border-bottom:1px solid var(--rule)}
+td{padding:.6rem .8rem .6rem 0; border-bottom:1px solid var(--rule-soft); vertical-align:top}
+td:first-child{font-family:var(--mono); font-size:.85rem; white-space:nowrap; color:var(--ink-soft)}
+
+.note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1.1rem; margin:1.4rem 0}
+.status{display:inline-block; border-bottom:2px solid var(--ink); padding-bottom:1px}
+.status--done{border-bottom-color:var(--accent)}
+mark{background:var(--accent); color:var(--accent-ink)}
+
+details{border-top:1px solid var(--rule-soft); padding:.6rem 0}
+summary{cursor:pointer; list-style:none; font-family:var(--sans); font-size:12.5px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+ "; color:var(--ink-soft)}
+details[open] summary::before{content:"− "}
+details pre{background:var(--fig-fill); padding:.9rem 1rem; overflow-x:auto;
+  font-family:var(--mono); font-size:.82rem; line-height:1.5; white-space:pre-wrap}
+
+footer{max-width:var(--measure); margin:4rem auto 0; padding-top:1.1rem;
+  border-top:1px solid var(--rule); font-family:var(--sans); font-size:12.5px; color:var(--ink-soft)}
+
+@media print{
+  body{background:#fff}
+  .reset{display:none}
+  .notebtn, .saveinfo, .stamp, .link .edit, .handoff{display:none}
+  #daynotes{border-left-color:var(--rule-soft); min-height:0}
+  .row[data-state="done"] > .txt, tr[data-state="done"] td:not(.tick){text-decoration:none}
+  .note-body[hidden]{display:block !important}
+  .note-body textarea{border-left-color:var(--rule-soft)}
+  .sheet{padding:0}
+  details{display:block}
+  details > *{display:revert}
+  details:not([open]) > *:not(summary){display:block}
+  summary{display:none}
+  section{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="sheet__head">
+    <span class="folio">§ 0</span>
+    <span class="runhead">personal-os · план дня · пятница 28.08.2026</span>
+    <span></span>
+  </div>
+
+  <header class="top">
+    <p class="eyebrow">План дня — производный вид, источник: plans/2026/08/2026-08-28.md</p>
+    <h1>Пятница <em>в дороге</em></h1>
+    <p class="lede">
+      Рабочих окон около четырёх часов, рвано, с ноутом. Это половина рабочего дня, а не полный. Поэтому три задачи плюс пятничный отчёт, а не шесть.
+    </p>
+    <div class="field">
+      <span class="label">Ради чего</span>
+      <span>Q3-пункт 2 — перевожу бизнес в задачи для других (резюме, roadmap, документы). Плюс M1 «переезд»: осмотр, ответ Sylvia, документы Vermieter.</span>
+    </div>
+        <div class="counts">
+      <span class="count"><b>4</b><span class="label">рабочие задачи</span></span>
+      <span class="count"><b>~4 ч</b><span class="label">рабочих окон</span></span>
+      <span class="count"><b>2</b><span class="label">жёстких встречи</span></span>
+      <span class="count"><b>16:00</b><span class="label">стоп работы</span></span>
+    </div>
+
+  </header>
+
+  <main>
+    <section class="wide schedule">
+      <h2>Расписание дня</h2>
+      <p class="lede" style="margin-bottom:1rem">Собрано из окон задач и жёстких точек. Наложения помечены — их надо развести до начала дня, а не в 12:00.</p>
+      <table><thead><tr><th>Когда</th><th>Сколько</th><th>Что</th></tr></thead><tbody>
+          <tr><td>07:45</td><td>—</td><td>Первым делом: написать Игорю — попросить документы для Vermieter. Не сделано с утра — день упрётся к вечеру.</td></tr>
+          <tr><td>09:30</td><td>—</td><td>Выезд <span class="gap">+1 ч 45 мин свободно до этого</span></td></tr>
+          <tr><td>10:00</td><td>—</td><td>Besichtigung #30 — Napoleonstraße 1a, Engen-Stetten ([86cbau6gu](https://app.clickup.com/t/86cbau6gu)) <span class="gap">+30 мин свободно до этого</span></td></tr>
+          <tr><td>12:00</td><td>—</td><td>Ногти — я с ноутом. Это рабочее окно, а не пауза. <span class="gap">+2 ч свободно до этого</span></td></tr>
+          <tr><td>12:00 – 14:00</td><td>2 ч</td><td>W1 · Шортлист 5 кандидатов на backend</td></tr>
+          <tr><td>14:30 – 15:30</td><td>1 ч</td><td>W2 · Обновить STATUS.md в alv/docs/ROADMAP <span class="gap">+30 мин свободно до этого</span></td></tr>
+          <tr class="clash"><td>15:00 – 15:40</td><td>40 мин</td><td>W4 · Отчёт по работе за неделю <span class="warn">наложение</span></td></tr>
+        </tbody></table>
+      <p class="lede" style="margin-top:1rem">Задачи занимают 3 ч 40 мин чистого времени.</p>
+    </section>
+    <section>
+      <h2>§ 1 · Якоря</h2>
+      <ul class="plain">
+        <li>Улица утром — ходьба 10-15 мин. Обязательна, даже если всё горит.</li>
+        <li>Силовая 25-30 мин, RIR 1-2, без отказа.</li>
+        <li>Холодный душ → медитация 10-15 мин.</li>
+        <li>Витамины.</li>
+        <li>Работа стоп в 16:00. Дальше дорога — это не работа.</li>
+        <li>Ревью дня в ~15:40.</li>
+        <li>Экраны off с 21:00. Видео сегодня нет — договорено.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>§ 2 · Тренировка — верх тела, pull в приоритете</h2>
+      <div class="note">Плечо (жалоба от 10.08) не проверено 17 дней. Сегодня — <mark>проверка, а не рекорд</mark>. Кольнуло на пробном подходе — снять подтягивания и доработать остальное.</div>
+      <ol class="steps">
+        <li>Разминка своя + 2 мин плеча: висы с депрессией лопатки, band pull-apart, круги руками</li>
+        <li>Подтягивания — 1 пробный подход, 5-6 повторов</li>
+        <li>Австралийские тяги 3x10-12, RIR 2</li>
+        <li>Отжимания на кулаках с паузой 3x12</li>
+        <li>Кор: скручивания 2x15, планка 2x45</li>
+      </ol>
+    </section>
+
+    <section class="wide">
+      <h2>§ 3 · Жёсткие точки дня</h2>
+      <table>
+        <thead><tr><th>Время</th><th>Что</th></tr></thead>
+        <tbody>
+          <tr><td>07:45</td><td>Первым делом: написать Игорю — попросить документы для Vermieter. Не сделано с утра — день упрётся к вечеру.</td></tr>
+          <tr><td>~09:30</td><td>Выезд</td></tr>
+          <tr><td>10:00</td><td>Besichtigung #30 — Napoleonstraße 1a, Engen-Stetten (<a href="https://app.clickup.com/t/86cbau6gu" target="_blank" rel="noopener">86cbau6gu</a>)</td></tr>
+          <tr><td>12:00</td><td>Ногти — я с ноутом. Это рабочее окно, а не пауза.</td></tr>
+          <tr><td>до 20:00</td><td>Ответить Sylvia по #12 Uhlandstraße 19 — берём или нет (<a href="https://app.clickup.com/t/86cbau6mb" target="_blank" rel="noopener">86cbau6mb</a>, urgent)</td></tr>
+          <tr><td>ночью</td><td>Дорога</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>§ 4 · Работа — по порядку</h2>
+      <h3 class="task">W1 · Шортлист 5 кандидатов на backend<span class="when">12:00 – 14:00<i>2 ч</i></span></h3>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Окно</span><span>Пока ногти. 1.5-2 ч.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Ход</span><span>Скачать все резюме → прогнать через модель по единым критериям → пять имён.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Сделано</span><span>Файл: 5 кандидатов, одна строка «почему он» на каждого, что спросить на скрине.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Минимум</span><span>Резюме скачаны и сведены в один файл. Отбор тогда в понедельник.</span></div>
+      <h3 class="task">W2 · Обновить STATUS.md в alv/docs/ROADMAP<span class="when">14:30 – 15:30<i>1 ч</i></span></h3>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Окно</span><span>45-60 мин.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Факт</span><span><code>beta_target: 2026-08-22</code> уже прошёл. Это второй сорванный T0 — первый был 27.07.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Сделано</span><span>Новый T0 стоит с причиной сдвига в комментарии, timeline пересчитан, в истории строка про срыв 22.08.</span></div>
+      <div class="note">Это не бумажка. T0 висит на Apple Developer, а там просрочены оба шага — см. последний раздел.</div>
+      <h3 class="task">W3 · Документы</h3>
+      <ul class="plain">
+        <li>Сисадмину — 15 мин, утром до выезда. Уже заполнены: отправить и получить «получил».</li>
+        <li>От Игоря → Vermieter — как придут, 15 мин. Не пришли к 15:00 — пингануть повторно, дальше не мой блокер.</li>
+      </ul>
+      <h3 class="task">W4 · Отчёт по работе за неделю<span class="when">15:00 – 15:40<i>40 мин</i></span></h3>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Окно</span><span>До ревью дня. 30-40 мин.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Почему</span><span>Пятничный якорь из <code>config.md</code>, не задача по выбору. Неделя без отчёта не закрывается.</span></div>
+      <ul class="plain">
+      </ul>
+      <div class="field"><span class="label">Сделано</span><span>Что сделано, что не сделано и почему, что горит на следующей неделе. Плюс одна цифра из уравнения расходов и ценности (<code>goal.md</code>, уровень 5).</span></div>
+      <div class="note">Сегодня день рваный, поэтому отчёт короткий: пять строк, не документ. Но он есть — иначе он не появится и в следующую пятницу.</div>
+    </section>
+
+    <section>
+      <h2>§ 5 · В дорогу — три PDF, по порядку отдачи</h2>
+      <p>Всё вместе 48 страниц. Порядок не случайный: первые два работают уже завтра утром,</p>
+      <p>третий — вложение вдолгую. Не успел третий — нормально.</p>
+      <ul class="plain">
+        <li><strong><code>s2s-probe-conn-to-coll.pdf</code></strong> — 12 страниц, <mark>читать первым</mark>.</li>
+      </ul>
+      <p><code>~/Documents/MyVault/Studying/Programming/Backend/Alvion/</code></p>
+      <p>Разбор зонда <code>conn_to_coll.py</code>: outbox, консьюмер, леджер идемпотентности, s2s-токен.</p>
+      <p>Это ровно тот механизм, который завтра чинится в W1 — там письмо с QR не уходит,</p>
+      <p>потому что цепочка рвётся где-то между outbox и консьюмером.</p>
+      <ul class="plain">
+        <li><strong><code>2026-08-27-apple-health-data-inventory.pdf</code></strong> — 6 страниц, быстрое.</li>
+      </ul>
+      <p><code>alv/docs/GENERAL/researches/wearables-data-model/</code></p>
+      <p>Вход в завтрашнее решение по реестру health-метрик — прочитать до него, а не после.</p>
+      <ul class="plain">
+        <li><strong><code>testing-in-isolation.pdf</code></strong> — 30 страниц, длинное. Под него завтра стоит практика</li>
+      </ul>
+      <p>в W3: написать с нуля один тест в изоляции.</p>
+      <ul class="plain">
+        <li><mark>Все три уже лежат локально</mark> — качать ничего не надо, интернет в дороге не нужен.</li>
+        <li>Читаю, а не смотрю: видео сегодня нет.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>§ 6 · Что сегодня не двигается</h2>
+      <div class="note">Самое горящее в Talvior — <a href="https://app.clickup.com/t/86cb3xtv5" target="_blank" rel="noopener">сквозной flow покупки</a> (urgent, in progress: Stripe → юзер → письмо с QR). Это денежный контур, квартальная цель №1. Сегодня он не двигается: нужен непрерывный блок и ручная тестовая оплата, а день рваный. <strong>Первым делом в субботу 29.08.</strong></div>
+      <details>
+      <summary>Хвост, который держит T0 — контекст для W2, не задачи на сегодня</summary>
+      <pre>🚀 Сайт-визитка ONMONETARY на VPS   high, просрочка с 31.07 — блокер Apple Developer enrollment
+                                          https://app.clickup.com/t/86cazbtw9
+      📱 Пингануть Apple Developer        было due 26.08, просрочено
+                                          https://app.clickup.com/t/86cb9t4cr
+      ADR-017 / ADR-019 + парсеры health  шесть high-задач висят с июля.
+                                          Либо в план недели, либо закрыть как неактуальные —
+                                          третий месяц они просто создают фон вины.</pre>
+      </details>
+    </section>
+
+    <section>
+      <h2>§ 7 · Заметки дня</h2>
+      <p class="lede" style="margin-bottom:1rem">
+        Свободный блокнот: что случилось, что мешало, что понял. Пишется по ходу дня;
+        вечером это вход для <code>/day-close</code> — саммари собирается отсюда, а не по памяти.
+      </p>
+      <textarea id="daynotes" placeholder="пиши как есть, без структуры…"></textarea>
+      <button class="stamp" type="button" id="stamp">+ отметить время</button>
+    </section>
+
+  </main>
+
+  <section class="handoff" id="handoffbox">
+    <h2>Передать день</h2>
+    <p class="lede">
+      Кнопка отдаёт ассистенту всё, что ты отметил и написал за день: галки, крестики,
+      комментарии у пунктов и блокнот. Он закроет день по этим словам и соберёт план
+      на завтра. Отмечай и пиши до конца дня — читаться будет то, что есть на момент нажатия.
+    </p>
+    <div class="job" data-action="tomorrow">
+      <button class="bigbtn" type="button">Сделать план на завтра</button>
+      <p class="hstatus"></p>
+      <details hidden><summary>Что происходит</summary><pre></pre></details>
+    </div>
+
+  </section>
+
+  <p style="max-width:var(--measure); margin:2.6rem auto 0">
+    <button class="reset" type="button" id="reset">Сбросить отметки</button>
+    <span class="saveinfo" id="saveinfo"></span>
+  </p>
+
+  <footer>
+    <a href="/life">Таймлайн жизни</a> · <a href="/">План на сегодня</a><br>
+    Источник истины — <code>plans/2026/08/2026-08-28.md</code>. Эта страница производная:
+    правки идут в <code>.md</code>, потом перерисовка скиллом <code>academic-html</code>.
+    В git не версионируется.
+  </footer>
+
+</div>
+
+<script>
+if ("serviceWorker" in navigator && location.protocol === "http:") {
+  navigator.serviceWorker.register("/sw.js").catch(function(){});
+}
+
+// Запускается после разбора страницы: блок <script id="plan-state"> с отметками
+// лежит в самом конце body, до DOMContentLoaded его ещё нет.
+function initPlan(){
+  var DATE = "2026-08-28";
+  var KEY = "plan-" + DATE;
+  var CYCLE = ["", "done", "fail"];
+  var GLYPH = {"": "", "done": "\u2713", "fail": "\u2715"};
+  var ONLINE = location.protocol === "http:";      // открыт через tools/plan_server.py
+  var info = null;
+  var store = {};
+
+  var seed = document.getElementById("plan-state");
+  if (seed) { try { store = JSON.parse(seed.textContent) || {}; } catch (e) { store = {}; } }
+
+  // Копия в браузере — страховка. Подмешиваем её всегда: если на диске по какому-то
+  // пункту пусто, а в браузере есть отметка или заметка, берём браузерную.
+  // Так пережитая потеря файла или отставшая вкладка не стоят дня записей.
+  var recovered = 0;
+  try {
+    var local = JSON.parse(localStorage.getItem(KEY) || "{}");
+    Object.keys(local).forEach(function(k){
+      var mine = local[k] || {}, disk = store[k] || {};
+      var mineHas = mine.s || (mine.n || "").trim();
+      var diskHas = disk.s || (disk.n || "").trim();
+      if (mineHas && !diskHas) { store[k] = mine; recovered++; }
+    });
+  } catch (e) {}
+
+  var timer = null;
+  function say(text, mode){
+    if (!info) info = document.getElementById("saveinfo");
+    if (!info) return;
+    info.textContent = text;
+    info.dataset.mode = mode;
+  }
+
+  function push(clear){
+    fetch("/save?date=" + DATE + (clear ? "&clear=1" : ""), {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(store)
+    }).then(function(r){
+      say(r.ok ? "сохранено на диск" : "сервер ответил " + r.status, r.ok ? "disk" : "local");
+    }).catch(function(){
+      say("сервер не отвечает — только в браузере", "local");
+    });
+  }
+
+  function save(){
+    try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {}
+    if (!ONLINE) { say("только в браузере — запусти tools/plan_server.py", "local"); return; }
+    say("сохраняю\u2026", "disk");
+    clearTimeout(timer);
+    timer = setTimeout(push, 400);
+  }
+  function rec(id){ if (!store[id]) store[id] = {s: "", n: ""}; return store[id]; }
+
+  // одна отметка: кнопка статуса + кнопка заметки + поле заметки
+  function control(id, host, textHolder){
+    var r = rec(id);
+
+    var mark = document.createElement("button");
+    mark.type = "button";
+    mark.className = "mark";
+    mark.title = "клик: сделано \u2192 не сделано \u2192 пусто";
+    mark.setAttribute("aria-label", "статус пункта");
+
+    var nb = document.createElement("button");
+    nb.type = "button";
+    nb.className = "notebtn";
+    nb.textContent = "как прошло";
+
+    var body = document.createElement("div");
+    body.className = "note-body";
+    body.hidden = true;
+    var ta = document.createElement("textarea");
+    ta.placeholder = "как прошло\u2026";
+    ta.value = r.n || "";
+    body.appendChild(ta);
+
+    function paint(){
+      mark.dataset.state = r.s;
+      mark.textContent = GLYPH[r.s];
+      textHolder.dataset.state = r.s;
+      nb.dataset.filled = r.n ? "1" : "0";
+      nb.textContent = r.n ? "заметка \u00b7 есть" : "как прошло";
+      if (r.n) body.hidden = false;
+    }
+
+    mark.addEventListener("click", function(){
+      r.s = CYCLE[(CYCLE.indexOf(r.s) + 1) % CYCLE.length];
+      save(); paint();
+    });
+    nb.addEventListener("click", function(){
+      body.hidden = !body.hidden;
+      if (!body.hidden) ta.focus();
+    });
+    ta.addEventListener("input", function(){
+      r.n = ta.value;
+      save();
+      nb.dataset.filled = r.n ? "1" : "0";
+      nb.textContent = r.n ? "заметка \u00b7 есть" : "как прошло";
+    });
+
+    paint();
+    return {mark: mark, nb: nb, body: body};
+  }
+
+  // пункты списков и шаги тренировки
+  document.querySelectorAll("ul.plain > li, ol.steps > li").forEach(function(li, i){
+    var row = document.createElement("div");
+    row.className = "row";
+    var txt = document.createElement("span");
+    txt.className = "txt";
+    while (li.firstChild) txt.appendChild(li.firstChild);
+    var c = control("i" + i, li, row);
+    row.appendChild(c.mark);
+    row.appendChild(txt);
+    row.appendChild(c.nb);
+    row.appendChild(c.body);
+    li.appendChild(row);
+  });
+
+  // строки таблицы жёстких точек
+  document.querySelectorAll("table tbody tr").forEach(function(tr, i){
+    var td = document.createElement("td");
+    td.className = "tick";
+    var last = tr.lastElementChild;
+    var c = control("t" + i, tr, tr);
+    td.appendChild(c.mark);
+    tr.insertBefore(td, tr.firstChild);
+    var wrap = document.createElement("div");
+    wrap.className = "row";
+    wrap.style.gridTemplateColumns = "1fr auto";
+    c.body.style.gridColumn = "1 / -1";
+    wrap.appendChild(c.nb);
+    wrap.appendChild(c.body);
+    last.appendChild(wrap);
+  });
+
+  // заголовки задач W1-W3
+  document.querySelectorAll("h3.task").forEach(function(h, i){
+    var row = document.createElement("div");
+    row.className = "row";
+    var txt = document.createElement("span");
+    txt.className = "txt";
+    while (h.firstChild) txt.appendChild(h.firstChild);
+    var c = control("w" + i, h, row);
+    row.appendChild(c.mark);
+    row.appendChild(txt);
+    row.appendChild(c.nb);
+    row.appendChild(c.body);
+    h.appendChild(row);
+  });
+
+  // ссылка на задачу в ClickUp — под каждым заголовком задачи
+  document.querySelectorAll("h3.task").forEach(function(h, i){
+    var id = "u" + i;
+    var r = rec(id);
+    var box = document.createElement("div");
+    box.className = "link";
+    var lab = document.createElement("span");
+    lab.className = "label";
+    lab.textContent = "ClickUp";
+    var slot = document.createElement("span");
+    box.appendChild(lab); box.appendChild(slot);
+    h.insertAdjacentElement("afterend", box);
+
+    function paint(){
+      slot.textContent = "";
+      if (r.n) {
+        var a = document.createElement("a");
+        a.href = r.n; a.textContent = r.n.replace(/^https?:\/\//, "");
+        a.target = "_blank"; a.rel = "noopener";
+        var ed = document.createElement("button");
+        ed.type = "button"; ed.className = "edit"; ed.textContent = "изменить";
+        ed.addEventListener("click", function(){ r.n = ""; save(); paint(); });
+        slot.appendChild(a); slot.appendChild(ed);
+      } else {
+        var inp = document.createElement("input");
+        inp.type = "url"; inp.placeholder = "https://app.clickup.com/t/…";
+        inp.addEventListener("change", function(){
+          r.n = inp.value.trim(); save(); if (r.n) paint();
+        });
+        slot.appendChild(inp);
+      }
+    }
+    paint();
+  });
+
+  // блокнот дня
+  var notes = document.getElementById("daynotes");
+  if (notes) {
+    var nr = rec("day");
+    notes.value = nr.n || "";
+    notes.addEventListener("input", function(){ nr.n = notes.value; save(); });
+    document.getElementById("stamp").addEventListener("click", function(){
+      var d = new Date();
+      var hh = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+      var pre = notes.value && !/\n$/.test(notes.value) ? "\n\n" : "";
+      notes.value += pre + hh + " \u2014 ";
+      nr.n = notes.value; save();
+      notes.focus();
+      notes.setSelectionRange(notes.value.length, notes.value.length);
+    });
+  }
+
+  say(ONLINE ? "сохраняется на диск" : "только в браузере — запусти tools/plan_server.py",
+      ONLINE ? "disk" : "local");
+
+  if (recovered && ONLINE) {
+    say("вернул " + recovered + " отметок из памяти браузера", "disk");
+    save();
+  }
+
+  // Вкладка была в фоне и отстала — перечитать состояние с диска, иначе она
+  // затрёт своими старыми данными то, что отмечено в другом окне.
+  if (ONLINE) {
+    document.addEventListener("visibilitychange", function(){
+      if (document.hidden || timer) return;      // timer = есть несохранённая правка
+      fetch("/state?date=" + DATE)
+        .then(function(r){ return r.json(); })
+        .then(function(fresh){
+          if (JSON.stringify(fresh) !== JSON.stringify(store)) location.reload();
+        })
+        .catch(function(){});
+    });
+  }
+
+  // --- фоновые задачи: обработчик один на любую кнопку .job ---
+  (function(){
+    var boxes = document.querySelectorAll(".job");
+    if (!boxes.length) return;
+
+    boxes.forEach(function(box){
+      var action = box.dataset.action;
+      var btn = box.querySelector("button");
+      var out = box.querySelector(".hstatus");
+      var logbox = box.querySelector("details");
+      var log = logbox.querySelector("pre");
+      var label = btn.textContent;
+      var poll = null;
+
+      if (!ONLINE) {
+        btn.disabled = true;
+        out.textContent = "Работает только через сервер: запусти приложение «План дня».";
+        return;
+      }
+
+      function stop(){ clearInterval(poll); poll = null; }
+
+      function paint(st){
+        if (st.log) { logbox.hidden = false; log.textContent = st.log; }
+
+        if (st.state === "running") {
+          btn.disabled = true;
+          btn.textContent = "Работаю…";
+          out.textContent = action === "tomorrow"
+            ? "Ассистент разбирает " + DATE + " и собирает план на " + st.tomorrow
+              + ". Несколько минут, окно можно закрыть."
+            : "Ассистент работает. Несколько минут, окно можно закрыть.";
+          return;
+        }
+
+        stop();
+        btn.disabled = false;
+
+        if (st.state === "failed") {
+          btn.textContent = "Попробовать снова";
+          out.textContent = "Ассистент завершился с ошибкой — смотри лог ниже.";
+          return;
+        }
+
+        if (st.ready) {
+          btn.textContent = st.state === "done" ? "Повторить" : label;
+          out.innerHTML = action === "tomorrow"
+            ? 'План на ' + st.tomorrow + ' готов: <a href="/' + st.tomorrow + '">открыть</a>.'
+            : "Готово: <code>" + st.result + "</code>";
+          return;
+        }
+
+        btn.textContent = label;
+        if (st.state === "done") {
+          out.textContent = "Ассистент закончил, но результата не видно. Загляни в лог.";
+        }
+      }
+
+      function check(){
+        fetch("/handoff/status?action=" + action + "&date=" + DATE)
+          .then(function(r){ return r.json(); })
+          .then(paint)
+          .catch(function(){});
+      }
+
+      btn.addEventListener("click", function(){
+        btn.disabled = true;
+        btn.textContent = "Отправляю…";
+        out.textContent = action === "tomorrow" ? "Сохраняю отметки и передаю день…" : "Запускаю…";
+        if (action === "tomorrow") save();
+        setTimeout(function(){
+          fetch("/handoff?action=" + action + "&date=" + DATE, {method: "POST"})
+            .then(function(r){ return r.json(); })
+            .then(function(res){
+              if (res.state === "no-claude") {
+                btn.disabled = false;
+                btn.textContent = label;
+                out.innerHTML = "Не нашёл <code>claude</code> в системе."
+                  + (res.report ? " Отчёт всё равно собран: <code>" + res.report + "</code>." : "");
+                return;
+              }
+              if (res.report) out.textContent = "Передал. Отчёт: " + res.report;
+              check();
+              if (!poll) poll = setInterval(check, 4000);
+            })
+            .catch(function(){
+              btn.disabled = false;
+              btn.textContent = label;
+              out.textContent = "Сервер не ответил.";
+            });
+        }, action === "tomorrow" ? 600 : 0);   // ждём, пока долетит автосохранение
+      });
+
+      check();
+    });
+  })();
+
+  document.getElementById("reset").addEventListener("click", function(){
+    if (!confirm("Снять все отметки и удалить заметки?")) return;
+    store = {};
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    if (ONLINE) { push(true); setTimeout(function(){ location.reload(); }, 300); }
+    else location.reload();
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initPlan);
+} else {
+  initPlan();
+}
+</script>
+<script id="plan-state"> с отметками
+// лежит в самом конце body, до DOMContentLoaded его ещё нет.
+function initPlan(){
+  var DATE = "2026-08-28";
+  var KEY = "plan-" + DATE;
+  var CYCLE = ["", "done", "fail"];
+  var GLYPH = {"": "", "done": "\u2713", "fail": "\u2715"};
+  var ONLINE = location.protocol === "http:";      // открыт через tools/plan_server.py
+  var info = null;
+  var store = {};
+
+  var seed = document.getElementById("plan-state");
+  if (seed) { try { store = JSON.parse(seed.textContent) || {}; } catch (e) { store = {}; } }
+
+  // Копия в браузере — страховка. Подмешиваем её всегда: если на диске по какому-то
+  // пункту пусто, а в браузере есть отметка или заметка, берём браузерную.
+  // Так пережитая потеря файла или отставшая вкладка не стоят дня записей.
+  var recovered = 0;
+  try {
+    var local = JSON.parse(localStorage.getItem(KEY) || "{}");
+    Object.keys(local).forEach(function(k){
+      var mine = local[k] || {}, disk = store[k] || {};
+      var mineHas = mine.s || (mine.n || "").trim();
+      var diskHas = disk.s || (disk.n || "").trim();
+      if (mineHas && !diskHas) { store[k] = mine; recovered++; }
+    });
+  } catch (e) {}
+
+  var timer = null;
+  function say(text, mode){
+    if (!info) info = document.getElementById("saveinfo");
+    if (!info) return;
+    info.textContent = text;
+    info.dataset.mode = mode;
+  }
+
+  function push(clear){
+    fetch("/save?date=" + DATE + (clear ? "&clear=1" : ""), {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(store)
+    }).then(function(r){
+      say(r.ok ? "сохранено на диск" : "сервер ответил " + r.status, r.ok ? "disk" : "local");
+    }).catch(function(){
+      say("сервер не отвечает — только в браузере", "local");
+    });
+  }
+
+  function save(){
+    try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {}
+    if (!ONLINE) { say("только в браузере — запусти tools/plan_server.py", "local"); return; }
+    say("сохраняю\u2026", "disk");
+    clearTimeout(timer);
+    timer = setTimeout(push, 400);
+  }
+  function rec(id){ if (!store[id]) store[id] = {s: "", n: ""}; return store[id]; }
+
+  // одна отметка: кнопка статуса + кнопка заметки + поле заметки
+  function control(id, host, textHolder){
+    var r = rec(id);
+
+    var mark = document.createElement("button");
+    mark.type = "button";
+    mark.className = "mark";
+    mark.title = "клик: сделано \u2192 не сделано \u2192 пусто";
+    mark.setAttribute("aria-label", "статус пункта");
+
+    var nb = document.createElement("button");
+    nb.type = "button";
+    nb.className = "notebtn";
+    nb.textContent = "как прошло";
+
+    var body = document.createElement("div");
+    body.className = "note-body";
+    body.hidden = true;
+    var ta = document.createElement("textarea");
+    ta.placeholder = "как прошло\u2026";
+    ta.value = r.n || "";
+    body.appendChild(ta);
+
+    function paint(){
+      mark.dataset.state = r.s;
+      mark.textContent = GLYPH[r.s];
+      textHolder.dataset.state = r.s;
+      nb.dataset.filled = r.n ? "1" : "0";
+      nb.textContent = r.n ? "заметка \u00b7 есть" : "как прошло";
+      if (r.n) body.hidden = false;
+    }
+
+    mark.addEventListener("click", function(){
+      r.s = CYCLE[(CYCLE.indexOf(r.s) + 1) % CYCLE.length];
+      save(); paint();
+    });
+    nb.addEventListener("click", function(){
+      body.hidden = !body.hidden;
+      if (!body.hidden) ta.focus();
+    });
+    ta.addEventListener("input", function(){
+      r.n = ta.value;
+      save();
+      nb.dataset.filled = r.n ? "1" : "0";
+      nb.textContent = r.n ? "заметка \u00b7 есть" : "как прошло";
+    });
+
+    paint();
+    return {mark: mark, nb: nb, body: body};
+  }
+
+  // пункты списков и шаги тренировки
+  document.querySelectorAll("ul.plain > li, ol.steps > li").forEach(function(li, i){
+    var row = document.createElement("div");
+    row.className = "row";
+    var txt = document.createElement("span");
+    txt.className = "txt";
+    while (li.firstChild) txt.appendChild(li.firstChild);
+    var c = control("i" + i, li, row);
+    row.appendChild(c.mark);
+    row.appendChild(txt);
+    row.appendChild(c.nb);
+    row.appendChild(c.body);
+    li.appendChild(row);
+  });
+
+  // строки таблицы жёстких точек
+  document.querySelectorAll("table tbody tr").forEach(function(tr, i){
+    var td = document.createElement("td");
+    td.className = "tick";
+    var last = tr.lastElementChild;
+    var c = control("t" + i, tr, tr);
+    td.appendChild(c.mark);
+    tr.insertBefore(td, tr.firstChild);
+    var wrap = document.createElement("div");
+    wrap.className = "row";
+    wrap.style.gridTemplateColumns = "1fr auto";
+    c.body.style.gridColumn = "1 / -1";
+    wrap.appendChild(c.nb);
+    wrap.appendChild(c.body);
+    last.appendChild(wrap);
+  });
+
+  // заголовки задач W1-W3
+  document.querySelectorAll("h3.task").forEach(function(h, i){
+    var row = document.createElement("div");
+    row.className = "row";
+    var txt = document.createElement("span");
+    txt.className = "txt";
+    while (h.firstChild) txt.appendChild(h.firstChild);
+    var c = control("w" + i, h, row);
+    row.appendChild(c.mark);
+    row.appendChild(txt);
+    row.appendChild(c.nb);
+    row.appendChild(c.body);
+    h.appendChild(row);
+  });
+
+  // ссылка на задачу в ClickUp — под каждым заголовком задачи
+  document.querySelectorAll("h3.task").forEach(function(h, i){
+    var id = "u" + i;
+    var r = rec(id);
+    var box = document.createElement("div");
+    box.className = "link";
+    var lab = document.createElement("span");
+    lab.className = "label";
+    lab.textContent = "ClickUp";
+    var slot = document.createElement("span");
+    box.appendChild(lab); box.appendChild(slot);
+    h.insertAdjacentElement("afterend", box);
+
+    function paint(){
+      slot.textContent = "";
+      if (r.n) {
+        var a = document.createElement("a");
+        a.href = r.n; a.textContent = r.n.replace(/^https?:\/\//, "");
+        a.target = "_blank"; a.rel = "noopener";
+        var ed = document.createElement("button");
+        ed.type = "button"; ed.className = "edit"; ed.textContent = "изменить";
+        ed.addEventListener("click", function(){ r.n = ""; save(); paint(); });
+        slot.appendChild(a); slot.appendChild(ed);
+      } else {
+        var inp = document.createElement("input");
+        inp.type = "url"; inp.placeholder = "https://app.clickup.com/t/…";
+        inp.addEventListener("change", function(){
+          r.n = inp.value.trim(); save(); if (r.n) paint();
+        });
+        slot.appendChild(inp);
+      }
+    }
+    paint();
+  });
+
+  // блокнот дня
+  var notes = document.getElementById("daynotes");
+  if (notes) {
+    var nr = rec("day");
+    notes.value = nr.n || "";
+    notes.addEventListener("input", function(){ nr.n = notes.value; save(); });
+    document.getElementById("stamp").addEventListener("click", function(){
+      var d = new Date();
+      var hh = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+      var pre = notes.value && !/\n$/.test(notes.value) ? "\n\n" : "";
+      notes.value += pre + hh + " \u2014 ";
+      nr.n = notes.value; save();
+      notes.focus();
+      notes.setSelectionRange(notes.value.length, notes.value.length);
+    });
+  }
+
+  say(ONLINE ? "сохраняется на диск" : "только в браузере — запусти tools/plan_server.py",
+      ONLINE ? "disk" : "local");
+
+  if (recovered && ONLINE) {
+    say("вернул " + recovered + " отметок из памяти браузера", "disk");
+    save();
+  }
+
+  // Вкладка была в фоне и отстала — перечитать состояние с диска, иначе она
+  // затрёт своими старыми данными то, что отмечено в другом окне.
+  if (ONLINE) {
+    document.addEventListener("visibilitychange", function(){
+      if (document.hidden || timer) return;      // timer = есть несохранённая правка
+      fetch("/state?date=" + DATE)
+        .then(function(r){ return r.json(); })
+        .then(function(fresh){
+          if (JSON.stringify(fresh) !== JSON.stringify(store)) location.reload();
+        })
+        .catch(function(){});
+    });
+  }
+
+  // --- фоновые задачи: обработчик один на любую кнопку .job ---
+  (function(){
+    var boxes = document.querySelectorAll(".job");
+    if (!boxes.length) return;
+
+    boxes.forEach(function(box){
+      var action = box.dataset.action;
+      var btn = box.querySelector("button");
+      var out = box.querySelector(".hstatus");
+      var logbox = box.querySelector("details");
+      var log = logbox.querySelector("pre");
+      var label = btn.textContent;
+      var poll = null;
+
+      if (!ONLINE) {
+        btn.disabled = true;
+        out.textContent = "Работает только через сервер: запусти приложение «План дня».";
+        return;
+      }
+
+      function stop(){ clearInterval(poll); poll = null; }
+
+      function paint(st){
+        if (st.log) { logbox.hidden = false; log.textContent = st.log; }
+
+        if (st.state === "running") {
+          btn.disabled = true;
+          btn.textContent = "Работаю…";
+          out.textContent = action === "tomorrow"
+            ? "Ассистент разбирает " + DATE + " и собирает план на " + st.tomorrow
+              + ". Несколько минут, окно можно закрыть."
+            : "Ассистент работает. Несколько минут, окно можно закрыть.";
+          return;
+        }
+
+        stop();
+        btn.disabled = false;
+
+        if (st.state === "failed") {
+          btn.textContent = "Попробовать снова";
+          out.textContent = "Ассистент завершился с ошибкой — смотри лог ниже.";
+          return;
+        }
+
+        if (st.ready) {
+          btn.textContent = st.state === "done" ? "Повторить" : label;
+          out.innerHTML = action === "tomorrow"
+            ? 'План на ' + st.tomorrow + ' готов: <a href="/' + st.tomorrow + '">открыть</a>.'
+            : "Готово: <code>" + st.result + "</code>";
+          return;
+        }
+
+        btn.textContent = label;
+        if (st.state === "done") {
+          out.textContent = "Ассистент закончил, но результата не видно. Загляни в лог.";
+        }
+      }
+
+      function check(){
+        fetch("/handoff/status?action=" + action + "&date=" + DATE)
+          .then(function(r){ return r.json(); })
+          .then(paint)
+          .catch(function(){});
+      }
+
+      btn.addEventListener("click", function(){
+        btn.disabled = true;
+        btn.textContent = "Отправляю…";
+        out.textContent = action === "tomorrow" ? "Сохраняю отметки и передаю день…" : "Запускаю…";
+        if (action === "tomorrow") save();
+        setTimeout(function(){
+          fetch("/handoff?action=" + action + "&date=" + DATE, {method: "POST"})
+            .then(function(r){ return r.json(); })
+            .then(function(res){
+              if (res.state === "no-claude") {
+                btn.disabled = false;
+                btn.textContent = label;
+                out.innerHTML = "Не нашёл <code>claude</code> в системе."
+                  + (res.report ? " Отчёт всё равно собран: <code>" + res.report + "</code>." : "");
+                return;
+              }
+              if (res.report) out.textContent = "Передал. Отчёт: " + res.report;
+              check();
+              if (!poll) poll = setInterval(check, 4000);
+            })
+            .catch(function(){
+              btn.disabled = false;
+              btn.textContent = label;
+              out.textContent = "Сервер не ответил.";
+            });
+        }, action === "tomorrow" ? 600 : 0);   // ждём, пока долетит автосохранение
+      });
+
+      check();
+    });
+  })();
+
+  document.getElementById("reset").addEventListener("click", function(){
+    if (!confirm("Снять все отметки и удалить заметки?")) return;
+    store = {};
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    if (ONLINE) { push(true); setTimeout(function(){ location.reload(); }, 300); }
+    else location.reload();
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initPlan);
+} else {
+  initPlan();
+}
+</script>
+<script id="plan-state" type="application/json">
+{
+ "i3": {
+  "s": "done",
+  "n": ""
+ },
+ "t0": {
+  "s": "done",
+  "n": ""
+ },
+ "t1": {
+  "s": "done",
+  "n": ""
+ },
+ "t2": {
+  "s": "done",
+  "n": ""
+ },
+ "t3": {
+  "s": "fail",
+  "n": ""
+ },
+ "w0": {
+  "s": "done",
+  "n": ""
+ },
+ "w1": {
+  "s": "done",
+  "n": ""
+ },
+ "w2": {
+  "s": "done",
+  "n": ""
+ },
+ "w3": {
+  "s": "done",
+  "n": ""
+ },
+ "i0": {
+  "s": "done",
+  "n": ""
+ },
+ "i2": {
+  "s": "done",
+  "n": ""
+ },
+ "i10": {
+  "s": "done",
+  "n": ""
+ },
+ "i11": {
+  "s": "done",
+  "n": ""
+ },
+ "i12": {
+  "s": "done",
+  "n": ""
+ },
+ "i13": {
+  "s": "done",
+  "n": ""
+ },
+ "day": {
+  "s": "",
+  "n": "Ну в целом сегодня сделали то что нужно было даже немного больше Payment метод вернее Payment немножко начал делать сервис продолжать вот в целом сегодня план как мне кажется выполнен нормальный единственное что не было нормально времени сходить вот позаниматься размяться но только когда приехал под отжимался и немножко пресс покачал
+
+спать в 2349"
+ },
+ "t7": {
+  "s": "done",
+  "n": ""
+ },
+ "t8": {
+  "s": "done",
+  "n": ""
+ },
+ "t9": {
+  "s": "done",
+  "n": ""
+ },
+ "t10": {
+  "s": "fail",
+  "n": ""
+ },
+ "t11": {
+  "s": "fail",
+  "n": ""
+ },
+ "i1": {
+  "s": "",
+  "n": ""
+ },
+ "i4": {
+  "s": "",
+  "n": ""
+ },
+ "i5": {
+  "s": "",
+  "n": ""
+ },
+ "i6": {
+  "s": "",
+  "n": ""
+ },
+ "i7": {
+  "s": "",
+  "n": ""
+ },
+ "i8": {
+  "s": "",
+  "n": ""
+ },
+ "i9": {
+  "s": "",
+  "n": ""
+ },
+ "i14": {
+  "s": "",
+  "n": ""
+ },
+ "i15": {
+  "s": "",
+  "n": ""
+ },
+ "i16": {
+  "s": "",
+  "n": ""
+ },
+ "i17": {
+  "s": "",
+  "n": ""
+ },
+ "i18": {
+  "s": "",
+  "n": ""
+ },
+ "t4": {
+  "s": "",
+  "n": ""
+ },
+ "t5": {
+  "s": "",
+  "n": ""
+ },
+ "t6": {
+  "s": "",
+  "n": ""
+ },
+ "t12": {
+  "s": "",
+  "n": ""
+ },
+ "u0": {
+  "s": "",
+  "n": ""
+ },
+ "u1": {
+  "s": "",
+  "n": ""
+ },
+ "u2": {
+  "s": "",
+  "n": ""
+ },
+ "u3": {
+  "s": "",
+  "n": ""
+ }
+}
+</script>
+</body>
+</html>

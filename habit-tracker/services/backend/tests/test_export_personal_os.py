@@ -165,8 +165,10 @@ async def test_a_stored_plan_reads_back_as_a_plan(
     assert "- Почему :: Пятничный якорь" in text
     assert "- ClickUp :: https://app.clickup.com/t/86cb" in text
     assert "- Формат :: аудио" in text
-    # The minimum sits at the task's own level, as the live plans wrote it.
-    assert "\n- Минимум :: Резюме скачаны в один файл" in text
+    # The children of a task are indented (changed by `#89`): an unindented
+    # bullet under a task heading reads equally as a step of the task and as the
+    # next line of the section, and the importer has to tell the two apart.
+    assert "\n  - Минимум :: Резюме скачаны в один файл" in text
 
     # Steps are numbered, anchors keep their handle, the free item has no window.
     assert "1. Разминка" in text

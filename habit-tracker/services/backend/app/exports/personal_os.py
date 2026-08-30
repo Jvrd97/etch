@@ -218,14 +218,21 @@ def _nest(items: Sequence[PlanItem]) -> list[_Node]:
 
 
 def _render_task(node: _Node, out: list[str]) -> None:
-    """A work task: its own heading, then its labels, then its children."""
+    """
+    A work task: its own heading, then its labels, then its children.
+
+    The children are indented (`#89`). An unindented bullet under a task heading
+    is unreadable both ways: on the way back in it could equally be a step of the
+    task or the next line of the section, and the importer has to choose one.
+    Two spaces say which, and cost nothing to a human reading the file.
+    """
     item = node.item
     heading = f"{item.code} · {item.text_md}" if item.code else item.text_md
     out.append(f"### {heading}")
     out.append("")
     for label, value in _labelled_lines(item):
         out.append(f"- {label} :: {value}")
-    _render_children(node, out, depth=0)
+    _render_children(node, out, depth=1)
     out.append("")
 
 
