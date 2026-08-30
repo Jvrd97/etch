@@ -1,15 +1,17 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input
-// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/121
+// summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import QuickMarkRow from '@/components/QuickMarkRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
 import { booleanFields } from '@/lib/today-categories';
+import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
@@ -40,6 +42,7 @@ export default function MobileTodayPage() {
     date,
     entries,
     groups,
+    quickMarks,
     checked,
     streaks,
     loading,
@@ -48,6 +51,7 @@ export default function MobileTodayPage() {
     setError,
     toggleField,
     addNumber,
+    tapQuickMark,
     reloadStreak,
     reload,
   } = useToday();
@@ -61,8 +65,15 @@ export default function MobileTodayPage() {
   const {
     avoid: avoidCategories,
     checklist: checklistCategories,
-    quickForm: quickFormCategories,
+    quickForm: allQuickFormCategories,
   } = groups;
+  // A category the directory already answers for loses its legacy card: two
+  // ways to add to the same field on one screen is one too many. An empty
+  // directory covers nothing, so the screen stays exactly as it was.
+  const covered = categoriesWithQuickMark(quickMarks);
+  const quickFormCategories = allQuickFormCategories.filter(
+    ({ category }) => !covered.has(category.id)
+  );
 
   return (
     <div className="space-y-6 animate-fade-rise">
@@ -98,6 +109,13 @@ export default function MobileTodayPage() {
         </div>
       ) : (
         <>
+          {quickMarks.length > 0 && (
+            <section>
+              <SectionLabel>Быстрые отметки</SectionLabel>
+              <QuickMarkRow marks={quickMarks} onTap={(id) => void tapQuickMark(id)} />
+            </section>
+          )}
+
           {avoidCategories.length > 0 && (
             <section>
               <SectionLabel>Streaks</SectionLabel>

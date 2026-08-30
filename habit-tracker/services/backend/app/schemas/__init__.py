@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
-# summary: re-export the Health DTOs, EntrySort and the day DTOs alongside the existing schemas
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/121
+# summary: re-export the Health DTOs, EntrySort, the day DTOs and the quick-mark DTOs alongside the existing schemas
 from app.schemas.daily_summary import (
     DailySummaryApplyRequest,
     DailySummaryApplyResponse,
@@ -57,6 +57,13 @@ from app.schemas.onboarding import (
     OnboardingPlan,
     PlanField,
 )
+from app.schemas.quick_mark import (
+    QuickMarkCreate,
+    QuickMarkEventRequest,
+    QuickMarkEventResponse,
+    QuickMarkResponse,
+    QuickMarkTodayResponse,
+)
 from app.schemas.streak import StreakResponse
 from app.schemas.table import (
     TableCategoryMeta,
@@ -107,6 +114,11 @@ __all__ = [
     "OnboardingDraftRequest",
     "OnboardingPlan",
     "PlanField",
+    "QuickMarkCreate",
+    "QuickMarkEventRequest",
+    "QuickMarkEventResponse",
+    "QuickMarkResponse",
+    "QuickMarkTodayResponse",
     "StreakResponse",
     "TableCategoryMeta",
     "TableCell",

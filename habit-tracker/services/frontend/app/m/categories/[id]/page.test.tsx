@@ -71,6 +71,13 @@ mock.module('next/navigation', () => ({
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // The quick-mark directory and its one write path (#121). Present in every
+  // api mock for the reason named above: bun fixes a module's export names on
+  // first link, so a mock that omits an export deletes it for whoever links next.
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+  },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.

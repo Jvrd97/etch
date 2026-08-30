@@ -915,3 +915,49 @@ Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` 
 `habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
 ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
 обход коллизии параллельных веток, не свойство тикета.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка: справочник + один эндпоинт записи)
+
+Тронуто 9 файлов бэкенда.
+
+- `app/models/quick_mark.py` — **new**: `quick_marks` (кнопка: подпись, `(category_id, field_id)`,
+  `kind`, `step`, `unit_label`, `hotkey`, порядок, флаги) и `quick_mark_events` (журнал: дельта
+  или галка, источник, `idempotency_key`, `undone_at` под #124). Словари `kind`/`source` —
+  константы модуля, из них же собраны CHECK-констрейнты и текст миграции. Уникальность хоткея —
+  именованный частичный индекс `uq_quick_mark_hotkey` (`WHERE hotkey IS NOT NULL`): у постгреса
+  частичного UNIQUE-констрейнта не существует вовсе.
+- `app/schemas/quick_mark.py` — **new**: `QuickMarkCreate`, `QuickMarkResponse`,
+  `QuickMarkTodayResponse` (справочник + состояние дня), `QuickMarkEventRequest`,
+  `QuickMarkEventResponse`. В теле тапа нет ни `category_id`, ни `field_id`, ни `display_mode`.
+- `app/crud/quick_mark.py` — **new**: валидация справочника списком причин (образец —
+  `validate_metric_ops`), накопление инкремента через `entry_crud.checklist_entry_id` и
+  `values.format_number`, срыв отдельной записью, состояние дня и запись события. День берётся
+  вызовом `core.daytime.local_date(at)`; часов этот модуль не читает вообще — момент приходит
+  аргументом, поэтому тест «00:30» проверяем без подмены времени.
+- `app/api/quick_marks.py` — **new**: `GET /quick-marks?date=`, `POST /quick-marks`,
+  `POST /quick-marks/{id}/events` с `Idempotency-Key` (повтор — 200 и то же `event_id`).
+  Клиентский `entry_date` — сверка часов, а не адрес: расхождение с `local_date()` — 409.
+- `app/models/entry.py` — **mod**: `ix_entries_category_date` — прямая цена горячего пути.
+- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_quick_marks.py` — **new**: обе таблицы, четыре
+  индекса и индекс на `entries`; `downgrade` снимает всё это и не трогает данные.
+  `down_revision = d5a7c9e1f3b6` — фактическая голова ветки на момент реализации.
+- `app/main.py`, `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: роутер в периметр
+  API-key, модели и DTO в реестры.
+- `tests/test_quick_marks.py` — **new**: 25 тестов — пять тапов в одну строку, сумма в ответе,
+  повтор ключа, срыв записью на тап, четыре отказа справочника (чужое поле, галка на числе,
+  срыв на `build`, инкремент без шага), занятый хоткей, тап в 00:30 против `local_date()`,
+  пустой справочник, состояние дня в справочнике, журнал, offline-SQL миграции в обе стороны,
+  grep-тесты на PII и на отсутствие второй даты.
+
+Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff check` clean,
+`ruff format --check` clean (138 файлов), `mypy --strict app` clean (100 файлов),
+`alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не работает, `make check` целиком
+**не отрабатывал**. Тесты — против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4` (в общей `habit_tracker_test` по-прежнему лежат таблицы других
+веток, и `drop_all` фикстуры падает на их внешних ключах). Обратимость миграции проверена не
+только offline-SQL: на отдельной базе `habit_migrate_fast4` прогнаны `upgrade head` →
+`downgrade -1` → `upgrade head`, и `alembic check` не видит расхождений между моделью и схемой
+по новым таблицам.
+
+Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
+кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.

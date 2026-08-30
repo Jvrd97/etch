@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/94
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; daysAPI reads a range of days in the shape the old /api/days had and weeksAPI reads and writes one week
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/94, PHASE-03/121
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; daysAPI reads a range of days in the shape the old /api/days had, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -1137,6 +1137,89 @@ export const weeksAPI = {
     return fetcher<Week>(`/weeks/${iso}`, {
       method: 'PUT',
       body: JSON.stringify(draft),
+    });
+  },
+};
+
+/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
+export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
+
+/** Which client a tap came from; the backend records it on every event. */
+export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
+
+/**
+ * One button of the directory, already carrying the state of the day it was
+ * read for.
+ *
+ * `today_total` is null for a tick — a box is not a quantity — and `done` is
+ * the field both kinds answer. The client never sees `category_id` as a thing
+ * to act on: what the button means is the server's business, and the only id a
+ * tap sends is `id`.
+ */
+export interface QuickMark {
+  id: number;
+  label: string;
+  category_id: number;
+  field_id: number;
+  kind: QuickMarkKind;
+  step: number | null;
+  unit_label: string | null;
+  icon: string | null;
+  color: string | null;
+  hotkey: string | null;
+  order: number;
+  show_in_agent: boolean;
+  is_active: boolean;
+  entry_date: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** The recorded tap and the state it produced — one call per tap, no refetch. */
+export interface QuickMarkEvent {
+  event_id: number;
+  quick_mark_id: number;
+  entry_id: number | null;
+  entry_date: string;
+  occurred_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** What a tap says beyond the button's own id. */
+export interface QuickMarkTap {
+  /** Overrides the button's step; for a tick, 0 unticks. */
+  value?: number;
+  source?: QuickMarkSource;
+  utc_offset_minutes?: number;
+}
+
+export const quickMarksAPI = {
+  /**
+   * The directory with today's state on it.
+   *
+   * No date is sent: which day is running is the server's answer
+   * (`local_date()`), and a browser that computed its own would disagree with
+   * it between midnight and the boundary hour.
+   */
+  list: async () => {
+    return fetcher<QuickMark[]>('/quick-marks');
+  },
+
+  /**
+   * Tap one button.
+   *
+   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
+   * and never decides the day it lands in.
+   */
+  tap: async (id: number, tap: QuickMarkTap = {}) => {
+    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'web',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+        ...tap,
+      }),
     });
   },
 };
