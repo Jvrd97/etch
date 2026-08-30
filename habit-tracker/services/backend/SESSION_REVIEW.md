@@ -969,3 +969,53 @@ Feedback loops (backend): pytest **625/625 green** (было 600 в этой в�
 одна голова `c4f6b8d0e2a5`. Docker-демон не поднят, `make check` целиком не отрабатывал; тесты
 шли против локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая
 `habit_tracker_test` держит таблицу `work_interval` из чужой ветки и роняет `drop_all`).
+
+## 2026-08-30 — PHASE-03/134 роли становятся данными
+
+Вертикаль без единой строки автоматики: справочник ролей, правила разметки, минуты и акты. Ручной
+ввод первичен — `POST /api/v1/role-time-blocks` с кодом роли, числом минут и заметкой работает,
+когда больше не работает ничего. Импортёры `#135`/`#136` позовут те же две записи, добавив к ним
+`external_ref`; это единственная разница между ними и человеком.
+
+- `app/models/role.py` — **new**: `role`, `role_rule`, `role_time_block`, `role_act`. Все
+  перечислимые поля — `String`, не enum (проект уже заплатил за `fieldtype`). `CHECK (minutes > 0)`,
+  частичные уникальные `(source, external_ref) WHERE external_ref IS NOT NULL` на обеих фактовых
+  таблицах, `role_id` — `RESTRICT`, `rule_id` — `SET NULL` (потерять правило не значит потерять
+  минуты).
+- `app/roles/catalog.py` — **new**: четыре сида с долями 25/25/50 как гипотезой квартала;
+  `unassigned` без цели — целиться в долю неотнесённой работы значит целиться не туда.
+- `app/roles/matcher.py` — **new**: чистый резолвер. Меньший `priority` выигрывает, равенство
+  доопределено меньшим `id` (иначе один и тот же образец дрейфует между ролями от прогона к
+  прогону). Несовпадение — `None`, не исключение. Сломанный regex и незнакомый `matcher_kind`
+  промахиваются и логируются по id правила; сам заголовок окна в лог не попадает (ADR-0020 B5).
+- `app/crud/role.py` — **new**: идемпотентный `seed_roles` (тесты строят базу `create_all` и сидов
+  миграции не видят), CRUD справочника и правил, `resolve_role` с падением в `unassigned`,
+  `write_time_block`/`write_act` — чтение-затем-запись вместо `ON CONFLICT`: решение «не трогать»
+  зависит от `confidence` **хранимой** строки, а система однопользовательская.
+- `app/schemas/role.py` — **new**: словарь `act_kind` живёт здесь и растёт правкой схемы, а не
+  миграцией. `minutes` намеренно без `gt=0` — ноль отвергает база.
+- `app/api/roles.py` — **new**: `GET/POST/PATCH /roles`, `GET/POST/PATCH /role-rules`,
+  `POST/PATCH/DELETE /role-time-blocks` и `/role-acts`, `GET /roles/day[/{date}]`. Отказ базы
+  превращается в 422 контекстным менеджером, который оборачивает и flush, и commit; в ответ уходит
+  имя constraint, но не сорвавшая его строка — в ней лежит заметка человека.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_role_tables.py` — **new**: одна ревизия на четыре
+  таблицы (порознь бесполезны), `down_revision = c4f6b8d0e2a5`, сид через `ON CONFLICT DO NOTHING`,
+  рабочий `downgrade` (проверено вручную: downgrade снимает все четыре, upgrade возвращает с
+  четырьмя ролями).
+- `app/models/__init__.py`, `app/crud/__init__.py`, `app/main.py` — **mod**: регистрация моделей,
+  crud-модуля и роутера в периметре API-key.
+- `tests/test_role_matcher.py` — **new**, 13 тестов: конфликт двух правил в обоих порядках ввода,
+  равный `priority`, промах, чужой источник, сломанный regex, неизвестный `matcher_kind`, четыре
+  вида матчера.
+- `tests/test_roles.py` — **new**, 24 теста: сид и его идемпотентность, `unassigned` вместо NULL
+  (плюс прямая проверка `role_id IS NULL` в таблице), неудвоение по `(source, external_ref)`,
+  переживание `confirmed` импортёра для минут и для актов, `minutes = 0` и `-30` через
+  `IntegrityError` на flush, и API-слой: 90 минут на найм, акт «написан ADR», 422 на нулевые минуты
+  и на неизвестный код роли, отказ битого regex при заведении правила.
+
+Feedback loops (backend): pytest **662/662 green** (было 625 в этой ветке), `ruff check` clean,
+`ruff format --check` clean, `mypy --strict app` clean (103 файла), `alembic heads` — одна голова
+`d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком не отрабатывал; тесты шли против
+локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая `habit_tracker_test`
+держит таблицу `work_interval` из чужой ветки и роняет `drop_all`). Миграция проверена на отдельной
+базе `habit_migr_fast1`: upgrade → downgrade → upgrade.

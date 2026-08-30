@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding reached through "More"
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/134
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -82,6 +82,17 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // Under "More": the goals are read when a quarter turns or a milestone
     // closes, not several times a day, and the tab bar's five slots are already
     // spoken for.
+    inTabBar: null,
+  },
+  {
+    id: 'roles',
+    name: 'Roles',
+    href: '/roles',
+    hasMobile: true,
+    hasMobileNested: false,
+    // Under "More": minutes and acts are written when a piece of work ends, not
+    // several times an hour, and the tab bar's five slots are already spoken
+    // for.
     inTabBar: null,
   },
   {

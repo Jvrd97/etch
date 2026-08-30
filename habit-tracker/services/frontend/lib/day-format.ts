@@ -1,7 +1,8 @@
-// [review:need-review] PHASE-03/86, PHASE-03/90
-// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings)
+// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/134
+// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings); the three-form arithmetic moved to lib/plural so the role screen does not carry a second copy
 
 import type { Day, DayRuleSet, VerdictReason, MissingData } from '@/lib/api';
+import { countable } from '@/lib/plural';
 
 /** Text shown where a plan would be. A day without one is an answer, not an error. */
 export const NO_PLAN_TEXT = 'Плана нет';
@@ -151,10 +152,5 @@ export function missingDataLabel(code: MissingData): string {
  * which is exactly the case a naive `n % 10` gets wrong.
  */
 export function streakLabel(days: number): string {
-  const lastTwo = days % 100;
-  const last = days % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return `${days} дней`;
-  if (last === 1) return `${days} день`;
-  if (last >= 2 && last <= 4) return `${days} дня`;
-  return `${days} дней`;
+  return countable(days, 'день', 'дня', 'дней');
 }

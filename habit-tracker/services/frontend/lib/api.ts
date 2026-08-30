@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/109
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/109, PHASE-03/134
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
@@ -1103,5 +1103,132 @@ export const goalsAPI = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Roles (PHASE-03/134)
+// ---------------------------------------------------------------------------
+
+/** One role of the directory. `target_share_pct` is a hypothesis, never a norm. */
+export interface Role {
+  id: number;
+  code: string;
+  title: string;
+  description: string | null;
+  target_share_pct: number | null;
+  is_work: boolean;
+  ord: number;
+  is_active: boolean;
+}
+
+/** One role's share of one day: minutes, the share they make, and the acts. */
+export interface RoleDaySlice {
+  role_id: number;
+  role_code: string;
+  title: string;
+  minutes: number;
+  share_pct: number;
+  target_share_pct: number | null;
+  act_count: number;
+}
+
+/** Minutes charged to a role. `is_manual` is what the screen marks. */
+export interface RoleTimeBlock {
+  id: number;
+  work_day: string;
+  role_id: number;
+  role_code: string;
+  source: string;
+  started_at: string | null;
+  ended_at: string | null;
+  minutes: number;
+  confidence: string;
+  external_ref: string | null;
+  rule_id: number | null;
+  note: string | null;
+  is_manual: boolean;
+}
+
+/** One act: the role happened, and this is what it was. */
+export interface RoleAct {
+  id: number;
+  work_day: string;
+  role_id: number;
+  role_code: string;
+  act_kind: string;
+  title: string;
+  source: string;
+  external_ref: string | null;
+  confidence: string;
+  occurred_at: string | null;
+  note: string | null;
+  is_manual: boolean;
+}
+
+/** Where a day went and which roles happened on it, in one answer. */
+export interface RoleDay {
+  work_day: string;
+  total_minutes: number;
+  roles: RoleDaySlice[];
+  blocks: RoleTimeBlock[];
+  acts: RoleAct[];
+}
+
+/** «Полтора часа на найм» as it is sent. The day is the server's when omitted. */
+export interface RoleTimeBlockDraft {
+  role_code: string;
+  minutes: number;
+  work_day?: string;
+  note?: string | null;
+}
+
+/** «Написал ADR» as it is sent. */
+export interface RoleActDraft {
+  role_code: string;
+  act_kind: string;
+  title: string;
+  work_day?: string;
+  note?: string | null;
+}
+
+/**
+ * The roles endpoints.
+ *
+ * `day()` without a date asks the server which day it is — the boundary runs
+ * from 04:00 and only `app/core/daytime.py` answers that question, so the
+ * browser never dates a screen from its own calendar.
+ */
+export const rolesAPI = {
+  day: async (date?: string) => {
+    return fetcher<RoleDay>(date ? `/roles/day/${date}` : '/roles/day');
+  },
+
+  listRoles: async () => {
+    return fetcher<Role[]>('/roles');
+  },
+
+  addTimeBlock: async (draft: RoleTimeBlockDraft) => {
+    return fetcher<RoleTimeBlock>('/role-time-blocks', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  deleteTimeBlock: async (id: number) => {
+    return fetcher<Record<string, never>>(`/role-time-blocks/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  addAct: async (draft: RoleActDraft) => {
+    return fetcher<RoleAct>('/role-acts', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  deleteAct: async (id: number) => {
+    return fetcher<Record<string, never>>(`/role-acts/${id}`, { method: 'DELETE' });
   },
 };
