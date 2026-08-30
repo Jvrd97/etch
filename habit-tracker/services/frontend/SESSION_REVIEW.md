@@ -1100,3 +1100,34 @@ Feedback loops: `bun test` **713/713 green** (было 701), `bunx tsc --noEmit`
 
 Feedback loops (frontend): `bun test` **780/780 green** (было 774), `bunx tsc --noEmit` clean.
 Бэкенд того же тикета: pytest 719/719, `ruff`, `mypy --strict`, одна голова `a8d0c2e4b6f1`.
+
+## 2026-08-31 — PHASE-03/122 (клавиша вместо клика на Today)
+
+Тикет `122-quick-mark-hotkeys-on-today`. Схемы и API он не трогает: `hotkey` уже приехал
+с #121 и уже отдаётся в `GET /quick-marks`. Работа целиком фронтовая.
+
+- `lib/quick-mark-hotkeys.ts` — **new**: одна таблица «кнопка → клавиша» (`hotkeyAssignment`),
+  из которой читают все трое — обработчик клавиш, подпись на кнопке и легенда, поэтому
+  нарисованная клавиша и сработавшая не могут разойтись. `resolveHotkey` отвечает размеченным
+  объединением `mark | legend | none`; пять причин молчания — открытый диалог, фокус в поле,
+  удержание клавиши, Cmd/Ctrl/Alt и «никто не отзывается». Буква сверяется и по `event.code`:
+  без этого `hotkey = 'p'` умирал бы при переключении на кириллицу.
+- `lib/quick-mark-hotkeys.test.ts` — **new**, 25 тестов: позиционные цифры, заданная руками
+  клавиша, её приоритет над позицией и переживание смены раскладки, INPUT/TEXTAREA/SELECT/contenteditable, Cmd+1, Shift,
+  repeat, именованные клавиши, `?` с шифтом и без, пустой справочник.
+- `hooks/useQuickMarkHotkeys.ts` — **new**: единственный слушатель `keydown`. Живёт и умирает
+  вместе с экраном `/today` — это и есть «на других маршрутах клавиши ничего не отмечают»,
+  никакого флага маршрута внутри нет. Мобильная оболочка его не зовёт.
+- `hooks/useQuickMarkHotkeys.test.ts` — **new**, 8 тестов, включая `preventDefault` только на
+  тех нажатиях, которые обработчик забрал себе, и снятие слушателя при размонтировании.
+- `components/HotkeyLegend.tsx` + `.test.tsx` — **new**: лист «клавиша → подпись» по `?`,
+  выход по Esc, по крестику и по фону; кнопка без клавиши показана без клавиши.
+- `components/QuickMarkRow.tsx` — **mod**: `showHotkeys` печатает `kbd` на кнопке; в
+  `aria-label` клавиша не идёт, чтобы объявление кнопки не поменялось.
+- `app/today/page.tsx` — **mod**: вызов хука, состояние легенды, кнопка «?» рядом с заголовком
+  секции. `dialogOpen` считает открытыми и легенду, и полный редактор записи.
+
+Feedback loops (frontend): `bun test` **822/822 green** (было 780), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. Бэкенд не тронут, прогнан как контроль: pytest 719/719 в обход
+docker через localhost:5432, `ruff`, `ruff format --check`, `mypy --strict`, одна голова
+`a8d0c2e4b6f1`. `make check` целиком не прогонялся — docker-демон на машине не отвечает.

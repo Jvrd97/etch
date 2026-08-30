@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/121
-// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, and the total under the label comes from the tap's own answer
+// [review:need-review] PHASE-03/121, PHASE-03/122
+// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, and on a shell that has a keyboard the button prints the key that fires it
 
 import type { QuickMark } from '@/lib/api';
 import { markActionLabel, markCaption } from '@/lib/quick-marks';
+import { hotkeyAssignment } from '@/lib/quick-mark-hotkeys';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
 interface QuickMarkRowProps {
@@ -14,6 +15,12 @@ interface QuickMarkRowProps {
    * that is the server's answer — so it sends nothing but the id.
    */
   onTap: (id: number) => void;
+  /**
+   * Print the key each button answers to. Only the desktop shell asks for it:
+   * it is the one that listens for those keys, and a key drawn in the mobile
+   * shell would name something there is no keyboard to press.
+   */
+  showHotkeys?: boolean;
 }
 
 /**
@@ -28,14 +35,21 @@ interface QuickMarkRowProps {
  * which field it writes to and whether it accumulates are deliberately absent —
  * that knowledge lives on the server, which is what keeps the floating window
  * of the agent from having to reimplement it.
+ *
+ * With `showHotkeys` it carries a fourth: the key. It is read from the same
+ * assignment table the keydown handler resolves through, so what is printed and
+ * what fires cannot disagree; a button that has no key prints none.
  */
-export default function QuickMarkRow({ marks, onTap }: QuickMarkRowProps) {
+export default function QuickMarkRow({ marks, onTap, showHotkeys = false }: QuickMarkRowProps) {
   if (marks.length === 0) return null;
+
+  const hotkeys = hotkeyAssignment(marks);
 
   return (
     <div className="flex flex-wrap gap-3">
-      {marks.map((mark) => {
+      {marks.map((mark, index) => {
         const caption = markCaption(mark);
+        const hotkey = showHotkeys ? hotkeys[index] : null;
         return (
           <button
             key={mark.id}
@@ -50,7 +64,22 @@ export default function QuickMarkRow({ marks, onTap }: QuickMarkRowProps) {
                 : 'bg-card text-text-secondary border-white/10 hover:text-text-primary hover:bg-white/5'
             }`}
           >
-            <span className="text-sm font-medium truncate">{mark.label}</span>
+            <span className="inline-flex items-center gap-2">
+              {hotkey !== null && (
+                // Hidden from assistive tech: the button already announces
+                // itself through aria-label, and a key nobody can press with a
+                // screen reader open is noise in that announcement.
+                <kbd
+                  aria-hidden="true"
+                  className={`px-1.5 py-0.5 rounded-md border text-[10px] font-medium leading-none ${
+                    mark.done ? 'border-background/30 text-background' : 'border-white/15'
+                  }`}
+                >
+                  {hotkey}
+                </kbd>
+              )}
+              <span className="text-sm font-medium truncate">{mark.label}</span>
+            </span>
             {caption && (
               // Keyed by the caption so a change remounts the node and replays
               // the animation: on rapid taps a restyled node keeps the finished

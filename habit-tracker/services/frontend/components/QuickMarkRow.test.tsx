@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/121
-// summary: tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, and the empty directory that renders no section at all
+// [review:need-review] PHASE-03/121, PHASE-03/122
+// summary: tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, the key printed on the button only where a keyboard exists, and the empty directory that renders no section at all
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -78,6 +78,33 @@ describe('QuickMarkRow', () => {
     );
     const button = screen.getByRole('button', { name: 'D3 — отмечено' });
     expect(button.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('prints the key on the button where a keyboard exists', () => {
+    const { container } = render(
+      <QuickMarkRow
+        marks={[mark(), mark({ id: 2, label: 'Отжимания', hotkey: 'p' })]}
+        onTap={(id: number) => onTap(id)}
+        showHotkeys
+      />
+    );
+    expect([...container.querySelectorAll('kbd')].map((node) => node.textContent)).toEqual([
+      '1',
+      'p',
+    ]);
+  });
+
+  it('prints no key in the mobile shell, which has no keyboard', () => {
+    const { container } = render(
+      <QuickMarkRow marks={[mark({ hotkey: 'p' })]} onTap={(id: number) => onTap(id)} />
+    );
+    expect(container.querySelectorAll('kbd')).toHaveLength(0);
+  });
+
+  it('keeps the printed key out of what the button announces', () => {
+    render(<QuickMarkRow marks={[mark()]} onTap={(id: number) => onTap(id)} showHotkeys />);
+    // Still findable by the label alone: the key is drawn, not spoken.
+    expect(screen.getByRole('button', { name: '+250 мл' })).toBeDefined();
   });
 
   it('renders no section at all for an empty directory', () => {
