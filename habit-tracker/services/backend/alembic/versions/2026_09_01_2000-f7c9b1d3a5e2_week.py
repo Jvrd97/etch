@@ -1,6 +1,6 @@
 """week and week_review_item — the fixed snapshot of a week and its sunday checklist
 
-Revision ID: d5a7c9e1f3b6
+Revision ID: f7c9b1d3a5e2
 Revises: c4f6b8d0e2a5
 Create Date: 2026-09-01 14:00:00.000000+00:00
 
@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision: str = "d5a7c9e1f3b6"
-down_revision: Union[str, None] = "c4f6b8d0e2a5"
+revision: str = "f7c9b1d3a5e2"
+down_revision: Union[str, None] = "e6b8d0f2a4c7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

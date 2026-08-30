@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/94
-// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
@@ -8,12 +8,14 @@ import DayNotebook from '@/components/day/DayNotebook';
 import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayVerdict from '@/components/day/DayVerdict';
+import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
-import { dayAPI, type DayCloseDraft, type Mark } from '@/lib/api';
+import { useWorkIntervals } from '@/hooks/useWorkIntervals';
+import { dayAPI, type DayCloseDraft, type Mark, type WorkDay } from '@/lib/api';
 import {
   NO_PLAN_HINT,
   NO_PLAN_TEXT,
@@ -32,6 +34,18 @@ import { itemKindsById, overlappingItemIds } from '@/lib/plan';
  */
 const NO_MARKS: Mark[] = [];
 
+/**
+ * Stable empty work block for a day that has not loaded yet.
+ *
+ * `work_minutes: null` is the honest value for it: «не измерено», not zero.
+ */
+const NO_WORK: WorkDay = {
+  day_date: '',
+  intervals: [],
+  work_minutes: null,
+  running: false,
+};
+
 /** `date` is null on the entry point `/day`, where the server names today. */
 export interface DayScreenProps {
   date: string | null;
@@ -43,6 +57,8 @@ export default function DayScreen({ date }: DayScreenProps) {
   const marks = useMemo(() => detail?.marks ?? NO_MARKS, [detail]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
+  const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
+  const intervals = useWorkIntervals(detail?.day.date ?? '', work);
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -122,6 +138,26 @@ export default function DayScreen({ date }: DayScreenProps) {
           />
         </>
       )}
+
+      <WorkIntervals
+        work={intervals.work}
+        saving={intervals.saving}
+        error={intervals.error}
+        onAdd={async (started_at, ended_at) => {
+          await intervals.add({ started_at, ended_at });
+          // The verdict of the day stands on this sum, so the day is re-read
+          // rather than only the block that changed.
+          reload();
+        }}
+        onStop={async (id, ended_at) => {
+          await intervals.edit(id, { ended_at });
+          reload();
+        }}
+        onRemove={async (id) => {
+          await intervals.remove(id);
+          reload();
+        }}
+      />
 
       <DayVerdict
         summary={detail.summary}

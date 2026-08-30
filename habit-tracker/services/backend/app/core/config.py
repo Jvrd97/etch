@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/106, PHASE-03/107
+# [review:need-review] PHASE-03/106, PHASE-03/107, PHASE-03/111
 # summary: ENVIRONMENT + CORS_ORIGINS allowlist; in prod an empty API_KEY or a "*" origin kills the start
 # summary: APP_TIMEZONE + DAY_START_HOUR — the temporary source of the one day boundary, validated at build
+# summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a chat turn from the host configuration is configuration, not a constant
 """
 Настройки приложения.
 
@@ -88,6 +89,20 @@ class Settings(BaseSettings):
     # LLM backend: "cli" (claude CLI binary) or "api" (Anthropic API).
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""
+
+    # Chat (ADR-0017). A chat turn on the CLI backend runs under its own
+    # configuration directory and inside a fixed empty working directory, never
+    # under the host's `~/.claude`: otherwise the process loads the personal
+    # CLAUDE.md, hooks, MCP servers and skills of whoever owns the machine —
+    # measured at 52 555 prefix tokens per turn against 282 with them off. The
+    # working directory doubles as the key of the CLI session file, which is
+    # what `--resume` (#112) is looked up by, so it is a setting and not a
+    # temporary directory picked per call.
+    CHAT_CLAUDE_CONFIG_DIR: str = "/data/claude-chat"
+    CHAT_CLI_CWD: str = "/data/claude-chat/workspace"
+    # Ceiling on the day card #113 will put into the prompt. Declared here
+    # already so that slice is code and not another pass over compose files.
+    CHAT_CONTEXT_MAX_CHARS: int = Field(default=20_000, ge=1_000)
 
     # The one day boundary — see `app/core/daytime.py`. A day runs from
     # DAY_START_HOUR local wall clock to that hour of the next date, so a

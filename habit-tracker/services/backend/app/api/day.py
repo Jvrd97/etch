@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 from datetime import date
 from uuid import UUID
 
@@ -12,6 +12,8 @@ from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
+from app.crud import work_interval as work_crud
+from app.crud.work_interval import IntervalNotOnDay
 from app.day.plan_validate import PlanRejected
 from app.day.rules import NoRuleForDate, is_openable
 from app.models.day import Day, DayRuleSet
@@ -25,6 +27,12 @@ from app.schemas.mark import (
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
+from app.schemas.work_interval import (
+    WorkDayResponse,
+    WorkIntervalIn,
+    WorkIntervalPatch,
+    WorkIntervalResponse,
+)
 
 router = APIRouter(prefix="/day", tags=["day"])
 
@@ -86,6 +94,7 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
         summary=await summary_crud.summary_for(db, day.day_date, rule, stored, marks),
+        work=await work_crud.day_response(db, day.day_date),
     )
 
 
@@ -275,9 +284,10 @@ async def post_close(
     `anchors`, `overtime`, — а не «день не выигран»: читателю нужно знать,
     что именно чинить.
 
-    `work_minutes` допускает `null` — «не измерено», а не ноль: интервалы работы
-    приезжают с `#91`, и до тех пор проверка переработки пропускается, а факт
-    уходит в `missing_data`.
+    `work_minutes` в теле — оценка на случай дня без интервалов; измерение
+    сильнее её, и день, у которого есть `work_interval`, считается по их сумме.
+    `null` при обоих пустых — «не измерено», а не ноль: проверка переработки
+    пропускается, а факт уходит в `missing_data`.
 
     Переопределение вердикта требует записки. 422 без неё — от схемы, и то же
     самое отвергает `CHECK` в базе: валидатор это сообщение, а правило — база.
@@ -287,3 +297,116 @@ async def post_close(
     """
     day, _ = await _resolve(db, on)
     return await summary_crud.close_day(db, day.day_date, body)
+
+
+@router.get("/{on}/work-intervals", response_model=WorkDayResponse)
+async def get_work_intervals(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> WorkDayResponse:
+    """
+    Интервалы работы за день и их сумма.
+
+    `work_minutes: null` — интервалов нет вообще, то есть «не измерено», а не
+    ноль: правило переработки в такой день не проверяется, а факт уходит в
+    `missing_data` итога. День, где записаны только паузы (`mode: off`),
+    измерен — и отвечает нулём.
+
+    Заголовков окон в ответе нет и быть не может: под них нет колонки. Граница
+    приватности проходит по этой таблице — интервал, режим и, самое большее,
+    идентификатор приложения. Скриншотов не существует нигде в системе.
+    """
+    await _resolve(db, on)
+    return await work_crud.day_response(db, on)
+
+
+@router.post(
+    "/{on}/work-intervals",
+    response_model=WorkIntervalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_work_interval(
+    on: date, body: WorkIntervalIn, db: AsyncSession = Depends(get_db)
+) -> WorkIntervalResponse:
+    """
+    Завести интервал работы или паузы.
+
+    Ручной ввод — основной путь, а не запасной: `source` по умолчанию `manual`,
+    и запись руками ничем не хуже посчитанной агентом. Объявить `corrected`
+    нельзя — в него переводит правка агентского интервала, и это факт, который
+    видел сервер, а не слово, которое может напечатать любой клиент.
+
+    Конец можно не присылать: интервал тогда идёт прямо сейчас и считается до
+    текущего момента, но не дальше конца своих суток.
+
+    День интервала считается по его началу — интервал 23:00-01:00 принадлежит
+    дню начала целиком и пополам не режется. Начало, принадлежащее другому дню,
+    отвергается 422, а не подшивается молча к чужой дате.
+    """
+    await _resolve(db, on)
+    try:
+        row = await work_crud.create(db, on, body)
+    except IntervalNotOnDay as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return work_crud.to_response(row)
+
+
+@router.patch("/{on}/work-intervals/{interval_id}", response_model=WorkIntervalResponse)
+async def patch_work_interval(
+    on: date,
+    interval_id: UUID,
+    body: WorkIntervalPatch,
+    db: AsyncSession = Depends(get_db),
+) -> WorkIntervalResponse:
+    """
+    Поправить интервал.
+
+    Правка агентского интервала не затирает предложение: границы, которые
+    посчитал агент, уезжают в `auto_started_at`/`auto_ended_at`, `source`
+    становится `corrected`, а `edited_at` помечает вмешательство. Экран потому
+    и может показать разом исправленное значение и то, что предлагал агент.
+
+    Двигаются только названные в теле поля. `ended_at: null` открывает интервал
+    заново, отсутствие `ended_at` не трогает его вовсе — иначе правка заметки
+    молча воскрешала бы закрытый час назад интервал.
+
+    404 — интервала с таким id в этом дне нет. Id из другого дня сюда не
+    подходит намеренно: интервал адресуется как «этот интервал этого дня».
+    """
+    await _resolve(db, on)
+    row = await work_crud.get(db, on, interval_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В дне {on.isoformat()} нет интервала {interval_id}.",
+        )
+    try:
+        updated = await work_crud.update(db, on, row, body)
+    except IntervalNotOnDay as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return work_crud.to_response(updated)
+
+
+@router.delete(
+    "/{on}/work-intervals/{interval_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_work_interval(
+    on: date, interval_id: UUID, db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Убрать интервал.
+
+    Сумма дня пересчитывается по тому, что осталось; удаление последнего
+    интервала возвращает день в «не измерено», а не в ноль.
+    """
+    await _resolve(db, on)
+    row = await work_crud.get(db, on, interval_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В дне {on.isoformat()} нет интервала {interval_id}.",
+        )
+    await work_crud.delete(db, row)

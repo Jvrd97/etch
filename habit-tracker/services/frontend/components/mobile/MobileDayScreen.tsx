@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
 import { useMemo } from 'react';
@@ -7,12 +7,14 @@ import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayVerdict from '@/components/day/DayVerdict';
+import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
-import { dayAPI, type DayCloseDraft, type Mark } from '@/lib/api';
+import { useWorkIntervals } from '@/hooks/useWorkIntervals';
+import { dayAPI, type DayCloseDraft, type Mark, type WorkDay } from '@/lib/api';
 import {
   NO_PLAN_HINT,
   NO_PLAN_TEXT,
@@ -31,6 +33,18 @@ import { itemKindsById, overlappingItemIds } from '@/lib/plan';
  */
 const NO_MARKS: Mark[] = [];
 
+/**
+ * Stable empty work block for a day that has not loaded yet.
+ *
+ * `work_minutes: null` is the honest value for it: «не измерено», not zero.
+ */
+const NO_WORK: WorkDay = {
+  day_date: '',
+  intervals: [],
+  work_minutes: null,
+  running: false,
+};
+
 /** `date` is null on the entry point `/m/day`, where the server names today. */
 export interface MobileDayScreenProps {
   date: string | null;
@@ -42,6 +56,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   const marks = useMemo(() => detail?.marks ?? NO_MARKS, [detail]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
+  const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
+  const intervals = useWorkIntervals(detail?.day.date ?? '', work);
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -116,6 +132,27 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           />
         </>
       )}
+
+      <WorkIntervals
+        work={intervals.work}
+        saving={intervals.saving}
+        error={intervals.error}
+        onAdd={async (started_at, ended_at) => {
+          await intervals.add({ started_at, ended_at });
+          // The verdict of the day stands on this sum, so the day is re-read
+          // rather than only the block that changed.
+          reload();
+        }}
+        onStop={async (id, ended_at) => {
+          await intervals.edit(id, { ended_at });
+          reload();
+        }}
+        onRemove={async (id) => {
+          await intervals.remove(id);
+          reload();
+        }}
+        compact
+      />
 
       <DayVerdict
         summary={detail.summary}

@@ -36,8 +36,8 @@ from app.models.quick_mark import QuickMark, QuickMarkEvent
 QUICK_MARKS_URL = "/api/v1/quick-marks"
 
 # The revision this ticket adds, and the one it grows from.
-QUICK_MARKS_REVISION = "e6b8d0f2a4c7"
-PREVIOUS_REVISION = "d5a7c9e1f3b6"
+QUICK_MARKS_REVISION = "a8d0c2e4b6f1"
+PREVIOUS_REVISION = "f7c9b1d3a5e2"
 
 BERLIN = ZoneInfo("Europe/Berlin")
 
