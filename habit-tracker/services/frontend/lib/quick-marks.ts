@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-03/121
-// summary: pure reading of the quick-mark directory — the caption a button shows, the state the tap's own answer folds back into the list without a refetch, and the categories the directory has taken over from the legacy quick-input card
+// [review:need-review] PHASE-03/121, PHASE-03/124
+// summary: pure reading of the quick-mark directory — the caption a button shows, the state the tap's own answer folds back into the list without a refetch, the categories the directory has taken over from the legacy quick-input card, the same fold for an undo, the caption the undo affordance carries, and the key that makes a retried tap the same tap
 
-import type { QuickMark, QuickMarkEvent } from '@/lib/api';
+import type { QuickMark, QuickMarkEvent, QuickMarkUndo } from '@/lib/api';
 
 /**
  * The number under a button's label, or '' when it has none.
@@ -63,4 +63,56 @@ export function categoriesWithQuickMark(marks: QuickMark[]): Set<number> {
  */
 export function markActionLabel(mark: QuickMark): string {
   return mark.done ? `${mark.label} — отмечено` : mark.label;
+}
+
+/**
+ * The directory with one button's state replaced by what its undo answered.
+ *
+ * The same fold as `applyQuickMarkEvent`, and deliberately a second function
+ * rather than a shared one over a union: the two answers happen to carry the
+ * same two fields today, and collapsing them would tie the undo response to the
+ * tap response for no reason beyond that coincidence.
+ */
+export function applyQuickMarkUndo(
+  marks: QuickMark[],
+  undone: QuickMarkUndo
+): QuickMark[] {
+  return marks.map((mark) =>
+    mark.id === undone.quick_mark_id
+      ? { ...mark, today_total: undone.today_total, done: undone.done }
+      : mark
+  );
+}
+
+/**
+ * What the undo affordance says, or null when there is nothing to take back.
+ *
+ * Names the button the tap belongs to, because the affordance sits under a row
+ * of them and «Отменить» alone would not say which. An event whose button has
+ * since left the directory answers null: an undo nobody can attribute is worse
+ * than no undo at all.
+ */
+export function undoCaption(
+  marks: QuickMark[],
+  event: QuickMarkEvent | null
+): string | null {
+  if (event === null) return null;
+  const mark = marks.find((candidate) => candidate.id === event.quick_mark_id);
+  return mark ? `Отменить «${mark.label}»` : null;
+}
+
+/**
+ * A key that makes a retried tap the same tap.
+ *
+ * The whole point of the retry: a connection that drops mid-send leaves the
+ * client unable to tell a lost request from a lost answer, and sending the
+ * second attempt under the key of the first is what keeps the day's sum from
+ * doubling. `crypto.randomUUID` is absent on http:// origins in some browsers,
+ * so the fallback is a value only this tab produces — uniqueness across tabs is
+ * enough, because the key only has to distinguish this tap from the next one.
+ */
+export function newTapKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `tap-${uuid}`;
+  return `tap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-03/121
-// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, and the total under the label comes from the tap's own answer
+// [review:need-review] PHASE-03/121, PHASE-03/124
+// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, and the last tap can be taken back from the same row it was made in
 
-import type { QuickMark } from '@/lib/api';
-import { markActionLabel, markCaption } from '@/lib/quick-marks';
+import type { QuickMark, QuickMarkEvent } from '@/lib/api';
+import { markActionLabel, markCaption, undoCaption } from '@/lib/quick-marks';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
 interface QuickMarkRowProps {
@@ -14,6 +14,10 @@ interface QuickMarkRowProps {
    * that is the server's answer — so it sends nothing but the id.
    */
   onTap: (id: number) => void;
+  /** The tap that can still be taken back, or null when none can. */
+  lastEvent?: QuickMarkEvent | null;
+  /** Take that tap back. Absent when the screen offers no undo. */
+  onUndo?: () => void;
 }
 
 /**
@@ -29,11 +33,18 @@ interface QuickMarkRowProps {
  * that knowledge lives on the server, which is what keeps the floating window
  * of the agent from having to reimplement it.
  */
-export default function QuickMarkRow({ marks, onTap }: QuickMarkRowProps) {
+export default function QuickMarkRow({
+  marks,
+  onTap,
+  lastEvent = null,
+  onUndo,
+}: QuickMarkRowProps) {
   if (marks.length === 0) return null;
 
+  const undoLabel = onUndo ? undoCaption(marks, lastEvent) : null;
+
   return (
-    <div className="flex flex-wrap gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       {marks.map((mark) => {
         const caption = markCaption(mark);
         return (
@@ -65,6 +76,21 @@ export default function QuickMarkRow({ marks, onTap }: QuickMarkRowProps) {
           </button>
         );
       })}
+      {undoLabel && onUndo && (
+        // Sits in the same row as the buttons and appears only after a tap: an
+        // undo that is always on screen is a permanent instruction, and the
+        // whole point of the affordance is that a wrong tap costs one action to
+        // repair rather than a trip to the entry editor.
+        <button
+          type="button"
+          onClick={onUndo}
+          aria-label={undoLabel}
+          style={{ minHeight: TAP_TARGET_PX }}
+          className="inline-flex items-center px-4 py-3 rounded-3xl border border-dashed border-white/20 text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-all duration-200"
+        >
+          {undoLabel}
+        </button>
+      )}
     </div>
   );
 }

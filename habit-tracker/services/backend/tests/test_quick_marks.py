@@ -45,52 +45,6 @@ BERLIN = ZoneInfo("Europe/Berlin")
 # --- fixtures ---------------------------------------------------------------
 
 
-@pytest.fixture
-async def water(client: AsyncClient) -> dict[str, Any]:
-    """A form category with one number field — the «+250 мл» case."""
-    response = await client.post(
-        "/api/v1/categories",
-        json={
-            "name": "Вода",
-            "display_mode": "form",
-            "fields": [{"name": "Объём", "field_type": "number", "order": 1}],
-        },
-    )
-    assert response.status_code == 201
-    return response.json()
-
-
-@pytest.fixture
-async def vitamins(client: AsyncClient) -> dict[str, Any]:
-    """A checklist category with one boolean field."""
-    response = await client.post(
-        "/api/v1/categories",
-        json={
-            "name": "Витамины",
-            "display_mode": "checklist",
-            "fields": [{"name": "D3", "field_type": "boolean", "order": 1}],
-        },
-    )
-    assert response.status_code == 201
-    return response.json()
-
-
-@pytest.fixture
-async def smoking(client: AsyncClient) -> dict[str, Any]:
-    """An avoid category — the one a relapse button is allowed on."""
-    response = await client.post(
-        "/api/v1/categories",
-        json={
-            "name": "Курение",
-            "display_mode": "form",
-            "streak_mode": "avoid",
-            "fields": [{"name": "Штук", "field_type": "number", "order": 1}],
-        },
-    )
-    assert response.status_code == 201
-    return response.json()
-
-
 def only_field(category: dict[str, Any]) -> int:
     return int(category["fields"][0]["id"])
 

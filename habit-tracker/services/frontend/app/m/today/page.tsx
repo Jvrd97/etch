@@ -52,6 +52,8 @@ export default function MobileTodayPage() {
     toggleField,
     addNumber,
     tapQuickMark,
+    lastQuickMarkEvent,
+    undoLastQuickMark,
     reloadStreak,
     reload,
   } = useToday();
@@ -112,7 +114,12 @@ export default function MobileTodayPage() {
           {quickMarks.length > 0 && (
             <section>
               <SectionLabel>Быстрые отметки</SectionLabel>
-              <QuickMarkRow marks={quickMarks} onTap={(id) => void tapQuickMark(id)} />
+              <QuickMarkRow
+                marks={quickMarks}
+                onTap={(id) => void tapQuickMark(id)}
+                lastEvent={lastQuickMarkEvent}
+                onUndo={() => void undoLastQuickMark()}
+              />
             </section>
           )}
 

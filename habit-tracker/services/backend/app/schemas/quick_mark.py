@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121
-# summary: wire types of the quick mark — the button as it is created and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode
+# [review:need-review] PHASE-03/121, PHASE-03/124
+# summary: wire types of the quick mark — the button as it is created and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode; the answer to an undo and the split of taps by source
 """
 Wire types of the quick mark.
 
@@ -166,3 +166,34 @@ class QuickMarkEventResponse(BaseModel):
     occurred_at: datetime
     today_total: float | None = None
     done: bool
+
+
+class QuickMarkUndoResponse(BaseModel):
+    """
+    A tap taken back, and what the day says once it is gone.
+
+    The same two state fields a tap answers with (`today_total`, `done`), for
+    the same reason: undo is one call, and the screen repaints from its answer
+    rather than fetching the directory again.
+    """
+
+    event_id: int
+    quick_mark_id: int
+    entry_date: date
+    undone_at: datetime
+    today_total: float | None = None
+    done: bool
+
+
+class QuickMarkSourceUsage(BaseModel):
+    """
+    How many taps came from one client over the period asked about.
+
+    `undone` counts separately rather than being subtracted: a client whose taps
+    get taken back half the time is a finding about that client, and a single
+    net number would hide it.
+    """
+
+    source: str
+    events: int
+    undone: int

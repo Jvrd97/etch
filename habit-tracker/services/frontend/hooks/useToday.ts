@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121
-// summary: Today-screen state for both shells — snapshot fetching (categories, entries and the quick-mark directory), the optimistic checklist flip and number increment each rolled back on its own failure, and the quick-mark tap that repaints from its own answer
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124
+// summary: Today-screen state for both shells — snapshot fetching (categories, entries and the quick-mark directory), the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
@@ -11,10 +11,11 @@ import {
   type Category,
   type Entry,
   type QuickMark,
+  type QuickMarkEvent,
 } from '@/lib/api';
 import { todayISO } from '@/lib/date';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
-import { applyQuickMarkEvent } from '@/lib/quick-marks';
+import { applyQuickMarkEvent, applyQuickMarkUndo, newTapKey } from '@/lib/quick-marks';
 import {
   buildCheckedMap,
   isFieldChecked,
@@ -58,6 +59,22 @@ export interface UseTodayResult {
    * repaints from it without a second request.
    */
   tapQuickMark: (quickMarkId: number) => Promise<void>;
+  /**
+   * The tap this session made last and has not taken back, or null. What the
+   * «Отменить» affordance is drawn from; cleared once it is used, and cleared
+   * by a refetch, because a snapshot from the server is a state this session
+   * did not produce and cannot claim the last tap of.
+   */
+  lastQuickMarkEvent: QuickMarkEvent | null;
+  /**
+   * Take the last tap back — one action, no trip to the entry editor.
+   *
+   * A refusal (the value was edited by hand, the tap is no longer the last one)
+   * comes back as the server's sentence in `error` and retires the affordance:
+   * the tap it pointed at is not undoable any more, and offering it again would
+   * be a button that answers 409 forever.
+   */
+  undoLastQuickMark: () => Promise<void>;
   /** Re-fetch one avoid category's streak, e.g. after a relapse was logged. */
   reloadStreak: (categoryId: number) => Promise<void>;
   /**
@@ -71,6 +88,9 @@ export function useToday(): UseTodayResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [quickMarks, setQuickMarks] = useState<QuickMark[]>([]);
+  const [lastQuickMarkEvent, setLastQuickMarkEvent] = useState<QuickMarkEvent | null>(
+    null
+  );
   // Entries this session logged that the last snapshot did not (yet) contain:
   // in flight, or saved after the snapshot was taken. Kept apart from `entries`
   // so a refetch can replace the snapshot without discarding them.
@@ -105,6 +125,10 @@ export function useToday(): UseTodayResult {
       setCategories(categoriesData);
       setEntries(entriesData);
       setQuickMarks(quickMarksData);
+      // The snapshot is the server's, not this session's: whatever tap the
+      // «Отменить» affordance pointed at is now indistinguishable from the rest
+      // of the day, so the offer goes with it.
+      setLastQuickMarkEvent(null);
       // Whatever the snapshot now carries is no longer ours to hold; dropping it
       // here is what keeps a saved increment from being counted twice.
       const fetchedIds = new Set(entriesData.map((entry) => entry.id));
@@ -136,13 +160,37 @@ export function useToday(): UseTodayResult {
    * measures on the network log.
    */
   const tapQuickMark = useCallback(async (quickMarkId: number) => {
+    // One key for both attempts. A connection that drops mid-send leaves this
+    // tab unable to tell a lost request from a lost answer, and a second tap
+    // under a fresh key would be a second tap: the sum of the day would double
+    // on exactly the flaky network the retry exists for.
+    const key = newTapKey();
     try {
-      const event = await quickMarksAPI.tap(quickMarkId);
+      let event: QuickMarkEvent;
+      try {
+        event = await quickMarksAPI.tap(quickMarkId, {}, key);
+      } catch {
+        event = await quickMarksAPI.tap(quickMarkId, {}, key);
+      }
       setQuickMarks((prev) => applyQuickMarkEvent(prev, event));
+      setLastQuickMarkEvent(event);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to record the mark');
     }
   }, []);
+
+  const undoLastQuickMark = useCallback(async () => {
+    const event = lastQuickMarkEvent;
+    if (event === null) return;
+    try {
+      const undone = await quickMarksAPI.undo(event.event_id);
+      setQuickMarks((prev) => applyQuickMarkUndo(prev, undone));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to undo the mark');
+    } finally {
+      setLastQuickMarkEvent(null);
+    }
+  }, [lastQuickMarkEvent]);
 
   const reloadStreak = useCallback(async (categoryId: number) => {
     const streak = await categoriesAPI.getStreak(categoryId).catch(() => null);
@@ -240,6 +288,8 @@ export function useToday(): UseTodayResult {
     toggleField,
     addNumber,
     tapQuickMark,
+    lastQuickMarkEvent,
+    undoLastQuickMark,
     reloadStreak,
     reload,
   };

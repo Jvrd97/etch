@@ -62,6 +62,8 @@ mock.module('@/lib/api', () => ({
   quickMarksAPI: {
     list: () => listQuickMarks(),
     tap: (id: number) => tapQuickMark(id),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
   },
   dayAPI: {
     getToday: () => Promise.resolve(null),

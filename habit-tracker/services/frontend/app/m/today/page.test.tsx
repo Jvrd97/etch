@@ -87,6 +87,8 @@ mock.module('@/lib/api', () => ({
   quickMarksAPI: {
     list: () => listQuickMarks(),
     tap: (id: number) => tapQuickMark(id),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
   },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on

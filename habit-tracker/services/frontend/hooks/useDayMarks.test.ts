@@ -17,6 +17,8 @@ mock.module('@/lib/api', () => ({
   quickMarksAPI: {
     list: () => Promise.resolve([]),
     tap: () => Promise.resolve(null),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
   },
   dailySummaryAPI: {
     draft: () => Promise.resolve({ metrics: [], unresolved: [] }),

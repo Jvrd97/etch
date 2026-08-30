@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/121
-// summary: tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, and the empty directory that renders no section at all
+// [review:need-review] PHASE-03/121, PHASE-03/124
+// summary: tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, the empty directory that renders no section at all, and the undo affordance that appears only after a tap and names the button it takes back
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { QuickMark } from '@/lib/api';
+import type { QuickMark, QuickMarkEvent } from '@/lib/api';
 
 function mark(overrides: Partial<QuickMark> = {}): QuickMark {
   return {
@@ -83,5 +83,58 @@ describe('QuickMarkRow', () => {
   it('renders no section at all for an empty directory', () => {
     const { container } = render(<QuickMarkRow marks={[]} onTap={(id: number) => onTap(id)} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe('QuickMarkRow undo', () => {
+  const tapped: QuickMarkEvent = {
+    event_id: 5,
+    quick_mark_id: 1,
+    entry_id: 42,
+    entry_date: '2026-08-30',
+    occurred_at: '2026-08-30T10:00:00Z',
+    today_total: 250,
+    done: true,
+  };
+
+  it('offers nothing to undo before a tap', () => {
+    render(<QuickMarkRow marks={[mark()]} onTap={() => {}} onUndo={() => {}} />);
+
+    expect(screen.queryByText(/Отменить/)).toBeNull();
+  });
+
+  it('names the button the offer would take back', () => {
+    render(
+      <QuickMarkRow
+        marks={[mark()]}
+        onTap={() => {}}
+        lastEvent={tapped}
+        onUndo={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Отменить «+250 мл»')).toBeTruthy();
+  });
+
+  it('takes the tap back in one action', () => {
+    const onUndo = mock(() => {});
+    render(
+      <QuickMarkRow
+        marks={[mark()]}
+        onTap={() => {}}
+        lastEvent={tapped}
+        onUndo={onUndo}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Отменить «+250 мл»'));
+
+    expect(onUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers nothing when the screen passes no undo at all', () => {
+    render(<QuickMarkRow marks={[mark()]} onTap={() => {}} lastEvent={tapped} />);
+
+    expect(screen.queryByText(/Отменить/)).toBeNull();
   });
 });

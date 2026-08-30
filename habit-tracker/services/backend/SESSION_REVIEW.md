@@ -1,5 +1,19 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/124 отмена тапа и источник отметки
+
+Отмена последнего тапа и распределение отметок по клиентам. Схема не менялась — `source`, `idempotency_key` и `undone_at` приехали с миграцией #121.
+
+- `app/crud/quick_mark.py` — **mod**: `undo_event` (три отказа кодами `already_undone` / `not_last` / `edited_by_hand`), `_journal_still_explains_the_day` (сумма дельт журнала против хранимого числа; для галки — состояние против `bool_value` события), `_previous_tick`, `_drop_relapse_entry`, `source_usage`, `get_event`.
+- `app/api/quick_marks.py` — **mod**: `POST /quick-marks/events/{id}/undo` (200 с новым состоянием дня, 404, 409 с причиной) и `GET /quick-marks/events/sources` (распределение тапов по клиентам за период).
+- `app/schemas/quick_mark.py` — **mod**: `QuickMarkUndoResponse`, `QuickMarkSourceUsage`.
+- `tests/test_quick_mark_undo.py` — **new**: 16 тестов — возврат суммы, галка, `set_value`, три отказа с проверкой хранимого значения после каждого, повтор под одним ключом, отмена `relapse` вместе с её записью, источник каждого события, неизвестный `source`, распределение и его период.
+- `tests/conftest.py` — **mod**: фикстуры `water` / `vitamins` / `smoking` переехали сюда из `test_quick_marks.py`: их жмут два тест-модуля, а импорт фикстуры между модулями ловится ruff как F811.
+- `tests/test_quick_marks.py` — **mod**: те же три фикстуры убраны, helpers остались.
+- `tests/test_insights.py` — **mod**: `date.today()` заменён на `today_local()`. Тест падал между полуночью и границей суток: окно контекста строится по `local_date()`, а запись создавалась на календарное «завтра».
+
+Проверки: `ruff check` / `ruff format --check` / `mypy --strict` (126 файлов) — зелёные; `pytest tests/ -q` — 829 passed на отдельной базе `habit_tracker_test_fast1`. Docker в этой среде не поднимается, поэтому `make check` целиком не гонялся.
+
 ## 2026-07-25 — PHASE-01/53 apply-plan batch endpoint
 
 Транзакционный `POST /api/v1/categories/batch`: additive-only план (`create_category` / `add_field`) применяется одной транзакцией, всё-или-ничего. UI онбординга получил чекбоксы и редактирование имени, кнопку «создать» и переход на `/categories`.

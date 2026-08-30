@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/134
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
@@ -1657,6 +1657,23 @@ export interface QuickMarkTap {
   utc_offset_minutes?: number;
 }
 
+/** A tap taken back, and the state the day is left in. */
+export interface QuickMarkUndo {
+  event_id: number;
+  quick_mark_id: number;
+  entry_date: string;
+  undone_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** How many taps one client contributed over the period, and how many were undone. */
+export interface QuickMarkSourceUsage {
+  source: QuickMarkSource;
+  events: number;
+  undone: number;
+}
+
 export const quickMarksAPI = {
   /**
    * The directory with today's state on it.
@@ -1675,14 +1692,40 @@ export const quickMarksAPI = {
    * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
    * and never decides the day it lands in.
    */
-  tap: async (id: number, tap: QuickMarkTap = {}) => {
+  tap: async (id: number, tap: QuickMarkTap = {}, idempotencyKey?: string) => {
     return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
       method: 'POST',
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       body: JSON.stringify({
         source: 'web',
         utc_offset_minutes: -new Date().getTimezoneOffset(),
         ...tap,
       }),
     });
+  },
+
+  /**
+   * Take the last tap back.
+   *
+   * One call, and its answer carries the state the day is left in, exactly as a
+   * tap does — the row repaints from it rather than refetching the directory.
+   * A 409 is not a failure of the request but the server's answer that this tap
+   * is no longer the one that can be undone; the caller shows the reason.
+   */
+  undo: async (eventId: number) => {
+    return fetcher<QuickMarkUndo>(`/quick-marks/events/${eventId}/undo`, {
+      method: 'POST',
+    });
+  },
+
+  /** How the taps of a period split between the clients that made them. */
+  sources: async (params: { from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const suffix = query.toString();
+    return fetcher<QuickMarkSourceUsage[]>(
+      `/quick-marks/events/sources${suffix ? `?${suffix}` : ''}`
+    );
   },
 };

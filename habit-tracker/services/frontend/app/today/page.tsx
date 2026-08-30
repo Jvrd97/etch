@@ -31,6 +31,8 @@ export default function TodayPage() {
     toggleField,
     addNumber,
     tapQuickMark,
+    lastQuickMarkEvent,
+    undoLastQuickMark,
     reloadStreak,
     reload,
   } = useToday();
@@ -85,7 +87,12 @@ export default function TodayPage() {
                 </span>
                 <div className="flex-1 h-px bg-white/5" />
               </div>
-              <QuickMarkRow marks={quickMarks} onTap={(id) => void tapQuickMark(id)} />
+              <QuickMarkRow
+                marks={quickMarks}
+                onTap={(id) => void tapQuickMark(id)}
+                lastEvent={lastQuickMarkEvent}
+                onUndo={() => void undoLastQuickMark()}
+              />
             </section>
           )}
 

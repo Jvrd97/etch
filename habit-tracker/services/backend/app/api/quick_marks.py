@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121
-# summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered by hand with every reason it is refused, and the one write path `POST /quick-marks/{id}/events`, whose answer carries the new state so a tap costs one network call
+# [review:need-review] PHASE-03/121, PHASE-03/124
+# summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered by hand with every reason it is refused, and the one write path `POST /quick-marks/{id}/events`, whose answer carries the new state so a tap costs one network call; the undo of the last tap and the split of taps by source
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -30,7 +30,9 @@ from app.schemas.quick_mark import (
     QuickMarkEventRequest,
     QuickMarkEventResponse,
     QuickMarkResponse,
+    QuickMarkSourceUsage,
     QuickMarkTodayResponse,
+    QuickMarkUndoResponse,
 )
 
 router = APIRouter(prefix="/quick-marks", tags=["quick-marks"])
@@ -208,3 +210,86 @@ async def create_quick_mark_event(
         )
 
     return _to_event_response(recorded)
+
+
+@router.get("/events/sources", response_model=list[QuickMarkSourceUsage])
+async def quick_mark_source_usage(
+    from_: date | None = Query(
+        None, alias="from", description="Первый день периода включительно"
+    ),
+    to: date | None = Query(None, description="Последний день периода включительно"),
+    db: AsyncSession = Depends(get_db),
+) -> list[QuickMarkSourceUsage]:
+    """
+    Откуда отметки приходят на самом деле.
+
+    Тот самый вопрос, ради которого в журнале появился `source`: если за месяц
+    почти всё пришло из одного клиента, второй путь закрывается по данным, а не
+    по вкусу. Отменённые тапы считаются отдельной колонкой, а не вычитаются, —
+    клиент, у которого половина тапов отменяется, это факт о клиенте.
+
+    Клиенты, которые за период не написали ничего, в ответе отсутствуют: ответ
+    описывает спрошенные дни, а строка нулей была бы утверждением о клиенте,
+    который ничего не писал.
+    """
+    usage = await quick_mark_crud.source_usage(db, since=from_, until=to)
+    return [
+        QuickMarkSourceUsage(source=row.source, events=row.events, undone=row.undone)
+        for row in usage
+    ]
+
+
+@router.post("/events/{event_id}/undo", response_model=QuickMarkUndoResponse)
+async def undo_quick_mark_event(
+    event_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> QuickMarkUndoResponse:
+    """
+    Отменить последний тап.
+
+    Кнопка нажимается одной клавишей, поэтому и отменяться обязана одним
+    действием: без этого ошибочный тап чинится походом в редактор записи, и
+    цена ошибки съедает выигрыш от скорости.
+
+    Правило узкое намеренно. Отменяется **только** последний неотменённый тап
+    этой кнопки и **только** если значение с тех пор не менялось мимо журнала.
+    Расхождение журнала и `entry_values` разрешено ADR-0018 — ручной ввод
+    первичен, — поэтому по правленому руками значению приходит отказ, а не
+    попытка починить расхождение вычитанием.
+
+    - **200** — тап отменён; в ответе новое состояние дня
+    - **404** — такого события нет
+    - **409** — уже отменён, не последний, либо значение правили руками
+    """
+    event = await quick_mark_crud.get_event(db, event_id)
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quick mark event with id {event_id} not found",
+        )
+
+    mark = await quick_mark_crud.get_quick_mark(db, event.quick_mark_id)
+    if mark is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quick mark with id {event.quick_mark_id} not found",
+        )
+
+    try:
+        undone = await quick_mark_crud.undo_event(
+            db, mark, event, at=datetime.now(timezone.utc)
+        )
+    except quick_mark_crud.UndoRefused as refused:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=refused.message
+        ) from None
+
+    return QuickMarkUndoResponse(
+        event_id=undone.event_id,
+        quick_mark_id=undone.quick_mark_id,
+        entry_date=undone.entry_date,
+        undone_at=undone.undone_at,
+        today_total=undone.state.today_total,
+        done=undone.state.done,
+    )

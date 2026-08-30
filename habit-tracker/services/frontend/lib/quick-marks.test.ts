@@ -1,13 +1,16 @@
-// [review:need-review] PHASE-03/121
-// summary: tests for the pure reading of the directory — nothing where the day said nothing, the tap's own answer folded back in without a refetch, and the categories the directory has taken over
+// [review:need-review] PHASE-03/121, PHASE-03/124
+// summary: tests for the pure reading of the directory — nothing where the day said nothing, the tap's own answer folded back in without a refetch, the categories the directory has taken over, the same fold for an undo, the caption the undo affordance carries, and the key that makes a retried tap the same tap
 
 import { describe, expect, it } from 'bun:test';
 import type { QuickMark, QuickMarkEvent } from '@/lib/api';
 import {
   applyQuickMarkEvent,
+  applyQuickMarkUndo,
   categoriesWithQuickMark,
   formatMarkTotal,
   markCaption,
+  newTapKey,
+  undoCaption,
 } from './quick-marks';
 
 function mark(overrides: Partial<QuickMark> = {}): QuickMark {
@@ -106,5 +109,75 @@ describe('categoriesWithQuickMark', () => {
       mark({ id: 3, category_id: 11 }),
     ]);
     expect([...covered].sort()).toEqual([10, 11]);
+  });
+});
+
+describe('applyQuickMarkUndo', () => {
+  it('puts back the state the undo answered with, without a refetch', () => {
+    const marks = [
+      mark({ id: 1, today_total: 750, done: true }),
+      mark({ id: 2, today_total: 3, done: true }),
+    ];
+
+    const next = applyQuickMarkUndo(marks, {
+      event_id: 9,
+      quick_mark_id: 1,
+      entry_date: '2026-08-30',
+      undone_at: '2026-08-30T10:00:00Z',
+      today_total: 500,
+      done: true,
+    });
+
+    expect(next[0].today_total).toBe(500);
+    expect(next[1].today_total).toBe(3);
+  });
+
+  it('leaves the list alone when the button has since left the directory', () => {
+    const marks = [mark({ id: 1, today_total: 250, done: true })];
+
+    const next = applyQuickMarkUndo(marks, {
+      event_id: 9,
+      quick_mark_id: 99,
+      entry_date: '2026-08-30',
+      undone_at: '2026-08-30T10:00:00Z',
+      today_total: 0,
+      done: false,
+    });
+
+    expect(next).toEqual(marks);
+  });
+});
+
+describe('undoCaption', () => {
+  const tapped = {
+    event_id: 5,
+    quick_mark_id: 1,
+    entry_id: 42,
+    entry_date: '2026-08-30',
+    occurred_at: '2026-08-30T10:00:00Z',
+    today_total: 250,
+    done: true,
+  };
+
+  it('names the button, because the offer sits under a row of them', () => {
+    expect(undoCaption([mark({ id: 1, label: '+250 мл' })], tapped)).toBe(
+      'Отменить «+250 мл»'
+    );
+  });
+
+  it('has nothing to say when no tap is outstanding', () => {
+    expect(undoCaption([mark({ id: 1 })], null)).toBeNull();
+  });
+
+  it('has nothing to say about a button that is gone', () => {
+    expect(undoCaption([mark({ id: 2 })], tapped)).toBeNull();
+  });
+});
+
+describe('newTapKey', () => {
+  it('gives every tap its own key, so two taps are two taps', () => {
+    const keys = new Set(Array.from({ length: 50 }, () => newTapKey()));
+
+    expect(keys.size).toBe(50);
   });
 });

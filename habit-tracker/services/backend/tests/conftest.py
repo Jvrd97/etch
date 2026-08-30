@@ -3,10 +3,11 @@ Test configuration and fixtures.
 """
 
 # [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -127,3 +128,49 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def water(client: AsyncClient) -> dict[str, Any]:
+    """A form category with one number field — the «+250 мл» case."""
+    response = await client.post(
+        "/api/v1/categories",
+        json={
+            "name": "Вода",
+            "display_mode": "form",
+            "fields": [{"name": "Объём", "field_type": "number", "order": 1}],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+@pytest.fixture
+async def vitamins(client: AsyncClient) -> dict[str, Any]:
+    """A checklist category with one boolean field."""
+    response = await client.post(
+        "/api/v1/categories",
+        json={
+            "name": "Витамины",
+            "display_mode": "checklist",
+            "fields": [{"name": "D3", "field_type": "boolean", "order": 1}],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+@pytest.fixture
+async def smoking(client: AsyncClient) -> dict[str, Any]:
+    """An avoid category — the one a relapse button is allowed on."""
+    response = await client.post(
+        "/api/v1/categories",
+        json={
+            "name": "Курение",
+            "display_mode": "form",
+            "streak_mode": "avoid",
+            "fields": [{"name": "Штук", "field_type": "number", "order": 1}],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121
-# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write
+# [review:need-review] PHASE-03/121, PHASE-03/124
+# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write; undo of the last tap, refused when the stored value has moved outside the journal, and the distribution of taps by source
 """
 What a quick mark means and where its value lands.
 
@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import local_date
@@ -56,13 +56,22 @@ from app.schemas.quick_mark import QuickMarkCreate
 __all__ = [
     "DayState",
     "RecordedEvent",
+    "SourceUsage",
+    "UNDO_ALREADY_UNDONE",
+    "UNDO_EDITED_BY_HAND",
+    "UNDO_NOT_LAST",
+    "UndoRefused",
+    "UndoneEvent",
     "create_quick_mark",
     "day_state",
     "event_by_idempotency_key",
+    "get_event",
     "get_quick_mark",
     "list_quick_marks",
     "record_event",
     "replayed_event",
+    "source_usage",
+    "undo_event",
     "validate_quick_mark",
 ]
 
@@ -435,3 +444,270 @@ async def replayed_event(
         occurred_at=event.occurred_at,
         state=await day_state(db, mark, event.entry_date),
     )
+
+
+# Why an undo was refused. The API turns each into a 409 with the sentence that
+# belongs to it; the codes are here so a test names the reason rather than
+# matching prose, and so a second client can branch on them.
+UNDO_ALREADY_UNDONE = "already_undone"
+UNDO_NOT_LAST = "not_last"
+UNDO_EDITED_BY_HAND = "edited_by_hand"
+
+# How far the stored number may sit from what the journal predicts and still
+# count as the same number. Values are rendered through `format_number` and read
+# back through `parse_number`, so the gap is rounding, never an edit: the
+# smallest step a button can carry is 10**-AMOUNT_SCALE, and half of that
+# separates "rounded" from "somebody typed a different figure".
+VALUE_EPSILON = 0.0005
+
+
+class UndoRefused(Exception):
+    """
+    An undo the journal will not perform, with the reason as a code.
+
+    Raised instead of returning a sentinel because every caller has to handle
+    it: an undo that quietly did nothing would leave the screen showing a total
+    the database disagrees with, which is the exact failure undo exists to
+    prevent.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class SourceUsage:
+    """How many taps one client contributed, and how many of them were undone."""
+
+    source: str
+    events: int
+    undone: int
+
+
+@dataclass(frozen=True)
+class UndoneEvent:
+    """A tap taken back, and the day it left behind."""
+
+    event_id: int
+    quick_mark_id: int
+    entry_date: date
+    undone_at: datetime
+    state: DayState
+
+
+async def get_event(db: AsyncSession, event_id: int) -> QuickMarkEvent | None:
+    """One journal row by id, or None."""
+    result = await db.execute(
+        select(QuickMarkEvent).where(QuickMarkEvent.id == event_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _last_open_event(
+    db: AsyncSession, quick_mark_id: int
+) -> QuickMarkEvent | None:
+    """
+    The most recent tap of this button that has not been taken back.
+
+    Ordered by id rather than by `occurred_at`: two taps inside one second share
+    a timestamp at the resolution the column stores, and "last" has to be a
+    total order or undo would pick between them by row order.
+    """
+    result = await db.execute(
+        select(QuickMarkEvent)
+        .where(
+            QuickMarkEvent.quick_mark_id == quick_mark_id,
+            QuickMarkEvent.undone_at.is_(None),
+        )
+        .order_by(QuickMarkEvent.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _journal_total(db: AsyncSession, mark: QuickMark, on: date) -> float:
+    """
+    What the day would hold for this field if the journal were the only writer.
+
+    Summed over every button pointing at the same `(category_id, field_id)`, not
+    just this one: two buttons on one field (`+250` and `+500`) both move the
+    same number, and a prediction that counted one of them would call the other
+    a manual edit.
+    """
+    result = await db.execute(
+        select(QuickMarkEvent.delta)
+        .join(QuickMark, QuickMark.id == QuickMarkEvent.quick_mark_id)
+        .where(
+            QuickMark.category_id == mark.category_id,
+            QuickMark.field_id == mark.field_id,
+            QuickMarkEvent.entry_date == on,
+            QuickMarkEvent.undone_at.is_(None),
+        )
+    )
+    return float(sum(delta for (delta,) in result.all() if delta is not None))
+
+
+async def _journal_still_explains_the_day(
+    db: AsyncSession, mark: QuickMark, event: QuickMarkEvent, on: date
+) -> bool:
+    """
+    Whether the stored value is still the one the journal accounts for.
+
+    A tick is checked against the tap itself — the box either still stands where
+    the last tap left it or somebody has flipped it since. Everything numeric is
+    checked against the sum of deltas: the day's value starts at nothing, every
+    tap says how far it moved the number, so the two agree exactly unless a hand
+    reached past the journal.
+
+    A disagreement is not repaired here, and that is deliberate: ADR-0018 lets
+    the journal and `entry_values` diverge because manual input comes first, so
+    the only honest answer to "undo this tap" on an edited value is to refuse.
+    """
+    if mark.kind == KIND_CHECK:
+        state = await day_state(db, mark, on)
+        return state.done == bool(event.bool_value)
+
+    stored = await _day_total(db, mark, on)
+    predicted = await _journal_total(db, mark, on)
+    return abs((0.0 if stored is None else stored) - predicted) < VALUE_EPSILON
+
+
+async def _previous_tick(db: AsyncSession, event: QuickMarkEvent) -> bool:
+    """
+    Where the box stood before `event` — the tap before it, or unticked.
+
+    An untouched box is false, which is why a first tap's undo unticks: there is
+    no earlier state to return to and "unticked" is what the day said before
+    anybody pressed anything.
+    """
+    result = await db.execute(
+        select(QuickMarkEvent.bool_value)
+        .where(
+            QuickMarkEvent.quick_mark_id == event.quick_mark_id,
+            QuickMarkEvent.entry_date == event.entry_date,
+            QuickMarkEvent.undone_at.is_(None),
+            QuickMarkEvent.id < event.id,
+        )
+        .order_by(QuickMarkEvent.id.desc())
+        .limit(1)
+    )
+    previous = result.scalar_one_or_none()
+    return bool(previous)
+
+
+async def _drop_relapse_entry(db: AsyncSession, event: QuickMarkEvent) -> None:
+    """
+    Remove the row a relapse tap appended.
+
+    A relapse is the one kind that writes an entry of its own, so taking it back
+    means deleting that entry rather than subtracting from a running total —
+    leaving a zeroed row behind would keep saying "сорвался" with a zero next
+    to it.
+    """
+    if event.entry_id is None:
+        return
+    entry = await db.get(Entry, event.entry_id)
+    if entry is not None:
+        await db.delete(entry)
+    await db.flush()
+
+
+async def undo_event(
+    db: AsyncSession, mark: QuickMark, event: QuickMarkEvent, *, at: datetime
+) -> UndoneEvent:
+    """
+    Take back one tap, or explain why it cannot be taken back.
+
+    Three refusals, all of them `UndoRefused`. The tap was already taken back;
+    it is not the last one this button recorded, so undoing it would rewrite
+    history under a later tap; or the stored value has moved outside the journal
+    and the journal no longer knows what this tap is worth.
+
+    The undo itself is the tap run backwards through the same writers the tap
+    used, so an increment loses exactly the delta it added and a `set_value`
+    returns to the figure it replaced — `delta` is the distance the stored value
+    actually travelled, which is what makes both a single subtraction.
+    """
+    if event.undone_at is not None:
+        raise UndoRefused(
+            UNDO_ALREADY_UNDONE,
+            f"quick mark event {event.id} was already undone",
+        )
+
+    last = await _last_open_event(db, event.quick_mark_id)
+    if last is None or last.id != event.id:
+        raise UndoRefused(
+            UNDO_NOT_LAST,
+            (
+                f"quick mark event {event.id} is not the last open event of "
+                f"quick mark {event.quick_mark_id}; only the last tap is undone"
+            ),
+        )
+
+    on = event.entry_date
+    if not await _journal_still_explains_the_day(db, mark, event, on):
+        raise UndoRefused(
+            UNDO_EDITED_BY_HAND,
+            (
+                f"the value of field {mark.field_id} on {on.isoformat()} was "
+                f"changed outside the journal, so quick mark event {event.id} "
+                f"cannot be undone; manual input wins and is left as it stands"
+            ),
+        )
+
+    if mark.kind == KIND_CHECK:
+        await entry_crud.upsert_checklist_values(
+            db, mark.category_id, on, {mark.field_id: await _previous_tick(db, event)}
+        )
+    elif mark.kind == KIND_RELAPSE:
+        await _drop_relapse_entry(db, event)
+    elif event.delta is not None:
+        await _write_number(db, mark, on, -float(event.delta), accumulate=True)
+
+    event.undone_at = at
+    await db.flush()
+
+    state = await day_state(db, mark, on)
+    undone = UndoneEvent(
+        event_id=event.id,
+        quick_mark_id=event.quick_mark_id,
+        entry_date=on,
+        undone_at=at,
+        state=state,
+    )
+    await db.commit()
+    return undone
+
+
+async def source_usage(
+    db: AsyncSession, *, since: date | None = None, until: date | None = None
+) -> list[SourceUsage]:
+    """
+    How the taps of a period split between the clients that made them.
+
+    The one question `source` was added to answer: if a month of marks comes
+    from a single client, the other path is closed on evidence rather than on
+    taste. Undone taps are counted apart instead of dropped — a client whose
+    taps are half taken back is a fact about that client, not noise.
+
+    Sources nobody used are absent rather than reported as zero: the answer
+    describes the days asked about, and a row of zeros would be a claim about a
+    client that never wrote anything.
+    """
+    query = select(
+        QuickMarkEvent.source,
+        func.count(QuickMarkEvent.id),
+        func.count(QuickMarkEvent.undone_at),
+    ).group_by(QuickMarkEvent.source)
+    if since is not None:
+        query = query.where(QuickMarkEvent.entry_date >= since)
+    if until is not None:
+        query = query.where(QuickMarkEvent.entry_date <= until)
+
+    result = await db.execute(query.order_by(QuickMarkEvent.source))
+    return [
+        SourceUsage(source=source, events=events, undone=undone)
+        for source, events, undone in result.all()
+    ]

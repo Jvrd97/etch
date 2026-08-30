@@ -1,5 +1,17 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/124 отмена тапа
+
+- `lib/api.ts` — **mod**: `quickMarksAPI.tap` принимает `Idempotency-Key`; `quickMarksAPI.undo`, `quickMarksAPI.sources`; типы `QuickMarkUndo`, `QuickMarkSourceUsage`.
+- `lib/quick-marks.ts` — **mod**: `applyQuickMarkUndo`, `undoCaption`, `newTapKey`.
+- `hooks/useToday.ts` — **mod**: тап шлёт ключ и повторяет неудавшуюся отправку **тем же** ключом; `lastQuickMarkEvent` и `undoLastQuickMark`; снимок с сервера гасит предложение отмены.
+- `components/QuickMarkRow.tsx` — **mod**: «Отменить «<кнопка>»» в той же строке, появляется только после тапа.
+- `app/today/page.tsx`, `app/m/today/page.tsx` — **mod**: оба шелла передают `lastEvent` и `onUndo`.
+- `hooks/useToday.test.ts`, `components/QuickMarkRow.test.tsx`, `lib/quick-marks.test.ts` — **mod**: повтор под одним ключом, два тапа — два ключа, отмена одним действием, отказ гасит предложение и оставляет сумму, отмены нечего предлагать после неудавшейся отправки.
+- 25 sibling test-файлов — **mod**: в mock `@/lib/api` добавлены `quickMarksAPI.undo` и `.sources` (bun фиксирует набор export-имён при первом линке).
+
+Проверки: `tsc --noEmit`, `eslint .` (0 problems), `bun test` — 845 passed.
+
 ## 2026-07-24 — round 3 review fixes (frontend, тикет PHASE-01/40)
 
 Раунд 3 по замечаниям ревью. Работа отнесена к слайсу `issues/PHASE-01/in-work/40-mobile-shell-toggle-manifest-today.md` — правятся именно его файлы; служебного ticket-id `PHASE-01/round-2-review-fixes` в маркерах больше нет.
