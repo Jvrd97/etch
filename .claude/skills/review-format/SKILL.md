@@ -73,3 +73,15 @@ Owner: <name>. <One-sentence orientation: what this service is in one breath.>
 - ❌ `**Label:** long text` instead of a heading + bullets
 - ❌ Section without a blank line before/after lists
 - ❌ Bold on more than ~10% of words in any paragraph
+
+---
+
+## Cognitive cost of the text
+
+The project-wide canon applies on top of this skill:
+`~/.claude/skills/copywriter/reference/cognitive-load.md` (Russian).
+
+Optimize new useful information per unit of reading effort, not length. Minimum: conclusion in
+the first paragraph of a section; one name per concept throughout; each point stated once;
+constraints placed next to what they constrain; plain verbs instead of noun-blobs; no filler
+connectives. Simplify the wording, never the subject.
