@@ -661,3 +661,36 @@ Feedback loops: pytest 351/351 green, `ruff check` clean, `ruff format --check` 
 - `habit-tracker/docs/day-boundary.md` — **mod**: раздел «Откуда берётся правило» переписан — источник теперь таблица, настройки стали запасным.
 
 Feedback loops: pytest 386/386 green (было 351), `ruff check` clean, `ruff format --check` clean (88 файлов), `mypy --strict app` clean (65 файлов), `alembic heads` — одна голова `c8e0a2b4d6f9`. Фронтенд: `bun test` 608/608 green (было 574), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`; миграция проверена отдельно на временной базе — `upgrade`, `downgrade`, `upgrade`, плюс сверка схемы после миграции со схемой после `create_all` (колонки, ограничения и индексы совпали).
+
+## 2026-08-30 — PHASE-03/87 план дня доезжает: `plan_section`/`plan_item` и `POST /day/{date}/plan` с валидацией канона
+
+Дата 2026-08-30, тикет `87-plan-sections-items-and-canon-validation`. Главный срез переезда: план становится строками, а ограничения этих строк — перенесённые правила `config.md`. Сегодня «не перезакручивать» и «у задачи обязаны быть окно и критерий» — проза, которую агент либо вспомнил, либо нет; после среза их отклоняет база и API.
+
+Правила разложены по двум местам, и разделение — суть решения. **Построчные — CHECK-ограничения** `plan_item`: у задачи есть окно и критерий, у пункта свободного блока окна нет, задача называет цель квартала или причину, окно идёт вперёд. Они верны для любого писателя — импорта, миграции, сессии `psql`, — потому что мимо них не пишет никто. **Правила документа — сервис** (`app/day/plan_validate.py`): планка `max_work_tasks` из правила дня и «жёсткими бывают только края дня». Оба — свойства плана, а не строки, и триггер на строку сорвал бы импорт исторических дней ([#89]), которые планку нарушали. Сервис дублирует и построчные проверки, но односторонне: база — гарантия, сервис — формулировка, и каждая его ветка покрыта ещё и тестом, который пишет мимо него прямо в таблицу.
+
+Отказ **называет пункт**: `{"error": "too_many_tasks", "item_code": "W5", "message": …}`. «Validation error» отправил бы автора перечитывать документ, который он только что написал, а планка существует ровно потому, что пятая задача — та, что превращает день в переработку. Отказ ничего не удаляет: документ судится до того, как удалена первая строка прежнего плана.
+
+Окно приезжает как `"23:30-00:30"`, а не парой timestamp: и человек, и `/day-open` думают настенными часами, а знание про пояс и границу суток централизовано в `#107`. Время раньше часа границы принадлежит следующей календарной дате, поэтому `23:30-00:30` даёт 60 минут, а не минус двадцать три часа; сохранился и `+24 ч` из `parse_window` для вырожденного случая.
+
+Порядок — позиция в списке, `ord` ставит сервер. Клиентский номер на одну правку отстоит от двух секций с одним `ord`, и база такой план отвергла бы, хотя в редакторе он выглядел целым.
+
+Наложения окон — самосоединение по `&&` поверх GiST-индекса на генерируемой колонке `window`, а не пересчёт на рендере: экран стал потребителем факта, а не его единственным владельцем.
+
+Найдено по ходу: обратное окно до CHECK `ck_plan_item_window_is_forward` не доходит — генерируемая колонка `window` считается раньше, и `tstzrange(23:30, 00:30)` падает сама, ошибкой диапазона. Ограничение на месте и верно, просто не успевает сработать; записано в тесте и в `docs/day-plan.md`.
+
+- `app/models/plan.py` — **new**: `DayPlan` (один план на день, `day_date` unique FK), `PlanSection` (`UNIQUE(plan_id, ord)`), `PlanItem` — четыре CHECK-а, генерируемые `window tstzrange` и `search tsvector`, индексы `(section_id, ord)`, GiST на `window`, GIN на `search`, `(carried_from_item_id)`, частичный `UNIQUE(section_id, code) WHERE code IS NOT NULL`.
+- `app/day/plan_validate.py` — **new**: базы не трогает. `PlanRejected` с кодом пункта, `ItemFacts`, `validate_plan`, `check_task_bar`, `check_hard_rigidity`, `check_item_shape`, `parse_window`, `resolve_window`, `to_plain`, `count_tasks`.
+- `app/crud/plan.py` — **new**: `prepare_plan` (документ → строки с разрешёнными окнами и `ord` по позиции), `replace_plan`, `get_plan`, `delete_plan`, `find_overlaps` (самосоединение по `&&`), `build_schedule`, `to_response`.
+- `app/schemas/plan.py` — **new**: `PlanDocument`/`PlanSectionIn`/`PlanItemIn` на вход, `PlanResponse`/`PlanSectionResponse`/`PlanItemResponse`/`ScheduleEntry`/`ScheduleOverlap`/`PlanRejection` на выход.
+- `alembic/versions/2026_08_30_1600-d9f1b3c5e7a0_plan_tables.py` — **new**: три таблицы; `upgrade`/`downgrade`/`upgrade` проверены на живой базе, схема после миграции сверена со схемой после `create_all` — колонки, ограничения и индексы совпали.
+- `app/api/day.py` — **mod**: `POST /api/v1/day/{date}/plan` (201, 422 с телом `PlanRejection`); `GET /day` и `GET /day/{date}` отдают план, расписание и наложения.
+- `app/schemas/day.py` — **mod**: `DayDetailResponse.plan` теперь `PlanResponse | None`.
+- `app/models/__init__.py` — **mod**: реэкспорт `DayPlan`, `PlanSection`, `PlanItem`.
+- `tests/test_plan_constraints.py` — **new**: 27 тестов. Половина пишет мимо сервиса прямо в таблицу и требует отказа базы; половина зовёт валидатор без базы.
+- `tests/test_plan_post.py` — **new**: 18 тестов ручки — все acceptance-случаи тикета плюс «отклонённый план не трогает прежний» и `X-API-Key`.
+- Фронтенд — **new**: `lib/plan.ts` (+тест), `components/day/PlanSections.tsx` (+тест), `components/day/DaySchedule.tsx` (+тест); **mod**: `lib/api.ts` (типы `Plan`/`PlanSection`/`PlanItem`/`ScheduleEntry`/`ScheduleOverlap`/`PlanDocument`, `dayAPI.savePlan`), `components/DayScreen.tsx` + его тест, `components/mobile/MobileDayScreen.tsx`.
+- `habit-tracker/docs/day-plan.md` — **new**: форма документа, словарь шести колонок, таблица кодов отказа, где живёт правило на самом деле, наложения.
+
+Тест `DayScreen.test.tsx` «keeps the plan block away once a plan exists» переписан: он задавал `has_plan: true` при `plan: null` — состояние, которого сервер выдать не может, — и держался на том, что экран ветвился по булеву флагу. Экран теперь ветвится по самому плану, а тест рендерит настоящий.
+
+Feedback loops: pytest 431/431 green (было 386), `ruff check` clean, `ruff format --check` clean (94 файла), `mypy --strict app` clean (69 файлов), `alembic heads` — одна голова `d9f1b3c5e7a0`. Фронтенд: `bun test` 633/633 green (было 608), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон на машине не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`.

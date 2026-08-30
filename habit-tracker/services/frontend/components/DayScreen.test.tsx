@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/86
+// [review:need-review] PHASE-03/86, PHASE-03/87
 // summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, and the rule it is judged by is on the screen
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { DayDetail } from '@/lib/api';
+import type { DayDetail, Plan } from '@/lib/api';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
 
 const DAY: DayDetail = {
@@ -33,6 +33,72 @@ const DAY: DayDetail = {
   },
   plan: null,
   has_plan: false,
+};
+
+// A plan as the server answers with one: sections in order, a schedule the
+// server measured, and no collisions.
+const PLAN: Plan = {
+  id: 'p1',
+  day_date: '2026-08-30',
+  title: 'План 2026-08-30 (вс)',
+  title_marker: null,
+  lede: 'Выходной по канону',
+  purpose_md: null,
+  quarter_goal_id: null,
+  counters: [],
+  condition_tomorrow: null,
+  status: 'active',
+  source: 'day-open',
+  created_at: '2026-08-30T06:00:00Z',
+  updated_at: '2026-08-30T06:00:00Z',
+  sections: [
+    {
+      id: 's1',
+      ord: 0,
+      title: 'Воскресный блок',
+      kind: 'personal',
+      items: [
+        {
+          id: 'i1',
+          parent_id: null,
+          ord: 0,
+          kind: 'bullet',
+          rigidity: 'soft',
+          text_md: 'Недельное ретро W35',
+          text_plain: 'Недельное ретро W35',
+          starts_at: '2026-08-30T09:00:00Z',
+          ends_at: '2026-08-30T09:40:00Z',
+          window_comment: null,
+          code: null,
+          done_criterion: null,
+          why_md: null,
+          plan_md: null,
+          external_ref: null,
+          extra: {},
+          quarter_goal_id: null,
+          unlinked_reason: null,
+          carried_from_item_id: null,
+          carry_count: 0,
+          children: [],
+        },
+      ],
+    },
+  ],
+  schedule: [
+    {
+      item_id: 'i1',
+      section_id: 's1',
+      code: null,
+      text_plain: 'Недельное ретро W35',
+      kind: 'bullet',
+      rigidity: 'soft',
+      starts_at: '2026-08-30T09:00:00Z',
+      ends_at: '2026-08-30T09:40:00Z',
+      minutes: 40,
+      window_comment: null,
+    },
+  ],
+  overlaps: [],
 };
 
 let state: {
@@ -88,11 +154,22 @@ describe('DayScreen', () => {
     expect(screen.getByText('no-code day')).toBeDefined();
   });
 
-  it('keeps the plan block away once a plan exists', () => {
-    state = { ...state, detail: { ...DAY, has_plan: true } };
+  it('renders the plan instead of the "плана нет" block once there is one', () => {
+    state = { ...state, detail: { ...DAY, plan: PLAN, has_plan: true } };
     render(<DayScreen date="2026-08-30" />);
 
     expect(screen.queryByText(NO_PLAN_TEXT)).toBeNull();
+    expect(screen.getByText('Воскресный блок')).toBeDefined();
+    expect(screen.getByText('Расписание дня')).toBeDefined();
+  });
+
+  it('says how many work tasks the plan spends of the bar', () => {
+    // The bar is the rule's, not a constant: a day under the legacy canon is
+    // read against different numbers, and the screen has to show which.
+    state = { ...state, detail: { ...DAY, plan: PLAN, has_plan: true } };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText('Рабочих задач: 0 из 4')).toBeDefined();
   });
 
   it('shows the failure instead of an empty day', () => {

@@ -1,10 +1,12 @@
 'use client';
-// [review:need-review] PHASE-03/86
-// summary: mobile day screen — markup only, all state comes from useDay (shared with the desktop shell); one column, the rule as a plain list, no text below text-sm
+// [review:need-review] PHASE-03/86, PHASE-03/87
+// summary: mobile day screen — markup only, all state comes from useDay (shared with the desktop shell); one column, the plan and its schedule in compact form, the rule as a plain list, no text below text-sm
 
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import DaySchedule from '@/components/day/DaySchedule';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import {
   NO_PLAN_HINT,
@@ -13,6 +15,7 @@ import {
   ruleLines,
   ruleValidity,
 } from '@/lib/day-format';
+import { countTasks, overlappingItemIds } from '@/lib/plan';
 
 /** `date` is null on the entry point `/m/day`, where the server names today. */
 export interface MobileDayScreenProps {
@@ -32,7 +35,7 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
     );
   }
 
-  const { day, rule } = detail;
+  const { day, rule, plan } = detail;
   const KindIcon = day.kind === 'work' ? Sun : Moon;
 
   return (
@@ -55,7 +58,7 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
         </div>
       </div>
 
-      {!detail.has_plan && (
+      {plan === null ? (
         <div className="bg-card border border-white/5 rounded-3xl text-center py-10 px-5">
           <div className="inline-flex p-3 rounded-3xl bg-surface mb-3">
             <CalendarCheck className="w-7 h-7 text-text-disabled" strokeWidth={2} />
@@ -63,6 +66,21 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           <p className="text-text-primary font-medium">{NO_PLAN_TEXT}</p>
           <p className="mt-2 text-sm text-text-secondary">{NO_PLAN_HINT}</p>
         </div>
+      ) : (
+        <>
+          {plan.lede && (
+            <p className="text-sm text-text-secondary">{plan.lede}</p>
+          )}
+          <p className="text-sm text-text-secondary">
+            Рабочих задач: {countTasks(plan)} из {rule.max_work_tasks}
+          </p>
+          <DaySchedule schedule={plan.schedule} overlaps={plan.overlaps} compact />
+          <PlanSections
+            sections={plan.sections}
+            overlapping={overlappingItemIds(plan.overlaps)}
+            compact
+          />
+        </>
       )}
 
       <section className="bg-card border border-white/5 rounded-3xl p-4">

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86
-# summary: day DTOs — the day itself, the rule it is judged by (so the screen can explain the verdict before there is one), and an explicit "no plan" instead of a 404
+# [review:need-review] PHASE-03/86, PHASE-03/87
+# summary: day DTOs — the day itself, the rule it is judged by (so the screen can explain the verdict before there is one), and the plan when there is one instead of a 404 when there is not
 """
 Wire types of the day.
 
@@ -16,6 +16,8 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.plan import PlanResponse
 
 
 class DayRuleSetResponse(BaseModel):
@@ -71,18 +73,21 @@ class DayResponse(BaseModel):
 
 class DayDetailResponse(BaseModel):
     """
-    The whole answer for one date.
+    The whole answer for one date: the day, its canon, and its plan.
 
-    `plan` is null and `has_plan` is false for every day right now: plan rows are
-    `#87`'s subject. The pair is here rather than absent so that the screen has
-    one shape to render from the start, and so that "нет плана" arrives as an
-    answer with a day and a rule attached — a 404 would leave the reader unable
-    to tell an empty day from a wrong URL.
+    A day without a plan answers with `plan: null` and `has_plan: false` rather
+    than 404ing. "Нет плана" is a fact about the day and arrives with the date
+    and the rule attached; a 404 would leave the reader unable to tell an empty
+    day from a mistyped URL.
+
+    `has_plan` is redundant with `plan is not null` on purpose: it is the field a
+    screen branches on, and one boolean is harder to get wrong in JSX than a
+    null check on a nested object.
     """
 
     day: DayResponse
     rule: DayRuleSetResponse
-    plan: None = Field(None, description="План дня; появится в #87, сейчас всегда null")
-    has_plan: bool = Field(
-        False, description="Есть ли план на этот день. Пока всегда false"
+    plan: PlanResponse | None = Field(
+        None, description="План дня с расписанием и наложениями; null — плана нет"
     )
+    has_plan: bool = Field(False, description="Есть ли план на этот день")

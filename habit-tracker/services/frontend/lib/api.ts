@@ -2,7 +2,7 @@
  * API Client for Habit Tracker Backend
  */
 // [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day and the rule it is judged by
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by and its plan, and sends a whole plan back with savePlan
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -297,6 +297,21 @@ export const dayAPI = {
 
   get: async (date: string) => {
     return fetcher<DayDetail>(`/day/${date}`);
+  },
+
+  /**
+   * Send the whole plan of a day, replacing whatever was there.
+   *
+   * Whole rather than per-item: the bar on the number of tasks and "only the
+   * edges of the day may be hard" are properties of a plan, and the server
+   * cannot judge them one line at a time. A rejection comes back as a 422
+   * whose body names the line that broke a rule.
+   */
+  savePlan: async (date: string, document: PlanDocument) => {
+    return fetcher<Plan>(`/day/${date}/plan`, {
+      method: 'POST',
+      body: JSON.stringify(document),
+    });
   },
 };
 
@@ -671,10 +686,147 @@ export interface Day {
   last_touched_at: string | null;
 }
 
-/** One day and the rule it is judged by. `plan` stays null until #87 lands. */
+/** What kind of line of a plan this is; only `task` counts against the bar. */
+export type PlanItemKind =
+  | 'bullet'
+  | 'step'
+  | 'table_row'
+  | 'task'
+  | 'anchor'
+  | 'hard_point'
+  | 'minimum';
+
+/** How movable a line is. `free` items can carry no window at all. */
+export type PlanRigidity = 'hard' | 'soft' | 'free';
+
+export interface PlanItem {
+  id: string;
+  parent_id: string | null;
+  ord: number;
+  kind: PlanItemKind;
+  rigidity: PlanRigidity;
+  text_md: string;
+  text_plain: string;
+  /** ISO moment, or null when the line claims no piece of the clock. */
+  starts_at: string | null;
+  ends_at: string | null;
+  window_comment: string | null;
+  code: string | null;
+  done_criterion: string | null;
+  why_md: string | null;
+  plan_md: string | null;
+  external_ref: Record<string, unknown> | null;
+  /** Every `Подпись :: значение` without a column of its own. */
+  extra: Record<string, unknown>;
+  quarter_goal_id: number | null;
+  unlinked_reason: string | null;
+  carried_from_item_id: string | null;
+  carry_count: number;
+  children: PlanItem[];
+}
+
+export interface PlanSection {
+  id: string;
+  ord: number;
+  title: string | null;
+  kind: string;
+  items: PlanItem[];
+}
+
+/**
+ * One line of the day's schedule.
+ *
+ * `minutes` is the server's, not a subtraction here: a window that runs past
+ * midnight is sixty minutes only to someone who knows where the day ends.
+ */
+export interface ScheduleEntry {
+  item_id: string;
+  section_id: string;
+  code: string | null;
+  text_plain: string;
+  kind: PlanItemKind;
+  rigidity: PlanRigidity;
+  starts_at: string;
+  ends_at: string;
+  minutes: number;
+  window_comment: string | null;
+}
+
+/** Two lines whose windows intersect, as the database found them. */
+export interface ScheduleOverlap {
+  left_item_id: string;
+  right_item_id: string;
+  overlap_minutes: number;
+}
+
+export interface Plan {
+  id: string;
+  day_date: string;
+  title: string | null;
+  title_marker: string | null;
+  lede: string | null;
+  purpose_md: string | null;
+  quarter_goal_id: number | null;
+  counters: unknown[];
+  condition_tomorrow: string | null;
+  status: 'draft' | 'active' | 'closed';
+  source: 'day-open' | 'import' | 'manual';
+  created_at: string;
+  updated_at: string;
+  sections: PlanSection[];
+  schedule: ScheduleEntry[];
+  overlaps: ScheduleOverlap[];
+}
+
+/**
+ * A plan on its way to the server.
+ *
+ * Neither a section nor an item carries `ord`: the server numbers what it
+ * receives, so the order on screen is the order that was sent and two sections
+ * can never claim the same place. A window goes as `"23:30-00:30"` — wall
+ * clock, because that is what a human and `/day-open` both write.
+ */
+export interface PlanItemDraft {
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md: string;
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  why_md?: string | null;
+  plan_md?: string | null;
+  external_ref?: Record<string, unknown> | null;
+  extra?: Record<string, unknown>;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+  children?: PlanItemDraft[];
+}
+
+export interface PlanSectionDraft {
+  title?: string | null;
+  kind?: string;
+  items?: PlanItemDraft[];
+}
+
+export interface PlanDocument {
+  title?: string | null;
+  title_marker?: string | null;
+  lede?: string | null;
+  purpose_md?: string | null;
+  quarter_goal_id?: number | null;
+  counters?: unknown[];
+  condition_tomorrow?: string | null;
+  status?: Plan['status'];
+  source?: Plan['source'];
+  raw_md?: string | null;
+  sections: PlanSectionDraft[];
+}
+
+/** One day, the rule it is judged by, and its plan when there is one. */
 export interface DayDetail {
   day: Day;
   rule: DayRuleSet;
-  plan: null;
+  plan: Plan | null;
   has_plan: boolean;
 }

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86
-# summary: re-export the Health contour models and the day tables (versioned canon + the day itself) alongside the existing ones
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87
+# summary: re-export the Health contour models, the day tables (versioned canon + the day itself) and the plan tables alongside the existing ones
 from app.models.ai_report import AIReport
 from app.models.applied_daily_summary import AppliedDailySummary
 from app.models.category import Category
@@ -9,6 +9,7 @@ from app.models.entry import Entry
 from app.models.entry_value import EntryValue
 from app.models.health import HealthHourBucket, HealthMetric
 from app.models.journal import JournalEntry
+from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.transcript import Transcript
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "AppliedDailySummary",
     "Category",
     "Day",
+    "DayPlan",
     "DayRuleSet",
     "Field",
     "FieldType",
@@ -24,5 +26,7 @@ __all__ = [
     "HealthHourBucket",
     "HealthMetric",
     "JournalEntry",
+    "PlanItem",
+    "PlanSection",
     "Transcript",
 ]
