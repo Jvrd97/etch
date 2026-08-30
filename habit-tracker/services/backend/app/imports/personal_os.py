@@ -95,7 +95,7 @@ from app.models.import_source import (
     ImportSource,
 )
 from app.models.plan import DayPlan, PlanItem, PlanSection
-from app.models.summary import SOURCE_IMPORT, DaySummary
+from app.models.summary import SOURCE_IMPORT, STAGE_CLOSED, DaySummary
 from app.schemas.plan import PlanDocument, PlanItemIn, PlanSectionIn
 
 __all__ = [
@@ -1052,6 +1052,11 @@ async def import_summary(
     values = {
         "day_date": day.day_date,
         "rule_set_id": rule.id,
+        # Импортированный день закрыт — стадию видно на строке с `#143`.
+        # Названа явно, а не оставлена на server_default: импорт может лечь
+        # поверх дня, у которого сегодня было только касание 15:40, и вердикт
+        # на строке со стадией `reviewed` база не примет.
+        "stage": STAGE_CLOSED,
         "verdict": read_verdict(text),
         "verdict_reason": "",
         "body_md": _rewrite_links(text, warnings, where),

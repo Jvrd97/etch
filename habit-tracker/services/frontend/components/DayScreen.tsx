@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94, PHASE-03/143
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 
 import { useMemo } from 'react';
@@ -15,7 +15,13 @@ import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
-import { dayAPI, type DayCloseDraft, type Mark, type WorkDay } from '@/lib/api';
+import {
+  dayAPI,
+  type DayCloseDraft,
+  type DayReviewDraft,
+  type Mark,
+  type WorkDay,
+} from '@/lib/api';
 import {
   NO_PLAN_HINT,
   NO_PLAN_TEXT,
@@ -161,8 +167,14 @@ export default function DayScreen({ date }: DayScreenProps) {
 
       <DayVerdict
         summary={detail.summary}
+        onReview={async (draft: DayReviewDraft) => {
+          await dayAPI.review(day.date, draft);
+          // Ревью двигает стадию и рабочие минуты, а счётчики дня остаются
+          // живыми: перечитываем день целиком, как и после закрытия.
+          reload();
+        }}
         onClose={async (draft: DayCloseDraft) => {
-          await dayAPI.close(day.date, draft);
+          await dayAPI.closeFinal(day.date, draft);
           // Re-read rather than patch in place: closing re-folds the streak of
           // every later day, so the server's answer is the only correct one.
           reload();

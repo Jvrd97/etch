@@ -1,7 +1,13 @@
-// [review:need-review] PHASE-03/86, PHASE-03/90
-// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings)
+// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/143
+// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian, plus the heading a half-closed day gets so that «рано» never reads as «проиграл» (both shells render the same strings)
 
-import type { Day, DayRuleSet, VerdictReason, MissingData } from '@/lib/api';
+import type {
+  ClosingStage,
+  Day,
+  DayRuleSet,
+  VerdictReason,
+  MissingData,
+} from '@/lib/api';
 
 /** Text shown where a plan would be. A day without one is an answer, not an error. */
 export const NO_PLAN_TEXT = 'Плана нет';
@@ -115,6 +121,27 @@ export function verdictLabel(verdict: 'won' | 'lost' | null): string {
   if (verdict === 'won') return 'День выигран';
   if (verdict === 'lost') return 'День проигран';
   return 'День не закрыт';
+}
+
+/** Said above the day whose 15:40 touch is done and whose evening is not. */
+export const VERDICT_LATER = 'Вердикт будет вечером';
+
+/** Said on a day closed in one touch: обычный день, но отличимый. */
+export const REVIEW_SKIPPED = 'Ревью в 15:40 не было — день закрыт одним касанием';
+
+/**
+ * Заголовок блока итога по стадии закрытия, а не по одному лишь вердикту.
+ *
+ * Пустой вердикт значит разное на разных стадиях: на `open` — «никто не
+ * закрывал», на `reviewed` — «рано». Прочесть второе как «день не закрыт» было
+ * бы ровно той потерей, ради которой стадия и заведена.
+ */
+export function closingHeadline(
+  stage: ClosingStage,
+  verdict: 'won' | 'lost' | null
+): string {
+  if (stage === 'reviewed' && verdict === null) return VERDICT_LATER;
+  return verdictLabel(verdict);
 }
 
 /**

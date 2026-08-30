@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86, PHASE-03/90
-// summary: tests for the day labels — weekday names in week order, minutes read as hours, the ratio as a percentage, the rule's validity interval spelled out, and the verdict of a day with the condition it failed on and the streak in countable Russian
+// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/143
+// summary: tests for the day labels — weekday names in week order, minutes read as hours, the ratio as a percentage, the rule's validity interval spelled out, and the verdict of a day with the condition it failed on the streak in countable Russian, and the heading a day gets by the stage of its closing
 
 import { describe, expect, it } from 'bun:test';
 import type { Day, DayRuleSet } from '@/lib/api';
@@ -12,6 +12,8 @@ import {
   ruleLines,
   ruleValidity,
   streakLabel,
+  closingHeadline,
+  VERDICT_LATER,
   verdictLabel,
   verdictReasonLabel,
   weekdayNames,
@@ -164,5 +166,14 @@ describe('the verdict of a day', () => {
     expect(streakLabel(21)).toBe('21 день');
     expect(streakLabel(22)).toBe('22 дня');
     expect(streakLabel(112)).toBe('112 дней');
+  });
+
+  it('splits "не закрыл" by the stage of closing', () => {
+    // Пустой вердикт значит разное на разных стадиях, и прочесть «рано» как
+    // «день не закрыт» — потеря, ради которой стадия и заведена.
+    expect(closingHeadline('open', null)).toBe('День не закрыт');
+    expect(closingHeadline('reviewed', null)).toBe(VERDICT_LATER);
+    expect(closingHeadline('closed', 'won')).toBe('День выигран');
+    expect(closingHeadline('closed', 'lost')).toBe('День проигран');
   });
 });

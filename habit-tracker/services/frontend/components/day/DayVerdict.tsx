@@ -1,14 +1,15 @@
 'use client';
-// [review:need-review] PHASE-03/90
-// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the button that closes an unclosed day, and the override that stays dead until a note is written
+// [review:need-review] PHASE-03/90, PHASE-03/143
+// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the two buttons closing takes — ревью 15:40 и вечернее закрытие — with the stage saying «вердикт будет вечером» instead of «проиграл», the note a day closed in one touch carries, and the override that stays dead until a note is written
 
 import { useState } from 'react';
-import type { DayCloseDraft, DaySummary } from '@/lib/api';
+import type { DayCloseDraft, DayReviewDraft, DaySummary } from '@/lib/api';
 import {
+  REVIEW_SKIPPED,
+  closingHeadline,
   formatMinutes,
   missingDataLabel,
   streakLabel,
-  verdictLabel,
   verdictReasonLabel,
 } from '@/lib/day-format';
 
@@ -17,6 +18,11 @@ export const VERDICT_TITLE = 'Итог дня';
 
 export const CLOSE_DAY = 'Закрыть день';
 export const CLOSE_FAILED = 'День не закрылся';
+
+/** Касание около 15:40 — рабочая часть закрытия, без вердикта. */
+export const REVIEW_DAY = 'Записать ревью 15:40';
+export const REVIEW_DONE = 'Обновить ревью';
+export { REVIEW_SKIPPED };
 
 /** Said above the reason, so the number is never left to speak for itself. */
 export const REASON_PREFIX = 'Не выполнено:';
@@ -33,6 +39,8 @@ export interface DayVerdictProps {
   summary: DaySummary;
   /** Closes the day; resolves once the server has judged it. */
   onClose: (draft: DayCloseDraft) => Promise<void>;
+  /** Записывает касание 15:40; вердикта после него ещё нет. */
+  onReview: (draft: DayReviewDraft) => Promise<void>;
 }
 
 /**
@@ -50,16 +58,21 @@ export interface DayVerdictProps {
  * afterwards: a person re-reading this in a month has to see what was
  * disagreed with.
  */
-export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
+export default function DayVerdict({
+  summary,
+  onClose,
+  onReview,
+}: DayVerdictProps) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (draft: DayCloseDraft) => {
+  /** One guard for both touches: the button that is pressed says what to send. */
+  const run = async (send: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      await onClose(draft);
+      await send();
     } catch (err) {
       setError(err instanceof Error ? err.message : CLOSE_FAILED);
     } finally {
@@ -69,12 +82,13 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
 
   const reason = verdictReasonLabel(summary.verdict_reason);
   const showReason = summary.closed && reason !== '';
+  const reviewed = summary.reviewed_at !== null;
 
   return (
     <section className="bg-card border border-white/5 rounded-3xl p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="text-xl font-semibold text-text-primary">
-          {verdictLabel(summary.verdict)}
+          {closingHeadline(summary.stage, summary.verdict)}
         </h2>
         {summary.streak_after !== null && (
           <span className="text-text-secondary">
@@ -144,15 +158,29 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
         </p>
       )}
 
+      {summary.review_skipped && (
+        <p className="mt-4 text-sm text-text-secondary">{REVIEW_SKIPPED}</p>
+      )}
+
       {!summary.closed ? (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void run({})}
-          className="mt-5 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
-        >
-          {CLOSE_DAY}
-        </button>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => onReview({}))}
+            className="rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
+          >
+            {reviewed ? REVIEW_DONE : REVIEW_DAY}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => onClose({}))}
+            className="rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
+          >
+            {CLOSE_DAY}
+          </button>
+        </div>
       ) : (
         !summary.verdict_override && (
           <div className="mt-5 pt-5 border-t border-white/5">
@@ -169,10 +197,12 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
               type="button"
               disabled={busy || note.trim() === ''}
               onClick={() =>
-                void run({
-                  verdict_override: true,
-                  verdict_override_note: note.trim(),
-                })
+                void run(() =>
+                  onClose({
+                    verdict_override: true,
+                    verdict_override_note: note.trim(),
+                  })
+                )
               }
               className="mt-3 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
             >

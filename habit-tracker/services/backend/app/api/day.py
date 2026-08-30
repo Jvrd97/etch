@@ -1,9 +1,9 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/143
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close/review is the 15:40 touch and /close/final the evening one that writes the verdict (the bare /close stays as a synonym of `final`), both idempotent by `Idempotency-Key`, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,6 +13,7 @@ from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
+from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
 from app.day.plan_validate import PlanRejected
 from app.day.rules import NoRuleForDate, is_openable
@@ -26,7 +27,7 @@ from app.schemas.mark import (
     NotebookResponse,
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
-from app.schemas.summary import DayCloseIn, DaySummaryResponse
+from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
 from app.schemas.work_interval import (
     WorkDayResponse,
     WorkIntervalIn,
@@ -271,12 +272,126 @@ async def put_notebook(
     )
 
 
-@router.post("/{on}/close", response_model=DaySummaryResponse)
-async def post_close(
-    on: date, body: DayCloseIn, db: AsyncSession = Depends(get_db)
+# Один заголовок на оба касания, описанный один раз. Ключ необязателен: браузер
+# его шлёт, `curl` из скрипта — как правило нет, и касание без ключа обязано
+# работать ровно так же, только без защиты от повтора.
+IDEMPOTENCY_DESCRIPTION = (
+    "Ключ повтора. Тот же ключ второй раз — 200 и та же строка, ничего не "
+    "записано. Другой ключ на закрытый день — перезакрытие: вердикт и стрик "
+    "считаются заново, вторая строка не появляется"
+)
+
+# Оба касания отвечают одинаково, и оба умеют упереться в чужой ключ.
+TOUCH_RESPONSES: dict[int | str, dict[str, str]] = {
+    409: {
+        "description": (
+            "Idempotency-Key уже применён к другой дате. Не повтор и не новое "
+            "касание: ответить чужим днём было бы враньём"
+        )
+    },
+}
+
+
+def _spent_elsewhere(error: KeyBelongsToAnotherDay) -> HTTPException:
+    """The 409 both touches raise, spelled once."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+
+@router.post(
+    "/{on}/close/review",
+    response_model=DaySummaryResponse,
+    responses=TOUCH_RESPONSES,
+)
+async def post_close_review(
+    on: date,
+    body: DayReviewIn,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", description=IDEMPOTENCY_DESCRIPTION
+    ),
 ) -> DaySummaryResponse:
     """
-    Закрыть день: посчитать вердикт, записать итог, пересчитать стрик.
+    Касание около 15:40: записать факт по работе, не вынося вердикта.
+
+    Стадия дня становится `reviewed`, `verdict` остаётся `null` — и это «рано»,
+    а не «проиграл»: на экране это разные подписи. Вечернее касание
+    (`POST .../close/final`) дописывает якоря и выносит вердикт.
+
+    Отметки пунктов сюда не едут: они уже записаны через
+    `PUT /day/{date}/marks/{item_id}`, и второй путь для того же факта означал
+    бы два ответа на вопрос «сделана ли задача». `null` в любом поле — «не
+    трогать записанное», а не «стереть».
+
+    Ревью, пришедшее после вечернего закрытия, уточняет цифры и не откатывает
+    день назад: стадия остаётся `closed`.
+    """
+    day, _ = await _resolve(db, on)
+    try:
+        return await summary_crud.review_day(
+            db, day.day_date, body, idempotency_key=idempotency_key
+        )
+    except KeyBelongsToAnotherDay as error:
+        raise _spent_elsewhere(error) from error
+
+
+@router.post(
+    "/{on}/close/final",
+    response_model=DaySummaryResponse,
+    responses=TOUCH_RESPONSES,
+)
+async def post_close_final(
+    on: date,
+    body: DayCloseIn,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", description=IDEMPOTENCY_DESCRIPTION
+    ),
+) -> DaySummaryResponse:
+    """
+    Вечернее касание: закрыть день, посчитать вердикт, пересчитать стрик.
+
+    Первого касания могло не быть — это обычный день, а не ошибка: стадия
+    прыгает `open → closed`, и ответ несёт `review_skipped: true`.
+
+    Вердикта в теле нет и быть не может: схема приёма его не знает, лишнее поле
+    даёт 422. Считает его чистая функция `evaluate_day` по правилу, под которым
+    день прожит, а не по нынешнему — канон менялся 2026-08-17, и день до этой
+    даты обязан получить тот же ответ, который получил бы тогда.
+
+    Закрытие вчерашнего дня задним числом пересчитывает стрик всей истории, так
+    что цифра сегодняшнего дня меняется сама.
+    """
+    day, _ = await _resolve(db, on)
+    try:
+        return await summary_crud.close_day(
+            db, day.day_date, body, idempotency_key=idempotency_key
+        )
+    except KeyBelongsToAnotherDay as error:
+        raise _spent_elsewhere(error) from error
+
+
+@router.post(
+    "/{on}/close",
+    response_model=DaySummaryResponse,
+    deprecated=True,
+    responses=TOUCH_RESPONSES,
+)
+async def post_close(
+    on: date,
+    body: DayCloseIn,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", description=IDEMPOTENCY_DESCRIPTION
+    ),
+) -> DaySummaryResponse:
+    """
+    Устаревший синоним `POST /day/{date}/close/final`.
+
+    Закрытие идёт в два касания с `#143`, и эта ручка — вечернее из них. Она
+    остаётся, потому что её зовут скрипты и старые вкладки, но новый код должен
+    звать `final`: имя без стадии перестало быть однозначным.
+
+    Дальше — то же, что делает `final`.
 
     Вердикт считается по правилу, под которым день прожит, а не по нынешнему:
     канон менялся 2026-08-17, и день до этой даты обязан получить тот же ответ,
@@ -295,8 +410,7 @@ async def post_close(
     Повторный вызов заменяет итог, а не добавляет второй: закрытие — состояние
     дня, а не запись в журнале.
     """
-    day, _ = await _resolve(db, on)
-    return await summary_crud.close_day(db, day.day_date, body)
+    return await post_close_final(on, body, db, idempotency_key)
 
 
 @router.get("/{on}/work-intervals", response_model=WorkDayResponse)

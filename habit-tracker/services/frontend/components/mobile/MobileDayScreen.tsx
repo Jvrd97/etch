@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/143
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
 import { useMemo } from 'react';
@@ -14,7 +14,13 @@ import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
-import { dayAPI, type DayCloseDraft, type Mark, type WorkDay } from '@/lib/api';
+import {
+  dayAPI,
+  type DayCloseDraft,
+  type DayReviewDraft,
+  type Mark,
+  type WorkDay,
+} from '@/lib/api';
 import {
   NO_PLAN_HINT,
   NO_PLAN_TEXT,
@@ -156,8 +162,14 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
 
       <DayVerdict
         summary={detail.summary}
+        onReview={async (draft: DayReviewDraft) => {
+          await dayAPI.review(day.date, draft);
+          // Ревью двигает стадию и рабочие минуты, а счётчики дня остаются
+          // живыми: перечитываем день целиком, как и после закрытия.
+          reload();
+        }}
         onClose={async (draft: DayCloseDraft) => {
-          await dayAPI.close(day.date, draft);
+          await dayAPI.closeFinal(day.date, draft);
           // Re-read rather than patch in place: closing re-folds the streak of
           // every later day, so the server's answer is the only correct one.
           reload();

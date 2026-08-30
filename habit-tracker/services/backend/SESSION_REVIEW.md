@@ -1115,3 +1115,42 @@ clean (154 файла), `mypy --strict app` clean (112 файлов), `alembic h
 `a8d0c2e4b6f1`. Docker-демон не поднят, `make check` целиком **не отрабатывал**: тесты шли
 против постгреса на localhost:5432 (`habit_tracker_test`). Живого прогона `claude -p --resume`
 не было — запуск CLI из этой сессии не разрешён; наличие флагов сверено по `claude --help`.
+
+## 2026-08-31 — PHASE-03/143, закрытие дня в два касания
+
+Тронуто 7 файлов бэкенда.
+
+- `alembic/versions/2026_09_02_1000-b9e1d3f5a7c2_day_summary_stage_and_idempotency.py` —
+  **new**: `stage` (`open`/`reviewed`/`closed`, server_default `closed`), `reviewed_at` и два
+  ключа идемпотентности на `day_summary`; `CHECK` на словарь стадий и `CHECK` «вердикт только
+  на закрытом дне»; по unique на каждый ключ. `downgrade()` снимает четыре колонки и четыре
+  ограничения, вердиктов и прозы не касается. Прогнана вживую: `upgrade` → `downgrade -1` →
+  `upgrade` на чистой базе `habit_migrate_fast4`.
+- `app/models/summary.py` — **mod**: стадия и ключи как колонки, два новых `CHECK`. Отдельной
+  таблицы `day_closing` из ADR-0015 не заводится — итог дня уже целиком в этой строке.
+- `app/schemas/summary.py` — **mod**: `DayReviewIn` (касание 15:40) рядом с `DayCloseIn`; `null`
+  в теле теперь «не трогать», а не «стереть»; ответ несёт `stage`, `reviewed_at`,
+  `review_skipped`. Вердикта в теле приёма нет ни у одного касания — `extra="forbid"` даёт 422.
+- `app/crud/summary.py` — **mod**: `review_day` рядом с `close_day`, обе двигают одну строку
+  через общий `_store`; ключ ищется до записи, повтор ничего не пишет, чужая дата поднимает
+  `KeyBelongsToAnotherDay`. Пересчёт истории теперь знает стадию: полузакрытый день не носит
+  стрика и не принимает переопределения. Починена ловушка на стыке Core-upsert и ORM: строка,
+  уже загруженная в сессию, после `pg_insert` оставалась старой, и `recompute_history`
+  записывала прежние цифры поверх только что сохранённых — после записи строка обновляется.
+- `app/api/day.py` — **mod**: `POST /day/{date}/close/review` и `.../close/final`, оба с
+  `Idempotency-Key` и 409 на ключ с чужой даты; старый `POST /day/{date}/close` помечен
+  `deprecated` и зовёт `final`, а не повторяет его.
+- `app/imports/personal_os.py` — **mod**: импорт называет `stage='closed'` явно. Иначе импорт
+  поверх дня, у которого сегодня было только касание 15:40, упирался бы в `CHECK`.
+- `tests/test_day_close_two_touches.py` — **new**, 18 тестов: стадии `open → reviewed → closed`,
+  живой пересчёт полузакрытого дня, повтор с тем же ключом (и `updated_at` на месте), другой
+  ключ и одна строка, ключ ревью отдельно от вечернего, чужая дата → 409, ревью после закрытия
+  не откатывает день, `verdict` в теле → 422, закрытие вчера двигает стрик сегодня, записка
+  переопределения переживает перезакрытие, устаревшая ручка — синоним `final`.
+
+Feedback loops (backend): pytest **737/737 green**, `ruff check` clean, `ruff format --check`
+clean (155 файлов), `mypy --strict app` clean (112 файлов), `alembic heads` — одна голова
+`b9e1d3f5a7c2`. `make check` целиком **не отрабатывал**: docker-демон на машине не поднят,
+тесты шли обходом против постгреса на localhost:5432 (база `habit_tracker_test_fast4` — общая
+`habit_tracker_test` занята соседними дорожками роя, и `drop_all` в ней падал на чужих
+таблицах).

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/90
-// summary: component tests for the итог block — a lost day names the condition it failed on rather than "не выигран", an unclosed day offers to close instead of reading as a loss, the override button stays dead until a note is typed, and unmeasured work is said out loud
+// [review:need-review] PHASE-03/90, PHASE-03/143
+// summary: component tests for the итог block — a lost day names the condition it failed on rather than "не выигран", an unclosed day offers to close instead of reading as a loss, the override button stays dead until a note is typed, unmeasured work is said out loud, a half-closed day reads «вердикт будет вечером» rather than «не закрыт», and a day closed in one touch says the 15:40 review was skipped
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -8,11 +8,18 @@ import DayVerdict, {
   CLOSE_DAY,
   OVERRIDE_NOTE_LABEL,
   OVERRIDE_SAVE,
+  REVIEW_DAY,
+  REVIEW_DONE,
+  REVIEW_SKIPPED,
 } from './DayVerdict';
+import { VERDICT_LATER } from '@/lib/day-format';
 
 const SUMMARY: DaySummary = {
   day_date: '2026-08-28',
   closed: true,
+  stage: 'closed',
+  reviewed_at: '2026-08-28T15:40:00+02:00',
+  review_skipped: false,
   rule_set_id: 2,
   verdict: 'lost',
   verdict_reason: 'tasks',
@@ -38,6 +45,7 @@ function show(patch: Partial<DaySummary> = {}) {
     <DayVerdict
       summary={{ ...SUMMARY, ...patch }}
       onClose={() => Promise.resolve()}
+      onReview={() => Promise.resolve()}
     />
   );
 }
@@ -115,6 +123,7 @@ describe('DayVerdict', () => {
           sent.push(draft);
           return Promise.resolve();
         }}
+        onReview={() => Promise.resolve()}
       />
     );
 
@@ -144,5 +153,63 @@ describe('DayVerdict', () => {
     expect(screen.getByText('День выигран')).toBeDefined();
     expect(screen.getByText(/задачи/)).toBeDefined();
     expect(screen.getByText(/сделал, отметить забыл/)).toBeDefined();
+  });
+
+  it('offers both touches while the day is not closed', () => {
+    // Закрытие идёт в два касания, и оба видны с самого начала: кнопка,
+    // которую надо искать, — кнопка, которую не нажмут.
+    show({ closed: false, stage: 'open', reviewed_at: null, verdict: null });
+
+    expect(screen.getByText(REVIEW_DAY)).toBeDefined();
+    expect(screen.getByText(CLOSE_DAY)).toBeDefined();
+  });
+
+  it('reads a half-closed day as "рано", not as a loss', () => {
+    show({
+      closed: false,
+      stage: 'reviewed',
+      reviewed_at: '2026-08-28T15:40:00+02:00',
+      verdict: null,
+      verdict_reason: 'not_closed',
+    });
+
+    expect(screen.getByText(VERDICT_LATER)).toBeDefined();
+    expect(screen.queryByText('День проигран')).toBeNull();
+    expect(screen.queryByText('День не закрыт')).toBeNull();
+    // Ревью уже было — кнопка предлагает поправить его, а не завести заново.
+    expect(screen.getByText(REVIEW_DONE)).toBeDefined();
+  });
+
+  it('sends the 15:40 touch through its own handler', async () => {
+    const touches: string[] = [];
+    render(
+      <DayVerdict
+        summary={{ ...SUMMARY, closed: false, stage: 'open', reviewed_at: null }}
+        onClose={() => {
+          touches.push('final');
+          return Promise.resolve();
+        }}
+        onReview={() => {
+          touches.push('review');
+          return Promise.resolve();
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText(REVIEW_DAY));
+
+    await waitFor(() => expect(touches).toEqual(['review']));
+  });
+
+  it('says out loud that a day was closed in one touch', () => {
+    show({ closed: true, stage: 'closed', reviewed_at: null, review_skipped: true });
+
+    expect(screen.getByText(REVIEW_SKIPPED)).toBeDefined();
+  });
+
+  it('says nothing of the kind about a day that had its review', () => {
+    show({ review_skipped: false });
+
+    expect(screen.queryByText(REVIEW_SKIPPED)).toBeNull();
   });
 });

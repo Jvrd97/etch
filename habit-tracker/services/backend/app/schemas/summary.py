@@ -1,12 +1,25 @@
-# [review:need-review] PHASE-03/90
-# summary: wire types of the day's итог — what closing a day sends (an override refused without its note) and what the day answers with, including the live block an unclosed day gets
+# [review:need-review] PHASE-03/90, PHASE-03/143
+# summary: wire types of the day's итог — what the 15:40 touch sends, what the evening touch sends (an override refused without its note), and what the day answers with, including the stage of closing and the `review_skipped` a day closed in one touch carries
 """
 Wire types of the итог of a day.
 
-**Закрытие дня — один документ, а не поле за полем.** The verdict is a property
-of the whole day: the minutes of work, the prose and the override are read
-together or the answer is wrong, and a PATCH-shaped API would let a day be half
-closed with nothing saying so.
+**Каждое касание — один документ, а не поле за полем.** The verdict is a
+property of the whole day: the minutes of work, the prose and the override are
+read together or the answer is wrong, and a PATCH-shaped API would let a day be
+half closed with nothing saying so. Half-closed is a *stage* — a different
+statement — and оно названо на строке, а не выведено из того, какие поля
+случайно заполнены.
+
+**`null` в теле — «не трогать», а не «стереть».** Касаний два, и второе не
+обязано повторять то, что записало первое: вечернее закрытие, не назвавшее
+рабочие минуты, оставляет цифру, пришедшую в 15:40. Стереть записанное значение
+через API нельзя, и это осознанно: `work_minutes` всё равно пересчитывается по
+интервалам дня (`#91`), а прозу правят, а не обнуляют.
+
+**Вердикта в теле приёма нет ни у одного касания.** Он вычисляется чистой
+функцией `evaluate_day`; клиент не может ни прислать его, ни попросить.
+`extra="forbid"` превращает попытку в 422, а не в молчаливо проигнорированное
+поле.
 
 **Переопределение без записки не проходит валидатор — и не проходит базу.** The
 validator here is the message a person reads; the CHECK on `day_summary` is the
@@ -20,15 +33,28 @@ vocabulary in the database, one translation on the screen, no прозы в ко
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.day.evaluate import VERDICTS
+from app.models.summary import STAGE_OPEN, SUMMARY_STAGES
 
 
-class DayCloseIn(BaseModel):
-    """What closing a day says about it."""
+class DayReviewIn(BaseModel):
+    """
+    Касание около 15:40: факт по рабочим задачам и рабочие минуты.
+
+    Отметки пунктов сюда не едут — они уже записаны через `PUT
+    /day/{date}/marks/{item_id}`, и второй путь для того же факта означал бы два
+    ответа на вопрос «сделана ли задача W2». Здесь остаётся то, чему в дне
+    больше негде лежать: сколько наработано и три вопроса, которые задаёт
+    рабочая часть закрытия.
+
+    Вердикта это касание не выносит. `stage` становится `reviewed`, `verdict`
+    остаётся NULL, и на экране это «вердикт будет вечером», а не «день
+    проигран».
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -36,32 +62,70 @@ class DayCloseIn(BaseModel):
         None,
         ge=0,
         description=(
-            "Минуты работы за день. null — не измерено, а не ноль: проверка "
-            "переработки пропускается, а факт уходит в `missing_data`"
+            "Минуты работы к моменту ревью. null — не трогать записанное; "
+            "измерение по `work_interval` всё равно сильнее этой цифры"
         ),
     )
-    body_md: str = Field(
-        "",
-        description=(
-            "Проза итога — «что случилось вместо плана», «что мешало». Ищется по тексту"
-        ),
+    body_md: str | None = Field(
+        None,
+        description="Черновик разбора. null — не трогать уже написанное",
     )
 
     wrote_from_scratch: int | None = Field(
-        None, ge=0, description="Минуты, написанные с нуля без ИИ; null — не спрашивали"
+        None, ge=0, description="Минуты, написанные с нуля без ИИ; null — не трогать"
     )
     education_debt: int | None = Field(
         None, ge=0, description="Сколько вопросов Education висит неразобранными"
     )
     reviewed_today: int | None = Field(
-        None, ge=0, description="Сделано ли ревью дня; null — не спрашивали"
+        None, ge=0, description="Сделано ли ревью дня; null — не трогать"
     )
 
-    verdict_override: bool = Field(
-        False,
+
+class DayCloseIn(BaseModel):
+    """
+    Вечернее касание: якоря, вердикт, стрик — то, чем день закрывается.
+
+    Оно же принимается устаревшей ручкой `POST /day/{date}/close`, потому что
+    это ровно тот документ, который она принимала до `#143`: одна схема, а не
+    её копия под новым именем.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    work_minutes: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Минуты работы за день. null — не трогать записанное; когда цифры "
+            "нет нигде, день читается как «не измерено», а не как ноль: "
+            "проверка переработки пропускается, а факт уходит в `missing_data`"
+        ),
+    )
+    body_md: str | None = Field(
+        None,
+        description=(
+            "Проза итога — «что случилось вместо плана», «что мешало». Ищется "
+            "по тексту. null — не трогать написанное в 15:40"
+        ),
+    )
+
+    wrote_from_scratch: int | None = Field(
+        None, ge=0, description="Минуты, написанные с нуля без ИИ; null — не трогать"
+    )
+    education_debt: int | None = Field(
+        None, ge=0, description="Сколько вопросов Education висит неразобранными"
+    )
+    reviewed_today: int | None = Field(
+        None, ge=0, description="Сделано ли ревью дня; null — не трогать"
+    )
+
+    verdict_override: bool | None = Field(
+        None,
         description=(
             "Человек говорит «день был выигран, просто я не отметил». Требует "
-            "записки; машинная причина остаётся видимой"
+            "записки; машинная причина остаётся видимой. null — не трогать: "
+            "перезакрытие дня не отменяет сделанного переопределения"
         ),
     )
     verdict_override_note: str | None = Field(
@@ -87,11 +151,36 @@ class DaySummaryResponse(BaseModel):
     both, so «не закрыл» and «проиграл» differ by a field rather than by the
     shape of the response, and the screen can show progress before anything is
     pressed.
+
+    `stage` splits «не закрыл» in two. `open` — никто не начинал; `reviewed` —
+    касание 15:40 прошло, и `verdict: null` тут значит «рано», а не «проиграл».
+    Экран читает подпись по стадии, а не по одному лишь пустому вердикту.
     """
 
     day_date: date
     closed: bool = Field(
-        ..., description="Есть ли строка итога. false — идёт живой пересчёт"
+        ...,
+        description=(
+            "Дошло ли закрытие до конца (`stage='closed'`). false — идёт живой "
+            "пересчёт, и вердикта пока нет"
+        ),
+    )
+    stage: str = Field(
+        STAGE_OPEN,
+        description=(
+            f"Стадия закрытия: {' | '.join(SUMMARY_STAGES)}. `open` — никто не "
+            "начинал, `reviewed` — было касание 15:40, вердикт будет вечером"
+        ),
+    )
+    reviewed_at: datetime | None = Field(
+        None, description="Когда прошло касание 15:40. null — его не было"
+    )
+    review_skipped: bool = Field(
+        False,
+        description=(
+            "День закрыт одним касанием: ревью в 15:40 не случилось. Это "
+            "обычный день, а не ошибка, — но отличимый"
+        ),
     )
     rule_set_id: int = Field(
         ..., description="Правило, по которому день посчитан — канон меняется"

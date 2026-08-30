@@ -38,6 +38,9 @@ const DAY: DayDetail = {
   summary: {
     day_date: '2026-08-30',
     closed: false,
+    stage: 'open' as const,
+    reviewed_at: null,
+    review_skipped: false,
     rule_set_id: 2,
     verdict: null,
     verdict_reason: 'not_closed',

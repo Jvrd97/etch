@@ -1131,3 +1131,30 @@ Feedback loops (frontend): `bun test` **822/822 green** (было 780), `bunx ts
 `bun run lint` 0 problems. Бэкенд не тронут, прогнан как контроль: pytest 719/719 в обход
 docker через localhost:5432, `ruff`, `ruff format --check`, `mypy --strict`, одна голова
 `a8d0c2e4b6f1`. `make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-31 — PHASE-03/143, две кнопки закрытия и стадия на экране
+
+Тронуто 8 файлов фронта.
+
+- `lib/api.ts` — **mod**: `ClosingStage`, поля `stage`/`reviewed_at`/`review_skipped` в
+  `DaySummary`, тип `DayReviewDraft`; `dayAPI.review` и `dayAPI.closeFinal` с необязательным
+  `Idempotency-Key`, старый `dayAPI.close` оставлен синонимом `closeFinal`.
+- `lib/day-format.ts` — **mod**: `closingHeadline(stage, verdict)` и строки `VERDICT_LATER`,
+  `REVIEW_SKIPPED`. Пустой вердикт значит разное на разных стадиях, и заголовок читается по
+  стадии, а не по одному лишь `verdict === null`.
+- `lib/day-format.test.ts` — **mod**: тест на все четыре сочетания стадии и вердикта.
+- `components/day/DayVerdict.tsx` — **mod**: две кнопки вместо одной («Записать ревью 15:40» /
+  «Закрыть день»), заголовок по стадии, строка «ревью в 15:40 не было» на дне, закрытом одним
+  касанием. Переопределение вердикта работает как раньше.
+- `components/day/DayVerdict.test.tsx` — **mod**, +5 тестов: обе кнопки видны сразу,
+  полузакрытый день читается как «вердикт будет вечером» и не как проигрыш, ревью уходит своим
+  обработчиком, `review_skipped` сказан вслух и не сказан там, где ревью было.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: обе оболочки
+  зовут `review` и `closeFinal` и перечитывают день после каждого касания.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts` — **mod**: заготовки дня получили три
+  новых поля итога.
+
+Feedback loops (frontend): `bun test` **828/828 green** (было 822), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. Бэкенд прогнан как контроль: pytest 737/737 обходом docker,
+`ruff`, `ruff format --check`, `mypy --strict`, одна голова `b9e1d3f5a7c2`. `make check`
+целиком не прогонялся — docker-демон не отвечает.

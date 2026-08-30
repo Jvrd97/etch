@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; daysAPI reads a range of days in the shape the old /api/days had, weeksAPI reads and writes one week, quickMarksAPI is the whole contract of a quick mark, and chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/143
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; daysAPI reads a range of days in the shape the old /api/days had, weeksAPI reads and writes one week, quickMarksAPI is the whole contract of a quick mark, and chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -43,6 +43,17 @@ async function fetcher<T>(
   }
 
   return response.json();
+}
+
+/**
+ * The `Idempotency-Key` header, or nothing at all.
+ *
+ * An absent key is a valid request rather than an error: a `curl` from a script
+ * has no reason to invent one, and the touch has to work without it — just
+ * without protection from a double press.
+ */
+function idempotency(key?: string): Record<string, string> {
+  return key === undefined ? {} : { 'Idempotency-Key': key };
 }
 
 // Categories API
@@ -401,17 +412,46 @@ export const dayAPI = {
   },
 
   /**
-   * Close the day: the server judges it and writes the итог.
+   * Касание около 15:40: факт по работе, без вердикта.
    *
-   * The whole day goes in one request — the minutes of work, the prose and the
-   * override are read together or the verdict is wrong, and a field-at-a-time
-   * API would leave a day half closed with nothing saying so.
+   * Стадия дня становится `reviewed`, `verdict` остаётся null — «рано», а не
+   * «проиграл». `null` в любом поле — «не трогать записанное».
    */
-  close: async (date: string, draft: DayCloseDraft) => {
-    return fetcher<DaySummary>(`/day/${date}/close`, {
+  review: async (date: string, draft: DayReviewDraft, key?: string) => {
+    return fetcher<DaySummary>(`/day/${date}/close/review`, {
       method: 'POST',
       body: JSON.stringify(draft),
+      headers: idempotency(key),
     });
+  },
+
+  /**
+   * Вечернее касание: закрыть день, вынести вердикт, пересчитать стрик.
+   *
+   * Касание идёт одним документом — минуты работы, проза и переопределение
+   * читаются вместе или вердикт неверен, а API «по полю за раз» оставил бы
+   * день наполовину закрытым, и ничто бы об этом не говорило. То, что закрытие
+   * бывает в два приёма, сказано стадией, а не набором заполненных полей.
+   *
+   * Ключ повтора необязателен. С ним второе нажатие той же кнопки не
+   * перезакрывает день: сервер отвечает той же строкой и ничего не пишет.
+   */
+  closeFinal: async (date: string, draft: DayCloseDraft, key?: string) => {
+    return fetcher<DaySummary>(`/day/${date}/close/final`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+      headers: idempotency(key),
+    });
+  },
+
+  /**
+   * Устаревший синоним `closeFinal`.
+   *
+   * Оставлен ради вызовов, написанных до того, как касаний стало два; новый
+   * код зовёт `closeFinal`, потому что имя без стадии больше не однозначно.
+   */
+  close: async (date: string, draft: DayCloseDraft) => {
+    return dayAPI.closeFinal(date, draft);
   },
 };
 
@@ -939,15 +979,31 @@ export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
 export type MissingData = 'work_minutes';
 
 /**
+ * Как далеко зашло закрытие дня.
+ *
+ * `open` — никто не начинал; `reviewed` — прошло касание 15:40 и вердикта ещё
+ * нет; `closed` — день закрыт. Это дискриминант, а не пара булевых флагов:
+ * «не закрыл», «рано» и «проиграл» — три разных ответа, и два флага рано или
+ * поздно разошлись бы между собой.
+ */
+export type ClosingStage = 'open' | 'reviewed' | 'closed';
+
+/**
  * The итог of a day: the verdict, what it stands on, and the prose beside it.
  *
  * `closed` is false while nobody has closed the day; the counters are then a
  * live recount, `verdict` is null and `verdict_reason` is `not_closed`. That is
- * what keeps «не закрыл» a different answer from «проиграл».
+ * what keeps «не закрыл» a different answer from «проиграл», and `stage` splits
+ * that further: `verdict: null` на стадии `reviewed` значит «рано».
  */
 export interface DaySummary {
   day_date: string;
   closed: boolean;
+  stage: ClosingStage;
+  /** Когда прошло касание 15:40; null — его не было. */
+  reviewed_at: string | null;
+  /** День закрыт одним касанием: ревью в 15:40 не случилось. */
+  review_skipped: boolean;
   /** The canon this day was judged by — it changed on 2026-08-17. */
   rule_set_id: number;
   verdict: Verdict | null;
@@ -971,10 +1027,25 @@ export interface DaySummary {
   source: 'close' | 'import';
 }
 
-/** What closing a day says about it. */
+/**
+ * Что говорит о дне касание 15:40.
+ *
+ * Отметок пунктов здесь нет: они уже записаны через `dayAPI.setMark`, и второй
+ * путь для того же факта означал бы два ответа на один вопрос. `null` в любом
+ * поле — «не трогать записанное», а не «стереть».
+ */
+export interface DayReviewDraft {
+  work_minutes?: number | null;
+  body_md?: string | null;
+  wrote_from_scratch?: number | null;
+  education_debt?: number | null;
+  reviewed_today?: number | null;
+}
+
+/** What the evening touch says about the day. `null` is «не трогать». */
 export interface DayCloseDraft {
   work_minutes?: number | null;
-  body_md?: string;
+  body_md?: string | null;
   wrote_from_scratch?: number | null;
   education_debt?: number | null;
   reviewed_today?: number | null;
