@@ -1,13 +1,13 @@
-// [review:need-review] PHASE-03/87
-// summary: tests for reading a plan — the duration the server measured is shown as written, both halves of a collision are marked, a section falls back to its kind only when it has no title of its own, and only work tasks count against the bar
+// [review:need-review] PHASE-03/87, PHASE-03/88
+// summary: tests for reading a plan — the duration the server measured is shown as written, both halves of a collision are marked, a section falls back to its kind only when it has no title of its own, and every item is reachable by id at any depth
 
 import { describe, expect, it } from 'bun:test';
 import type { Plan, PlanItem, PlanSection, ScheduleOverlap } from '@/lib/api';
 import {
-  countTasks,
   extraLines,
   formatDuration,
   itemKindLabel,
+  itemKindsById,
   overlappingItemIds,
   rigidityLabel,
   sectionTitle,
@@ -141,17 +141,30 @@ describe('labels', () => {
   });
 });
 
-describe('countTasks', () => {
-  it('counts only work tasks, at any depth', () => {
+describe('itemKindsById', () => {
+  it('reaches every item, at any depth', () => {
+    // The header counts tasks against their marks, and marks are keyed by item
+    // id — so the kind of a nested line has to be reachable by id too. A
+    // minimum inside a training block is exactly such a line.
     const nested = item({
       id: 'parent',
       children: [item({ id: 'child', kind: 'task' })],
     });
     const counted = plan([
-      section({ items: [item({ kind: 'task' }), item({ kind: 'anchor' }), nested] }),
+      section({
+        items: [item({ id: 'a', kind: 'task' }), item({ id: 'b', kind: 'anchor' }), nested],
+      }),
     ]);
 
-    expect(countTasks(counted)).toBe(2);
+    const kinds = itemKindsById(counted);
+
+    expect(kinds.size).toBe(4);
+    expect([...kinds.values()].filter((kind) => kind === 'task')).toHaveLength(2);
+    expect(kinds.get('child')).toBe('task');
+  });
+
+  it('answers with nothing for a day that has no plan', () => {
+    expect(itemKindsById(null).size).toBe(0);
   });
 });
 

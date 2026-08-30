@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/87
-// summary: pure reading of a plan — clock labels for a window, the duration the server measured, which schedule lines collide, and the plain-Russian names of section kinds and item rigidity
+// [review:need-review] PHASE-03/87, PHASE-03/88
+// summary: pure reading of a plan — clock labels for a window, the duration the server measured, which schedule lines collide, the kinds of every item by id, and the plain-Russian names of section kinds and item rigidity
 
 import type {
   Plan,
@@ -126,17 +126,23 @@ export function itemKindLabel(kind: PlanItemKind): string | null {
   return KIND_LABELS[kind] ?? null;
 }
 
-/** How many lines of this plan are work tasks — the number the bar counts. */
-export function countTasks(plan: Plan): number {
-  let total = 0;
+/**
+ * Every item of a plan by id, with the kind it is.
+ *
+ * The map, not a count: the header counts tasks against marks, and the marks
+ * are keyed by item id. Building it once per plan keeps the counting in the day
+ * screen from walking the tree again on every click.
+ */
+export function itemKindsById(plan: Plan | null): Map<string, PlanItemKind> {
+  const kinds = new Map<string, PlanItemKind>();
   const walk = (items: PlanItem[]): void => {
     for (const item of items) {
-      if (item.kind === 'task') total += 1;
+      kinds.set(item.id, item.kind);
       walk(item.children);
     }
   };
-  for (const section of plan.sections) walk(section.items);
-  return total;
+  if (plan !== null) for (const section of plan.sections) walk(section.items);
+  return kinds;
 }
 
 /**

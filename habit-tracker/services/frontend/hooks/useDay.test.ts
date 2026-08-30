@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86
-// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, and reload re-fetches
+// [review:need-review] PHASE-03/86, PHASE-03/88
+// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -32,10 +32,15 @@ const DAY: DayDetail = {
   },
   plan: null,
   has_plan: false,
+  marks: [],
+  task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
+  notebook: null,
 };
 
 let getToday: ReturnType<typeof mock>;
 let getDay: ReturnType<typeof mock>;
+let openToday: ReturnType<typeof mock>;
+let openDay: ReturnType<typeof mock>;
 
 // Declares the whole surface on purpose: bun fixes a module's export *names*
 // the first time anything links against it and shares that registry across the
@@ -75,6 +80,8 @@ mock.module('@/lib/api', () => ({
   dayAPI: {
     getToday: () => getToday(),
     get: (date: string) => getDay(date),
+    openToday: () => openToday(),
+    open: (date: string) => openDay(date),
   },
 }));
 
@@ -83,6 +90,8 @@ const { useDay } = await import('./useDay');
 beforeEach(() => {
   getToday = mock(() => Promise.resolve(DAY));
   getDay = mock(() => Promise.resolve(DAY));
+  openToday = mock(() => Promise.resolve(DAY));
+  openDay = mock(() => Promise.resolve(DAY));
 });
 
 afterEach(() => {
@@ -131,6 +140,35 @@ describe('useDay', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('1999-01-01');
     expect(result.current.detail).toBeNull();
+  });
+
+  it('reads a day without claiming a person opened it', async () => {
+    // The default read is the one an agent, an import or a cron job makes.
+    // Only a screen says "opened", and only that fills `day.opened_at`.
+    const { result } = renderHook(() => useDay('2026-08-30'));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getDay).toHaveBeenCalledWith('2026-08-30');
+    expect(openDay).not.toHaveBeenCalled();
+  });
+
+  it('says a person is looking when asked to', async () => {
+    const { result } = renderHook(() => useDay('2026-08-30', true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(openDay).toHaveBeenCalledWith('2026-08-30');
+    expect(getDay).not.toHaveBeenCalled();
+  });
+
+  it('opens today the same way when no date is given', async () => {
+    const { result } = renderHook(() => useDay(null, true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(openToday).toHaveBeenCalled();
+    expect(getToday).not.toHaveBeenCalled();
   });
 
   it('reloads on demand', async () => {

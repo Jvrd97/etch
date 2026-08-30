@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87
-# summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction, and overlapping windows found by a self-join on `&&` rather than on render
+# [review:need-review] PHASE-03/87, PHASE-03/88
+# summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), and overlapping windows found by a self-join on `&&` rather than on render
 """
 Database access for the plan of a day.
 
@@ -22,6 +22,16 @@ two.
 says so — a self-join on `&&` over the GiST index on the generated `window`
 column. The screen is then one consumer of that fact rather than its only
 owner, and `#90`'s verdict can ask the same question without reimplementing it.
+
+**A re-sent uuid means "the same line".** An incoming item may carry the `id` it
+already has; when that id belongs to the plan currently stored for this date, the
+row keeps it and its mark is carried across the replace. That is what makes
+"поправил формулировку задачи" different from "выкинул задачу и завёл новую" —
+under `#88` the first must not un-tick anything, and position cannot express the
+difference (it was position that made the file-based marks slide onto the wrong
+lines in the first place). An id from another day, or one nobody has seen, is
+not honoured: a stale id would otherwise collide with a live row from a day the
+caller was not editing.
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.daytime import DayBoundary, current_boundary
+from app.crud import mark as mark_crud
 from app.day.plan_validate import (
     ItemFacts,
     PlanRejected,
@@ -118,6 +129,37 @@ class _PreparedItem:
         )
 
 
+def _identity(
+    item: PlanItemIn, keep: frozenset[uuid.UUID], taken: set[uuid.UUID]
+) -> uuid.UUID:
+    """
+    The uuid this line will be stored under.
+
+    A client that sends back an id already in this day's plan is saying "this is
+    the same line" and gets to keep it, marks and all. Anything else — no id, an
+    id from another day, an invented one — gets a fresh uuid, because honouring
+    it could collide with a live row elsewhere.
+
+    The same id twice in one document is refused rather than silently split: two
+    lines claiming to be the same line have one mark between them, and guessing
+    which of them owns it is exactly the class of mistake `#88` exists to end.
+    """
+    if item.id is None or item.id not in keep:
+        return uuid.uuid4()
+    if item.id in taken:
+        raise PlanRejected(
+            error="duplicate_item_id",
+            message=(
+                f"Пункт с id {item.id} встречается в плане дважды. Один id — один "
+                "пункт: у второго пункта id должен быть свой или отсутствовать."
+            ),
+            code=item.code,
+            text=to_plain(item.text_md),
+        )
+    taken.add(item.id)
+    return item.id
+
+
 def _prepare_items(
     items: list[PlanItemIn],
     section_index: int,
@@ -125,6 +167,8 @@ def _prepare_items(
     on: date,
     boundary: DayBoundary,
     flat: list[_PreparedItem],
+    keep: frozenset[uuid.UUID],
+    taken: set[uuid.UUID],
 ) -> list[_PreparedItem]:
     """
     Walk one level of the document, resolving every window as it goes.
@@ -136,7 +180,7 @@ def _prepare_items(
     prepared: list[_PreparedItem] = []
     for index, item in enumerate(items):
         row = _PreparedItem(
-            id=uuid.uuid4(),
+            id=_identity(item, keep, taken),
             section_index=section_index,
             parent_id=parent_id,
             ord=index,
@@ -151,13 +195,16 @@ def _prepare_items(
         prepared.append(row)
         flat.append(row)
         row.children = _prepare_items(
-            item.children, section_index, row.id, on, boundary, flat
+            item.children, section_index, row.id, on, boundary, flat, keep, taken
         )
     return prepared
 
 
 def prepare_plan(
-    document: PlanDocument, on: date, boundary: DayBoundary
+    document: PlanDocument,
+    on: date,
+    boundary: DayBoundary,
+    keep: frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[list[_PreparedItem]], list[_PreparedItem]]:
     """
     The document as rows-to-be: one tree per section, plus every row flat.
@@ -165,14 +212,39 @@ def prepare_plan(
     The flat list is what gets judged; the trees are what gets written. Both
     reference the same objects, so a line cannot be validated in one shape and
     stored in another.
+
+    `keep` is the set of ids the day already has: an incoming id from that set
+    is honoured, everything else gets a fresh one. Empty by default, so a caller
+    that only wants to know what a document *would* become — a preview, a test
+    — mints new ids and touches nothing.
     """
     trees: list[list[_PreparedItem]] = []
     flat: list[_PreparedItem] = []
+    taken: set[uuid.UUID] = set()
     for section_index, section in enumerate(document.sections):
         trees.append(
-            _prepare_items(section.items, section_index, None, on, boundary, flat)
+            _prepare_items(
+                section.items, section_index, None, on, boundary, flat, keep, taken
+            )
         )
     return trees, flat
+
+
+async def _stored_item_ids(db: AsyncSession, on: date) -> frozenset[uuid.UUID]:
+    """
+    Ids of every item currently stored for `on`.
+
+    Read as bare ids rather than as entities: this runs before a delete, and an
+    ORM object loaded here would still be in the identity map when the row is
+    inserted again under the same primary key.
+    """
+    result = await db.execute(
+        select(PlanItem.id)
+        .join(PlanSection, PlanSection.id == PlanItem.section_id)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on)
+    )
+    return frozenset(result.scalars().all())
 
 
 async def get_plan(db: AsyncSession, on: date) -> DayPlan | None:
@@ -210,11 +282,21 @@ async def replace_plan(
     Raises `PlanRejected` before touching a row: nothing is deleted for a plan
     that is not going to be accepted, so a rejected `POST` leaves yesterday's
     plan exactly as it was rather than emptying the day on the way to a 422.
+
+    Items whose ids the document sent back keep those ids, and their marks are
+    lifted over the delete and put back. Everything else is a new line with a
+    new id and no mark — including a line whose text is identical to one that
+    was there, because a plan that re-mints its ids is a plan that is being
+    rewritten rather than edited.
     """
     resolved_boundary = boundary if boundary is not None else current_boundary()
-    trees, flat = prepare_plan(document, on, resolved_boundary)
+    keep = await _stored_item_ids(db, on)
+    trees, flat = prepare_plan(document, on, resolved_boundary, keep)
     validate_plan([row.facts() for row in flat], rule)
 
+    carried = await mark_crud.snapshot_marks(
+        db, {row.id for row in flat if row.id in keep}
+    )
     await delete_plan(db, on)
 
     plan = DayPlan(
@@ -247,6 +329,7 @@ async def replace_plan(
                 db.add(_to_model(row, section.id))
 
     await db.flush()
+    await mark_crud.restore_marks(db, carried)
     stored = await get_plan(db, on)
     if stored is None:  # pragma: no cover - the insert above just ran
         raise RuntimeError(

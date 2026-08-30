@@ -694,3 +694,34 @@ Feedback loops: pytest 386/386 green (было 351), `ruff check` clean, `ruff f
 Тест `DayScreen.test.tsx` «keeps the plan block away once a plan exists» переписан: он задавал `has_plan: true` при `plan: null` — состояние, которого сервер выдать не может, — и держался на том, что экран ветвился по булеву флагу. Экран теперь ветвится по самому плану, а тест рендерит настоящий.
 
 Feedback loops: pytest 431/431 green (было 386), `ruff check` clean, `ruff format --check` clean (94 файла), `mypy --strict app` clean (69 файлов), `alembic heads` — одна голова `d9f1b3c5e7a0`. Фронтенд: `bun test` 633/633 green (было 608), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон на машине не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`.
+
+## 2026-08-30 — PHASE-03/88 отметка трёх состояний с заметкой, блокнот дня и четвёртое «пусто»
+
+Дата 2026-08-30, тикет `88-plan-marks-three-states-and-notebook`. Ради этого весь переезд: отметка перестала висеть на позиции в DOM и перешла на `plan_item.id`. Ключом были `i7`, `t3`, `w1`, поэтому правка одной строки `.md` молча сдвигала соответствие «отметка ↔ пункт», а `.html` с отметками лежал в `.gitignore` — истории отметок не существовало вовсе.
+
+**Четыре «пусто» стали различимы.** `plan_mark` — одна строка на пункт; её отсутствие и есть `pending`. Вместе с `day.opened_at` это отделяет «не открывал» от «открыл и не дошёл», а `state='failed'` от `state='skipped'`. 29 августа — день с нулём отметок — после импорта прочитается как «не открывал», а не как «ничего не сделал». `opened_at` ставит только `GET ...?opened=true` (флаг ставит страница) и отметка с `source='web'`; агент, импорт и cron читают день молча, иначе «не открывал» перестало бы быть устанавливаемым фактом.
+
+**Отметка переживает правку плана.** `POST /plan` заменяет план целиком, поэтому пункт теперь может прислать назад свой `id`: тогда строка сохраняет uuid, а отметка переносится через замену (`snapshot_marks` → `delete_plan` → вставка → `restore_marks`, одна транзакция, `updated_at` отметки не двигается). `id` чужой или отсутствует — новый пункт без отметок; один `id` дважды в документе — 422 `duplicate_item_id` с названным пунктом. Совпадения по тексту нет намеренно: позиционное и текстовое сопоставление и было причиной, по которой отметки терялись.
+
+**Заплатки `plan_server.py` не воспроизведены.** 409 «пустое поверх непустого», подмешивание `localStorage` и перечитывание по `visibilitychange` существовали потому, что запись шла в файл без транзакции. Их место занял `ON CONFLICT (item_id) DO UPDATE`: запрос называет состояние, а не шаг цикла, две вкладки не воскрешают старое значение, побеждает последняя запись, и `updated_at` показывает, какая.
+
+**Цикл — данные, а не if-цепочка**, и записан по обе стороны: `MARK_CYCLE` в `app/day/marks.py` и в `lib/marks.ts`, `пусто → done → failed → пусто`. `skipped` на кольце нет: «стало неактуально» — суждение о плане, а не о работе, и попадать в него четвёртым щелчком человек не должен; в счётчике задач он не считается ни закрытым, ни проваленным.
+
+**`plan_mark_event.item_id` — без внешнего ключа.** Удалённый пункт уносит свою `plan_mark`, и это верно: отметка несуществующей строки не факт ни о чём. Но лог, который забывает, логом не является, поэтому события переживают пункт и читаются по `day_date`.
+
+- `app/models/mark.py` — **new**: `PlanMark` (PK = `item_id`, FK на `plan_item` с CASCADE, CHECK на `state` и `source`), `PlanMarkEvent` (append-only, `from_state`/`to_state` с NULL вместо `pending`, CHECK `from_state IS DISTINCT FROM to_state`, индексы `(item_id, at)` и `(day_date, at)`).
+- `app/day/marks.py` — **new**, базы не трогает: `MARK_CYCLE`, `next_state`, `TaskCounts`, `count_tasks`.
+- `app/crud/mark.py` — **new**: `day_item` (пункт, но только этого дня), `list_marks`, `set_mark` (upsert + событие в той же транзакции), `snapshot_marks`/`restore_marks` (перенос отметок через замену плана), `task_counts`, `to_response`.
+- `app/schemas/mark.py` — **new**: `MarkIn` (словарь состояний проверяется здесь, чтобы опечатка была 422, а не ошибкой ограничения), `MarkResponse`, `TaskCountsResponse`, `NotebookIn`, `NotebookResponse`.
+- `alembic/versions/2026_08_30_2000-e0b2d4f6a8c1_plan_marks.py` — **new**: две таблицы; `upgrade`/`downgrade` проверены на временной базе `habit_mig_check`.
+- `app/api/day.py` — **mod**: `PUT /day/{date}/marks/{item_id}`, `PUT /day/{date}/notebook`, `?opened=` у обоих `GET`; ответ дня несёт `marks`, `task_counts` и `notebook`.
+- `app/crud/day.py` — **mod**: `touch_day`, `get_notebook`, `set_notebook` (через существующий `write_day_journal`, режим `replace`).
+- `app/crud/plan.py` — **mod**: `_stored_item_ids`, `_identity`, `prepare_plan(..., keep)`, перенос отметок в `replace_plan`.
+- `app/schemas/plan.py` — **mod**: `PlanItemIn.id`; `app/schemas/day.py` — **mod**: `marks`, `task_counts`, `notebook`; `app/models/__init__.py` — **mod**: реэкспорт.
+- `tests/test_plan_marks.py` — **new**: 24 теста — цикл, отметка переживает правку текста, четыре «пусто», счётчик со `skipped`, лог событий (включая снятие и переживание удалённого пункта), две вкладки, блокнот одной записью.
+- Фронтенд — **new**: `lib/marks.ts` (+тест), `hooks/useDayMarks.ts` (+тест), `components/day/PlanItemMark.tsx` (+тест), `components/day/DayNotebook.tsx` (+тест); **mod**: `lib/api.ts` (типы `Mark`/`MarkState`/`TaskCounts`, `dayAPI.open`/`openToday`/`setMark`/`saveNotebook`), `lib/plan.ts` (`itemKindsById`), `hooks/useDay.ts` (флаг `opened`) + его тест, `components/day/PlanSections.tsx` (необязательный проп `marking`), `components/DayScreen.tsx` + его тест, `components/mobile/MobileDayScreen.tsx`.
+- `habit-tracker/docs/day-plan.md` — **mod**: раздел «Отметки» — таблица четырёх «пусто», цикл, лог, правило переноса `id`, открытие дня, блокнот.
+
+Найдено по ходу: `useDayMarks` получает список отметок из ответа дня, и вызывающий обычно строит его выражением `detail?.marks ?? []` — новый массив на каждый рендер. Эффект синхронизации ключуется по строке-сигнатуре содержимого, а не по ссылке: иначе экран уходит в цикл, а хук, который работает только когда вызывающий не забыл `useMemo`, — не хук, а ловушка.
+
+Feedback loops: pytest 455/455 green (было 431), `ruff check` clean, `ruff format --check` clean (99 файлов), `mypy --strict app` clean (73 файла), `alembic heads` — одна голова `e0b2d4f6a8c1`. Фронтенд: `bun test` 664/664 green (было 633), `bunx tsc --noEmit` clean, `eslint` clean. Docker-демон на машине не поднят, поэтому `make check` целиком не отрабатывал: тесты шли против постгреса на 5432, база `habit_tracker_test`; миграция проверена отдельно на временной базе `habit_mig_check` — `upgrade`, `\d` обеих таблиц, `downgrade`.

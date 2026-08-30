@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86
-// summary: day-screen state for both shells — one fetch of the day and the rule it is judged by, with "today" left to the server so the browser calendar never decides which day is open
+// [review:need-review] PHASE-03/86, PHASE-03/88
+// summary: day-screen state for both shells — one fetch of the day, the rule it is judged by and its marks, with "today" left to the server so the browser calendar never decides which day is open, and an explicit flag saying a person is looking at it
 
 import { useCallback, useEffect, useState } from 'react';
 import { dayAPI, type DayDetail } from '@/lib/api';
@@ -22,8 +22,14 @@ export interface UseDayResult {
  * Null means "ask the server which day it is" rather than "read the browser's
  * calendar": the day runs from 04:00, so between midnight and four the two
  * disagree, and the screen would open a day nothing else is writing into.
+ *
+ * `opened` says that a person is looking at this day, and it is what fills
+ * `day.opened_at`. Off by default: an agent, an import and a cron job read days
+ * too, and if reading counted as opening then "не открывал" — one of the four
+ * kinds of empty the day screen has to tell apart — would stop being a fact
+ * anything could establish.
  */
-export function useDay(date: string | null): UseDayResult {
+export function useDay(date: string | null, opened = false): UseDayResult {
   const [detail, setDetail] = useState<DayDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,8 +47,8 @@ export function useDay(date: string | null): UseDayResult {
       setError(null);
       try {
         const result = date === null
-          ? await dayAPI.getToday()
-          : await dayAPI.get(date);
+          ? await (opened ? dayAPI.openToday() : dayAPI.getToday())
+          : await (opened ? dayAPI.open(date) : dayAPI.get(date));
         if (cancelled) return;
         setDetail(result);
       } catch (err) {
@@ -58,7 +64,7 @@ export function useDay(date: string | null): UseDayResult {
     return () => {
       cancelled = true;
     };
-  }, [date, refreshCounter]);
+  }, [date, opened, refreshCounter]);
 
   const reload = useCallback(() => {
     setRefreshCounter((n) => n + 1);

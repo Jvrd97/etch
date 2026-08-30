@@ -1,8 +1,10 @@
-// [review:need-review] PHASE-03/87
-// summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, and every label without a column of its own read back out of `extra`
+'use client';
+// [review:need-review] PHASE-03/87, PHASE-03/88
+// summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, and the mark of each line when the screen passes one in
 
 import { Clock, CornerDownRight, Link2 } from 'lucide-react';
-import type { PlanItem, PlanSection } from '@/lib/api';
+import PlanItemMark from '@/components/day/PlanItemMark';
+import type { Mark, MarkState, PlanItem, PlanSection } from '@/lib/api';
 import {
   EMPTY_PLAN_TEXT,
   extraLines,
@@ -18,10 +20,27 @@ const INDENT_PER_LEVEL = 4;
 /** Beyond this the indent stops growing; a plan nested deeper is a plan to fix. */
 const MAX_INDENT_LEVEL = 3;
 
+/**
+ * What a line needs in order to be markable.
+ *
+ * Passed as one object rather than four props so that "this plan is read-only"
+ * is a single `undefined` — a preview, a printed day and `#89`'s import all
+ * render the same component without inventing handlers that write nothing.
+ */
+export interface PlanMarking {
+  marks: Map<string, Mark>;
+  saving: Set<string>;
+  onCycle: (itemId: string) => void;
+  onSetState: (itemId: string, state: MarkState | null) => void;
+  onSetNote: (itemId: string, note: string) => void;
+}
+
 export interface PlanSectionsProps {
   sections: PlanSection[];
   /** Ids of items whose windows collide, so the line can say so where it is. */
   overlapping: Set<string>;
+  /** Left out where the plan is only being read; then no line shows a box. */
+  marking?: PlanMarking;
   /** Mobile trims the type scale; the structure is identical. */
   compact?: boolean;
 }
@@ -29,15 +48,20 @@ export interface PlanSectionsProps {
 /**
  * The plan, section by section.
  *
- * Read-only on purpose: `#87` moves the plan into rows, and the plan still
- * arrives from `/day-open` as one document. Editing a line here would be a
- * second way to write a plan, with none of the whole-document rules the server
- * applies — the bar on tasks and "only the edges may be hard" cannot be checked
- * one keystroke at a time.
+ * The *text* is read-only on purpose: the plan arrives from `/day-open` as one
+ * document, and editing a line here would be a second way to write a plan with
+ * none of the whole-document rules the server applies — the bar on tasks and
+ * "only the edges may be hard" cannot be checked one keystroke at a time.
+ *
+ * The *marks* are not text. They are what a person adds to a plan while living
+ * the day, they hang off the item's uuid rather than its position, and each one
+ * is a write of its own — so `marking` turns them on without turning the plan
+ * into an editor.
  */
 export default function PlanSections({
   sections,
   overlapping,
+  marking,
   compact = false,
 }: PlanSectionsProps) {
   if (sections.length === 0) {
@@ -65,6 +89,7 @@ export default function PlanSections({
                 item={item}
                 level={0}
                 overlapping={overlapping}
+                marking={marking}
                 compact={compact}
               />
             ))}
@@ -79,6 +104,7 @@ interface PlanLineProps {
   item: PlanItem;
   level: number;
   overlapping: Set<string>;
+  marking?: PlanMarking;
   compact: boolean;
 }
 
@@ -89,7 +115,7 @@ interface PlanLineProps {
  * drawn as its own line for exactly that reason: 29 August showed that a
  * minimum written inside a task does not get done.
  */
-function PlanLine({ item, level, overlapping, compact }: PlanLineProps) {
+function PlanLine({ item, level, overlapping, marking, compact }: PlanLineProps) {
   const indent = Math.min(level, MAX_INDENT_LEVEL) * INDENT_PER_LEVEL;
   const kind = itemKindLabel(item.kind);
   const rigidity = rigidityLabel(item.rigidity);
@@ -153,6 +179,21 @@ function PlanLine({ item, level, overlapping, compact }: PlanLineProps) {
             </p>
           )}
 
+          {marking && (
+            <div className="mt-2">
+              <PlanItemMark
+                itemId={item.id}
+                state={marking.marks.get(item.id)?.state ?? null}
+                note={marking.marks.get(item.id)?.note ?? ''}
+                saving={marking.saving.has(item.id)}
+                onCycle={marking.onCycle}
+                onSetState={marking.onSetState}
+                onSetNote={marking.onSetNote}
+                compact={compact}
+              />
+            </div>
+          )}
+
           {extras.length > 0 && (
             <dl className="mt-1 space-y-0.5 text-sm">
               {extras.map((line) => (
@@ -174,6 +215,7 @@ function PlanLine({ item, level, overlapping, compact }: PlanLineProps) {
               item={child}
               level={level + 1}
               overlapping={overlapping}
+              marking={marking}
               compact={compact}
             />
           ))}

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86
-# summary: day persistence — seed of the rule rows, the rule in force on a date (publishing the day boundary as it goes), and lazy creation of a day with kind/is_nocode materialised
+# [review:need-review] PHASE-03/86, PHASE-03/88
+# summary: day persistence — seed of the rule rows, the rule in force on a date (publishing the day boundary as it goes), lazy creation of a day with kind/is_nocode materialised, and the two writes that make "не открывал" a fact: touch_day and the day's notebook
 """
 Database access for the day.
 
@@ -19,13 +19,14 @@ that last Tuesday stays what it was.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import DayBoundary, use_boundary
+from app.crud import journal as journal_crud
 from app.day.rules import (
     SEED_RULES,
     active_rule,
@@ -34,6 +35,11 @@ from app.day.rules import (
     resolve_rule,
 )
 from app.models.day import Day, DayRuleSet
+from app.models.journal import JournalEntry
+
+# The heading a notebook entry is created with. Only used on creation — see
+# `set_notebook`.
+NOTEBOOK_TITLE = "Блокнот дня"
 
 
 async def list_rules(db: AsyncSession) -> list[DayRuleSet]:
@@ -156,3 +162,56 @@ async def ensure_day(db: AsyncSession, on: date) -> Day:
             "deleted by a concurrent writer."
         )
     return created
+
+
+async def touch_day(db: AsyncSession, day: Day, *, opened: bool) -> Day:
+    """
+    Record that something happened to `day`, and whether a human did it.
+
+    `last_touched_at` moves on every write. `opened_at` is set once and only
+    when `opened` — that is, when the caller knows a person was looking at the
+    day, not merely that some process read it. An import, a cron job and an
+    agent all read days, and if reading counted as opening, "не открывал"
+    would stop being a fact anything could establish.
+    """
+    now = datetime.now(timezone.utc)
+    day.last_touched_at = now
+    if opened and day.opened_at is None:
+        day.opened_at = now
+    await db.flush()
+    return day
+
+
+async def get_notebook(db: AsyncSession, on: date) -> JournalEntry | None:
+    """
+    The day's notebook, which is the day's journal entry.
+
+    No table of its own: `journal_entries` is already where the prose of a day
+    lives, and a second store would give "что я писал 30-го" two answers.
+    """
+    return await journal_crud.get_day_journal_entry(db, on)
+
+
+async def set_notebook(db: AsyncSession, on: date, content: str) -> JournalEntry:
+    """
+    Replace the day's notebook text, keeping it a single entry per date.
+
+    `replace` rather than `append`: the notebook is a text a person edits in
+    place — every save carries what was already written plus the new sentence —
+    and appending would double the whole note on every keystroke's worth of
+    save. The title is only supplied when the entry is being created, so that a
+    heading the person wrote by hand in the morning survives the evening save.
+    """
+    existing = await journal_crud.get_day_journal_entry(db, on)
+    entry = await journal_crud.write_day_journal(
+        db,
+        on,
+        mode="replace",
+        title=None if existing is not None else NOTEBOOK_TITLE,
+        content=content,
+    )
+    # `updated_at` is a server default and a server `onupdate`; without this the
+    # attribute is expired after the flush and reading it would be a lazy load
+    # in an async context.
+    await db.refresh(entry)
+    return entry

@@ -18,8 +18,12 @@ which is exactly the knowledge this system spent `#107` centralising.
 
 **A minimum is a child item, not a field.** `Минимум ::` used to live inside the
 text of a training block, and 29 August showed that a minimum without its own
-tick does not get done. It comes in as a nested item of `kind='minimum'` and
-gets a mark of its own in `#88`.
+tick does not get done. It comes in as a nested item of `kind='minimum'` and has
+a mark of its own since `#88`.
+
+**An item may name the id it already has.** That is how a re-sent plan says "the
+same line, different wording" instead of "delete that line and make a new one" —
+and it is the only way to say it, because the marks of `#88` hang off the id.
 """
 
 from __future__ import annotations
@@ -47,6 +51,16 @@ class PlanItemIn(BaseModel):
     """One line of an incoming plan, with its children."""
 
     model_config = ConfigDict(extra="forbid")
+
+    id: UUID | None = Field(
+        None,
+        description=(
+            "Id пункта, если это тот же самый пункт, что уже есть в плане дня. "
+            "Тогда пункт сохраняет свои отметки; без id заводится новый пункт. "
+            "Id из другого дня или незнакомый — игнорируется, id дважды в одном "
+            "документе — отказ"
+        ),
+    )
 
     kind: str = Field("bullet", description=f"Одно из: {', '.join(ITEM_KINDS)}")
     rigidity: str = Field(

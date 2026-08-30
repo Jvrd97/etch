@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87
-# summary: day DTOs — the day itself, the rule it is judged by (so the screen can explain the verdict before there is one), and the plan when there is one instead of a 404 when there is not
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88
+# summary: day DTOs — the day itself, the rule it is judged by (so the screen can explain the verdict before there is one), the plan when there is one instead of a 404 when there is not, and the marks, task counts and notebook that come with it
 """
 Wire types of the day.
 
@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
 
 
@@ -91,3 +92,19 @@ class DayDetailResponse(BaseModel):
         None, description="План дня с расписанием и наложениями; null — плана нет"
     )
     has_plan: bool = Field(False, description="Есть ли план на этот день")
+    marks: list[MarkResponse] = Field(
+        default_factory=list,
+        description=(
+            "Отметки пунктов. Пункта здесь нет — отметки нет, «не дошёл»; "
+            "не открывали ли день вообще, говорит `day.opened_at`"
+        ),
+    )
+    task_counts: TaskCountsResponse = Field(
+        default_factory=lambda: TaskCountsResponse(
+            planned=0, done=0, failed=0, skipped=0, pending=0
+        ),
+        description="Рабочие задачи дня по состояниям — счётчик в шапке",
+    )
+    notebook: str | None = Field(
+        None, description="Блокнот дня из journal_entries; null — не писали"
+    )

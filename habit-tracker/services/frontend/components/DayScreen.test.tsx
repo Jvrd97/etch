@@ -1,10 +1,12 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87
-// summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, and the rule it is judged by is on the screen
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88
+// summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook is there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { DayDetail, Plan } from '@/lib/api';
+import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
+import { DAY_NEVER_OPENED } from '@/lib/marks';
 
 const DAY: DayDetail = {
   day: {
@@ -33,6 +35,9 @@ const DAY: DayDetail = {
   },
   plan: null,
   has_plan: false,
+  marks: [],
+  task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
+  notebook: null,
 };
 
 // A plan as the server answers with one: sections in order, a schedule the
@@ -169,7 +174,33 @@ describe('DayScreen', () => {
     state = { ...state, detail: { ...DAY, plan: PLAN, has_plan: true } };
     render(<DayScreen date="2026-08-30" />);
 
-    expect(screen.getByText('Рабочих задач: 0 из 4')).toBeDefined();
+    expect(
+      screen.getByText(/Рабочих задач: 0 из 4 · закрыто 0 из 0/)
+    ).toBeDefined();
+  });
+
+  it('says outright when nobody has opened the day', () => {
+    // One of the four kinds of empty `#88` separates: a day with no marks that
+    // nobody ever came to is not a day where nothing was done.
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText(DAY_NEVER_OPENED)).toBeDefined();
+  });
+
+  it('keeps that badge off a day that was opened', () => {
+    state = {
+      ...state,
+      detail: { ...DAY, day: { ...DAY.day, opened_at: '2026-08-30T07:10:00Z' } },
+    };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.queryByText(DAY_NEVER_OPENED)).toBeNull();
+  });
+
+  it('offers the notebook of the day', () => {
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByLabelText(NOTEBOOK_TITLE)).toBeDefined();
   });
 
   it('shows the failure instead of an empty day', () => {

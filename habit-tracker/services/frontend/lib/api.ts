@@ -2,7 +2,7 @@
  * API Client for Habit Tracker Backend
  */
 // [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by and its plan, and sends a whole plan back with savePlan
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan and its marks, and writes back a whole plan, a single mark or the day's notebook
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -300,6 +300,22 @@ export const dayAPI = {
   },
 
   /**
+   * The same two reads, but saying that a person is looking at the day.
+   *
+   * `opened=true` is what fills `day.opened_at`. It is a separate call rather
+   * than the default because an agent, an import and a cron job also read days,
+   * and if reading counted as opening, "не открывал" — one of the four kinds of
+   * empty this screen has to tell apart — would stop being establishable.
+   */
+  openToday: async () => {
+    return fetcher<DayDetail>('/day?opened=true');
+  },
+
+  open: async (date: string) => {
+    return fetcher<DayDetail>(`/day/${date}?opened=true`);
+  },
+
+  /**
    * Send the whole plan of a day, replacing whatever was there.
    *
    * Whole rather than per-item: the bar on the number of tasks and "only the
@@ -312,6 +328,28 @@ export const dayAPI = {
       method: 'POST',
       body: JSON.stringify(document),
     });
+  },
+
+  /**
+   * Mark one item of the day, or take its mark off with `state: null`.
+   *
+   * The request names the state rather than asking for "the next one": two open
+   * tabs would otherwise get a result that depends on which of them arrived
+   * first. The cycle a click walks lives in `lib/marks.ts`.
+   */
+  setMark: async (date: string, itemId: string, draft: MarkDraft) => {
+    return fetcher<Mark>(`/day/${date}/marks/${itemId}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Replace the day's notebook text; it stays one entry per date. */
+  saveNotebook: async (date: string, content: string) => {
+    return fetcher<{ day_date: string; content: string; updated_at: string | null }>(
+      `/day/${date}/notebook`,
+      { method: 'PUT', body: JSON.stringify({ content }) }
+    );
   },
 };
 
@@ -829,4 +867,47 @@ export interface DayDetail {
   rule: DayRuleSet;
   plan: Plan | null;
   has_plan: boolean;
+  /** One entry per item that has a mark; an item missing here is `pending`. */
+  marks: Mark[];
+  task_counts: TaskCounts;
+  /** The day's free text, or null when nothing was written. */
+  notebook: string | null;
+}
+
+/** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */
+export type MarkState = 'done' | 'failed' | 'skipped';
+
+/** Who wrote a mark: a click, the local agent, the import, a suggestion. */
+export type MarkSource = 'web' | 'agent' | 'import' | 'llm';
+
+export interface Mark {
+  item_id: string;
+  /** null after the mark was taken off — the line is back to "не дошёл". */
+  state: MarkState | null;
+  note: string | null;
+  /** When the current state was set; a note edited later does not move it. */
+  marked_at: string | null;
+  updated_at: string | null;
+  source: MarkSource | null;
+}
+
+/**
+ * The day's work tasks split by what happened to them.
+ *
+ * `skipped` is counted apart from both `done` and `failed`: a task that stopped
+ * being relevant was neither closed nor missed.
+ */
+export interface TaskCounts {
+  planned: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  pending: number;
+}
+
+/** The body of a mark write; `state: null` takes the mark off. */
+export interface MarkDraft {
+  state: MarkState | null;
+  note?: string | null;
+  source?: MarkSource;
 }
