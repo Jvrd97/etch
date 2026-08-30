@@ -1,11 +1,12 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93, PHASE-03/109, PHASE-03/134
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/109, PHASE-03/111, PHASE-03/134
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
+import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -394,6 +395,52 @@ export const dayAPI = {
     return fetcher<Mark>(`/day/${date}/marks/${itemId}`, {
       method: 'PUT',
       body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * The intervals of measured work of a day, and their sum.
+   *
+   * `work_minutes: null` is «не измерено», not zero: the day then skips the
+   * overtime check instead of reading as comfortably short.
+   */
+  workIntervals: async (date: string) => {
+    return fetcher<WorkDay>(`/day/${date}/work-intervals`);
+  },
+
+  /**
+   * Add one interval. Manual entry is the first-class path, not the fallback:
+   * `source` defaults to `manual` and an interval typed by hand is no lesser a
+   * measurement than one the agent proposed.
+   */
+  addWorkInterval: async (date: string, draft: WorkIntervalDraft) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Edit one interval; the server keeps what the agent proposed beside it.
+   *
+   * Only the keys present move, so an edit of the note cannot reopen an
+   * interval that finished hours ago.
+   */
+  updateWorkInterval: async (
+    date: string,
+    intervalId: string,
+    patch: WorkIntervalPatch
+  ) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Remove one interval; deleting the last returns the day to «не измерено». */
+  deleteWorkInterval: async (date: string, intervalId: string) => {
+    return fetcher<void>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'DELETE',
     });
   },
 
@@ -1001,6 +1048,77 @@ export interface DayDetail {
   notebook: string | null;
   /** Always present — a live recount while the day is not closed. */
   summary: DaySummary;
+  /** The intervals the day's measured time is made of, and their sum. */
+  work: WorkDay;
+}
+
+/** Who put an interval there; `corrected` is a state, not a writer. */
+export type WorkIntervalSource = 'manual' | 'agent' | 'corrected';
+
+/** What the interval says the person was doing; only `work` adds up. */
+export type WorkMode = 'work' | 'off';
+
+/**
+ * One recorded stretch of work or pause.
+ *
+ * `auto_started_at`/`auto_ended_at` hold what the agent proposed before a
+ * person moved it, so a corrected interval can show both values at once —
+ * «исправил руками» and «агент так и посчитал» have to stay tellable apart.
+ *
+ * There is no field for a window title, and there is no column behind one: the
+ * privacy line of the day model runs through this table. Screenshots do not
+ * exist anywhere in this system.
+ */
+export interface WorkInterval {
+  id: string;
+  day_date: string;
+  started_at: string;
+  /** null means the interval is running right now. */
+  ended_at: string | null;
+  running: boolean;
+  /** Length as the server counts it; an open interval is measured to now. */
+  minutes: number;
+  source: WorkIntervalSource;
+  mode: WorkMode;
+  auto_started_at: string | null;
+  auto_ended_at: string | null;
+  app_bundle_id: string | null;
+  note: string | null;
+  /** When a person intervened; null means nobody has. */
+  edited_at: string | null;
+}
+
+/** The work of one day: its intervals and what they add up to. */
+export interface WorkDay {
+  day_date: string;
+  intervals: WorkInterval[];
+  /** null means «не измерено» — no intervals at all — and never zero. */
+  work_minutes: number | null;
+  running: boolean;
+}
+
+/** A new interval. `corrected` cannot be declared: it is reached by editing. */
+export interface WorkIntervalDraft {
+  started_at: string;
+  ended_at?: string | null;
+  source?: 'manual' | 'agent';
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
+}
+
+/**
+ * An edit of an interval; only the keys present are touched.
+ *
+ * `ended_at: null` reopens a closed interval, an absent `ended_at` leaves it
+ * alone — which is why this is a partial object rather than the whole row.
+ */
+export interface WorkIntervalPatch {
+  started_at?: string;
+  ended_at?: string | null;
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
 }
 
 /** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */
@@ -1230,5 +1348,117 @@ export const rolesAPI = {
 
   deleteAct: async (id: number) => {
     return fetcher<Record<string, never>>(`/role-acts/${id}`, { method: 'DELETE' });
+  },
+};
+
+// ============ Chat ============
+
+/** Why a conversation was started. Mirrors `CONVERSATION_KINDS` on the server. */
+export type ConversationKind = 'general' | 'day_open' | 'day_close';
+
+/** Who said it. `system_note` is the server speaking, not the model. */
+export type ChatRole = 'user' | 'assistant' | 'system_note';
+
+/**
+ * State of one message.
+ *
+ * `interrupted` and `failed` are different facts: the first has the text that
+ * arrived before the connection died, the second has no text and a machine code.
+ */
+export type ChatMessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
+
+export interface ChatConversation {
+  id: number;
+  title: string | null;
+  started_on: string;
+  kind: ConversationKind;
+  llm_backend: string | null;
+  context_version: number;
+  last_message_at: string | null;
+  archived: boolean;
+  created_at: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  seq: number;
+  role: ChatRole;
+  content: string;
+  status: ChatMessageStatus;
+  error_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  latency_ms: number | null;
+  model: string | null;
+  created_at: string;
+}
+
+/** A conversation read back with its messages — what a reload of `/chat` draws. */
+export interface ChatConversationDetail extends ChatConversation {
+  messages: ChatMessage[];
+}
+
+export const chatAPI = {
+  list: async (limit = 50) => {
+    return fetcher<ChatConversation[]>(`/chat/conversations?limit=${limit}`);
+  },
+
+  create: async (kind: ConversationKind = 'general') => {
+    return fetcher<ChatConversation>('/chat/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ kind }),
+    });
+  },
+
+  get: async (id: number) => {
+    return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /**
+   * Send one turn and read the answer as it is produced.
+   *
+   * Not `fetcher`: that one waits for the whole body, which is exactly what
+   * this endpoint exists to avoid. `signal` lets the screen abandon a turn;
+   * the server still stores what it had, with status `interrupted`.
+   */
+  streamMessage: async (
+    id: number,
+    content: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    const response = await fetch(`${API_BASE_URL}/chat/conversations/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
+      throw new APIError(response.status, error.detail || 'An error occurred');
+    }
+    if (!response.body) {
+      throw new APIError(response.status, 'Поток ответа недоступен в этом браузере');
+    }
+
+    const reader = response.body.getReader();
+    // `stream: true` on the decoder is what keeps a multi-byte character whole
+    // when a chunk ends in the middle of it — Russian text splits routinely.
+    const decoder = new TextDecoder();
+    const parser = new ChatStreamParser();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+          onEvent(event);
+        }
+      }
+      for (const event of parser.flush()) onEvent(event);
+    } finally {
+      reader.releaseLock();
+    }
   },
 };

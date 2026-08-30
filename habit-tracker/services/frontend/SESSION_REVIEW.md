@@ -1028,3 +1028,55 @@ Feedback loops: `bun test` **704/704 green** (было 682), `bunx tsc --noEmit`
 
 Feedback loops: `bun test` **721/721 green** (было 704), `bunx tsc --noEmit` clean, `bun run lint`
 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/91: время работы на экране дня
+
+- `lib/work-intervals.ts` — **new** (+тест): `momentOf` (настенное `HH:MM` дня → момент со
+  смещением машины), `crossesMidnight`, `clockOf`, `spanLabel`, `proposedLabel`, `sourceLabel`,
+  строки блока. Какому дню принадлежит интервал, здесь не решается никогда — это ответ сервера.
+- `hooks/useWorkIntervals.ts` — **new**: интервалы дня, `add`/`edit`/`remove`, множество
+  `saving`. Оптимистичных правок нет намеренно: длину открытого интервала считает сервер
+  (до `now`, но не дальше конца суток), и локальная догадка дала бы на экране одно число, а в
+  вердикте рядом — другое.
+- `components/day/WorkIntervals.tsx` — **new** (+тест, 8 штук): список интервалов с суммой,
+  ручной ввод по настенным часам, кнопка «Остановить» у идущего, «Убрать» у любого.
+  Исправленный интервал показывает и своё значение, и «Агент предлагал: …». День без интервалов
+  говорит «время не измерено», а не «0 ч».
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: блок стоит над
+  «Итогом дня», потому что вердикт стоит на его сумме; после любой правки день перечитывается.
+- `lib/api.ts` — **mod**: типы `WorkInterval`, `WorkDay`, `WorkIntervalDraft`,
+  `WorkIntervalPatch`, `DayDetail.work`; методы `workIntervals`, `addWorkInterval`,
+  `updateWorkInterval`, `deleteWorkInterval`. Поля под заголовок окна в типах нет.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts` — **mod**: фикстура дня получила блок
+  `work` с `work_minutes: null` — честное «не измерено» для дня без интервалов.
+
+Feedback loops: `bun test` **701/701 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 603/603, `ruff`, `mypy --strict`, одна голова `d5a7c9e1f3b6`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-30 — PHASE-03/111: экран `/chat`
+
+- `lib/chat-stream.ts` — **new**: чистый разборщик SSE. Состояние здесь неслучайно — сетевой
+  кусок кончается там, где решил TCP, регулярно посреди кадра. `ChatStreamEvent` —
+  размеченное объединение: `delta`, `usage`, `done`, `error`. Незнакомое имя события и битый
+  JSON пропускаются, а не роняют ход.
+- `lib/chat-stream.test.ts` — **new**, 12 тестов: порядок кусков, кадр, разрезанный пополам,
+  переводы строк внутри ответа, CRLF, `flush` последнего кадра без пустой строки, пропуск
+  незнакомого имени и `done` без id.
+- `lib/api.ts` — **mod**: типы `ChatConversation`, `ChatMessage`, `ChatConversationDetail` и
+  `chatAPI`. `streamMessage` идёт мимо `fetcher`: тот ждёт всё тело, ради отказа от чего ручка
+  и существует. `TextDecoder({stream: true})` — то, что не рвёт русскую букву пополам.
+- `app/chat/page.tsx` — **new**: лента сообщений, поле ввода, ответ по кускам. Состояния экрана
+  и хода — объединения, не булевы флаги. После закрытия хода разговор перечитывается с сервера:
+  строки таблицы и есть разговор.
+- `lib/routes.ts`, `components/route-icons.ts` — **mod**: экран в реестре под «More», глиф
+  `MessagesSquare`. `hasMobile: false` — мобильный близнец это `#118`.
+- `lib/routes.test.ts`, `lib/view-mode.test.ts` — **mod**: список «More» пополнился, а
+  инвариант «мобильный порт полон» переписан на «полон, кроме перечисленных» и называет `chat`
+  поимённо — чтобы следующий экран без близнеца добавляли сюда осознанно, а не мимо теста.
+
+Feedback loops: `bun test` **713/713 green** (было 701), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 638/638, `ruff`, `mypy --strict`, одна голова `e6b8d0f2a4c7`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.

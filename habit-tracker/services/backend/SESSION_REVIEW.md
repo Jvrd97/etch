@@ -1019,3 +1019,104 @@ Feedback loops (backend): pytest **662/662 green** (было 625 в этой в�
 локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая `habit_tracker_test`
 держит таблицу `work_interval` из чужой ветки и роняет `drop_all`). Миграция проверена на отдельной
 базе `habit_migr_fast1`: upgrade → downgrade → upgrade.
+
+## 2026-08-30 — PHASE-03/91: время работы, `work_interval`
+
+Тронуто 12 файлов: 5 новых, 7 изменённых.
+
+- `app/day/work.py` — **new**: чистая арифметика минут. `IntervalSpan`, `span_minutes`,
+  `day_work_minutes`; словарь `mode` (`work`/`off`) и `source` (`manual`/`agent`/`corrected`)
+  живёт здесь, а модель и схема его читают, а не перепечатывают. Пустой день отвечает `None`,
+  а не нулём — то же правило, по которому `fold_daily` возвращает `None` при нулевом счётчике.
+  Открытый интервал считается до `now`, но не дальше конца своих суток, и границу отдаёт
+  `day_bounds()`, а не собственная арифметика.
+- `app/models/work_interval.py` — **new**: таблица. `CHECK (ended_at IS NULL OR ended_at >
+  started_at)`, CHECK на `source` и `mode`, btree по `(day_date, started_at)`, GiST по
+  `tstzrange(started_at, ended_at)`. Колонки под заголовок окна нет и не будет — граница
+  приватности всей модели дня проходит здесь.
+- `app/schemas/work_interval.py` — **new**: `AwareDatetime` отвергает момент без смещения;
+  `corrected` объявить нельзя, в него переводит правка; `extra="forbid"` отвергает присланный
+  заголовок окна, а не глотает его молча.
+- `app/crud/work_interval.py` — **new**: день интервала спрашивается у `local_date(started_at)`
+  и здесь не считается — `grep` по файлу не находит ни `day_start_hour`, ни `timezone`.
+  Первая правка агентского интервала уносит его границы в `auto_*`, ставит `source='corrected'`
+  и штампует `edited_at`; вторая границы двигает, предложение не трогает. Начало, уводящее
+  интервал в чужой день, отвергается `IntervalNotOnDay` → 422.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_work_interval.py` — **new**:
+  `down_revision = c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки. Прогнан
+  upgrade → downgrade → upgrade на отдельной базе; `downgrade` снимает оба индекса и таблицу.
+- `app/api/day.py` — **mod**: `GET/POST/PATCH/DELETE /day/{date}/work-intervals`; ответ дня
+  получил блок `work` с интервалами и суммой.
+- `app/crud/summary.py` — **mod**: `work_minutes` берётся у интервалов. Незакрытый день меряется
+  живьём, `recompute_history` читает суммы всей истории одним запросом и переписывает
+  `day_summary.work_minutes` измерением. День без интервалов сохраняет число, присланное в
+  `POST /close`, — иначе история, закрытая до появления интервалов, потеряла бы свои цифры.
+- `app/core/daytime.py` — **mod**: `now_utc()`. Не второе определение суток, а одно написание
+  `datetime.now(timezone.utc)`: `local_date()` отвергает наивный момент, и у починки этого
+  отказа должно быть одно правописание. `today_local()` теперь зовёт его же.
+- `app/day/evaluate.py`, `app/schemas/day.py`, `app/models/__init__.py` — **mod**: словарь и
+  документация под новый источник `work_minutes`.
+- `tests/test_work_intervals.py` — **new**: 28 тестов. Чистая арифметика без постгреса
+  (пустой день — `None`, пауза — ноль, открытый интервал упирается в конец своих суток,
+  UTC и берлинское написание одного момента дают одну длину) плюс API: интервал руками,
+  23:00-01:00 целиком в дне начала, перевёрнутый интервал отвергают и валидатор, и `CHECK`,
+  исправленный агентский отдаёт оба значения, 4/4 задачи и девять часов дают `lost/overtime`,
+  день без интервалов — `missing_data: ['work_minutes']`, в ответе дня нет ни одного заголовка
+  окна (набор полей интервала сверяется целиком).
+
+Feedback loops (backend): pytest **603/603 green** (было 575), `ruff check` clean,
+`ruff format --check` clean (130 файлов), `mypy --strict app` clean (94 файла), `alembic heads` —
+одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком **не отрабатывал**:
+тесты шли против постгреса на localhost:5432, база `habit_tracker_test`; миграция проверена
+отдельно на `habit_mig_91` тем же постгресом.
+
+## 2026-08-30 — PHASE-03/111: чат отвечает одним ходом и переживает перезапуск
+
+Тронуто 11 файлов бэкенда: 8 new, 3 mod (плюс `app/llm/client.py`, `app/api/deps.py`,
+`app/main.py`, `app/core/config.py`, `app/models/__init__.py`, `app/crud/__init__.py`).
+
+- `app/models/chat.py` — **new**: четыре таблицы темы. `chat_conversations` (день разговора,
+  вид, подсказки `cli_session_id`/`cli_cwd`/`context_version` — заводятся здесь, включает `#112`),
+  `chat_messages` (порядок несёт `seq`, а не `created_at`; `uq_chat_message_seq` делает дубль
+  позиции ошибкой базы), `chat_plans` (`message_id` unique; `applied_summary_id` намеренно без
+  внешнего ключа), `chat_retrievals`. Словари — плоские строки без PG-enum и CHECK, по образцу
+  `display_mode`.
+- `alembic/versions/…-e6b8d0f2a4c7_chat_conversation_tables.py` — **new**: одна ревизия на всю
+  тему, `down_revision = d5a7c9e1f3b6` (фактическая голова ветки). Проверена вживую на отдельной
+  базе `habit_tracker_migr`: upgrade → downgrade → upgrade; после downgrade ни одной из четырёх
+  таблиц нет. `alembic check` на мигрированной базе не показывает расхождений по chat-таблицам —
+  модель и миграция совпадают колонка в колонку.
+- `app/llm/chat/client.py` — **new**: `ChatLLMClient.stream_turn(...) -> AsyncIterator[ChatChunk]`
+  рядом с нетронутым `LLMClient.generate`. `ISOLATION_ARGS` — отдельная константа, потому что
+  проверяется тестом целиком: `--tools ""` и `--setting-sources ""` вместе со значениями, плюс
+  `CLAUDE_CONFIG_DIR` и фиксированный пустой cwd из настроек. stderr процесса — `DEVNULL`:
+  там эхо промпта. Парсер `stream_event/content_block_delta/text_delta` и финального `result`;
+  `input_tokens` = `input + cache_creation`, иначе проверка «первый ход дешевле тысячи» врёт.
+  API-реализация — `messages.stream` через `AnthropicInsightsClient.sdk`.
+- `app/llm/chat/prompt.py` — **new**: системный промпт чата, `CHAT_CONTEXT_VERSION`, `ChatTurn` и
+  `render_transcript` (реплей одним промптом с подписями ролей).
+- `app/crud/chat.py`, `app/schemas/chat.py`, `app/api/chat.py` — **new**: лента, разговор с
+  сообщениями, ход по SSE. Ход не берёт `get_db`: контекст читается своей сессией, сессия
+  отпускается, ответ пишется новой — это же закрывает долг
+  `concern-charts-ai-followups.md`. 503 проверяется **до** записи реплики.
+- `app/llm/client.py` — **mod**: подпись `generate` не тронута. Добавлены свойство `sdk` и
+  ре-экспорт `AnthropicAPIError`, чтобы `app/llm/chat/` стримил без второго `import anthropic`:
+  инвариант «SDK импортируется ровно в одном файле» держится грепом, а не памятью.
+- `app/api/deps.py` — **mod**: `get_chat_llm_client` и `get_session_factory` (фабрика сессий для
+  единственной ручки, которой нельзя держать соединение всю генерацию).
+- `tests/test_chat_stream.py` — **new**, 15 тестов: порядок событий `delta*/usage/done`, ответ с
+  счётчиками токенов, `seq` 1..4 на двух ходах, реплей всего разговора на втором ходу, чтение
+  разговора после «перезапуска», 503 без бэкенда не оставляет строк, сбой бэкенда даёт `failed`
+  с машинным кодом и сохраняет полученный текст, в событии `error` нет ни куска разговора; плюс
+  два несущих: во время генерации не открыто ни одной сессии БД, и закрытый генератор пишет
+  `interrupted` с уже полученным текстом.
+- `tests/test_chat_cli_args.py` — **new**, 20 тестов: набор флагов изоляции целиком (включая
+  дословную сверку состава — замер 282 против 52 555 токенов сделан именно на нём),
+  `CLAUDE_CONFIG_DIR` и cwd доезжают до процесса, разговор уходит stdin, ненулевой код не
+  протекает содержимым, разбор потока и игнор незнакомых строк.
+
+Feedback loops (backend): pytest **638/638 green** (было 603; 35 из них — новые тесты чата),
+`ruff check` clean, `ruff format --check` clean (139 файлов), `mypy --strict app`
+clean (101 файл), `alembic heads` — одна голова `e6b8d0f2a4c7`. Docker-демон не поднят,
+`make check` целиком **не отрабатывал**: тесты шли против постгреса на localhost:5432
+(`habit_tracker_test`), миграция — на `habit_tracker_migr` тем же постгресом.
