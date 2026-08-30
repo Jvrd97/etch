@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/84-voice-day-input
-// summary: tests for the dictation entry point on the mobile Today screen — the button opens the sheet, cancelling leaves the day untouched, and a written day closes the sheet and reloads what Today shows
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118
+// summary: tests for the two entry points on the mobile Today screen — dictation (the button opens the sheet, cancelling leaves the day untouched, a written day closes the sheet and reloads what Today shows) and the chat, whose conversation is started on the very date this screen is displaying
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -33,6 +33,9 @@ const NUTRITION: Category = {
 
 const MEAL = 'съел борщ и котлету';
 
+/** Id of the conversation the chat entry point starts. */
+const CONVERSATION_ID = 31;
+
 const MEAL_PLAN = {
   metrics: [
     {
@@ -55,10 +58,21 @@ let getCategories: ReturnType<typeof mock>;
 let getEntries: ReturnType<typeof mock>;
 let draft: ReturnType<typeof mock>;
 let applyPlan: ReturnType<typeof mock>;
+let createConversation: ReturnType<typeof mock>;
+let pushed: string[];
 
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
 mock.module('@/lib/api', () => ({
+  // The chat client (#118). Present in every api mock for the same reason the
+  // rest of the surface is: bun fixes a module's export names on first link, so
+  // a mock that omits it deletes it for whoever runs next.
+  chatAPI: {
+    list: () => Promise.resolve([]),
+    create: (options?: unknown) => createConversation(options),
+    get: () => Promise.resolve(null),
+    streamMessage: () => Promise.resolve(undefined),
+  },
   // The training client (#92). Present in every api mock for the same reason
   // the rest of the surface is: bun fixes a module's export names on first
   // link, so a mock that omits it deletes it for whoever runs next.
@@ -105,11 +119,17 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
   useParams: () => ({}),
   usePathname: () => '/m/today',
-  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  useRouter: () => ({
+    push: (href: string) => {
+      pushed.push(href);
+    },
+    replace: () => {},
+  }),
 }));
 
 const { default: MobileTodayPage } = await import('./page');
 const { TELL_DAY_LABEL } = await import('./page');
+const { ASK_ABOUT_DAY_LABEL } = await import('@/components/chat/AskAboutDayButton');
 const { START_DICTATION_LABEL, VOICE_SHEET_TITLE } = await import(
   '@/components/mobile/VoiceDaySheet'
 );
@@ -180,6 +200,8 @@ beforeEach(() => {
   getEntries = mock(() => Promise.resolve([] as Entry[]));
   draft = mock(() => Promise.resolve(MEAL_PLAN));
   applyPlan = mock(() => Promise.resolve({ entry_ids: [1] }));
+  createConversation = mock(() => Promise.resolve({ id: CONVERSATION_ID }));
+  pushed = [];
 });
 
 afterEach(() => {
@@ -229,5 +251,31 @@ describe('dictating a day from /m/today', () => {
 
     expect(screen.queryByRole('dialog', { name: VOICE_SHEET_TITLE })).toBeNull();
     expect(getEntries.mock.calls.length).toBeGreaterThan(loadsBefore);
+  });
+});
+
+describe('asking about the day from /m/today', () => {
+  it('starts the conversation on the date the screen is showing', async () => {
+    // Экран знает свой день и обязан передать именно его: разговор, заведённый
+    // «на сегодня по мнению сервера», окажется про другой день, как только
+    // Today покажет не сегодняшнюю дату.
+    await renderToday();
+    const shownDate = screen.getByText(/^\d{4}-\d{2}-\d{2}$/).textContent;
+
+    fireEvent.click(screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }));
+
+    await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+    expect(createConversation.mock.calls[0][0]).toEqual({
+      started_on: shownDate,
+      kind: 'general',
+    });
+  });
+
+  it('opens that conversation in the mobile shell, not the desktop one', async () => {
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }));
+
+    await waitFor(() => expect(pushed).toEqual([`/m/chat?conversation=${CONVERSATION_ID}`]));
   });
 });

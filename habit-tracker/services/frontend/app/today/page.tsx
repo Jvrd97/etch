@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118
+// summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -8,6 +8,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryForm from '@/components/EntryForm';
+import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
@@ -51,6 +52,10 @@ export default function TodayPage() {
         </h1>
         <p className="mt-2 text-text-secondary">{date} — one tap to check things off</p>
       </div>
+
+      {/* Рядом с заголовком, а не внизу экрана: разговор идёт про день целиком,
+          а не про какую-то одну его карточку. */}
+      <AskAboutDayButton date={date} onError={setError} />
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 

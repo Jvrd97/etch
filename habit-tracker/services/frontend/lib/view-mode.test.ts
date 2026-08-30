@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen now has a mobile twin (insights was the last), a nested route of a flat screen is the no-mobile example
+// [review:need-review] PHASE-03/111, PHASE-03/118, PHASE-01/62-mobile-onboarding-twin
+// summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen has a mobile twin again now that Chat has one, a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
 import { APP_ROUTES } from './routes';
@@ -486,11 +486,19 @@ describe('MOBILE_ROUTES', () => {
     expect(MOBILE_ROUTES).toContain('/insights');
   });
 
-  it('now covers every screen in the registry — the mobile port is complete', () => {
-    // The final slice (insights) lands here: no desktop screen is left without
-    // a mobile twin, so the view-mode toggle maps every registry route across.
+  it('again covers every screen in the registry — Chat was the last one left', () => {
+    // The exception opened by #111 (`/chat` without a mobile twin) is closed by
+    // #118. Asserted as "no screen is missing one" rather than as a list of
+    // exceptions, so the next screen landing without a twin has to reopen this
+    // test deliberately instead of quietly joining a list.
+    expect(APP_ROUTES.filter((route) => !route.hasMobile).map((route) => route.id)).toEqual([]);
     expect([...MOBILE_ROUTES]).toEqual(APP_ROUTES.map((route) => route.href));
     expect(APP_ROUTES.every((route) => hasMobileVersion(route.href))).toBe(true);
+  });
+
+  it('maps the chat across to the screen the mobile shell actually has', () => {
+    expect(MOBILE_ROUTES).toContain('/chat');
+    expect(toMobilePath('/chat')).toBe('/m/chat');
   });
 });
 

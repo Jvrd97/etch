@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93
-// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118
+// summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens), and the chat's own registration: a mobile twin under "More" that leaves the five tab slots alone
 
 import { describe, expect, it } from 'bun:test';
 import {
@@ -50,11 +50,43 @@ describe('TAB_BAR_ROUTES', () => {
   });
 });
 
+describe('the chat registration', () => {
+  const chat = APP_ROUTES.find((route) => route.id === 'chat');
+
+  it('is one entry in the registry, with a mobile twin of its own', () => {
+    // Своей навигации чат не заводит: экран `/m/chat` попадает и в «More», и в
+    // белый список мобильных маршрутов из одной этой записи.
+    expect(chat).toBeDefined();
+    expect(chat?.href).toBe('/chat');
+    expect(chat?.hasMobile).toBe(true);
+    expect(chat?.hasMobileNested).toBe(false);
+  });
+
+  it('lives under "More" and takes no tab slot', () => {
+    expect(chat?.inTabBar).toBeNull();
+    expect(TAB_BAR_ROUTES.some((route) => route.id === 'chat')).toBe(false);
+    expect(MORE_ROUTES.some((route) => route.id === 'chat')).toBe(true);
+  });
+
+  it('leaves the tab bar at five slots, in the order it already had', () => {
+    // Перестановка табов — отдельное решение при слиянии personal-os
+    // (ADR-0017). Тест держит именно это: чат приехал, а таб-бар не тронут.
+    expect(MOBILE_TABS.map((tab) => tab.name)).toEqual([
+      'Today',
+      'Entries',
+      'Dashboard',
+      'Categories',
+      'More',
+    ]);
+  });
+});
+
 describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
       'day',
       'goals',
+      'chat',
       'daily-summary',
       'table',
       'journal',

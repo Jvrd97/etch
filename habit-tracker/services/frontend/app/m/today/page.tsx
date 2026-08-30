@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input
-// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118
+// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -9,6 +9,7 @@ import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
+import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
@@ -85,6 +86,10 @@ export default function MobileTodayPage() {
         <Mic className="w-4 h-4 shrink-0" strokeWidth={2} />
         Рассказать день
       </button>
+
+      {/* Под диктовкой и на всю ширину, как она: оба действия — про день
+          целиком, и оба открываются одним большим касанием. */}
+      <AskAboutDayButton date={date} onError={setError} className="w-full" />
 
       {nothingToTrack ? (
         <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
