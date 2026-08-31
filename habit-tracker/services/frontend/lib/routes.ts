@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123, PHASE-03/nav-drawer
+// summary: screens now carry `section` (День/Данные/Настройка) and `inHeader`, from which the desktop drawer and its two header anchors are derived; `isActiveRoute` marks a screen on its detail routes too
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
 
@@ -27,7 +28,35 @@ export interface AppRoute {
   hasMobileNested: boolean;
   /** Slot in the mobile tab bar (lower comes first), or null when it lives under "More". */
   inTabBar: number | null;
+  /** Meaning group the desktop drawer files the screen under. */
+  section: AppRouteSection;
+  /**
+   * True for the screens the desktop header shows without opening the drawer.
+   *
+   * The desktop counterpart of `inTabBar`, and deliberately a flag rather than a
+   * slot: the header holds two anchors, and their order is the registry's.
+   */
+  inHeader: boolean;
 }
+
+/**
+ * Meaning group of a screen, which is what the desktop drawer sorts by.
+ *
+ * The axis is how often the screen is opened, because that is the question the
+ * reader actually asks the navigation. `day` is what a day is made of and is
+ * opened daily; `data` is what accumulated and is opened to be read or picked
+ * apart; `setup` is the directories and the canon, edited about once a month.
+ */
+export type AppRouteSection = 'day' | 'data' | 'setup';
+
+/** Group headings, in the order the drawer prints them. */
+export const SECTION_ORDER: readonly AppRouteSection[] = ['day', 'data', 'setup'];
+
+export const SECTION_NAMES: Record<AppRouteSection, string> = {
+  day: 'День',
+  data: 'Данные',
+  setup: 'Настройка',
+};
 
 /**
  * URL prefix owned by the mobile instance (`app/m/*`). It lives here rather
@@ -76,6 +105,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 2,
+    // «Данные»: сводка читается по накопленному, а не пишется в течение дня.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'today',
@@ -84,6 +116,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 0,
+    // «День»: тот самый экран, ради которого вкладка открыта.
+    section: 'day',
+    inHeader: true,
   },
   {
     id: 'day',
@@ -97,6 +132,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // Under "More": the day screen is opened on purpose, from a link with a
     // date on it, and the tab bar's five slots are already spoken for.
     inTabBar: null,
+    // «День»: день целиком — план, отметки, вердикт.
+    section: 'day',
+    inHeader: false,
   },
   {
     id: 'life',
@@ -108,6 +146,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // is a weekly act rather than a daily one, and the tab bar's five slots are
     // already spoken for.
     inTabBar: null,
+    // «День»: таймлайн отвечает на тот же вопрос «как прошёл отрезок жизни».
+    section: 'day',
+    inHeader: false,
   },
   {
     id: 'week',
@@ -119,6 +160,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: true,
     inTabBar: null,
+    // «День»: неделя — это отрезок дней, а не таблица.
+    section: 'day',
+    inHeader: false,
   },
   {
     id: 'goals',
@@ -130,6 +174,10 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // closes, not several times a day, and the tab bar's five slots are already
     // spoken for.
     inTabBar: null,
+    // «Настройка»: цели задают рамку, по которой судится день, и правятся,
+    // когда поворачивается квартал, — это канон, а не накопленные данные.
+    section: 'setup',
+    inHeader: false,
   },
   {
     id: 'roles',
@@ -143,6 +191,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // several times an hour, and the tab bar's five slots are already spoken
     // for.
     inTabBar: null,
+    // «Данные»: минуты и акты — накопленное по работе, его читают разбором.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'quick-marks',
@@ -155,6 +206,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // Под «More»: справочник настраивают раз в месяц, а таб-бар — для того,
     // что открывают каждый день.
     inTabBar: null,
+    // «Настройка»: справочник кнопок настраивают раз в месяц.
+    section: 'setup',
+    inHeader: true,
   },
   {
     id: 'chat',
@@ -168,6 +222,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // «More» по решению ADR-0017. Перестановка табов — отдельное решение при
     // слиянии personal-os, а не побочный эффект появления чата на телефоне.
     inTabBar: null,
+    // «День»: с чатом разговаривают про сегодня.
+    section: 'day',
+    inHeader: false,
   },
   {
     id: 'daily-summary',
@@ -178,6 +235,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // First of the "More" screens: telling the app about your day is a daily
     // act, but the tab bar's five slots are already spoken for.
     inTabBar: null,
+    // «День»: рассказать приложению про свой день — ежедневный акт.
+    section: 'day',
+    inHeader: false,
   },
   {
     id: 'table',
@@ -186,6 +246,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: null,
+    // «Данные»: таблица — это записи в другой развёртке.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'categories',
@@ -194,6 +257,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: true,
     inTabBar: 3,
+    // «Настройка»: справочник категорий и полей.
+    section: 'setup',
+    inHeader: false,
   },
   {
     id: 'entries',
@@ -202,6 +268,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 1,
+    // «Данные»: сами записи.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'journal',
@@ -210,6 +279,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: null,
+    // «Данные»: журнал — записанное, перечитываемое позже.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'insights',
@@ -218,6 +290,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: null,
+    // «Данные»: выводы, следующие из записей.
+    section: 'data',
+    inHeader: false,
   },
   {
     id: 'day-rules',
@@ -231,6 +306,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // Под «More»: канон меняли дважды за месяц, а не дважды в день, и пять
     // слотов таб-бара заняты.
     inTabBar: null,
+    // «Настройка»: канон дня.
+    section: 'setup',
+    inHeader: false,
   },
   {
     id: 'onboarding',
@@ -242,6 +320,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // at the app is a rare act, not a daily one, and the tab bar's five slots
     // are already spoken for.
     inTabBar: null,
+    // «Настройка»: разовая настройка категорий разговором.
+    section: 'setup',
+    inHeader: false,
   },
 ];
 
@@ -276,6 +357,54 @@ export const TAB_BAR_ROUTES: readonly AppRoute[] = APP_ROUTES.filter(
 export const MORE_ROUTES: readonly AppRoute[] = APP_ROUTES.filter(
   (route) => route.inTabBar === null
 );
+
+/** One heading of the desktop drawer, with the screens filed under it. */
+export interface NavSection {
+  id: AppRouteSection;
+  /** Heading text, in Russian — this list is read, not typed into. */
+  name: string;
+  /** Screens of the group, in registry order. */
+  routes: readonly AppRoute[];
+}
+
+/**
+ * The whole app as the desktop drawer prints it: three headings, every screen
+ * under exactly one of them.
+ *
+ * Derived rather than written out, so a screen added to the registry appears in
+ * the drawer by itself. Seventeen items in a single row do not fit any monitor
+ * — the desktop container is capped at `max-w-7xl` regardless of screen width —
+ * and an unsorted list of seventeen is not navigation either.
+ */
+export const NAV_SECTIONS: readonly NavSection[] = SECTION_ORDER.map((id) => ({
+  id,
+  name: SECTION_NAMES[id],
+  routes: APP_ROUTES.filter((route) => route.section === id),
+}));
+
+/**
+ * The screens the desktop header shows outside the drawer.
+ *
+ * Two of them, both daily: Today is the address the app opens on, and Быстрые
+ * отметки is what a mark is made from. Everything else is one click away behind
+ * the drawer button, which is the correct price for a screen opened weekly.
+ */
+export const HEADER_ROUTES: readonly AppRoute[] = APP_ROUTES.filter((route) => route.inHeader);
+
+/**
+ * Whether `pathname` is the screen `route` names, or one of its detail routes.
+ *
+ * Exact equality alone leaves `/day/2026-08-30`, `/week/2026-W35`,
+ * `/categories/12` and `/roles/rules` with nothing marked at all, which is
+ * exactly the state the old desktop row shipped in. `hasMobileNested` is the
+ * registry's only record of "this screen owns the routes below it" — it is
+ * named after the mobile twin because that is where the question first came up,
+ * but the fact it states is about the screen, not about the shell.
+ */
+export function isActiveRoute(pathname: string, route: AppRoute): boolean {
+  if (pathname === route.href) return true;
+  return route.hasMobileNested && pathname.startsWith(`${route.href}/`);
+}
 
 /** One destination of the mobile tab bar. The id resolves to an icon in the UI layer. */
 export interface MobileTab {

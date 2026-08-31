@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/nav-drawer
+// summary: `navRowClass` and the drawer wording move here — the mobile "More" list and the desktop drawer draw the same row, and a second copy of it drifts on the first restyle
 // summary: shared UI constants used by both shells — touch target, editor field styling, category enum labels, mobile sheet names, and the dashboard hero's wording (ring caption, empty day, last-entry headline)
 
 import type {
@@ -10,6 +11,30 @@ import type { HeroLastEntry } from '@/lib/dashboard-stats';
 
 /** Apple HIG minimum touch target, in CSS px. */
 export const TAP_TARGET_PX = 44;
+
+/**
+ * One row of a navigation list: icon, name, chevron.
+ *
+ * Shared because both shells draw the same list — the mobile "More" screen and
+ * the desktop drawer — and each of them owning a private copy is the classic
+ * way two surfaces of one app stop looking like one app. Hover is not part of
+ * it: the mobile list has no pointer to hover with, so the desktop drawer adds
+ * that state on top.
+ */
+export const navRowClass =
+  'flex items-center gap-3 w-full px-4 py-3 bg-card border border-white/5 rounded-2xl text-text-primary transition-colors duration-200 active:bg-white/5';
+
+/**
+ * Wording of the desktop drawer.
+ *
+ * The button and the dialog are named differently on purpose: two nodes sharing
+ * a name are indistinguishable in the accessibility tree, and the reader who
+ * just pressed "Меню" needs to hear that something opened, not the same word
+ * again.
+ */
+export const NAV_MENU_LABEL = 'Меню';
+export const NAV_DRAWER_TITLE = 'Все экраны';
+export const NAV_DRAWER_CLOSE_LABEL = 'Закрыть меню';
 
 /**
  * Caption under the hero ring. It names the day on purpose: the number inside

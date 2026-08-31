@@ -31,6 +31,7 @@ import {
 } from '@/lib/plan-violations';
 import { useDay } from '@/hooks/useDay';
 import { useRoleDirectory } from '@/hooks/useRoleDirectory';
+import { useDayAnchors } from '@/hooks/useDayAnchors';
 import { useDayMarks } from '@/hooks/useDayMarks';
 import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
@@ -38,6 +39,7 @@ import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import {
   dayAPI,
   type AnchorState,
+  type DayAnchors as DayAnchorsPayload,
   type DayCloseDraft,
   type DayReviewDraft,
   type Mark,
@@ -60,6 +62,20 @@ import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
  * put the screen in a loop.
  */
 const NO_MARKS: Mark[] = [];
+
+/**
+ * Stable empty anchors for a day that has not loaded yet.
+ *
+ * A fresh object on every render would look like a re-read day to
+ * `useDayAnchors` and throw away the tick a person just made.
+ */
+const NO_ANCHORS: DayAnchorsPayload = {
+  day_date: '',
+  anchors: [],
+  done: 0,
+  total: 0,
+  missing: [],
+};
 
 /**
  * Stable empty work block for a day that has not loaded yet.
@@ -92,6 +108,10 @@ export default function DayScreen({ date }: DayScreenProps) {
   const brokenPlanWide = useMemo(() => planWideViolations(violations), [violations]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
+  // Якоря живут в собственном состоянии по той же причине, что и отметки:
+  // галочка обязана встать под пальцем, а не через круг до сервера и обратно.
+  const anchorsPayload = useMemo(() => detail?.anchors ?? NO_ANCHORS, [detail]);
+  const anchors = useDayAnchors(detail?.day.date ?? '', anchorsPayload);
   const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
   const intervals = useWorkIntervals(detail?.day.date ?? '', work);
   const training = useTrainingState();
@@ -254,11 +274,12 @@ export default function DayScreen({ date }: DayScreenProps) {
       />
 
       <DayAnchors
-        payload={detail.anchors}
+        payload={anchors.payload}
         onMark={async (kind: string, state: AnchorState | null) => {
-          await dayAPI.setAnchors(day.date, [{ kind, state }]);
-          // Re-read rather than patch in place: an anchor moves the verdict of
-          // the day, and the server's recount is the only correct one.
+          await anchors.mark(kind, state);
+          // The block already shows the tick; this re-read is for everything
+          // around it — an anchor moves the verdict, and the server's recount
+          // is the only correct one. It is silent, so the day does not blink.
           reload();
         }}
       />

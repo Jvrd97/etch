@@ -1,11 +1,22 @@
 # [review:need-review] PHASE-03/120
-# summary: deploy & ops shortcuts; `preflight` delegates the pre-deploy run (check + live-CLI isolation smoke) to the backend
+# summary: deploy & ops shortcuts; `preflight` delegates the pre-deploy run (check + live-CLI isolation smoke) to the backend; `up`/`deploy` end in `verify`, which fails the build when the containers are not running this commit
 # habit-tracker/Makefile — deploy & ops shortcuts (run from this dir on the VPS),
 # plus the local dev entrypoint (`make dev`) used on a laptop.
 # Prod stack = base compose + prod override + the optional `web` (frontend) profile.
 COMPOSE = docker compose --profile web -f docker-compose.yml -f ../deploy/docker-compose.prod.yml
 # Local stack = base compose only, no prod override.
 DEV_COMPOSE = docker compose -f docker-compose.yml
+
+# The commit being deployed. Two jobs, both in deploy/docker-compose.prod.yml and
+# deploy/verify-deploy.sh: it is stamped onto every image as the OCI label
+# org.opencontainers.image.revision at build time, and it is what `verify` compares
+# that label against afterwards. Exported so compose interpolation sees it.
+# Note the `:=` — evaluated once, when make starts. `deploy` therefore does its
+# `git pull` and then re-enters make (`$(MAKE) up`) instead of building inline: a
+# fresh make process re-reads HEAD, so the images are labelled with the commit that
+# was just pulled and not with the one that was checked out a minute earlier.
+GIT_SHA := $(shell git -C .. rev-parse HEAD 2>/dev/null)
+export GIT_SHA
 
 BACKEND_DIR = services/backend
 FRONTEND_DIR = services/frontend
@@ -24,7 +35,7 @@ BACKEND_PORT ?= 8000
 FRONTEND_PORT ?= 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help up down stop restart logs ps build migrate deploy preflight backup enable-boot \
+.PHONY: help up down stop restart logs ps build migrate deploy verify preflight backup enable-boot \
         dev dev-back dev-front dev-deps dev-createdb dev-migrate dev-stop dev-db dev-docker \
         front-check
 
@@ -32,8 +43,10 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up: ## Build and start everything (backend, frontend, postgres), detached
+up: ## Build and start everything (backend, frontend, postgres), detached, then verify
+	@test -n "$(GIT_SHA)" || { echo "make up: 'git rev-parse HEAD' gave nothing — is this a git checkout?"; exit 1; }
 	$(COMPOSE) up -d --build
+	@$(MAKE) --no-print-directory verify
 
 down: ## Stop and remove containers (DB volume is kept)
 	$(COMPOSE) down
@@ -56,10 +69,13 @@ build: ## Rebuild images without starting
 migrate: ## Apply DB migrations (alembic upgrade head)
 	$(COMPOSE) exec backend alembic upgrade head
 
-deploy: ## Full redeploy: pull main, rebuild, restart, migrate (run `make preflight` first)
+deploy: ## Full redeploy: pull main, rebuild, restart, VERIFY, migrate (run `make preflight` first)
 	git -C .. pull origin main
-	$(COMPOSE) up -d --build
+	@$(MAKE) --no-print-directory up
 	$(COMPOSE) exec backend alembic upgrade head
+
+verify: ## Prove the running containers are this commit's build; exits non-zero if not
+	@COMPOSE="$(COMPOSE)" bash ../deploy/verify-deploy.sh
 
 preflight: ## Pre-deploy run: backend check + the live-CLI isolation smoke (PHASE-03/120)
 	$(MAKE) -C $(BACKEND_DIR) preflight

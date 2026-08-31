@@ -6,7 +6,21 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
+      # Everything except the compose files: full load, so types and anchors are
+      # checked too.
       - id: check-yaml
+        exclude: ^(habit-tracker/docker-compose\.yml|deploy/docker-compose\..*\.yml)$
+      # Compose files, syntax only. `--unsafe` skips node construction, which is
+      # what lets the Compose Specification merge tags through: prod.yml uses
+      # `!override` and `!reset` to cancel the development volume mounts, and plain
+      # PyYAML has no constructor for them ("could not determine a constructor for
+      # the tag '!override'"). Nothing is lost that matters — compose validates
+      # these files properly on every `up`, and `docker compose config` renders the
+      # merge result on demand.
+      - id: check-yaml
+        name: check-yaml (compose files, syntax only)
+        args: [--unsafe]
+        files: ^(habit-tracker/docker-compose\.yml|deploy/docker-compose\..*\.yml)$
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: detect-private-key

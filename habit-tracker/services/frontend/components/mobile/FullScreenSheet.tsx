@@ -1,10 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/49-device-acceptance-checklist, PHASE-01/84-voice-day-input
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/49-device-acceptance-checklist, PHASE-01/84-voice-day-input, PHASE-03/nav-drawer
+// summary: the focusable-selector and the Tab wrap moved to lib/focus-trap, shared with the desktop navigation drawer; behaviour unchanged
 // summary: full-screen editor sheet of the mobile shell — Cancel / title / confirm bar (its label and availability overridable, for a sheet whose confirm is not "Done") pinned above a single scrolling content column sized to the visual viewport, an in-sheet error banner, and the modal contract its role promises: Escape, initial focus, focus trap, frozen page behind
 
 import { useCallback, useEffect, useRef } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { focusablesIn, trapTab } from '@/lib/focus-trap';
 
 export interface FullScreenSheetProps {
   /** Bar title, and the accessible name of the dialog. */
@@ -49,16 +51,6 @@ export interface FullScreenSheetProps {
 const DONE_LABEL = 'Done';
 const DONE_BUSY_LABEL = 'Saving...';
 
-/** Everything the browser would stop at while tabbing through the sheet. */
-const FOCUSABLE_SELECTOR = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
-
 /**
  * Suppresses the focus change a press on a bar action would cause, keeping the
  * on-screen keyboard open until the click has been delivered.
@@ -68,11 +60,6 @@ const FOCUSABLE_SELECTOR = [
  */
 function keepFocusInField(event: React.MouseEvent) {
   event.preventDefault();
-}
-
-function focusablesIn(scope: Element | null): HTMLElement[] {
-  if (!scope) return [];
-  return Array.from(scope.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
 /**
@@ -172,22 +159,7 @@ export default function FullScreenSheet({
         return;
       }
       if (event.key !== 'Tab') return;
-
-      const focusables = focusablesIn(sheetRef.current);
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-
-      // Only the two edges need handling; in between, the browser's own tab
-      // order is already correct.
-      if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTab(event, sheetRef.current);
     },
     [onCancel]
   );
