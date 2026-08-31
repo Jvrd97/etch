@@ -40,6 +40,8 @@ from app.models.mark import PlanMark
 from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.summary import DaySummary
 from app.models.week import Week, WeekReviewItem
+from app.crud import day_profile as profile_crud
+from app.day.debt import week_is_won
 from app.schemas.week import (
     DayListItem,
     WeekIn,
@@ -266,7 +268,18 @@ async def replace_week_text(db: AsyncSession, iso: str, body: WeekIn) -> Week:
     return refreshed
 
 
-def to_response(week: Week) -> WeekResponse:
+async def week_debt(db: AsyncSession, week: Week) -> int:
+    """
+    Minutes of overtime this week still owes.
+
+    Scoped to the week's own dates: a debt incurred in August must not keep every
+    September week from ever being won. `#179` is about buying back the hours a
+    raised ceiling let through, not about a permanent mark.
+    """
+    return await profile_crud.open_debt_minutes(db, week.starts_on, week.ends_on)
+
+
+def to_response(week: Week, debt_minutes: int = 0) -> WeekResponse:
     """
     The week as the wire carries it.
 
@@ -281,6 +294,11 @@ def to_response(week: Week) -> WeekResponse:
         won_days=week.won_days,
         total_days=week.total_days,
         streak_end=week.streak_end,
+        debt_minutes=debt_minutes,
+        # Третье условие выигранной недели (`#179`): все дни выиграны, дни есть
+        # и долг за переработку вернулся. Считается здесь, а не хранится: два из
+        # трёх слагаемых меняются на каждом закрытии дня.
+        is_won=week_is_won(week.won_days, week.total_days, debt_minutes),
         retro_md=week.retro_md,
         blockers_md=week.blockers_md,
         mgmt_retro_md=week.mgmt_retro_md,

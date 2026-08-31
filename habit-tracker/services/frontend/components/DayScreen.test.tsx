@@ -16,6 +16,7 @@ const DAY: DayDetail = {
     opened_at: null,
     last_touched_at: null,
   },
+  profile: null,
   rule: {
     id: 2,
     valid_from: '2026-08-17',

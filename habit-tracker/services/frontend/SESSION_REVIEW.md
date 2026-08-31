@@ -1529,3 +1529,23 @@ Feedback loops (frontend): `bun test` **1097 pass, 0 fail** (98 файлов),
 
 Feedback loops (frontend): `bun test` **1115 pass, 0 fail** (100 файлов),
 `bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/179, карточка предложения и блок долга
+
+**new**: `components/day/ProfileProposal.tsx`, `components/week/OvertimeDebt.tsx`,
+`components/day/ProfileProposal.test.tsx` (10), `hooks/useProfileProposal.ts`,
+`lib/day-profiles.ts`.
+**mod**: `lib/api.ts` (`ProfileInForce`, `ProfileProposal`, `DebtLedger`, `profilesAPI`,
+`DayDetail.profile`, `Week.debt_minutes`/`is_won`), `components/DayScreen.tsx`,
+`components/mobile/MobileDayScreen.tsx`, `components/week/WeekScreen.tsx`.
+
+Цена подъёма напечатана на самой карточке, а не за ней: человек, соглашающийся согнуть
+правило, обязан прочесть цену в том же взгляде. Строка профиля на дне появляется только
+когда подъём действует — подпись «обычный потолок» каждый день никто бы не читал, и
+однажды не заметил бы другую. Долг старше недели рисуется как проваленное правило.
+
+Механически тронуты 29 тест-файлов: заглушка `profilesAPI` дописана в каждую подмену
+`mock.module('@/lib/api')`.
+
+Feedback loops (frontend): `bun test` **1125 pass, 0 fail** (101 файл),
+`bunx tsc --noEmit` clean.

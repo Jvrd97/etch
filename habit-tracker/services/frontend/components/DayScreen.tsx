@@ -8,6 +8,7 @@ import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
+import ProfileProposal from '@/components/day/ProfileProposal';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
@@ -200,6 +201,8 @@ export default function DayScreen({ date }: DayScreenProps) {
         </>
       )}
 
+      {/* Предложение поднять потолок (#179). Появляется редко и не само. */}
+      <ProfileProposal onSettled={reload} />
       <DayMapCard map={detail.day_map} />
       {/* «Где прошёл день» (#160): лента, приложения, задачи и работа вне плана. */}
       <DayIntervals date={detail.day.date} />

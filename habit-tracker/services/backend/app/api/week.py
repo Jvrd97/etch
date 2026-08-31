@@ -109,7 +109,7 @@ async def get_week(iso: str, db: AsyncSession = Depends(get_db)) -> WeekResponse
     когда это было. Текст ретро пересчёт не трогает никогда.
     """
     week = await week_crud.recompute_week(db, _checked(iso))
-    return week_crud.to_response(week)
+    return week_crud.to_response(week, await week_crud.week_debt(db, week))
 
 
 @weeks_router.put("/{iso}", response_model=WeekResponse)
@@ -124,7 +124,7 @@ async def put_week(
     недели выиграно, и разошёлся бы с днями при первом же переоткрытии.
     """
     week = await week_crud.replace_week_text(db, _checked(iso), body)
-    return week_crud.to_response(week)
+    return week_crud.to_response(week, await week_crud.week_debt(db, week))
 
 
 @weeks_router.get("", response_model=WeekResponse)
@@ -136,4 +136,4 @@ async def get_current_week(db: AsyncSession = Depends(get_db)) -> WeekResponse:
     с 04:00, и в ночь с воскресенья на понедельник это ещё прошлая неделя.
     """
     week = await week_crud.recompute_week(db, iso_code(today_local()))
-    return week_crud.to_response(week)
+    return week_crud.to_response(week, await week_crud.week_debt(db, week))

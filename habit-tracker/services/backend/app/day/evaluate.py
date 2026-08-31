@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/142
-# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero; since #142 the order of the reasons and the composition of the anchors come from the rule row (`verdict_rule`, `anchors`) instead of from constants
+# [review:need-review] PHASE-03/90, PHASE-03/179, PHASE-03/91, PHASE-03/142
+# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero; since #142 the order of the reasons and the composition of the anchors come from the rule row (`verdict_rule`, `anchors`) instead of from constants; #179 lets the ceiling of the day come from the profile in force on its date, while the reason stays the same `overtime`
 """
 Whether a day was won, decided without a database.
 
@@ -223,18 +223,26 @@ def _closed_of(counts: TaskCounts) -> tuple[int, int]:
     return counts.done, counts.planned - counts.skipped
 
 
-def _is_overtime(rule: DayRuleSet, work_minutes: int | None) -> bool:
+def _is_overtime(
+    rule: DayRuleSet, work_minutes: int | None, work_cap_min: int | None
+) -> bool:
     """
-    Whether the day ran past the everyday ceiling of its canon.
+    Whether the day ran past the everyday ceiling in force on it.
 
     Compared against `work_cap_min` rather than `work_hard_cap_min`: the hard
     cap is the exception a day is allowed to reach for, not the line a normal
     day is judged by. Nine hours under the current canon (480/540) is overtime,
     which is exactly what the acceptance of `#90` requires.
+
+    Since `#179` the ceiling may come from the profile the date was under, and
+    then it is passed in. The rule's own number is the answer when nothing
+    passes one — a day judged before profiles existed, or one no activation
+    covered.
     """
     if work_minutes is None or not rule.overtime_disqualifies:
         return False
-    return work_minutes > rule.work_cap_min
+    cap = work_cap_min if work_cap_min is not None else rule.work_cap_min
+    return work_minutes > cap
 
 
 def _tasks_are_short(rule: DayRuleSet, done: int, total: int) -> bool:
@@ -260,7 +268,9 @@ def _anchors_not_closed(rule: DayRuleSet, facts: DayFacts) -> tuple[str, ...]:
     return tuple(kind for kind in (rule.anchors or ()) if kind not in closed)
 
 
-def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
+def evaluate_day(
+    rule: DayRuleSet, facts: DayFacts, *, work_cap_min: int | None = None
+) -> Verdict:
     """
     Judge one day against the canon it was lived under.
 
@@ -313,7 +323,7 @@ def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
         return decided(None, REASON_NOT_CLOSED)
 
     lowered = {
-        REASON_OVERTIME: _is_overtime(rule, facts.work_minutes),
+        REASON_OVERTIME: _is_overtime(rule, facts.work_minutes, work_cap_min),
         REASON_ANCHORS: anchors_done < anchors_total or bool(missing_anchor_kinds),
         REASON_TASKS: _tasks_are_short(rule, tasks_done, tasks_total),
     }

@@ -23,6 +23,7 @@ from app.api import (
     chat,
     daily_summary,
     day,
+    day_profiles,
     day_rules,
     entries,
     goals,
@@ -80,6 +81,9 @@ API_ROUTERS = (
     onboarding.router,
     daily_summary.router,
     health.router,
+    # Раньше `day.router`: `/day/debt` и `/day/{date}` для FastAPI одной формы,
+    # и выигрывает тот, кто объявлен первым (`#179`).
+    day_profiles.router,
     day.router,
     day_rules.router,
     goals.router,

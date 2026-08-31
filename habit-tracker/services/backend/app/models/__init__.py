@@ -23,6 +23,11 @@ from app.models.chat import (
     ChatRetrieval,
 )
 from app.models.day import Day, DayRuleSet
+from app.models.day_profile import (
+    DayRuleActivation,
+    DayRuleProfile,
+    OvertimeDebt,
+)
 from app.models.field import Field, FieldType
 from app.models.entry import Entry
 from app.models.entry_value import EntryValue
@@ -53,6 +58,9 @@ __all__ = [
     "AIReport",
     "ClaudeSession",
     "DayMode",
+    "DayRuleActivation",
+    "DayRuleProfile",
+    "OvertimeDebt",
     "ModeSchedule",
     "TitleRule",
     "TrackedApp",

@@ -16,6 +16,7 @@ from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import plan_violation as violation_crud
+from app.crud import day_profile as profile_crud
 from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
@@ -57,6 +58,7 @@ from app.schemas.plan import (
     PlanRejection,
     PlanResponse,
 )
+from app.schemas.day_profile import ProfileInForceResponse
 from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
 from app.schemas.training import TrainingDayIn, TrainingDayResponse
@@ -156,9 +158,23 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
     counts = mark_crud.task_counts(stored, marks)
     notebook = await day_crud.get_notebook(db, day.day_date)
     training = await training_crud.get_training_day(db, day.day_date)
+    in_force = await profile_crud.profile_for(db, day.day_date)
     return DayDetailResponse(
         day=_day(day),
         rule=DayRuleSetResponse.model_validate(rule),
+        # По какому потолку судится этот день (`#179`). Иначе «день выигран при
+        # одиннадцати часах» на экране выглядит как сломанное правило.
+        profile=(
+            None
+            if in_force is None
+            else ProfileInForceResponse(
+                code=in_force.profile.code,
+                title=in_force.profile.title,
+                work_cap_min=in_force.profile.work_cap_min,
+                valid_to=in_force.valid_to,
+                reason=in_force.reason,
+            )
+        ),
         day_map=_map(day_map(rule)),
         plan=plan,
         has_plan=plan is not None,

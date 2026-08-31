@@ -68,7 +68,11 @@ from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import work_interval as work_crud
+from app.crud import day_profile as profile_crud
 from app.day.evaluate import VERDICT_WON, DayFacts, Verdict, evaluate_day
+from app.day.profiles import Activation as ActivationValue
+from app.day.profiles import Profile as ProfileValue
+from app.day.profiles import resolve_profile
 from app.day.rules import resolve_rule
 from app.day.streak import step_streak
 from app.models.anchor import DayAnchor
@@ -339,8 +343,17 @@ async def summary_for(
         work_minutes=measured if measured is not None else estimated,
         closed=False,
     )
+    # Потолок дня берётся у профиля, действовавшего в эту дату (`#179`), а не у
+    # строки правила: в неделю сдачи двенадцать часов — норма, и день судится
+    # тем потолком, который на нём стоял.
+    profiles, activations = await profile_crud.resolution_inputs(db)
+    chosen = resolve_profile(profiles, activations, on)
+    cap = None if chosen is None else chosen.work_cap_min
     return _preview(
-        on, evaluate_day(rule, facts), missing_anchors=missing, stored=stored
+        on,
+        evaluate_day(rule, facts, work_cap_min=cap),
+        missing_anchors=missing,
+        stored=stored,
     )
 
 
@@ -566,7 +579,50 @@ async def close_day(
 
     await _store(db, day.day_date, rule.id, values)
     await recompute_history(db)
+    # Долг за переработку (`#179`). После пересчёта, а не до: минуты работы дня
+    # пишутся именно там, и начислять по числу, которое сейчас перезапишут,
+    # значило бы считать долг по устаревшей цифре.
+    stored_row = await get_summary(db, day.day_date)
+    await profile_crud.settle_day(
+        db, day.day_date, stored_row.work_minutes if stored_row else None
+    )
     return await _answer(db, day.day_date, rule)
+
+
+def _cap_of(
+    profiles: list[ProfileValue],
+    activations: list[ActivationValue],
+    on: date,
+) -> int | None:
+    """The ceiling of the profile in force on `on`, or None to keep the rule's."""
+    chosen = resolve_profile(profiles, activations, on)
+    return None if chosen is None else chosen.work_cap_min
+
+
+async def days_over_cap(db: AsyncSession, start: date, end: date) -> int:
+    """
+    How many days of `[start, end]` ran past the baseline ceiling.
+
+    The second half of the proposal of `#179`: a raise is offered only when the
+    week has actually been long, not merely because a deadline exists. A day
+    with no measured minutes counts as neither long nor short — «не измерено» is
+    not zero here either.
+    """
+    baseline = await profile_crud.baseline_cap(db)
+    if baseline is None:
+        return 0
+    rows = await db.execute(
+        select(DaySummary.work_minutes).where(
+            DaySummary.day_date >= start,
+            DaySummary.day_date <= end,
+            DaySummary.work_minutes.is_not(None),
+        )
+    )
+    return sum(
+        1
+        for minutes in rows.scalars().all()
+        if minutes is not None and minutes > baseline
+    )
 
 
 async def recompute_history(db: AsyncSession) -> None:
@@ -600,6 +656,11 @@ async def recompute_history(db: AsyncSession) -> None:
     stored row, not of the day's facts.
     """
     rules = await day_crud.list_rules(db)
+    # Профили и активации — тоже одним чтением, и по той же причине. День
+    # судится профилем, действовавшим в его дату (`#179`): перенастройка
+    # потолка сегодня не переписывает вердикты прошлых дней, потому что
+    # активация привязана к датам, а не к «сейчас».
+    profiles, activations = await profile_crud.resolution_inputs(db)
     # Every day that has intervals, in one read: this walks the whole history,
     # and a query per row would turn a recompute into a query per day.
     measured = await work_crud.minutes_by_day(db)
@@ -625,7 +686,11 @@ async def recompute_history(db: AsyncSession) -> None:
                 work_minutes=row.work_minutes,
                 closed=closed,
             )
-            verdict = evaluate_day(rule, facts)
+            verdict = evaluate_day(
+                rule,
+                facts,
+                work_cap_min=_cap_of(profiles, activations, row.day_date),
+            )
             # Переопределение действует только на закрытом дне: «выигран» на
             # строке, до вечера которой ещё не дошли, было бы вердиктом,
             # вынесенным раньше срока, и CHECK таблицы его и не принял бы.

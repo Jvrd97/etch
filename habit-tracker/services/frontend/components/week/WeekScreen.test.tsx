@@ -16,6 +16,8 @@ const WEEK: Week = {
   ends_on: '2026-08-30',
   won_days: 1,
   total_days: 7,
+  debt_minutes: 0,
+  is_won: false,
   streak_end: 0,
   retro_md: '## Выигранные дни\n\n**1 из 7.**',
   blockers_md: 'День без отметок неотличим от дня без работы.',

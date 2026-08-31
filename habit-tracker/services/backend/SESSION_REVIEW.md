@@ -1856,3 +1856,33 @@ Feedback loops (backend): pytest **1264 passed, 2 skipped**, `ruff check app tes
 Feedback loops (backend): pytest **1278 passed, 2 skipped**, `ruff check app tests`,
 `ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
 голова `a3c5e7b9d1f4`. `make check` целиком не отрабатывал: docker.
+
+## 2026-08-31 — PHASE-03/179, потолок работы дышит
+
+**Схема (new)**: `alembic/versions/2026_09_02_1600-b4d6f8a0c2e5_day_rule_profiles.py` —
+`day_rule_profile` (три именованных набора, ровно один по умолчанию частичным уникальным
+индексом), `day_rule_activation` (какой профиль на какие даты, почему и подтверждён ли),
+`overtime_debt` (долг за день сверх базового потолка). Сиды профилей в теле ревизии.
+`down_revision = a3c5e7b9d1f4`; upgrade → downgrade → upgrade проверен.
+
+**Сервис (new)**: `app/models/day_profile.py`, `app/day/profiles.py` (чистые
+`resolve_profile`/`propose_profile`), `app/day/debt.py` (чистые `accrue`/`repay`/
+`week_is_won`), `app/crud/day_profile.py`, `app/schemas/day_profile.py`,
+`app/api/day_profiles.py`.
+**mod**: `app/day/evaluate.py` (потолок дня приходит аргументом), `app/crud/summary.py`
+(вердикт считается профилем даты, закрытие дня начисляет и гасит долг),
+`app/crud/week.py` + `app/schemas/week.py` (`debt_minutes`, `is_won`),
+`app/api/day.py` (`profile` в ответе дня), `app/main.py`.
+**Тесты (new)**: `tests/test_day_profiles.py` (19), `tests/test_overtime_debt.py` (18).
+
+Что стоит назвать вслух. Первое: `#179` **аддитивен** — на базе без профилей
+`resolve_profile` отдаёт `None`, и день судится потолком своей строки правила ровно как до
+тикета. Фича, которую не настроили, не должна менять вердикты. Второе: роутер профилей
+зарегистрирован **раньше** `day.router`: `/day/debt` и `/day/{date}` для FastAPI одной формы,
+и выигрывает объявленный первым. Третье: долг считается от базового потолка, а не от
+поднятого; тест `test_the_debt_is_counted_from_the_baseline_and_not_from_the_raise`
+сравнивает оба числа прямо.
+
+Feedback loops (backend): pytest **1315 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (167 файлов), `alembic heads` — одна
+голова `b4d6f8a0c2e5`. `make check` целиком не отрабатывал: docker.

@@ -44,6 +44,15 @@ let getAllCategories: ReturnType<typeof mock>;
 // even the parts this file never calls — otherwise whichever file happens to
 // load first decides that `tableAPI` does not exist.
 mock.module('@/lib/api', () => ({
+  // Профили потолка и долг за переработку (#179): экран дня читает предложение,
+  // экран недели — гроссбух. Заглушка стоит в каждом моке api, потому что bun
+  // фиксирует имена экспортов модуля при первой линковке.
+  profilesAPI: {
+    proposal: () => Promise.resolve(null),
+    activate: () => Promise.resolve(null),
+    decline: () => Promise.resolve(null),
+    debt: () => Promise.resolve({ open_minutes: 0, debts: [] }),
+  },
   // Активность агента (#158, #160): экран дня читает её ради блока «где прошёл
   // день», а bun фиксирует имена экспортов модуля при первой линковке — мок,
   // забывший экспорт, удаляет его для всех, кто линкуется следом.

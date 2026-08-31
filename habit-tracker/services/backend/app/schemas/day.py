@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.anchor import DayAnchorsResponse
+from app.schemas.day_profile import ProfileInForceResponse
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
 from app.schemas.summary import DaySummaryResponse
@@ -343,6 +344,14 @@ class DayDetailResponse(BaseModel):
 
     day: DayResponse
     rule: DayRuleSetResponse
+    profile: ProfileInForceResponse | None = Field(
+        default=None,
+        description=(
+            "Профиль потолка, которым судится этот день, и дата, после которой "
+            "подъём кончится сам. Без него на экране не видно, по какому "
+            "правилу день считался"
+        ),
+    )
     day_map: DayMapResponse = Field(
         ...,
         description=(

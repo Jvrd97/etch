@@ -1488,9 +1488,69 @@ export interface DayCloseDraft {
 }
 
 /** One day, the rule it is judged by, and its plan when there is one. */
+/** Профиль потолка, которым судится день, и дата, после которой подъём кончится. */
+export interface ProfileInForce {
+  code: string;
+  title: string;
+  work_cap_min: number;
+  /** null у обычного дня: базовый профиль — это не «до какого-то числа». */
+  valid_to: string | null;
+  reason: string;
+}
+
+/** Предложение поднять потолок. Всегда с причиной или его нет вовсе. */
+export interface ProfileProposal {
+  profile_code: string;
+  title: string;
+  work_cap_min: number;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  source_signal_id: string;
+}
+
+/** Подтверждение человеком — единственное, что двигает потолок. */
+export interface ActivationDraft {
+  profile_code: string;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  source_signal_id?: string | null;
+}
+
+export interface Activation {
+  id: number;
+  profile_code: string;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  confirmed_at: string | null;
+  declined_at: string | null;
+  source_signal_id: string | null;
+  is_in_force: boolean;
+}
+
+/** Долг за переработку одного дня. */
+export interface OvertimeDebt {
+  incurred_on: string;
+  minutes_over: number;
+  repaid_on: string | null;
+  repaid_by_day: string | null;
+  is_open: boolean;
+  /** Больше семи — проваленное правило, а не справка. */
+  days_open: number;
+}
+
+export interface DebtLedger {
+  open_minutes: number;
+  debts: OvertimeDebt[];
+}
+
 export interface DayDetail {
   day: Day;
   rule: DayRuleSet;
+  /** Профиль потолка этого дня; null на базе, где профили не заведены (#179). */
+  profile: ProfileInForce | null;
   /** The map of the day drawn by the same rule row. */
   day_map: DayMap;
   plan: Plan | null;
@@ -1957,6 +2017,33 @@ export interface AgentSettings {
  * Порядок правил — семантика, а не оформление: первое совпавшее выигрывает,
  * поэтому перестановка едет целым списком id, а не по одному шагу.
  */
+/**
+ * Профили потолка работы и долг за переработку.
+ *
+ * `proposal()` только показывает. Потолок двигает `activate()` — решение
+ * человека 2026-08-30: система предлагает, человек подтверждает.
+ */
+export const profilesAPI = {
+  proposal: async () => {
+    return fetcher<ProfileProposal | null>('/day/rules/proposal');
+  },
+
+  activate: async (draft: ActivationDraft) => {
+    return fetcher<Activation>('/day/rules/activations', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  decline: async (id: number) => {
+    return fetcher<Activation>(`/day/rules/activations/${id}`, { method: 'DELETE' });
+  },
+
+  debt: async () => {
+    return fetcher<DebtLedger>('/day/debt');
+  },
+};
+
 export const agentAPI = {
   /** Где прошёл день — тремя срезами сразу, потому что порознь они врут. */
   day: async (date: string) => {
@@ -2373,6 +2460,10 @@ export interface Week {
   total_days: number;
   /** null when no day of the week was closed — not the same as a streak of 0. */
   streak_end: number | null;
+  /** Минуты переработки этой недели, которые ещё не вернулись (#179). */
+  debt_minutes: number;
+  /** Все дни выиграны, дни есть и долга нет. Гибкость покупается возвратом. */
+  is_won: boolean;
   retro_md: string;
   blockers_md: string;
   mgmt_retro_md: string;
