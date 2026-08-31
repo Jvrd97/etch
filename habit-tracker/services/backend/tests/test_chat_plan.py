@@ -89,6 +89,52 @@ class TestParsing:
         with pytest.raises(ChatPlanError):
             parse_plan(answer_with({"entry_date": DAY.isoformat()}))
 
+    async def test_an_answer_that_tries_to_untick_produces_no_card(self) -> None:
+        """
+        «Убери вчерашнюю отметку про бег» не превращается в план.
+
+        Даже если модель ответит мимо инструкции и выпишет операцию снятия
+        отметки, схема её не примет: `extra="forbid"` на плане и на каждой
+        операции превращает выдуманное слово в отказ, а отказ — в отсутствие
+        плашки. Ни одной записи при этом не появляется, потому что появляться
+        нечему: применять нечего.
+        """
+        answer = answer_with(
+            {
+                "entry_date": DAY.isoformat(),
+                "checklist": [
+                    {
+                        "op": "uncheck",
+                        "category_id": 2,
+                        "field_id": 9,
+                        "source_text": "убери отметку про бег",
+                    }
+                ],
+            }
+        )
+        assert await plan_from_answer(answer) is None
+
+    async def test_an_answer_that_tries_to_replace_the_day_text_produces_no_card(
+        self,
+    ) -> None:
+        """
+        Замена текста дня — тоже W2, и её нет в `mode`.
+
+        `JournalOp` экрана разбора дня умеет сказать `replace`; план чата — нет.
+        Разница существенна: `replace` теряет уже написанное.
+        """
+        answer = answer_with(
+            {
+                "entry_date": DAY.isoformat(),
+                "journal": {
+                    "op": "write_journal",
+                    "content": "новый текст",
+                    "mode": "replace",
+                },
+            }
+        )
+        assert await plan_from_answer(answer) is None
+
     async def test_the_repair_pass_is_asked_exactly_once(self) -> None:
         """Модель, промахнувшаяся дважды, не сходится — второго круга нет."""
         calls: list[str] = []
