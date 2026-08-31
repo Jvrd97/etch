@@ -45,7 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.daytime import DayBoundary, current_boundary
+from app.core.daytime import DayBoundary, current_boundary, local_time
 from app.day.constraints import DraftItem, PlanDraft
 from app.crud import goal as goal_crud
 from app.crud import mark as mark_crud
@@ -62,7 +62,17 @@ from app.day.plan_validate import (
     validate_plan,
 )
 from app.models.day import DayRuleSet
+from app.crud import plan_revision as revision_crud
 from app.models.plan import EDITED_BY_HUMAN, DayPlan, PlanItem, PlanSection
+from app.models.plan_revision import (
+    AUTHOR_HUMAN,
+    FIELD_ORD,
+    FIELD_SECTION_ID,
+    FIELD_STATUS,
+    FIELD_TEXT,
+    FIELD_WINDOW_END,
+    FIELD_WINDOW_START,
+)
 from app.schemas.plan import (
     PlanDocument,
     PlanItemCreate,
@@ -286,9 +296,20 @@ async def replace_plan(
     rule: DayRuleSet,
     document: PlanDocument,
     boundary: DayBoundary | None = None,
+    author: str = AUTHOR_HUMAN,
+    *,
+    report_id: uuid.UUID | None = None,
+    model: str | None = None,
+    prompt_hash: str | None = None,
 ) -> DayPlan:
     """
     Store `document` as the plan of `on`, replacing whatever was there.
+
+    **Запись документа целиком режет ревизию** (`#150`). Это генерация, чьей бы
+    она ни была: план заменён, а не поправлен, и «что предлагали до этого»
+    сохраняется только снимком. Первая ревизия дня получает номер 0 — она и есть
+    предложение машины, если писал скелет (`author='fallback'`) или модель.
+    Правка по одному пункту ревизии не режет — она пишет журнал.
 
     Raises `PlanRejected` before touching a row: nothing is deleted for a plan
     that is not going to be accepted, so a rejected `POST` leaves yesterday's
@@ -354,6 +375,15 @@ async def replace_plan(
         raise RuntimeError(
             f"plan for {on.isoformat()} vanished between insert and read."
         )
+    await revision_crud.cut_revision(
+        db,
+        on,
+        stored,
+        author,
+        report_id=report_id,
+        model=model,
+        prompt_hash=prompt_hash,
+    )
     return stored
 
 
@@ -517,6 +547,7 @@ async def to_response(db: AsyncSession, plan: DayPlan) -> PlanResponse:
         condition_tomorrow=plan.condition_tomorrow,
         status=plan.status,
         source=plan.source,
+        needs_review=plan.needs_review,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         sections=sections,
@@ -711,6 +742,7 @@ async def edit_item(
     if item is None:
         raise PlanItemNotFound(item_id)
 
+    before = _journalled(item)
     fields = patch.model_dump(exclude_unset=True)
     for name in PATCH_COLUMNS:
         if name in fields:
@@ -739,7 +771,73 @@ async def edit_item(
     except IntegrityError as error:
         db.expire(item)
         raise _reject_from_db(error) from error
+    await _journal(db, item, on, before, editor)
     return item
+
+
+def _journalled(item: PlanItem) -> dict[str, str | None]:
+    """
+    Значения полей, за которыми следит журнал правок (`#150`).
+
+    Ровно те, по которым видно, что человек переставил: два конца окна, текст,
+    место в плане. Снимаются до правки и сравниваются после — правка, ничего не
+    изменившая, строки не пишет.
+    """
+    return {
+        FIELD_WINDOW_START: _clock(item.starts_at),
+        FIELD_WINDOW_END: _clock(item.ends_at),
+        FIELD_TEXT: item.text_md,
+        FIELD_ORD: str(item.ord),
+        FIELD_SECTION_ID: str(item.section_id),
+    }
+
+
+def _clock(value: datetime | None) -> str | None:
+    """
+    Момент окна как «ЧЧ:ММ» на часах человека.
+
+    Через `local_time`, а не `strftime` по хранимому UTC: диф читает человек, и
+    «было 07:00, стало 12:00» про девять утра — не то, что он делал.
+    """
+    return None if value is None else local_time(value).strftime("%H:%M")
+
+
+async def clear_needs_review(db: AsyncSession, on: date) -> None:
+    """
+    Снять пометку «собран ночью, не проверен» с плана этой даты.
+
+    Зовётся из путей правки пункта и из первой отметки дня (`#151`). Отдельной
+    ручки «я посмотрел» нет намеренно: пометка снимается действием с планом, а
+    кнопка подтверждения — это ещё одно место, где можно соврать себе.
+    """
+    plan = await get_plan(db, on)
+    if plan is not None and plan.needs_review:
+        plan.needs_review = False
+        await db.flush()
+
+
+async def _journal(
+    db: AsyncSession,
+    item: PlanItem,
+    on: date,
+    before: dict[str, str | None],
+    editor: str,
+) -> None:
+    """
+    Записать в журнал всё, что эта правка изменила.
+
+    Правки, сделанные генерацией, в журнал не идут: автором правки человека
+    помечается только человек, иначе диф «что человек переставил» посчитает
+    саму же машину.
+    """
+    if editor != EDITED_BY_HUMAN:
+        return
+    await clear_needs_review(db, on)
+    after = _journalled(item)
+    for name, old_value in before.items():
+        await revision_crud.record_change(
+            db, item, on, name, old_value, after[name], AUTHOR_HUMAN
+        )
 
 
 async def add_item(
@@ -804,6 +902,13 @@ async def add_item(
     except IntegrityError as error:
         db.expunge(item)
         raise _reject_from_db(error) from error
+    if editor == EDITED_BY_HUMAN:
+        # Появление строки — тоже правка, и без неё пункт, которого машина не
+        # предлагала, читался бы на экране как непонятый: изменён, а записи нет.
+        await revision_crud.record_change(
+            db, item, on, FIELD_STATUS, None, "added", AUTHOR_HUMAN
+        )
+        await clear_needs_review(db, on)
     return item
 
 
@@ -821,6 +926,7 @@ async def remove_item(db: AsyncSession, on: date, item_id: uuid.UUID) -> None:
     await db.delete(item)
     await db.flush()
     await _renumber(db, section_id, parent_id)
+    await clear_needs_review(db, on)
 
 
 async def move_item(
@@ -850,6 +956,7 @@ async def move_item(
                 message="Пункт не может стать своим же родителем.",
             )
 
+    before = _journalled(item)
     source_section, source_parent = item.section_id, item.parent_id
     same_level = source_section == move.section_id and source_parent == move.parent_id
 
@@ -871,6 +978,7 @@ async def move_item(
     await _renumber(db, move.section_id, move.parent_id, target)
     if not same_level:
         await _renumber(db, source_section, source_parent)
+    await _journal(db, item, on, before, EDITED_BY_HUMAN)
     return item
 
 
@@ -959,6 +1067,7 @@ async def human_warnings(
 
 
 __all__ = [
+    "clear_needs_review",
     "PlanItemNotFound",
     "PlanRejected",
     "PlanSectionNotFound",

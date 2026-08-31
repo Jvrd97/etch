@@ -630,6 +630,39 @@ export const dayAPI = {
   close: async (date: string, draft: DayCloseDraft) => {
     return dayAPI.closeFinal(date, draft);
   },
+
+  /**
+   * Диф плана: что предлагала машина и что человек с этим сделал.
+   *
+   * `revision_zero: null` — плана на эту дату никто не генерировал, сравнивать
+   * не с чем. Это ответ, а не ошибка, и экран рисует под него ничего.
+   */
+  getPlanDiff: async (date: string) => {
+    return fetcher<PlanDiff>(`/day/${date}/plan/diff`);
+  },
+
+  /**
+   * Отчёт дня: последняя ревизия или названная номером.
+   *
+   * 404 значит «отчёт этого дня не собирали» — это не пустой текст, а другое
+   * состояние, и экран показывает под него кнопку сборки, а не пустую панель.
+   */
+  getReport: async (date: string, revision?: number) => {
+    const query = revision === undefined ? '' : `?revision=${revision}`;
+    return fetcher<DayReport>(`/day/${date}/report${query}`);
+  },
+
+  /**
+   * Пересобрать отчёт дня.
+   *
+   * Данные не менялись — сервер возвращает ту же ревизию: `content_hash`
+   * узнаёт себя, и вторая одинаковая ревизия не заводится.
+   */
+  buildReport: async (date: string, trigger: DayReportTrigger = 'button') => {
+    return fetcher<DayReport>(`/day/${date}/report?trigger=${trigger}`, {
+      method: 'POST',
+    });
+  },
 };
 
 // Day rules API: the canon of a day, versioned. There is no update and no
@@ -1293,6 +1326,8 @@ export interface Plan {
   condition_tomorrow: string | null;
   status: 'draft' | 'active' | 'closed';
   source: 'day-open' | 'import' | 'manual';
+  /** План собран ночным прогоном-страховкой и человеком не смотрен. */
+  needs_review: boolean;
   created_at: string;
   updated_at: string;
   sections: PlanSection[];
@@ -1409,6 +1444,15 @@ export type ClosingStage = 'open' | 'reviewed' | 'closed';
  * what keeps «не закрыл» a different answer from «проиграл», and `stage` splits
  * that further: `verdict: null` на стадии `reviewed` значит «рано».
  */
+/**
+ * Откуда взялся вердикт дня.
+ *
+ * `migrated_prose` — перенесён из `summaries/**` personal-os и пересчёту не
+ * подлежит: данных, по которым он выносился, не сохранилось. `none` — вердикта
+ * нет вовсе, и это не то же самое, что «проиграл».
+ */
+export type VerdictOrigin = 'computed' | 'migrated_prose' | 'none';
+
 export interface DaySummary {
   day_date: string;
   closed: boolean;
@@ -1438,6 +1482,8 @@ export interface DaySummary {
   /** Texts of the anchors that were neither closed nor set aside. */
   missing_anchors: string[];
   source: 'close' | 'import';
+  /** Вычислен вердикт здесь или перенесён прозой; `none` — вердикта нет. */
+  verdict_origin: VerdictOrigin;
 }
 
 /**
@@ -2114,11 +2160,89 @@ export const chatAPI = {
  * закрыт». The square of the timeline is painted from this field alone, which
  * is what `life.py` could not do while it was reading prose with a regexp.
  */
+/** Кто автор версии плана: модель, скелет, человек или внешний скилл. */
+export type PlanAuthor = 'ai' | 'fallback' | 'human' | 'skill';
+
+/** Поле пункта, изменение которого журналируется. */
+export type PlanChangeField =
+  | 'window_start'
+  | 'window_end'
+  | 'text'
+  | 'ord'
+  | 'section_id'
+  | 'status';
+
+/** Одна правка одного поля одного пункта. */
+export interface PlanFieldChange {
+  field: PlanChangeField;
+  old_value: string | null;
+  new_value: string | null;
+  author: PlanAuthor;
+  /** Ревизия, поверх которой правка сделана. */
+  revision_from: number | null;
+  changed_at: string;
+}
+
+/** Один пункт, который человек тронул, со всеми правками по нему. */
+export interface PlanItemDiff {
+  plan_item_id: string;
+  /** Текст пункта сейчас; пусто — пункт уже удалён. */
+  text_md: string;
+  changes: PlanFieldChange[];
+}
+
+/**
+ * Диф плана дня.
+ *
+ * `revision_zero: null` значит «плана никто не генерировал»: сравнивать не с
+ * чем, и это не то же самое, что «человек ничего не менял».
+ */
+export interface PlanDiff {
+  day_date: string;
+  revision_zero: number | null;
+  revision_zero_author: PlanAuthor | null;
+  latest_revision: number | null;
+  /** Сколько пунктов тронул человек — сводка над планом. */
+  moved_items: number;
+  items: PlanItemDiff[];
+}
+
+/** Что вызвало сборку отчёта дня. */
+export type DayReportTrigger = 'close' | 'button' | 'nightly' | 'api';
+
+/** Что один источник отдал отчёту и почему не больше. */
+export interface DayReportSource {
+  available: boolean;
+  count: number;
+  /** Почему записей нет; пусто — источник их отдал. */
+  note: string;
+}
+
+/**
+ * Одна ревизия отчёта дня.
+ *
+ * Ревизия неизменяема: пересборка добавляет строку, а не правит эту.
+ * `content_hash` — sha256 текста, и совпадение хэша значит «данные те же».
+ */
+export interface DayReport {
+  day_date: string;
+  revision: number;
+  trigger: DayReportTrigger;
+  content_md: string;
+  content_hash: string;
+  sources: Record<string, DayReportSource>;
+  built_at: string;
+  /** Все ревизии этой даты по возрастанию — для переключателя. */
+  revisions: number[];
+}
+
 export interface DayListItem {
   date: string;
   /** Title of the day's plan; empty when there is no plan or it had none. */
   title: string;
   verdict: Verdict | null;
+  /** Вычислен вердикт здесь или перенесён прозой; `none` — вердикта нет. */
+  verdict_origin: VerdictOrigin;
   /** Work tasks closed, and work tasks planned. */
   done: number;
   total: number;

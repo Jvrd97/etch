@@ -1745,3 +1745,53 @@ Feedback loops (backend): pytest **652/652 green**, `ruff check app tests` clean
 поднимается. Тесты шли против постгреса на localhost:5432 в отдельной базе `habit_test_92` —
 общая `habit_tracker_test` содержит `work_interval` из параллельной ветки, и `drop_all` падает
 на её внешнем ключе к `day`.
+
+---
+
+## 2026-08-31 — дорожка `fast-1`, тикеты PHASE-03/144, /145, /150, /151
+
+Четыре вертикальных среза одной сессией, каждый своим коммитом в ветке `fast-1`.
+Голова Alembic прошла путь `f7c9e1a3b5d8 → d4a6c8e0b2f5 → e5b7d9f1a3c6 → a7f9c1e3b5d7`,
+на каждом шаге ровно одна.
+
+**#144 — четвёртое состояние дня и вердикт, перенесённый прозой** (коммит `9489f15`).
+`app/imports/day_stage_backfill.py` — **new**; `app/models/summary.py`, `app/crud/summary.py`,
+`app/crud/week.py`, `app/schemas/summary.py`, `app/schemas/week.py`,
+`app/imports/personal_os.py` — **mod**. Схемы не тронуты: происхождение вердикта —
+производная от колонки `source`, а не новая колонка. `recompute_history` сменил тип
+возврата с `None` на `RecomputeReport`.
+
+**#145 — отчёт дня строкой базы** (коммит `1904e6f`). `app/models/day_report.py`,
+`app/day/report.py`, `app/schemas/day_report.py`, миграция `d4a6c8e0b2f5` — **new**;
+`app/api/day.py`, `app/models/__init__.py` — **mod**. Отчёт с поводом `close` собирается в
+обработчике `POST .../close/review`, а не в `app/crud/summary.py`: вызов оттуда замкнул бы
+импорт в цикл, а транзакция от места вызова не меняется.
+
+**#150 — ревизия 0 и журнал правок** (коммит `b71dbc8`). `app/models/plan_revision.py`,
+`app/crud/plan_revision.py`, `app/schemas/plan_revision.py`, миграция `e5b7d9f1a3c6` — **new**;
+`app/crud/plan.py`, `app/crud/mark.py`, `app/api/day.py`, `app/models/plan.py`,
+`app/models/__init__.py`, `app/imports/personal_os.py` — **mod**. Две сигнатуры сменились:
+`replace_plan` получил `author` и режет ревизию, `set_mark` получил `freeze_plan`.
+
+**#151 — ночной прогон-страховка** (коммит `e149993`). `app/jobs/__init__.py`,
+`app/jobs/nightly.py`, `app/core/locks.py`, миграция `a7f9c1e3b5d7` — **new**;
+`app/scheduling/registry.py`, `app/crud/plan.py`, `app/crud/mark.py`, `app/models/plan.py`,
+`app/schemas/plan.py`, `deploy/README.md` — **mod**. `lock_key` переехал из реестра в
+`app/core/locks.py`: тело задания не имеет права импортировать список всех заданий.
+
+**Тесты (new)**: `tests/test_migrated_verdicts.py`, `tests/test_day_report.py`,
+`tests/test_plan_revision.py`, `tests/test_nightly_plan.py`. Поправлены в ожиданиях:
+`tests/test_days_range.py` (набор полей `/days` проверяется вложением, а не равенством —
+новое поле рядом старого читателя не ломает).
+
+Что стоит назвать вслух: **#149 не сделан и не начат.** Он — дельта на `#95` (заводит
+`day_job`) и `#148` (генерация внутри процесса), а ни таблицы `day_job`, ни
+`app/day/handoff.py` в этой ветке не существует. Поэтому `#150` завёл `plan_revision.job_id`
+**без** внешнего ключа, а `#151` пишет план сам, минуя строку задачи. Обе точки помечены на
+доске роя.
+
+Feedback loops (backend): pytest **1236 passed, 2 skipped** против отдельной базы
+`habit_test_f1`; `ruff check app tests`, `ruff format --check app tests`,
+`mypy --strict app` — чисто (164 файла); `alembic heads` — одна голова; каждая из трёх
+миграций прогнана `upgrade → downgrade → upgrade` на `habit_mig_f1`. `make check` целиком не
+отрабатывал: docker на машине не поднимается.

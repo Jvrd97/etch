@@ -14,23 +14,27 @@ from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import plan_revision as revision_crud
 from app.crud import plan_violation as violation_crud
 from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
-from app.day import constraints, skeleton
+from app.day import constraints, report as report_service, skeleton
 from app.crud import training as training_crud
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
+from app.models.day_report import REPORT_TRIGGERS, TRIGGER_API, TRIGGER_CLOSE, DayReport
 from app.models.mark import SOURCE_WEB
+from app.models.plan_revision import AUTHOR_FALLBACK
 from app.schemas.anchor import (
     DayAnchorResponse,
     DayAnchorsIn,
     DayAnchorsResponse,
 )
+from app.schemas.day_report import DayReportResponse, DayReportSource
 from app.schemas.day import (
     DayDetailResponse,
     DayEdgeResponse,
@@ -54,6 +58,11 @@ from app.schemas.plan import (
     PlanItemResponse,
     PlanRejection,
     PlanResponse,
+)
+from app.schemas.plan_revision import (
+    PlanDiffResponse,
+    PlanFieldChange,
+    PlanItemDiff,
 )
 from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
@@ -447,6 +456,86 @@ def _refused_import(error: summary_crud.ImportedDayIsNotClosable) -> HTTPExcepti
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
 
+REPORT_NOT_BUILT = "отчёт этого дня ещё не собирали"
+REVISION_NOT_FOUND = "такой ревизии отчёта нет"
+
+
+async def _report_answer(db: AsyncSession, row: DayReport) -> DayReportResponse:
+    """Одна ревизия со списком всех ревизий этой даты рядом."""
+    revisions = await report_service.list_revisions(db, row.day_date)
+    return DayReportResponse(
+        day_date=row.day_date,
+        revision=row.revision,
+        trigger=row.trigger,
+        content_md=row.content_md,
+        content_hash=row.content_hash,
+        sources={
+            key: DayReportSource(**value) for key, value in (row.sources or {}).items()
+        },
+        built_at=row.built_at,
+        revisions=revisions,
+    )
+
+
+@router.get("/{on}/report", response_model=DayReportResponse)
+async def get_day_report(
+    on: date,
+    revision: int | None = Query(
+        default=None,
+        ge=0,
+        description="Номер ревизии; без него — последняя собранная",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> DayReportResponse:
+    """
+    Отчёт дня: последняя ревизия или названная номером.
+
+    Отчёта может не быть вовсе — его никто не собирал, — и это 404, а не пустой
+    текст: «отчёт пуст» и «отчёта нет» ведут к разным следующим действиям.
+    """
+    row = (
+        await report_service.latest_revision(db, on)
+        if revision is None
+        else await report_service.read_revision(db, on, revision)
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=REPORT_NOT_BUILT if revision is None else REVISION_NOT_FOUND,
+        )
+    return await _report_answer(db, row)
+
+
+@router.post(
+    "/{on}/report",
+    response_model=DayReportResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def post_day_report(
+    on: date,
+    trigger: str = Query(
+        default=TRIGGER_API,
+        description=f"Повод сборки: {' | '.join(REPORT_TRIGGERS)}",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> DayReportResponse:
+    """
+    Пересобрать отчёт дня и отдать ревизию — новую или ту же.
+
+    Данные не менялись — `content_hash` совпадает с последней ревизией, и
+    возвращается она: вторая одинаковая ревизия не заводится, `built_at` не
+    сдвигается. Прежние ревизии не переписываются никогда.
+    """
+    if trigger not in REPORT_TRIGGERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"неизвестный повод сборки: {trigger}",
+        )
+    day, _ = await _resolve(db, on)
+    row = await report_service.build_report(db, day.day_date, trigger)
+    return await _report_answer(db, row)
+
+
 @router.post(
     "/{on}/close/review",
     response_model=DaySummaryResponse,
@@ -477,13 +566,18 @@ async def post_close_review(
     """
     day, _ = await _resolve(db, on)
     try:
-        return await summary_crud.review_day(
+        answer = await summary_crud.review_day(
             db, day.day_date, body, idempotency_key=idempotency_key
         )
     except KeyBelongsToAnotherDay as error:
         raise _spent_elsewhere(error) from error
     except summary_crud.ImportedDayIsNotClosable as refused:
         raise _refused_import(refused) from refused
+    # Отчёт собирается тем же запросом и в той же транзакции: касание 15:40 —
+    # момент, когда факт по дню записан, и отчёт, собранный секундой позже
+    # отдельной ручкой, описывал бы уже другой день.
+    await report_service.build_report(db, day.day_date, TRIGGER_CLOSE)
+    return answer
 
 
 @router.post(
@@ -686,6 +780,52 @@ async def delete_work_interval(
     await work_crud.delete(db, row)
 
 
+@router.get("/{on}/plan/diff", response_model=PlanDiffResponse)
+async def get_plan_diff(
+    on: date,
+    db: AsyncSession = Depends(get_db),
+) -> PlanDiffResponse:
+    """
+    Что предлагала машина и что человек с этим сделал.
+
+    По каждому тронутому пункту — поле, старое значение, новое и автор. Пункт,
+    удалённый из плана, из дифа уходит вместе со своими записями (каскад), но в
+    снимке ревизии 0 остаётся: «машина это предлагала» — факт, который удалением
+    не отменяется.
+
+    День, которому плана никто не генерировал, отвечает пустым дифом с
+    `revision_zero: null` — сравнивать не с чем, и это ответ, а не ошибка.
+    """
+    plan = await plan_crud.get_plan(db, on)
+    diff = await revision_crud.diff_of(db, on, plan)
+    zero = diff.revision_zero
+    return PlanDiffResponse(
+        day_date=on,
+        revision_zero=None if zero is None else zero.revision,
+        revision_zero_author=None if zero is None else zero.author,
+        latest_revision=None if diff.latest is None else diff.latest.revision,
+        moved_items=diff.moved_items,
+        items=[
+            PlanItemDiff(
+                plan_item_id=one.plan_item_id,
+                text_md=one.text_md,
+                changes=[
+                    PlanFieldChange(
+                        field=change.field,
+                        old_value=change.old_value,
+                        new_value=change.new_value,
+                        author=change.author,
+                        revision_from=change.revision_from,
+                        changed_at=change.changed_at,
+                    )
+                    for change in one.changes
+                ],
+            )
+            for one in diff.items
+        ],
+    )
+
+
 @router.get("/{on}/plan/violations", response_model=list[PlanViolationResponse])
 async def get_plan_violations(
     on: date, db: AsyncSession = Depends(get_db)
@@ -767,7 +907,12 @@ async def post_plan_skeleton(
 
     document = violation_crud.skeleton_document(built, rule)
     try:
-        stored = await plan_crud.replace_plan(db, day.day_date, rule, document)
+        # `fallback` — автор ревизии, а не `human`: план собран без модели, и
+        # диф `#150` обязан работать и в этом случае, иначе «что предлагала
+        # машина» на дне без генерации не отвечается вовсе.
+        stored = await plan_crud.replace_plan(
+            db, day.day_date, rule, document, author=AUTHOR_FALLBACK
+        )
     except PlanRejected as rejected:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

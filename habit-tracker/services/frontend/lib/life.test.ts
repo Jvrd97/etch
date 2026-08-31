@@ -17,7 +17,15 @@ import {
 } from '@/lib/life';
 
 function day(date: string, overrides: Partial<DayListItem> = {}): DayListItem {
-  return { date, title: '', verdict: null, done: 0, total: 0, ...overrides };
+  return {
+    date,
+    title: '',
+    verdict: null,
+    verdict_origin: 'none',
+    done: 0,
+    total: 0,
+    ...overrides,
+  };
 }
 
 const TODAY = '2026-08-30';

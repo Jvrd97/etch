@@ -6,10 +6,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { DayListItem } from '@/lib/api';
 
 const DAYS: DayListItem[] = [
-  { date: '2025-12-31', title: 'Прошлый год', verdict: 'won', done: 1, total: 1 },
-  { date: '2026-07-31', title: 'Июль', verdict: 'lost', done: 0, total: 3 },
-  { date: '2026-08-28', title: 'Пятница', verdict: 'won', done: 4, total: 4 },
-  { date: '2026-08-30', title: 'Воскресенье', verdict: null, done: 0, total: 2 },
+  { date: '2025-12-31', title: 'Прошлый год', verdict: 'won', verdict_origin: 'computed', done: 1, total: 1 },
+  { date: '2026-07-31', title: 'Июль', verdict: 'lost', verdict_origin: 'computed', done: 0, total: 3 },
+  { date: '2026-08-28', title: 'Пятница', verdict: 'won', verdict_origin: 'computed', done: 4, total: 4 },
+  { date: '2026-08-30', title: 'Воскресенье', verdict: null, verdict_origin: 'none', done: 0, total: 2 },
 ];
 
 mock.module('@/hooks/useDays', () => ({

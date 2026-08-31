@@ -256,6 +256,11 @@ class ImportReport:
     training_days: int = 0
     training_complaints: int = 0
     training_records: int = 0
+    # Даты, у которых итог есть, а вердикта в нём нет: «**Формально — нет.**»
+    # прочиталось бы, а «Вне игры (выходной)» — нет, и это разные факты. Такой
+    # день остаётся `verdict = NULL` и попадает сюда списком, вместо того чтобы
+    # быть угаданным (`#144`).
+    unjudged: list[date] = field(default_factory=list)
 
     def _count(self, action: str) -> int:
         return sum(1 for one in self.days if one.action == action)
@@ -302,8 +307,14 @@ class ImportReport:
             f"жалоб: {self.training_complaints}",
             f"рекордов: {self.training_records}",
             f"дней без плана заведено: {len(self.gaps_filled)}",
+            f"итогов без вердикта: {_dates(self.unjudged)}",
             f"предупреждений: {len(self.warnings)}",
         ]
+
+
+def _dates(dates: list[date]) -> str:
+    """Даты списком для отчёта CLI; «нет», когда список пуст."""
+    return ", ".join(one.isoformat() for one in dates) if dates else "нет"
 
 
 def _goal_state(report: ImportReport) -> str:
@@ -967,7 +978,15 @@ async def _apply_marks(
             )
             continue
         await mark_crud.set_mark(
-            db, on, item_id, state=binding.state, note=binding.note, source=MARK_SOURCE
+            db,
+            on,
+            item_id,
+            state=binding.state,
+            note=binding.note,
+            source=MARK_SOURCE,
+            # Импорт не режет ревизий: пачка отметок августа — история импорта,
+            # а не история дня (`#150`).
+            freeze_plan=False,
         )
         written += 1
 
@@ -1004,6 +1023,9 @@ async def _apply_reported(
             state=reported.state,
             note=reported.note,
             source=MARK_SOURCE,
+            # Импорт не режет ревизий: пачка отметок августа — история
+            # импорта, а не история дня (`#150`).
+            freeze_plan=False,
         )
         written += 1
     return written
@@ -1051,6 +1073,7 @@ async def import_summary(
     *,
     root: Path,
     warnings: list[ImportWarning],
+    unjudged: list[date] | None = None,
 ) -> None:
     """
     Read one `summaries/**/*.md` into `day_summary` as it is written.
@@ -1077,6 +1100,10 @@ async def import_summary(
     day = await day_crud.ensure_day(db, on)
     rule = await day_crud.rule_for_date(db, on)
 
+    verdict = read_verdict(text)
+    if verdict is None and unjudged is not None and on not in unjudged:
+        unjudged.append(on)
+
     values = {
         "day_date": day.day_date,
         "rule_set_id": rule.id,
@@ -1085,7 +1112,7 @@ async def import_summary(
         # поверх дня, у которого сегодня было только касание 15:40, и вердикт
         # на строке со стадией `reviewed` база не примет.
         "stage": STAGE_CLOSED,
-        "verdict": read_verdict(text),
+        "verdict": verdict,
         "verdict_reason": "",
         "body_md": _rewrite_links(text, warnings, where),
         "source": SOURCE_IMPORT,
@@ -1223,7 +1250,14 @@ async def _import_summaries(
         if not force and known and stored.get(where) == digest:
             report.summaries_unchanged += 1
             continue
-        await import_summary(db, on, path, root=root, warnings=report.warnings)
+        await import_summary(
+            db,
+            on,
+            path,
+            root=root,
+            warnings=report.warnings,
+            unjudged=report.unjudged,
+        )
         report.summaries_written += 1
 
 

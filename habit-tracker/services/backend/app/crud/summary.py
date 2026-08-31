@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/143
-# summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at a touch only where nothing measured it), the two touches that move one row from `open` through `reviewed` to `closed` with an idempotency key each, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
+# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/143, PHASE-03/144
+# summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at a touch only where nothing measured it), the two touches that move one row from `open` through `reviewed` to `closed` with an idempotency key each, the whole-history recompute that never touches an imported verdict and now names the days it left alone instead of skipping them silently, and full-text search over the prose
 # summary: persistence of the day's итог — the facts gathered from rows that already exist (anchors now read off `day_anchor` rather than off the anchor lines of the plan), the upsert that closes a day, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
 """
 Database access for the итог of a day.
@@ -56,6 +56,7 @@ out of order, which is exactly what closing yesterday at 00:30 is.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
@@ -82,12 +83,14 @@ from app.models.summary import (
     STAGE_OPEN,
     STAGE_REVIEWED,
     DaySummary,
+    verdict_origin,
 )
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
 
 __all__ = [
     "ImportedDayIsNotClosable",
     "KeyBelongsToAnotherDay",
+    "RecomputeReport",
     "close_day",
     "facts_of",
     "get_summary",
@@ -147,6 +150,21 @@ class ImportedDayIsNotClosable(RuntimeError):
             "не пересчитывают. Правьте summary этого дня в personal-os и "
             "импортируйте заново."
         )
+
+
+@dataclass(frozen=True)
+class RecomputeReport:
+    """
+    Что пересчёт сделал и чего не стал делать, названное поимённо.
+
+    Пропуск перенесённого вердикта — не деталь реализации, а решение, и молчать
+    о нём нельзя: человек, нажавший «пересчитать», иначе прочитает неизменившееся
+    число как «пересчитали, вышло то же». `kept_prose` называет даты, на которых
+    пересчёт остановился, и ручка кладёт этот список в ответ.
+    """
+
+    judged: list[date] = field(default_factory=list)
+    kept_prose: list[date] = field(default_factory=list)
 
 
 def facts_of(
@@ -264,6 +282,7 @@ def _to_response(row: DaySummary, *, missing_anchors: list[str]) -> DaySummaryRe
         missing_data=list(row.missing_data),
         missing_anchors=missing_anchors,
         source=row.source,
+        verdict_origin=verdict_origin(row.source, row.verdict),
     )
 
 
@@ -302,6 +321,9 @@ def _preview(
         body_md="" if stored is None else stored.body_md,
         missing_data=list(verdict.missing_data),
         missing_anchors=missing_anchors,
+        verdict_origin=verdict_origin(
+            SOURCE_CLOSE if stored is None else stored.source, verdict.verdict
+        ),
     )
 
 
@@ -569,9 +591,13 @@ async def close_day(
     return await _answer(db, day.day_date, rule)
 
 
-async def recompute_history(db: AsyncSession) -> None:
+async def recompute_history(db: AsyncSession) -> RecomputeReport:
     """
     Re-judge every day that was closed here, and re-fold the streak over all of them.
+
+    Возвращает отчёт: какие даты пересужены и какие оставлены как есть, потому
+    что их вердикт перенесён прозой. Без этого списка пересчёт, ничего не
+    изменивший, неотличим от пересчёта, который решил ничего не менять.
 
     Идемпотентен: два прогона подряд оставляют те же значения, because every
     number written is a function of rows that the recompute itself does not
@@ -606,9 +632,13 @@ async def recompute_history(db: AsyncSession) -> None:
     result = await db.execute(select(DaySummary).order_by(DaySummary.day_date))
     streak = 0
 
+    report = RecomputeReport()
     for row in result.scalars().all():
         closed = row.stage == STAGE_CLOSED
+        if row.source != SOURCE_CLOSE:
+            report.kept_prose.append(row.day_date)
         if row.source == SOURCE_CLOSE:
+            report.judged.append(row.day_date)
             plan = await plan_crud.get_plan(db, row.day_date)
             marks = await mark_crud.list_marks(db, row.day_date)
             # Measurement over estimate, and the row is rewritten to what the
@@ -645,6 +675,7 @@ async def recompute_history(db: AsyncSession) -> None:
         row.streak_after = streak if closed else None
 
     await db.flush()
+    return report
 
 
 async def search(db: AsyncSession, query: str) -> list[DaySummary]:

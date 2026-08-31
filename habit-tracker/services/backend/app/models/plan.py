@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     Date,
@@ -159,6 +160,15 @@ class DayPlan(Base):
 
     status: Mapped[str] = mapped_column(String(16), server_default="active")
     source: Mapped[str] = mapped_column(String(16), server_default="day-open")
+
+    # План собран ночным прогоном-страховкой и человеком не смотрен (`#151`).
+    # Не `source`: источник у ночного плана тот же, что у любого скелета, а этот
+    # признак — про то, читал ли его человек. Снимается первой правкой пункта
+    # или первой отметкой дня; отдельной ручки под снятие нет, потому что
+    # «посмотрел» — это не кнопка, а действие с планом.
+    needs_review: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
     raw_md: Mapped[str | None] = mapped_column(Text, nullable=True)
 

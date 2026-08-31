@@ -1463,3 +1463,27 @@ Feedback loops (frontend): `bun test` **704/704 green**, `bunx tsc --noEmit` cle
 
 Feedback loops (frontend): `bun test` **761/761 green**, `bunx tsc --noEmit` clean,
 `bun run lint` 0 errors (6 warnings — в чужом `components/day/DayAnchors.test.tsx`).
+
+---
+
+## 2026-08-31 — дорожка `fast-1`, тикеты PHASE-03/144, /145, /150, /151
+
+`components/day/DayReportPreview.tsx` (+ тест), `lib/plan-diff.ts` (+ тест),
+`hooks/usePlanDiff.ts` — **new**.
+`lib/api.ts`, `lib/day-format.ts`, `lib/plan-violations.ts`, `components/day/DayVerdict.tsx`,
+`components/day/PlanSections.tsx`, `components/life/LifeGrid.tsx`, `components/DayScreen.tsx`,
+`components/mobile/MobileDayScreen.tsx` — **mod**.
+
+Три обязательных поля добавились в типы `lib/api.ts` и потянули за собой фикстуры:
+`DaySummary.verdict_origin` и `DayListItem.verdict_origin` (#144), `Plan.needs_review` (#151).
+Тронуты `components/DayScreen.test.tsx`, `components/day/DayVerdict.test.tsx`,
+`components/day/DaySidebar.test.tsx`, `components/life/LifeGrid.test.tsx`,
+`components/week/WeekScreen.test.tsx`, `hooks/useDay.test.ts`, `lib/life.test.ts`,
+`lib/plan.test.ts`.
+
+Что стоит назвать вслух: `DayReportPreview` **не импортирует `APIError`** и различает 404 по
+полю `status`. 26 тест-файлов подменяют модуль `@/lib/api` целиком, реестр модулей у bun общий
+на прогон, и импорт класса ронял бы их на линковке — не на ассерте, а раньше.
+
+Feedback loops (frontend): `bun test` — **1089 pass, 0 fail** (97 файлов);
+`bunx tsc --noEmit` — чисто.

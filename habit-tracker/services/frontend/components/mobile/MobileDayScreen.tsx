@@ -8,6 +8,9 @@ import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
+import DayReportPreview from '@/components/day/DayReportPreview';
+import { usePlanDiff } from '@/hooks/usePlanDiff';
+import { diffSummary, proposalsOf } from '@/lib/plan-diff';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayTraining from '@/components/day/DayTraining';
 import DayVerdict from '@/components/day/DayVerdict';
@@ -16,6 +19,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import {
+  NEEDS_REVIEW_BADGE,
   planAuthorLabel,
   planWideViolations,
   ruleLabel,
@@ -86,6 +90,10 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
   // и правится, и отмечается, и обе операции обязаны пережить друг друга.
   const editor = usePlanItemEdit(detail?.day.date ?? '');
+  // Диф перечитывается вместе с планом: правка меняет обоих одним действием.
+  const { diff } = usePlanDiff(detail?.day.date ?? '', editor.plan);
+  const proposals = useMemo(() => proposalsOf(diff), [diff]);
+  const planDiffLine = useMemo(() => diffSummary(diff), [diff]);
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -142,6 +150,11 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
             <p className="text-sm text-text-secondary">{plan.lede}</p>
           )}
           <p className="text-xs text-text-secondary">{planAuthorLabel(plan)}</p>
+          {plan.needs_review && (
+            <p className="inline-block px-3 py-1 rounded-2xl bg-warning/10 text-xs text-warning">
+              {NEEDS_REVIEW_BADGE}
+            </p>
+          )}
           {brokenPlanWide.length > 0 && (
             // Above the plan, because the line each of these is about is the one
             // that is not there: a missing health anchor has nothing to hang on.
@@ -162,10 +175,17 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           {editor.error && (
             <ErrorAlert message={editor.error} onDismiss={editor.dismissError} />
           )}
+          {planDiffLine !== null && (
+            // Над планом, потому что это цифра о плане целиком: подпись под
+            // пунктом говорит про пункт, а эта строка — про то, чем плох
+            // генератор в этот день.
+            <p className="text-sm text-text-secondary">{planDiffLine}</p>
+          )}
           <PlanSections
             sections={plan.sections}
             overlapping={overlappingItemIds(plan.overlaps)}
             violations={brokenByItem}
+            proposals={proposals}
             marking={{
               marks: marking.marks,
               saving: marking.saving,
@@ -242,6 +262,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           reload();
         }}
       />
+
+      <DayReportPreview date={day.date} compact />
 
       <DayNotebook
         value={detail.notebook}

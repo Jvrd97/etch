@@ -265,6 +265,13 @@ class PlanResponse(BaseModel):
     condition_tomorrow: str | None
     status: str
     source: str
+    needs_review: bool = Field(
+        False,
+        description=(
+            "План собран ночным прогоном-страховкой и человеком не смотрен. "
+            "Снимается первой правкой пункта или первой отметкой дня"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     sections: list[PlanSectionResponse] = Field(default_factory=list)

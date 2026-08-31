@@ -37,7 +37,6 @@ VPS. Три планировщика — три источника гонок з
 """
 
 import asyncio
-import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterator
@@ -48,6 +47,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.database import AsyncSessionLocal
+from app.core.locks import lock_key
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,7 @@ JobFunc = Callable[[], Awaitable[None]]
 # `deploy/README.md`, поэтому оно ограничено алфавитом, который переживает все три.
 JOB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
-# Разрядность ключа `pg_advisory_lock`: он принимает один bigint.
-LOCK_KEY_BYTES = 8
-
-# Пульс: единственное задание, которое приносит сам этот тикет. Оно отвечает на
+# Пульс: единственное задание, которое приносит сам тикет `#108`. Оно отвечает на
 # вопрос «планировщик вообще жив и база из воркера видна» строкой в логе —
 # без него первое подтверждение работы воркера появилось бы только с `#99`.
 HEARTBEAT_INTERVAL_SECONDS = 300.0
@@ -76,18 +73,6 @@ class JobOutcome(Enum):
     SKIPPED_LOCKED = "skipped_locked"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
-
-
-def lock_key(name: str) -> int:
-    """
-    Ключ `pg_advisory_lock` для задания с этим именем.
-
-    Хеш, а не порядковый номер: номер зависит от порядка регистрации, и
-    добавление задания в середину списка молча переназначило бы блокировки всем
-    следующим. `blake2b` берётся ради фиксированной длины, не ради стойкости.
-    """
-    digest = hashlib.blake2b(name.encode("utf-8"), digest_size=LOCK_KEY_BYTES).digest()
-    return int.from_bytes(digest, "big", signed=True)
 
 
 @dataclass(frozen=True)
@@ -292,5 +277,31 @@ registry.register(
         timeout_seconds=HEARTBEAT_TIMEOUT_SECONDS,
         func=heartbeat,
         summary="строка в лог: планировщик жив, база из воркера видна",
+    )
+)
+
+
+# Ночной прогон-страховка (`#151`). Импорт стоит здесь, а не наверху файла:
+# `app.jobs.nightly` читает crud, а crud не должен тянуть за собой реестр
+# расписания — иначе импорт замыкается через `app.models`.
+from app.jobs.nightly import (  # noqa: E402  (циклический импорт иначе)
+    JOB_NAME as NIGHTLY_JOB_NAME,
+)
+from app.jobs.nightly import (  # noqa: E402
+    NIGHTLY_INTERVAL_SECONDS,
+    NIGHTLY_TIMEOUT_SECONDS,
+    run_nightly,
+)
+
+registry.register(
+    ScheduledJob(
+        name=NIGHTLY_JOB_NAME,
+        interval_seconds=NIGHTLY_INTERVAL_SECONDS,
+        timeout_seconds=NIGHTLY_TIMEOUT_SECONDS,
+        func=run_nightly,
+        summary=(
+            "скелет плана на завтра, если плана нет и завтра рабочий день; "
+            "модель не зовётся, план помечается needs_review"
+        ),
     )
 )

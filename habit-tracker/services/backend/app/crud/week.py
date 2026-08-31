@@ -38,7 +38,7 @@ from app.day.week import week_bounds
 from app.models.day import Day
 from app.models.mark import PlanMark
 from app.models.plan import DayPlan, PlanItem, PlanSection
-from app.models.summary import DaySummary
+from app.models.summary import ORIGIN_NONE, DaySummary, verdict_origin
 from app.models.week import Week, WeekReviewItem
 from app.schemas.week import (
     DayListItem,
@@ -82,11 +82,13 @@ async def list_days(db: AsyncSession, start: date, end: date) -> list[DayListIte
     for on in dates:
         plan = by_date.get(on)
         counts = mark_crud.task_counts(plan, marks.get(on, []))
+        verdict, origin = verdicts.get(on, (None, ORIGIN_NONE))
         listed.append(
             DayListItem(
                 date=on,
                 title=(plan.title if plan is not None and plan.title else ""),
-                verdict=verdicts.get(on),
+                verdict=verdict,
+                verdict_origin=origin,
                 done=counts.done,
                 total=counts.planned,
             )
@@ -123,14 +125,24 @@ async def _marks_in_range(
 
 async def _verdicts_in_range(
     db: AsyncSession, start: date, end: date
-) -> dict[date, str | None]:
-    """The verdict of every closed day of the range; a date absent is «не закрыт»."""
+) -> dict[date, tuple[str | None, str]]:
+    """
+    Вердикт каждого закрытого дня диапазона и его происхождение.
+
+    Даты в ответе нет — день не закрыт. Происхождение едет рядом с вердиктом, а
+    не считается на экране: «жёлтый квадрат, который никто не вычислял» — это
+    факт строки, и таймлайн подписывает его, а не догадывается по источнику,
+    которого у него нет.
+    """
     result = await db.execute(
-        select(DaySummary.day_date, DaySummary.verdict).where(
+        select(DaySummary.day_date, DaySummary.verdict, DaySummary.source).where(
             DaySummary.day_date.between(start, end)
         )
     )
-    return {row.day_date: row.verdict for row in result}
+    return {
+        row.day_date: (row.verdict, verdict_origin(row.source, row.verdict))
+        for row in result
+    }
 
 
 async def get_week(db: AsyncSession, iso: str) -> Week | None:
