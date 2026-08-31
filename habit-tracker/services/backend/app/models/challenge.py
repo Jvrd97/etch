@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127
+# [review:need-review] PHASE-03/127, PHASE-03/129
 # summary: the two challenge tables — `challenges` (the promise: rule, window, failure mode, status) and `challenge_days` (one verdict per day, unique on `(challenge_id, day)` so a re-materialization lands on the row it already wrote)
 """
 Челлендж как обязательство: правило, окно, вердикт на каждый день.
@@ -35,6 +35,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+from app.models.checks import in_list
 
 # Как челлендж заканчивается. `any_miss` — первый промах заваливает;
 # `budget` — заваливает `allowed_misses + 1`-й.
@@ -46,12 +47,29 @@ STATUS_ACTIVE = "active"
 STATUS_WON = "won"
 STATUS_FAILED = "failed"
 STATUS_ABANDONED = "abandoned"
+# Обязательство, которое ещё никто на себя не взял: предложено, не принято.
+# Дни для него не материализуются и счёт не идёт — до тех пор, пока человек не
+# нажмёт «принять».
+STATUS_PROPOSED = "proposed"
 CHALLENGE_STATUSES: tuple[str, ...] = (
+    STATUS_PROPOSED,
     STATUS_ACTIVE,
     STATUS_WON,
     STATUS_FAILED,
     STATUS_ABANDONED,
 )
+
+# Откуда челлендж взялся. На расчёт не влияет вовсе — влияет на путь появления:
+# человек заводит обязательство сразу активным, модель и план дня только
+# предлагают.
+ORIGIN_HUMAN = "human"
+ORIGIN_AI = "ai"
+ORIGIN_PLAN = "plan"
+CHALLENGE_ORIGINS: tuple[str, ...] = (ORIGIN_HUMAN, ORIGIN_AI, ORIGIN_PLAN)
+# Источники, которым запись в базу разрешена только через предложение. Одной
+# галлюцинации в JSON достаточно, чтобы завести человеку обязательство без
+# спроса, поэтому правило держит сервер, а не промпт.
+MACHINE_ORIGINS: tuple[str, ...] = (ORIGIN_AI, ORIGIN_PLAN)
 
 # Статусы, из которых пересчёт назад не отыгрывает: раз закрытая история
 # обязательства сама себя не переписывает.
@@ -76,6 +94,15 @@ class Challenge(Base):
         # Читательский путь списка: активные челленджи, у которых окно ещё не
         # кончилось.
         Index("ix_challenges_status_ends", "status", "ends_on"),
+        # Словари статуса и источника — те же, что в миграции, и написаны из
+        # тех же кортежей. Без них `create_all` строит таблицу без CHECK, и
+        # тесты пропускают статус, который прод отвергнет (#129).
+        CheckConstraint(
+            in_list("status", CHALLENGE_STATUSES), name="ck_challenge_status"
+        ),
+        CheckConstraint(
+            in_list("origin", CHALLENGE_ORIGINS), name="ck_challenge_origin"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
@@ -102,6 +129,9 @@ class Challenge(Base):
     allowed_misses: Mapped[int] = mapped_column(SmallInteger, server_default="0")
 
     status: Mapped[str] = mapped_column(String(12), server_default=STATUS_ACTIVE)
+    # Кто предложил обязательство. Строки, написанные до #129, — человеческие:
+    # другого пути завести челлендж тогда не было.
+    origin: Mapped[str] = mapped_column(String(6), server_default=ORIGIN_HUMAN)
     # День, на котором бюджет промахов кончился. NULL, пока челлендж жив.
     failed_on: Mapped[date_type | None] = mapped_column(Date, nullable=True)
 

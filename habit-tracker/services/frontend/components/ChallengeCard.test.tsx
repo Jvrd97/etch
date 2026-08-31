@@ -25,6 +25,7 @@ const WATER: Challenge = {
   failure_mode: 'any_miss',
   allowed_misses: 0,
   status: 'active',
+  origin: 'human',
   failed_on: null,
   total_days: 7,
   day_number: 3,

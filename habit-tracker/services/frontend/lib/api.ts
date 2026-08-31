@@ -2217,7 +2217,21 @@ export type ChallengeDaySource = 'computed' | 'manual';
 /** `any_miss` — the first miss ends it; `budget` — the (allowed + 1)-th does. */
 export type ChallengeFailureMode = 'any_miss' | 'budget';
 
-export type ChallengeStatus = 'active' | 'won' | 'failed' | 'abandoned';
+export type ChallengeStatus =
+  | 'proposed'
+  | 'active'
+  | 'won'
+  | 'failed'
+  | 'abandoned';
+
+/**
+ * Кто предложил обязательство.
+ *
+ * На расчёт не влияет вовсе — влияет на путь появления: человек заводит
+ * челлендж сразу активным, модель и план дня только предлагают, и предложение
+ * ждёт кнопки «принять».
+ */
+export type ChallengeOrigin = 'human' | 'ai' | 'plan';
 
 export interface ChallengeDay {
   day: string;
@@ -2239,6 +2253,7 @@ export interface Challenge {
   failure_mode: ChallengeFailureMode;
   allowed_misses: number;
   status: ChallengeStatus;
+  origin: ChallengeOrigin;
   failed_on: string | null;
   total_days: number;
   day_number: number;
@@ -2319,6 +2334,30 @@ export const challengesAPI = {
 
   recompute: async (id: number) => {
     return fetcher<Challenge>(`/challenges/${id}/recompute`, { method: 'POST' });
+  },
+
+  /**
+   * Принять предложение: оно становится обязательством и начинает считаться.
+   *
+   * Дни считаются от `starts_on`, включая прожитые, — окно человек прочитал,
+   * когда нажимал «принять».
+   */
+  accept: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}/accept`, { method: 'POST' });
+  },
+
+  /**
+   * Отклонить предложение.
+   *
+   * Отдельной ручки нет намеренно: отклонённое предложение — это брошенный
+   * челлендж, и `PATCH {status:'abandoned'}` уже значит ровно это. Второй путь
+   * означал бы два способа сказать одно.
+   */
+  decline: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'abandoned' }),
+    });
   },
 
   /**
