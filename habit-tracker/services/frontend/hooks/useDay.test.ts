@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/90
+// [review:need-review] PHASE-03/86, PHASE-03/147, PHASE-03/88, PHASE-03/90
 // summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day (whether the server honours it is the server's call since #90)
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -108,6 +108,7 @@ const DAY: DayDetail = {
 };
 
 let getToday: ReturnType<typeof mock>;
+let listViolations: ReturnType<typeof mock>;
 let getDay: ReturnType<typeof mock>;
 let openToday: ReturnType<typeof mock>;
 let openDay: ReturnType<typeof mock>;
@@ -161,12 +162,15 @@ mock.module('@/lib/api', () => ({
     get: (date: string) => getDay(date),
     openToday: () => openToday(),
     open: (date: string) => openDay(date),
+    violations: () => listViolations(),
+    buildSkeleton: () => Promise.resolve(null),
   },
 }));
 
 const { useDay } = await import('./useDay');
 
 beforeEach(() => {
+  listViolations = mock(() => Promise.resolve([]));
   getToday = mock(() => Promise.resolve(DAY));
   getDay = mock(() => Promise.resolve(DAY));
   openToday = mock(() => Promise.resolve(DAY));

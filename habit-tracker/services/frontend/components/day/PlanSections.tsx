@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88
-// summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, and the mark of each line when the screen passes one in
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/147
+// summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
 
 import { Clock, CornerDownRight, Link2 } from 'lucide-react';
 import PlanItemMark from '@/components/day/PlanItemMark';
-import type { Mark, MarkState, PlanItem, PlanSection } from '@/lib/api';
+import type { Mark, MarkState, PlanItem, PlanSection, PlanViolation } from '@/lib/api';
+import { ruleLabel } from '@/lib/plan-violations';
 import {
   EMPTY_PLAN_TEXT,
   extraLines,
@@ -43,6 +44,14 @@ export interface PlanSectionsProps {
   marking?: PlanMarking;
   /** Mobile trims the type scale; the structure is identical. */
   compact?: boolean;
+  /**
+   * Which rules each line broke, by item id.
+   *
+   * Empty is the normal case. A line that broke one is still drawn and still
+   * markable — the edit stands; what it gains is a label saying which rule of
+   * the canon it stepped over.
+   */
+  violations?: Map<string, PlanViolation[]>;
 }
 
 /**
@@ -63,6 +72,7 @@ export default function PlanSections({
   overlapping,
   marking,
   compact = false,
+  violations,
 }: PlanSectionsProps) {
   if (sections.length === 0) {
     return (
@@ -91,6 +101,7 @@ export default function PlanSections({
                 overlapping={overlapping}
                 marking={marking}
                 compact={compact}
+                violations={violations}
               />
             ))}
           </ul>
@@ -106,6 +117,7 @@ interface PlanLineProps {
   overlapping: Set<string>;
   marking?: PlanMarking;
   compact: boolean;
+  violations?: Map<string, PlanViolation[]>;
 }
 
 /**
@@ -115,7 +127,15 @@ interface PlanLineProps {
  * drawn as its own line for exactly that reason: 29 August showed that a
  * minimum written inside a task does not get done.
  */
-function PlanLine({ item, level, overlapping, marking, compact }: PlanLineProps) {
+function PlanLine({
+  item,
+  level,
+  overlapping,
+  marking,
+  compact,
+  violations,
+}: PlanLineProps) {
+  const broken = violations?.get(item.id) ?? [];
   const indent = Math.min(level, MAX_INDENT_LEVEL) * INDENT_PER_LEVEL;
   const kind = itemKindLabel(item.kind);
   const rigidity = rigidityLabel(item.rigidity);
@@ -150,6 +170,18 @@ function PlanLine({ item, level, overlapping, marking, compact }: PlanLineProps)
                 {rigidity}
               </span>
             )}
+            {broken.map((violation) => (
+              // Marked, not hidden and not blocked: «свой день человек правит
+              // свободно», and a rule nobody is told about is a rule that does
+              // not exist.
+              <span
+                key={violation.id}
+                className="px-2 py-0.5 rounded-2xl bg-warning/10 text-xs text-warning"
+                title={ruleLabel(violation.rule_code)}
+              >
+                {ruleLabel(violation.rule_code)}
+              </span>
+            ))}
           </div>
 
           {item.starts_at && item.ends_at && (
@@ -217,6 +249,7 @@ function PlanLine({ item, level, overlapping, marking, compact }: PlanLineProps)
               overlapping={overlapping}
               marking={marking}
               compact={compact}
+              violations={violations}
             />
           ))}
         </ul>

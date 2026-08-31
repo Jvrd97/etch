@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { DayDetail, Plan } from '@/lib/api';
+import type { DayDetail, Plan, PlanViolation } from '@/lib/api';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
 import { DAY_NEVER_OPENED } from '@/lib/marks';
@@ -180,6 +180,7 @@ let state: {
   detail: DayDetail | null;
   loading: boolean;
   error: string | null;
+  violations: PlanViolation[];
   reload: () => void;
 };
 
@@ -199,7 +200,7 @@ mock.module('@/hooks/useDays', () => ({
 const { default: DayScreen } = await import('./DayScreen');
 
 beforeEach(() => {
-  state = { detail: DAY, loading: false, error: null, reload: () => {} };
+  state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
 });
 
 afterEach(() => {
@@ -281,7 +282,7 @@ describe('DayScreen', () => {
   });
 
   it('shows the failure instead of an empty day', () => {
-    state = { detail: null, loading: false, error: 'нет правила', reload: () => {} };
+    state = { detail: null, loading: false, error: 'нет правила', violations: [], reload: () => {} };
     render(<DayScreen date="1999-01-01" />);
 
     expect(screen.getByText('нет правила')).toBeDefined();

@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134, PHASE-03/147
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
@@ -442,6 +442,27 @@ export const dayAPI = {
     return fetcher<void>(`/day/${date}/work-intervals/${intervalId}`, {
       method: 'DELETE',
     });
+  },
+
+  /**
+   * The rules this day's plan broke.
+   *
+   * `warn` is a person's own edit, stored and annotated rather than refused;
+   * `block` is a draft that never reached the database and lies here as the
+   * explanation of why the day has no plan.
+   */
+  violations: async (date: string) => {
+    return fetcher<PlanViolation[]>(`/day/${date}/plan/violations`);
+  },
+
+  /**
+   * Build the day out of the canon, without a model.
+   *
+   * The insurance of `#147`: the day is never left without a plan, whatever the
+   * model does. Writes only on `date` — the neighbours are not touched.
+   */
+  buildSkeleton: async (date: string) => {
+    return fetcher<Plan>(`/day/${date}/plan/skeleton`, { method: 'POST' });
   },
 
   /** Replace the day's notebook text; it stays one entry per date. */
@@ -985,6 +1006,35 @@ export interface Plan {
   sections: PlanSection[];
   schedule: ScheduleEntry[];
   overlaps: ScheduleOverlap[];
+}
+
+/** Which rule of the canon a draft plan broke. Mirrors `app/day/constraints.py`. */
+export type PlanRuleCode =
+  | 'hard_edges_only'
+  | 'free_evening_empty'
+  | 'work_cap'
+  | 'task_cap'
+  | 'health_before_work'
+  | 'relationship_anchor_required'
+  | 'no_overlap'
+  | 'target_day_only';
+
+/**
+ * One broken rule, recorded beside the day.
+ *
+ * `detail` carries item ids and numbers and never the text of a line: the row
+ * outlives the plan that produced it, and a task can be named after a
+ * diagnosis. The screen therefore looks a line up by id rather than reading a
+ * quote out of the violation.
+ */
+export interface PlanViolation {
+  id: number;
+  day_date: string;
+  rule_code: PlanRuleCode;
+  severity: 'block' | 'warn';
+  origin: 'ai' | 'fallback' | 'human';
+  detail: Record<string, unknown>;
+  created_at: string;
 }
 
 /**

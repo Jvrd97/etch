@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/142
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/142, PHASE-03/147
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 from datetime import date
 from uuid import UUID
@@ -11,9 +11,11 @@ from app.core.daytime import today_local
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import plan_violation as violation_crud
 from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
 from app.crud.work_interval import IntervalNotOnDay
+from app.day import constraints, skeleton
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.day import Day, DayRuleSet
@@ -33,6 +35,7 @@ from app.schemas.mark import (
     NotebookResponse,
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
+from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
 from app.schemas.work_interval import (
     WorkDayResponse,
@@ -240,7 +243,23 @@ async def post_plan(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=rejected.as_detail(),
         ) from rejected
+    # The asymmetry of `#147`: a person's edit is stored and then annotated, a
+    # machine's draft is refused. The write has already happened here, so a
+    # broken rule becomes a `warn` row beside the plan rather than a 422 — a
+    # system that refuses a person the right to edit their own day gets
+    # abandoned in a week.
+    await violation_crud.record_violations(
+        db,
+        day.day_date,
+        constraints.check_all(
+            plan_crud.draft_of(document, day.day_date),
+            rule,
+            severity=constraints.SEVERITY_WARN,
+        ),
+        origin=constraints.ORIGIN_HUMAN,
+    )
     await day_crud.touch_day(db, day, opened=False)
+    await db.commit()
     return await plan_crud.to_response(db, stored)
 
 
@@ -457,3 +476,101 @@ async def delete_work_interval(
             detail=f"В дне {on.isoformat()} нет интервала {interval_id}.",
         )
     await work_crud.delete(db, row)
+
+
+@router.get("/{on}/plan/violations", response_model=list[PlanViolationResponse])
+async def get_plan_violations(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> list[PlanViolationResponse]:
+    """
+    Правила, которые план этого дня нарушил.
+
+    `severity='warn'` — правка человека, которая прошла: свой день человек
+    правит свободно, а нарушение записывается строкой рядом. `block` — черновик
+    машины, который до базы не доехал; он лежит здесь как объяснение, почему
+    плана нет.
+
+    В `detail` только id пунктов и числа. Текста пункта там нет и быть не может:
+    строки живут дольше плана, который их породил, а задача бывает названа
+    диагнозом.
+    """
+    await _resolve(db, on)
+    rows = await violation_crud.list_violations(db, on)
+    return [PlanViolationResponse.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{on}/plan/skeleton",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={422: {"model": SkeletonRejection}},
+)
+async def post_plan_skeleton(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> PlanResponse:
+    """
+    Собрать план дня из канона, без модели.
+
+    Страховка, отгруженная раньше того, что она страхует: после этой ручки день
+    не остаётся без плана ни при каком поведении модели — нет ответа, таймаут,
+    сломанный JSON, кончившаяся подписка.
+
+    Скелет проходит восемь ограничений **по построению**, потому что собран из
+    той же строки правила, против которой они проверяются: края дня — края
+    канона, потолок работы — потолок канона, свободный вечер пуст, потому что в
+    него ничего не кладётся, а якорь `relationship` появляется ровно тогда,
+    когда `relationship_anchor_required` требует его в нерабочий вечер.
+
+    Соседние даты не трогаются: все строки написаны на `on`, и правило
+    `target_day_only` это подтверждает. «Сегодня сорвалось — неделю не трогаем»
+    здесь машинная проверка, а не договорённость.
+
+    - **201** — план собран и записан
+    - **404** — дата вне всех интервалов канона
+    - **422** — скелет сам нарушил правило; в `detail` коды правил и id пунктов
+    """
+    day, rule = await _resolve(db, on)
+
+    built = skeleton.skeleton_plan(day.day_date, rule)
+    blocking = constraints.check_all(built.draft, rule)
+    if blocking:
+        # The skeleton breaking its own rules is a bug in the generator, not a
+        # complaint about the day. It is answered rather than swallowed, and the
+        # rows are recorded so the failure survives the response.
+        await violation_crud.record_violations(
+            db, day.day_date, blocking, origin=constraints.ORIGIN_FALLBACK
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "skeleton_violates_canon",
+                "violations": [
+                    {
+                        "rule_code": violation.rule_code,
+                        "severity": violation.severity,
+                        "detail": violation.detail,
+                        "message": violation.message,
+                    }
+                    for violation in blocking
+                ],
+            },
+        )
+
+    document = violation_crud.skeleton_document(built, rule)
+    try:
+        stored = await plan_crud.replace_plan(db, day.day_date, rule, document)
+    except PlanRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=rejected.as_detail(),
+        ) from rejected
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_FALLBACK
+    )
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_HUMAN
+    )
+    await day_crud.touch_day(db, day, opened=False)
+    await db.commit()
+    return await plan_crud.to_response(db, stored)

@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/142
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/142, PHASE-03/147
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
 import { useMemo } from 'react';
@@ -12,6 +12,12 @@ import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
+import {
+  planAuthorLabel,
+  planWideViolations,
+  ruleLabel,
+  violationsByItem,
+} from '@/lib/plan-violations';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
@@ -53,8 +59,13 @@ export interface MobileDayScreenProps {
 
 export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   // `true`: a person is looking at this day, which is what fills `opened_at`.
-  const { detail, loading, error, reload } = useDay(date, true);
+  const { detail, loading, error, violations, reload } = useDay(date, true);
   const marks = useMemo(() => detail?.marks ?? NO_MARKS, [detail]);
+  const brokenByItem = useMemo(() => violationsByItem(violations), [violations]);
+  // Violations that name no line: a health anchor that is not in the plan, a
+  // day off with no evening with the family. The offending line is the one that
+  // is missing, so they are shown above the plan rather than lost.
+  const brokenPlanWide = useMemo(() => planWideViolations(violations), [violations]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
   const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
@@ -111,6 +122,16 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           {plan.lede && (
             <p className="text-sm text-text-secondary">{plan.lede}</p>
           )}
+          <p className="text-xs text-text-secondary">{planAuthorLabel(plan)}</p>
+          {brokenPlanWide.length > 0 && (
+            // Above the plan, because the line each of these is about is the one
+            // that is not there: a missing health anchor has nothing to hang on.
+            <ul className="text-xs text-warning space-y-1">
+              {brokenPlanWide.map((violation) => (
+                <li key={violation.id}>{ruleLabel(violation.rule_code)}</li>
+              ))}
+            </ul>
+          )}
           <p className="text-sm text-text-secondary">
             Рабочих задач: {marking.counts.planned} из {rule.max_work_tasks} ·{' '}
             {taskCountsLine(marking.counts)}
@@ -122,6 +143,7 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           <PlanSections
             sections={plan.sections}
             overlapping={overlappingItemIds(plan.overlaps)}
+            violations={brokenByItem}
             marking={{
               marks: marking.marks,
               saving: marking.saving,

@@ -1,9 +1,9 @@
 // [review:need-review] PHASE-03/87
-// summary: component tests for the plan — sections keep the order they were sent, a minimum is drawn as its own line under its task, a task shows its criterion of being done, and a label without a column of its own is on the screen
+// summary: component tests for the plan — sections keep the order they were sent, a minimum is drawn as its own line under its task, a task shows its criterion of being done, a label without a column of its own is on the screen, and a line that broke a rule is marked with it rather than hidden or refused
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { PlanItem, PlanSection } from '@/lib/api';
+import type { PlanItem, PlanSection, PlanViolation } from '@/lib/api';
 import { EMPTY_PLAN_TEXT } from '@/lib/plan';
 import PlanSections from './PlanSections';
 
@@ -168,5 +168,55 @@ describe('PlanSections', () => {
     render(<PlanSections sections={[]} overlapping={NONE} />);
 
     expect(screen.getByText(EMPTY_PLAN_TEXT)).toBeDefined();
+  });
+});
+
+describe('PlanSections and the rules a line broke', () => {
+  const warn: PlanViolation = {
+    id: 11,
+    day_date: '2026-09-02',
+    rule_code: 'free_evening_empty',
+    severity: 'warn',
+    origin: 'human',
+    detail: { item_ids: ['i1'] },
+    created_at: '2026-09-02T10:00:00Z',
+  };
+
+  it('marks the line the rule was found on, and still draws it', () => {
+    // Машине нарушение блокирует запись, человеку — нет: правка стоит на месте,
+    // а рядом с ней написано, какое правило канона она переступила.
+    render(
+      <PlanSections
+        sections={[section({ items: [item({ id: 'i1', text_plain: 'вечерняя задача' })] })]}
+        overlapping={NONE}
+        violations={new Map([['i1', [warn]]])}
+      />
+    );
+
+    expect(screen.getByText('вечерняя задача')).toBeTruthy();
+    expect(screen.getByText('свободный вечер не расписывается')).toBeTruthy();
+  });
+
+  it('says nothing about a line that broke nothing', () => {
+    render(
+      <PlanSections
+        sections={[section({ items: [item({ id: 'i2', text_plain: 'обычный пункт' })] })]}
+        overlapping={NONE}
+        violations={new Map([['i1', [warn]]])}
+      />
+    );
+
+    expect(screen.queryByText('свободный вечер не расписывается')).toBeNull();
+  });
+
+  it('draws the plan unchanged when no violations are passed at all', () => {
+    render(
+      <PlanSections
+        sections={[section({ items: [item({ text_plain: 'пункт' })] })]}
+        overlapping={NONE}
+      />
+    );
+
+    expect(screen.getByText('пункт')).toBeTruthy();
   });
 });

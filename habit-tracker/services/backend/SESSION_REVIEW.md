@@ -1,5 +1,23 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/147 модуль ограничений и скелет плана
+
+Черновик плана проверяется **до** записи, восемью чистыми функциями, отвечающими кодами правил и id пунктов. Проверки `#87` остаются: база отказывает тому, что просочилось, модуль отбраковывает черновик, а его ответ уходит в ремонтный промпт `#148` — `IntegrityError` туда не положишь.
+
+- `app/day/constraints.py` — **new**: `hard_edges_only`, `free_evening_empty`, `work_cap`, `task_cap`, `health_before_work`, `relationship_anchor_required`, `no_overlap`, `target_day_only` и `check_all(draft, rule, severity=)`. Асимметрия строгости — параметр `severity`: машине `block`, человеку `warn`. Ни одного числа в модуле: все времена, потолки и списки якорей читаются со строки `day_rule_set`.
+- `app/day/skeleton.py` — **new**: `skeleton_plan(target, rule, carryovers, signals)`. Края канона, тренировочный слот, упирающийся концом в `work_start`, переносы по приоритету под двумя потолками, свободный блок пуст, якорь `relationship` — в нерабочий вечер. Что не влезло, возвращается в `overflow`, а не теряется.
+- `app/models/plan_violation.py` + `alembic/.../c8f0a2b4d6e7_plan_violation.py` — **new**: `day_date`, `plan_revision_id` (под `#150`), `job_id` (под `#149`), `rule_code`, `severity`, `origin`, `detail` jsonb, индекс (`day_date`, `rule_code`). `down_revision = b7d9f1a3c5e6` — фактическая голова ветки. Downgrade реальный: проверен `upgrade → downgrade → upgrade` на отдельной базе.
+- `app/crud/plan_violation.py` — **new**: запись нарушений с заменой по (день, origin), чтение и конвертер `skeleton_document` — скелет едет в базу через тот же `replace_plan`, что и план человека.
+- `app/crud/plan.py` — **mod**: `draft_of(document, on)` — те же подготовленные строки без текста.
+- `app/api/day.py` — **mod**: `POST /day/{date}/plan/skeleton`, `GET /day/{date}/plan/violations`; приём плана человеком после записи прогоняет `check_all` и пишет `warn` с `origin='human'`, не отклоняя правку.
+- `app/schemas/plan_violation.py` — **new**: `PlanViolationResponse`, `SkeletonRejection`. Поля, в котором мог бы проехать текст пункта, в файле нет.
+- `tests/test_day_constraints.py` — **new**: 32 теста, у каждого правила пропуск и отлов; отдельно — что `detail` не несёт текста и что grep не находит в двух модулях ни `16:00`, ни `22:30`, ни `480`.
+- `tests/test_day_skeleton.py` — **new**: 19 тестов. Скелет чист против `check_all` на действующей строке, на `legacy` и на строке со сдвинутыми краями; снимок соседних дат до и после вызова сравнивается как значение; правка человека в свободный вечер сохраняется и получает `warn`.
+
+Найдено по ходу: словарь кодов правил приходится писать трижды — в `constraints`, в модели и в миграции. Модель не может импортировать `constraints` (цикл через `app.models`), миграция не имеет права зависеть от кода приложения. Три списка держит вместе тест `test_the_model_and_the_module_name_the_same_rules`.
+
+Проверки: `ruff check` / `ruff format --check` / `mypy --strict` (131 файл), `alembic heads` — одна голова `c8f0a2b4d6e7`, `pytest tests/ -q` — 898 passed на базе `habit_tracker_test_fast1`. `# type: ignore` в новом коде — ноль. Docker не поднимается, `make check` целиком не гонялся.
+
 ## 2026-08-31 — PHASE-03/124 отмена тапа и источник отметки
 
 Отмена последнего тапа и распределение отметок по клиентам. Схема не менялась — `source`, `idempotency_key` и `undone_at` приехали с миграцией #121.

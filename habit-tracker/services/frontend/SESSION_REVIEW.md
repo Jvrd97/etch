@@ -1,5 +1,16 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/147 нарушения правил на экране дня
+
+- `lib/api.ts` — **mod**: типы `PlanRuleCode`, `PlanViolation`; `dayAPI.violations`, `dayAPI.buildSkeleton`.
+- `lib/plan-violations.ts` — **new** (+тест): `violationsByItem` (поиск строго по id — текста в нарушении нет и не будет), `planWideViolations` (правила, у которых нарушивший пункт — тот, которого нет), `ruleLabel`, `planAuthorLabel`.
+- `hooks/useDay.ts` — **mod**: нарушения тянутся рядом с днём; их падение не гасит день.
+- `components/day/PlanSections.tsx` — **mod**: пункт с `warn` помечен расшифровкой правила и по-прежнему рисуется и отмечается.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: в шапке плана — кем он собран (по колонке `source`, а не по заголовку); правила, не привязанные к строке, показаны над планом.
+- `components/day/PlanSections.test.tsx`, `hooks/useDay.test.ts`, `components/DayScreen.test.tsx` — **mod**: помеченный пункт, непомеченный пункт, план без нарушений вовсе; моки `useDay` и `dayAPI` получили новые члены.
+
+Проверки: `tsc --noEmit`, `eslint .` (0 problems), `bun test` — 860 passed.
+
 ## 2026-08-31 — PHASE-03/124 отмена тапа
 
 - `lib/api.ts` — **mod**: `quickMarksAPI.tap` принимает `Idempotency-Key`; `quickMarksAPI.undo`, `quickMarksAPI.sources`; типы `QuickMarkUndo`, `QuickMarkSourceUsage`.
