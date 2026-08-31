@@ -1,17 +1,18 @@
 'use client';
-// [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
-// summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, and one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end
+// [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
+// summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end, and a badge saying whether the next turn continues the CLI session or rebuilds the dialogue
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MessagesSquare, SendHorizonal } from 'lucide-react';
+import { MessagesSquare, RefreshCw, RotateCcw, SendHorizonal } from 'lucide-react';
 import ChatContextDisclosure from '@/components/chat/ChatContextDisclosure';
 import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
 import { chatAPI, type ChatMessage, type ChatUsage } from '@/lib/api';
+import { formatTokens, lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { turnCost } from '@/lib/chat-usage';
 import { entryInputClass } from '@/lib/ui-constants';
@@ -35,7 +36,7 @@ const EMPTY_USAGE: ChatUsage = {
 type Screen =
   | { status: 'loading' }
   | { status: 'failed'; message: string }
-  | { status: 'ready'; conversationId: number };
+  | { status: 'ready'; conversationId: number; resumeReady: boolean };
 
 /** The turn in flight, if any. `text` grows delta by delta. */
 type Turn =
@@ -95,7 +96,11 @@ export default function ChatPage() {
         if (cancelled) return;
         setMessages(detail.messages);
         setUsage(detail.usage);
-        setScreen({ status: 'ready', conversationId: conversation.id });
+        setScreen({
+          status: 'ready',
+          conversationId: conversation.id,
+          resumeReady: detail.resume_ready,
+        });
       } catch (error) {
         if (!cancelled) setScreen({ status: 'failed', message: errorText(error) });
       }
@@ -170,6 +175,13 @@ export default function ChatPage() {
       const detail = await chatAPI.get(conversationId);
       setMessages(detail.messages);
       setUsage(detail.usage);
+      // Признак пересчитывается после каждого хода, а не запоминается один раз:
+      // файл сессии может исчезнуть между двумя репликами.
+      setScreen({
+        status: 'ready',
+        conversationId,
+        resumeReady: detail.resume_ready,
+      });
       setTurn({ phase: 'idle' });
     },
     []
@@ -186,6 +198,8 @@ export default function ChatPage() {
   }
 
   const busy = turn.phase === 'streaming';
+  const mode = resumeMode(screen.resumeReady);
+  const cached = lastCacheRead(messages);
 
   return (
     <div className="space-y-6 animate-fade-rise">
@@ -196,6 +210,32 @@ export default function ChatPage() {
         onCancel={() => setRemoval('idle')}
         onConfirm={() => void remove(screen.conversationId)}
       />
+
+      {/* Значок режима хода живёт на экране, а не в шапке, по той же причине,
+          что и раскрывашка: `ChatHeader` рисует данное ему пропсами, а признак
+          продолжения пересчитывается после каждого хода. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          title={mode.hint}
+          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
+            mode.kind === 'resume'
+              ? 'bg-lime/15 text-lime'
+              : 'bg-surface text-text-secondary'
+          }`}
+        >
+          {mode.kind === 'resume' ? (
+            <RefreshCw className="w-3 h-3" strokeWidth={2} />
+          ) : (
+            <RotateCcw className="w-3 h-3" strokeWidth={2} />
+          )}
+          {mode.label}
+        </span>
+        {cached !== null && (
+          <span className="text-xs text-text-disabled">
+            прошлый ход прочитал из кеша {formatTokens(cached)} токенов
+          </span>
+        )}
+      </div>
 
       {/* Раскрывашка живёт на экране, а не внутри шапки: `ChatHeader` рисует
           то, что ему дали пропсами, и не ходит в сеть сам. */}

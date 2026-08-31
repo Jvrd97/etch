@@ -1,15 +1,16 @@
 'use client';
-// [review:need-review] PHASE-03/90
-// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form that closes an unclosed one, and the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose
+// [review:need-review] PHASE-03/90, PHASE-03/143
+// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form an unclosed one is closed through and the two touches it feeds — ревью 15:40 и вечернее закрытие — with the stage saying «вердикт будет вечером» instead of «проиграл», the note a day closed in one touch carries, and the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose
 
 import { useState } from 'react';
 import Markdown from '@/components/Markdown';
-import type { DayCloseDraft, DaySummary } from '@/lib/api';
+import type { DayCloseDraft, DayReviewDraft, DaySummary } from '@/lib/api';
 import {
+  REVIEW_SKIPPED,
+  closingHeadline,
   formatMinutes,
   missingDataLabel,
   streakLabel,
-  verdictLabel,
   verdictReasonLabel,
 } from '@/lib/day-format';
 
@@ -18,6 +19,11 @@ export const VERDICT_TITLE = 'Итог дня';
 
 export const CLOSE_DAY = 'Закрыть день';
 export const CLOSE_FAILED = 'День не закрылся';
+
+/** Касание около 15:40 — рабочая часть закрытия, без вердикта. */
+export const REVIEW_DAY = 'Записать ревью 15:40';
+export const REVIEW_DONE = 'Обновить ревью';
+export { REVIEW_SKIPPED };
 
 /** Said above the reason, so the number is never left to speak for itself. */
 export const REASON_PREFIX = 'Не выполнено:';
@@ -44,6 +50,8 @@ export interface DayVerdictProps {
   summary: DaySummary;
   /** Closes the day; resolves once the server has judged it. */
   onClose: (draft: DayCloseDraft) => Promise<void>;
+  /** Записывает касание 15:40; вердикта после него ещё нет. */
+  onReview: (draft: DayReviewDraft) => Promise<void>;
 }
 
 /**
@@ -73,18 +81,23 @@ export interface DayVerdictProps {
  * the override branch; the server answers 409 to that write, and this block says
  * so instead of offering a button that cannot work.
  */
-export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
+export default function DayVerdict({
+  summary,
+  onClose,
+  onReview,
+}: DayVerdictProps) {
   const [note, setNote] = useState('');
   const [body, setBody] = useState('');
   const [workMinutes, setWorkMinutes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (draft: DayCloseDraft) => {
+  /** One guard for both touches: the button that is pressed says what to send. */
+  const run = async (send: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      await onClose(draft);
+      await send();
     } catch (err) {
       setError(err instanceof Error ? err.message : CLOSE_FAILED);
     } finally {
@@ -95,11 +108,14 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
   const reason = verdictReasonLabel(summary.verdict_reason);
   const showReason = summary.closed && reason !== '';
   const imported = summary.source === 'import';
+  const reviewed = summary.reviewed_at !== null;
 
   // Only the fields a person filled in travel: an empty box is «не сказал»,
-  // and the server distinguishes that from a null it was handed.
-  const closingDraft = (): DayCloseDraft => {
-    const draft: DayCloseDraft = {};
+  // and the server distinguishes that from a null it was handed. Оба касания
+  // берут один и тот же черновик: поля у них общие, и заполнять их дважды —
+  // в 15:40 и вечером — человека заставлять не за что.
+  const closingDraft = (): DayCloseDraft & DayReviewDraft => {
+    const draft: DayCloseDraft & DayReviewDraft = {};
     if (body.trim() !== '') draft.body_md = body.trim();
     if (workMinutes.trim() !== '') draft.work_minutes = Number(workMinutes);
     return draft;
@@ -109,7 +125,7 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
     <section className="bg-card border border-white/5 rounded-3xl p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="text-xl font-semibold text-text-primary">
-          {verdictLabel(summary.verdict)}
+          {closingHeadline(summary.stage, summary.verdict)}
         </h2>
         {summary.streak_after !== null && (
           <span className="text-text-secondary">
@@ -188,6 +204,10 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
         </p>
       )}
 
+      {summary.review_skipped && (
+        <p className="mt-4 text-sm text-text-secondary">{REVIEW_SKIPPED}</p>
+      )}
+
       {!summary.closed ? (
         <div className="mt-5 pt-5 border-t border-white/5">
           <textarea
@@ -207,14 +227,24 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
             onChange={(event) => setWorkMinutes(event.target.value)}
             className="mt-3 w-full bg-surface rounded-2xl px-4 py-2 text-text-primary placeholder:text-text-disabled"
           />
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void run(closingDraft())}
-            className="mt-3 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
-          >
-            {CLOSE_DAY}
-          </button>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onReview(closingDraft()))}
+              className="rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
+            >
+              {reviewed ? REVIEW_DONE : REVIEW_DAY}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onClose(closingDraft()))}
+              className="rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
+            >
+              {CLOSE_DAY}
+            </button>
+          </div>
         </div>
       ) : imported ? (
         <p className="mt-5 pt-5 border-t border-white/5 text-sm text-text-secondary">
@@ -236,10 +266,12 @@ export default function DayVerdict({ summary, onClose }: DayVerdictProps) {
               type="button"
               disabled={busy || note.trim() === ''}
               onClick={() =>
-                void run({
-                  verdict_override: true,
-                  verdict_override_note: note.trim(),
-                })
+                void run(() =>
+                  onClose({
+                    verdict_override: true,
+                    verdict_override_note: note.trim(),
+                  })
+                )
               }
               className="mt-3 rounded-2xl bg-surface px-4 py-2 text-text-primary disabled:opacity-50"
             >

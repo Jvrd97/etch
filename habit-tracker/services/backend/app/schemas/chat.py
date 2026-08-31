@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
-# summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, and the body of a turn; the SSE events are described here as constants so the frontend parser and the server cannot drift
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
+# summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, the body of a turn, and the one flag that says whether the next turn continues a CLI session or rebuilds the dialogue; the SSE events are described here as constants so the frontend parser and the server cannot drift
 # summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
 # summary: PHASE-03/113 adds ConversationContext — the day card as it went into the prompt, its size, and which sections the ceiling ate
 """
@@ -127,6 +127,14 @@ class ConversationDetail(ConversationResponse):
     """Разговор вместе с сообщениями — то, что рисует экран после перезагрузки."""
 
     messages: list[MessageResponse]
+    resume_ready: bool = Field(
+        description=(
+            "Продолжит ли следующий ход сессию CLI (`--resume`) или пересоберёт "
+            "разговор из таблицы целиком. Считается на месте: сессия могла "
+            "исчезнуть с диска между двумя ходами. Ответ разговора от этого не "
+            "меняется — меняется его цена."
+        )
+    )
 
 
 class MessageCreate(BaseModel):

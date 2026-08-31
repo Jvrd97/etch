@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90
-# summary: `day_summary` — the verdict of a day with the rule it was reached under, the counters behind it, the prose made searchable by a generated tsvector, and the CHECK that makes an override without a note impossible for every writer
+# [review:need-review] PHASE-03/90, PHASE-03/143
+# summary: `day_summary` — the verdict of a day with the rule it was reached under, the counters behind it, the prose made searchable by a generated tsvector, the CHECK that makes an override without a note impossible for every writer, and the stage of closing with the two idempotency keys that make each of the two touches repeatable
 from __future__ import annotations
 
 from datetime import date as date_type
@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -40,18 +41,33 @@ SOURCE_CLOSE = "close"
 SOURCE_IMPORT = "import"
 SUMMARY_SOURCES: tuple[str, ...] = (SOURCE_CLOSE, SOURCE_IMPORT)
 
+# How far the closing of the day got. Закрытие идёт в два касания — около 15:40
+# факт по рабочим задачам, вечером якоря и вердикт, — и до `#143` в базе это
+# было одно событие, так что день, где ревью в 15:40 не случилось, ничем не
+# отличался от дня, где оно было.
+#
+# `open` is the stage of a day that has no row here at all: the live block
+# `GET /day/{date}` answers with carries it, and the column accepts it so that
+# the vocabulary is one list rather than two. Stored rows are `reviewed` or
+# `closed`.
+STAGE_OPEN = "open"
+STAGE_REVIEWED = "reviewed"
+STAGE_CLOSED = "closed"
+SUMMARY_STAGES: tuple[str, ...] = (STAGE_OPEN, STAGE_REVIEWED, STAGE_CLOSED)
+
 
 class DaySummary(Base):
     """
     The итог of one day: what the verdict was, and everything it stands on.
 
-    **Наличие строки и есть «день закрыт».** No column of its own: a boolean
-    beside a row that exists would be a second answer to the same question, and
-    the two would eventually disagree. `GET /day/{date}` answers with a live
-    recount and `verdict = null` while there is no row here, which is how «не
-    закрыл» stays a different fact from «проиграл». The *stage* of closing —
-    started, half-done — is `#143` and adds a column to this table rather than a
-    table of its own.
+    **Строка одна на дату, и на ней написано, как далеко зашло закрытие.** Since
+    `#143` «день закрыт» is `stage = 'closed'` rather than the mere existence of
+    the row: касание 15:40 пишет `reviewed`, вечернее — `closed`. A boolean
+    beside the stage would be a second answer to the same question, so there is
+    none. `GET /day/{date}` answers with a live recount and `verdict = null`
+    while the day is not closed, which is how «не закрыл» stays a different fact
+    from «проиграл» — and `stage = 'reviewed'` splits that further into «рано»
+    rather than «проиграл».
 
     **`rule_set_id` is stored, not derived.** The canon changed on 2026-08-17
     and will change again; a verdict that does not carry the numbers it was
@@ -79,6 +95,21 @@ class DaySummary(Base):
             "NOT verdict_override OR verdict_override_note IS NOT NULL",
             name="ck_day_summary_override_has_note",
         ),
+        CheckConstraint(in_list("stage", SUMMARY_STAGES), name="ck_day_summary_stage"),
+        # «До `final` вердикта нет»: `verdict = NULL` на стадии `reviewed`
+        # значит «рано», а не «проиграл». A rule of the base rather than of the
+        # service, because a verdict written onto a half-closed day would be
+        # indistinguishable afterwards from one the evening produced.
+        CheckConstraint(
+            f"stage = '{STAGE_CLOSED}' OR verdict IS NULL",
+            name="ck_day_summary_verdict_needs_closed",
+        ),
+        UniqueConstraint(
+            "review_idempotency_key", name="uq_day_summary_review_idempotency_key"
+        ),
+        UniqueConstraint(
+            "final_idempotency_key", name="uq_day_summary_final_idempotency_key"
+        ),
         Index("ix_day_summary_search", "search", postgresql_using="gin"),
     )
 
@@ -89,9 +120,32 @@ class DaySummary(Base):
     )
     rule_set_id: Mapped[int] = mapped_column(ForeignKey("day_rule_set.id"))
 
+    # Как далеко зашло закрытие. Стадия живёт здесь, а не в отдельной таблице
+    # `day_closing` из ADR-0015: итог дня уже целиком в этой строке, и двух
+    # хранилищ одного итога в одной базе быть не должно.
+    #
+    # `closed` по умолчанию — так строка, написанная импортом или существовавшая
+    # до `#143`, читается как закрытый день, каким она и является.
+    stage: Mapped[str] = mapped_column(Text, server_default=STAGE_CLOSED)
+    # NULL — касания 15:40 не было. Это обычный день, а не ошибка: стадия тогда
+    # прыгает `open → closed`, и `review_skipped` в ответе считается ровно по
+    # этой паре (`stage='closed'` при пустом `reviewed_at`), без второй колонки,
+    # которая рано или поздно разошлась бы с первой.
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Ключи идемпотентности двух касаний, по образцу `applied_daily_summaries`.
+    # Уникальны каждый сам по себе: один ключ закрывает одно касание одного дня,
+    # и повтор с тем же ключом обязан вернуть ту же строку, ничего не записав.
+    # NULL здесь — «касание пришло без ключа», и таких строк может быть сколько
+    # угодно: в postgres NULL уникальности не нарушает.
+    review_idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # NULL while nothing judged the day — an imported summary whose prose says
-    # «вне игры (выходной)» is exactly that, and so is a row `#143` will write
-    # for a closing that was started and not finished.
+    # «вне игры (выходной)» is exactly that, and so is a row on stage
+    # `reviewed`: закрытие началось и не дошло до вечера.
     verdict: Mapped[str | None] = mapped_column(Text, nullable=True)
     verdict_reason: Mapped[str] = mapped_column(Text, server_default="")
 

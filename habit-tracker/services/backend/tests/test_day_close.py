@@ -370,7 +370,12 @@ async def test_an_override_does_not_erase_the_prose_of_a_day_already_closed(
     assert stored["body_md"].startswith("что мешало")
     assert stored["work_minutes"] == 400
     assert stored["wrote_from_scratch"] == 45
-    assert stored["missing_data"] == []
+    # Минуты работы не вернулись в «не измерено» — ради этого тест и написан.
+    # `anchor_kinds` тут остаётся: план этого дня не называет кодов якорей
+    # (`#142`), и к тому, стёрло ли переопределение записанное, это отношения
+    # не имеет.
+    assert "work_minutes" not in stored["missing_data"]
+    assert stored["missing_data"] == ["anchor_kinds"]
     assert stored["source"] == "close"
     assert stored["verdict_override"] is True
 

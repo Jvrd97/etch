@@ -1296,3 +1296,79 @@ Feedback loops: `bun test` **743/743 green** (было 718), `bunx tsc --noEmit`
 
 Feedback loops: `bun test` **687/687 green** (было 682), `bunx tsc --noEmit` clean,
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+## 2026-08-31 — PHASE-03/112 (признак продолжения сессии в шапке чата)
+
+Тикет `112-chat-resume-with-replay-fallback`, фронтовая часть: без неё разница в цене хода
+не видна нигде.
+
+- `lib/chat-resume.ts` — **new**: `resumeMode` (размеченное объединение на два состояния, а не
+  булев флаг с подписью рядом), `lastCacheRead` — сколько прочитал из кеша последний отвеченный
+  ход, `formatTokens`. Четыре условия продолжения браузеру не видны вовсе: ответ приходит одним
+  полем `resume_ready` с сервера.
+- `lib/chat-resume.test.ts` — **new**, 6 тестов: обе формулировки, «пересбор — не поломка»,
+  число берётся у свежего хода, а не у самого дешёвого, пустая лента и разговор без ответа.
+- `app/chat/page.tsx` — **mod**: бейдж в шапке плюс строка «прошлый ход прочитал из кеша N
+  токенов». `Screen` получил `resumeReady`, и признак пересчитывается после каждого хода —
+  файл сессии может исчезнуть между двумя репликами.
+- `lib/api.ts` — **mod**: `resume_ready` в `ChatConversationDetail`.
+
+Feedback loops (frontend): `bun test` **780/780 green** (было 774), `bunx tsc --noEmit` clean.
+Бэкенд того же тикета: pytest 719/719, `ruff`, `mypy --strict`, одна голова `a8d0c2e4b6f1`.
+
+## 2026-08-31 — PHASE-03/122 (клавиша вместо клика на Today)
+
+Тикет `122-quick-mark-hotkeys-on-today`. Схемы и API он не трогает: `hotkey` уже приехал
+с #121 и уже отдаётся в `GET /quick-marks`. Работа целиком фронтовая.
+
+- `lib/quick-mark-hotkeys.ts` — **new**: одна таблица «кнопка → клавиша» (`hotkeyAssignment`),
+  из которой читают все трое — обработчик клавиш, подпись на кнопке и легенда, поэтому
+  нарисованная клавиша и сработавшая не могут разойтись. `resolveHotkey` отвечает размеченным
+  объединением `mark | legend | none`; пять причин молчания — открытый диалог, фокус в поле,
+  удержание клавиши, Cmd/Ctrl/Alt и «никто не отзывается». Буква сверяется и по `event.code`:
+  без этого `hotkey = 'p'` умирал бы при переключении на кириллицу.
+- `lib/quick-mark-hotkeys.test.ts` — **new**, 25 тестов: позиционные цифры, заданная руками
+  клавиша, её приоритет над позицией и переживание смены раскладки, INPUT/TEXTAREA/SELECT/contenteditable, Cmd+1, Shift,
+  repeat, именованные клавиши, `?` с шифтом и без, пустой справочник.
+- `hooks/useQuickMarkHotkeys.ts` — **new**: единственный слушатель `keydown`. Живёт и умирает
+  вместе с экраном `/today` — это и есть «на других маршрутах клавиши ничего не отмечают»,
+  никакого флага маршрута внутри нет. Мобильная оболочка его не зовёт.
+- `hooks/useQuickMarkHotkeys.test.ts` — **new**, 8 тестов, включая `preventDefault` только на
+  тех нажатиях, которые обработчик забрал себе, и снятие слушателя при размонтировании.
+- `components/HotkeyLegend.tsx` + `.test.tsx` — **new**: лист «клавиша → подпись» по `?`,
+  выход по Esc, по крестику и по фону; кнопка без клавиши показана без клавиши.
+- `components/QuickMarkRow.tsx` — **mod**: `showHotkeys` печатает `kbd` на кнопке; в
+  `aria-label` клавиша не идёт, чтобы объявление кнопки не поменялось.
+- `app/today/page.tsx` — **mod**: вызов хука, состояние легенды, кнопка «?» рядом с заголовком
+  секции. `dialogOpen` считает открытыми и легенду, и полный редактор записи.
+
+Feedback loops (frontend): `bun test` **822/822 green** (было 780), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. Бэкенд не тронут, прогнан как контроль: pytest 719/719 в обход
+docker через localhost:5432, `ruff`, `ruff format --check`, `mypy --strict`, одна голова
+`a8d0c2e4b6f1`. `make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-31 — PHASE-03/143, две кнопки закрытия и стадия на экране
+
+Тронуто 8 файлов фронта.
+
+- `lib/api.ts` — **mod**: `ClosingStage`, поля `stage`/`reviewed_at`/`review_skipped` в
+  `DaySummary`, тип `DayReviewDraft`; `dayAPI.review` и `dayAPI.closeFinal` с необязательным
+  `Idempotency-Key`, старый `dayAPI.close` оставлен синонимом `closeFinal`.
+- `lib/day-format.ts` — **mod**: `closingHeadline(stage, verdict)` и строки `VERDICT_LATER`,
+  `REVIEW_SKIPPED`. Пустой вердикт значит разное на разных стадиях, и заголовок читается по
+  стадии, а не по одному лишь `verdict === null`.
+- `lib/day-format.test.ts` — **mod**: тест на все четыре сочетания стадии и вердикта.
+- `components/day/DayVerdict.tsx` — **mod**: две кнопки вместо одной («Записать ревью 15:40» /
+  «Закрыть день»), заголовок по стадии, строка «ревью в 15:40 не было» на дне, закрытом одним
+  касанием. Переопределение вердикта работает как раньше.
+- `components/day/DayVerdict.test.tsx` — **mod**, +5 тестов: обе кнопки видны сразу,
+  полузакрытый день читается как «вердикт будет вечером» и не как проигрыш, ревью уходит своим
+  обработчиком, `review_skipped` сказан вслух и не сказан там, где ревью было.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: обе оболочки
+  зовут `review` и `closeFinal` и перечитывают день после каждого касания.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts` — **mod**: заготовки дня получили три
+  новых поля итога.
+
+Feedback loops (frontend): `bun test` **828/828 green** (было 822), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. Бэкенд прогнан как контроль: pytest 737/737 обходом docker,
+`ruff`, `ruff format --check`, `mypy --strict`, одна голова `b9e1d3f5a7c2`. `make check`
+целиком не прогонялся — docker-демон не отвечает.

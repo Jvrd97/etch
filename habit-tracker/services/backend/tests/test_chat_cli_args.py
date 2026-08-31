@@ -21,9 +21,12 @@ from app.llm.chat.client import (
     parse_stream_line,
 )
 from app.llm.chat.prompt import ChatTurn, render_transcript
+from app.llm.chat.session import MODE_REPLAY, TurnStrategy
 from app.llm.client import LLMError
 
 SYSTEM_PROMPT = "системный промпт чата"
+# Стратегия первого хода: разговора в сессии ещё нет, значит реплей.
+FRESH = TurnStrategy(mode=MODE_REPLAY, session_id="fresh-uuid")
 SECRET = "якорь-77 личная фраза из дневника"
 
 
@@ -108,7 +111,7 @@ class TestIsolationArgs:
 
     def test_every_isolation_flag_is_present(self, tmp_path: Path) -> None:
         """`--tools ""` и `--setting-sources ""` — оба, вместе со своими значениями."""
-        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT)
+        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT, FRESH)
 
         assert argv[0] == "claude"
         assert "-p" in argv
@@ -123,14 +126,14 @@ class TestIsolationArgs:
 
     def test_stream_flags_are_present(self, tmp_path: Path) -> None:
         """Поток кусками требует stream-json вместе с частичными сообщениями."""
-        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT)
+        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT, FRESH)
 
         for flag in STREAM_ARGS:
             assert flag in argv
 
     def test_system_prompt_replaces_the_default_one(self, tmp_path: Path) -> None:
         """Промпт передаётся `--system-prompt`, а не дописывается к чужому."""
-        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT)
+        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT, FRESH)
 
         assert "--system-prompt" in argv
         assert argv[argv.index("--system-prompt") + 1] == SYSTEM_PROMPT

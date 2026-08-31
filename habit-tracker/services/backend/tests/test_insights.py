@@ -192,9 +192,10 @@ class TestBuildPeriodContext:
         category = category_response.json()
         field_id = category["fields"][0]["id"]
 
-        # The same answer the context builder asks for: the window it reports is
-        # `today_local()`-based, and between midnight and the boundary hour
-        # `date.today()` is one day ahead of it.
+        # Не `date.today()`: окно контекста считает `today_local()`, и между
+        # полуночью и часом начала дня календарь машины называет уже завтра —
+        # запись такого числа в окно не попадает, и тест краснеет по времени
+        # суток, а не по коду.
         today = today_local().isoformat()
         entry_response = await client.post(
             "/api/v1/entries",

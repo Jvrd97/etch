@@ -1149,6 +1149,103 @@ Feedback loops (backend): pytest **662/662 green** (было 625 в этой в�
 держит таблицу `work_interval` из чужой ветки и роняет `drop_all`). Миграция проверена на отдельной
 базе `habit_migr_fast1`: upgrade → downgrade → upgrade.
 
+## 2026-08-30 — PHASE-03/94 (неделя и диапазон дней)
+
+Тикет `94-week-days-endpoint-and-life-page`: таблица `week` со снимком счётчиков,
+`GET /api/v1/days?from&to` в форме прежнего `/api/days`, `GET/PUT /api/v1/weeks/{iso}`,
+импорт `weeks/**/*.md`. Тронуто 12 файлов бэкенда.
+
+- `app/day/week.py` — **new**: чистая ISO-арифметика недели (`iso_code`, `week_bounds`,
+  `week_codes`). Часы здесь не читаются: «какое сегодня число» остаётся за
+  `app/core/daytime.py`, а неделя выводится из переданной даты. `date.isocalendar()`, а не
+  ручной `weekday()` + `timedelta`, — иначе 2027-01-01 не попадает в `2026-W53`.
+- `app/models/week.py` — **new**: `week` (снимок с `computed_at`, четыре колонки прозы,
+  генерируемый `search`) и `week_review_item` (воскресный чеклист строками, а не `- [ ]`
+  внутри прозы).
+- `app/crud/week.py` — **new**: `recompute_week` пишет только `won_days`, `total_days`,
+  `streak_end` и `computed_at`; прозу не трогает никогда. `list_days` отвечает диапазоном,
+  считая задачи через `app.crud.mark.task_counts` — второго определения «skipped выходит из
+  знаменателя» в SQL не заводится. `get_week` идёт с `populate_existing`: оба писателя
+  обходят ORM (upsert и bulk delete), и без этого чтение после записи вернуло бы состояние до неё.
+- `app/schemas/week.py` — **new**: `DayListItem` ровно в пяти полях прежнего `/api/days`,
+  `WeekIn` с `extra="forbid"` — счётчики прислать нельзя.
+- `app/api/week.py` — **new**: `days_router` и `weeks_router`. Код, который не называет неделю
+  (`2026-W99`), — 404; неделя без ретро — 200 с пустой прозой. Диапазон шире пяти лет
+  отклоняется 422, а не сканируется.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_week.py` — **new**: `down_revision`
+  `c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки; `downgrade` сносит обе таблицы
+  и оба индекса.
+- `app/imports/week_md.py` — **new**: файл недели по блокам — «Что мешало» и «Mgmt-ретро» в
+  свои колонки, чеклист в строки, всё остальное в `retro_md`. Счётчики из прозы не берутся:
+  «0 из 7» остаётся предложением, а колонки считает `recompute_week`.
+- `app/imports/personal_os.py` — **mod**: `collect_weeks`, `_import_weeks`, `_recompute_weeks`,
+  счётчики недель в отчёте, `WEEK_LINK_RE` — ссылка в `weeks/` теперь переписывается в
+  `/week/2026-W35`, потому что у недели появился экран.
+- `app/models/import_source.py` — **mod**: вид `week_md`.
+- `app/main.py`, `app/models/__init__.py` — **mod**: роутеры в периметр API-key, модели в реестр.
+- `tests/test_week.py` — **new**: 18 тестов — ISO-арифметика с краями года, неделя без ретро,
+  пересчёт двигает счётчики и `computed_at` и не трогает текст, PUT заменяет чеклист,
+  разбор файла недели.
+- `tests/test_days_range.py` — **new**: 8 тестов — форма прежнего `/api/days` (набор полей
+  сверяется как множество), три состояния вердикта, `done`/`total` по рабочим задачам,
+  пустой и слишком широкий диапазон, ключ API.
+- `tests/test_import_personal_os.py` — **mod**: три теста импорта недели плюс правка теста
+  ссылок — ссылка в `weeks/` больше не остаётся текстом.
+- `tests/fixtures/personal_os/weeks/2026/2026-W35.md` — **new**: фикстура недели.
+
+Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов),
+`alembic heads` — одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком
+**не отрабатывал**. Тесты шли против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
+ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
+обход коллизии параллельных веток, не свойство тикета.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка: справочник + один эндпоинт записи)
+
+Тронуто 9 файлов бэкенда.
+
+- `app/models/quick_mark.py` — **new**: `quick_marks` (кнопка: подпись, `(category_id, field_id)`,
+  `kind`, `step`, `unit_label`, `hotkey`, порядок, флаги) и `quick_mark_events` (журнал: дельта
+  или галка, источник, `idempotency_key`, `undone_at` под #124). Словари `kind`/`source` —
+  константы модуля, из них же собраны CHECK-констрейнты и текст миграции. Уникальность хоткея —
+  именованный частичный индекс `uq_quick_mark_hotkey` (`WHERE hotkey IS NOT NULL`): у постгреса
+  частичного UNIQUE-констрейнта не существует вовсе.
+- `app/schemas/quick_mark.py` — **new**: `QuickMarkCreate`, `QuickMarkResponse`,
+  `QuickMarkTodayResponse` (справочник + состояние дня), `QuickMarkEventRequest`,
+  `QuickMarkEventResponse`. В теле тапа нет ни `category_id`, ни `field_id`, ни `display_mode`.
+- `app/crud/quick_mark.py` — **new**: валидация справочника списком причин (образец —
+  `validate_metric_ops`), накопление инкремента через `entry_crud.checklist_entry_id` и
+  `values.format_number`, срыв отдельной записью, состояние дня и запись события. День берётся
+  вызовом `core.daytime.local_date(at)`; часов этот модуль не читает вообще — момент приходит
+  аргументом, поэтому тест «00:30» проверяем без подмены времени.
+- `app/api/quick_marks.py` — **new**: `GET /quick-marks?date=`, `POST /quick-marks`,
+  `POST /quick-marks/{id}/events` с `Idempotency-Key` (повтор — 200 и то же `event_id`).
+  Клиентский `entry_date` — сверка часов, а не адрес: расхождение с `local_date()` — 409.
+- `app/models/entry.py` — **mod**: `ix_entries_category_date` — прямая цена горячего пути.
+- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_quick_marks.py` — **new**: обе таблицы, четыре
+  индекса и индекс на `entries`; `downgrade` снимает всё это и не трогает данные.
+  `down_revision = d5a7c9e1f3b6` — фактическая голова ветки на момент реализации.
+- `app/main.py`, `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: роутер в периметр
+  API-key, модели и DTO в реестры.
+- `tests/test_quick_marks.py` — **new**: 25 тестов — пять тапов в одну строку, сумма в ответе,
+  повтор ключа, срыв записью на тап, четыре отказа справочника (чужое поле, галка на числе,
+  срыв на `build`, инкремент без шага), занятый хоткей, тап в 00:30 против `local_date()`,
+  пустой справочник, состояние дня в справочнике, журнал, offline-SQL миграции в обе стороны,
+  grep-тесты на PII и на отсутствие второй даты.
+
+Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff check` clean,
+`ruff format --check` clean (138 файлов), `mypy --strict app` clean (100 файлов),
+`alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не работает, `make check` целиком
+**не отрабатывал**. Тесты — против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4` (в общей `habit_tracker_test` по-прежнему лежат таблицы других
+веток, и `drop_all` фикстуры падает на их внешних ключах). Обратимость миграции проверена не
+только offline-SQL: на отдельной базе `habit_migrate_fast4` прогнаны `upgrade head` →
+`downgrade -1` → `upgrade head`, и `alembic check` не видит расхождений между моделью и схемой
+по новым таблицам.
+
+Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
+кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.
 ## 2026-08-30 — PHASE-03/91: время работы, `work_interval`
 
 Тронуто 12 файлов: 5 новых, 7 изменённых.
@@ -1352,100 +1449,63 @@ Feedback loops (backend): pytest **757 passed, 1 failed**. Упавший —
 `habit_tracker_test_fast1` (в общей `habit_tracker_test` лежит таблица `quick_mark_events`
 из соседней ветки, и `drop_all` по метаданным этой ветки на ней падает). Миграций тикет
 не заводит.
-## 2026-08-30 — PHASE-03/94 (неделя и диапазон дней)
+## 2026-08-31 — PHASE-03/112 (возобновление сессии CLI с реплеем)
 
-Тикет `94-week-days-endpoint-and-life-page`: таблица `week` со снимком счётчиков,
-`GET /api/v1/days?from&to` в форме прежнего `/api/days`, `GET/PUT /api/v1/weeks/{iso}`,
-импорт `weeks/**/*.md`. Тронуто 12 файлов бэкенда.
+Тикет `112-chat-resume-with-replay-fallback`: второй ход продолжает сессию CLI вместо того,
+чтобы платить за весь диалог заново, и падает обратно в реплей при любой поломке. Миграции
+тикет не заводит — `cli_session_id`, `cli_cwd` и `context_version` пришли с `#111`.
 
-- `app/day/week.py` — **new**: чистая ISO-арифметика недели (`iso_code`, `week_bounds`,
-  `week_codes`). Часы здесь не читаются: «какое сегодня число» остаётся за
-  `app/core/daytime.py`, а неделя выводится из переданной даты. `date.isocalendar()`, а не
-  ручной `weekday()` + `timedelta`, — иначе 2027-01-01 не попадает в `2026-W53`.
-- `app/models/week.py` — **new**: `week` (снимок с `computed_at`, четыре колонки прозы,
-  генерируемый `search`) и `week_review_item` (воскресный чеклист строками, а не `- [ ]`
-  внутри прозы).
-- `app/crud/week.py` — **new**: `recompute_week` пишет только `won_days`, `total_days`,
-  `streak_end` и `computed_at`; прозу не трогает никогда. `list_days` отвечает диапазоном,
-  считая задачи через `app.crud.mark.task_counts` — второго определения «skipped выходит из
-  знаменателя» в SQL не заводится. `get_week` идёт с `populate_existing`: оба писателя
-  обходят ORM (upsert и bulk delete), и без этого чтение после записи вернуло бы состояние до неё.
-- `app/schemas/week.py` — **new**: `DayListItem` ровно в пяти полях прежнего `/api/days`,
-  `WeekIn` с `extra="forbid"` — счётчики прислать нельзя.
-- `app/api/week.py` — **new**: `days_router` и `weeks_router`. Код, который не называет неделю
-  (`2026-W99`), — 404; неделя без ретро — 200 с пустой прозой. Диапазон шире пяти лет
-  отклоняется 422, а не сканируется.
-- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_week.py` — **new**: `down_revision`
-  `c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки; `downgrade` сносит обе таблицы
-  и оба индекса.
-- `app/imports/week_md.py` — **new**: файл недели по блокам — «Что мешало» и «Mgmt-ретро» в
-  свои колонки, чеклист в строки, всё остальное в `retro_md`. Счётчики из прозы не берутся:
-  «0 из 7» остаётся предложением, а колонки считает `recompute_week`.
-- `app/imports/personal_os.py` — **mod**: `collect_weeks`, `_import_weeks`, `_recompute_weeks`,
-  счётчики недель в отчёте, `WEEK_LINK_RE` — ссылка в `weeks/` теперь переписывается в
-  `/week/2026-W35`, потому что у недели появился экран.
-- `app/models/import_source.py` — **mod**: вид `week_md`.
-- `app/main.py`, `app/models/__init__.py` — **mod**: роутеры в периметр API-key, модели в реестр.
-- `tests/test_week.py` — **new**: 18 тестов — ISO-арифметика с краями года, неделя без ретро,
-  пересчёт двигает счётчики и `computed_at` и не трогает текст, PUT заменяет чеклист,
-  разбор файла недели.
-- `tests/test_days_range.py` — **new**: 8 тестов — форма прежнего `/api/days` (набор полей
-  сверяется как множество), три состояния вердикта, `done`/`total` по рабочим задачам,
-  пустой и слишком широкий диапазон, ключ API.
-- `tests/test_import_personal_os.py` — **mod**: три теста импорта недели плюс правка теста
-  ссылок — ссылка в `weeks/` больше не остаётся текстом.
-- `tests/fixtures/personal_os/weeks/2026/2026-W35.md` — **new**: фикстура недели.
+Ветка начата слиянием `fast-3`: `#111` уехал туда, и `app/llm/chat/client.py`, который правит
+этот тикет, на `fast-4` отсутствовал. Слияние развело столкнувшиеся ревизии Alembic —
+обе ветки выдали `d5a7c9e1f3b6` и `e6b8d0f2a4c7` разным темам. Цепочка выпрямлена:
+work_interval → chat → week (`f7c9b1d3a5e2`) → quick_marks (`a8d0c2e4b6f1`).
 
-Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` clean,
-`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов),
-`alembic heads` — одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком
-**не отрабатывал**. Тесты шли против постгреса на localhost:5432 в базе
-`habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
-ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
-обход коллизии параллельных веток, не свойство тикета.
+- `app/llm/chat/session.py` — **new**: где CLI держит сессию (`<config>/projects/<слаг-cwd>/
+  <id>.jsonl`, слаг — каждый символ вне `A-Za-z0-9-` в дефис) и чистый предикат `can_resume`
+  из четырёх условий: id есть, cwd совпал, `context_version` совпал, файл на месте.
+  `choose_strategy` поверх него отдаёт `TurnStrategy` — на реплее с новым uuid, который уйдёт
+  в `--session-id`. Ни одна непройденная проверка не отказывает: все ведут в реплей.
+- `app/llm/chat/client.py` — **mod**: развилка внутри `stream_turn`. Первый ход открывает
+  сессию нашим uuid (`--session-id`), последующие продолжают (`--resume`); промпт продолжения
+  — только хвост после последней реплики модели, промпт реплея — весь разговор. `_with_session`
+  подставляет в итог хода тот id, под которым ход запускали, когда CLI промолчал: иначе первый
+  ход не оставляет ничего, что мог бы продолжить второй. `resumes(hint)` вынесен в контракт
+  базового класса — шапку разговора считает транспорт, а не второй экземпляр тех же условий.
+- `app/llm/chat/prompt.py` — **mod**: `resume_tail` и `render_resume`. Одинокая реплика человека
+  уходит в продолжаемую сессию без подписи «Человек:» — это настоящая реплика пользователя;
+  заметка сервера, легшая между ходами, едет вместе с ней и не теряется.
+- `app/crud/chat.py` — **mod**: `touch_conversation` пишет `context_version` вместе с id сессии,
+  `drop_stale_session` обнуляет id при расхождении версий. Пустая подсказка не затирает
+  заполненную: ход на API-бэкенде не имеет права стереть сессию CLI вчерашнего дня.
+- `app/api/chat.py` — **mod**: подсказка читается до хода (устаревшая версия чистится там же,
+  чтобы таблица и `ResumeHint` не расходились ни на миг), уходит в транспорт, id сессии
+  возвращается в таблицу. `GET /conversations/{id}` отдаёт `resume_ready`.
+- `app/schemas/chat.py` — **mod**: `resume_ready` в `ConversationDetail`.
+- `tests/test_chat_resume.py` — **new**, 27 тестов: слаг и путь к файлу сессии; четыре условия
+  продолжения, каждое ломается отдельно (нет id, файл удалён, cwd уехал, версия сменилась,
+  бэкенд без каталога); что уходит в промпт на продолжении и на реплее; подставной процесс CLI
+  — `--session-id` на первом ходу, `--resume` со старым id на втором и одна строка в stdin,
+  удалённый файл возвращает в промпт число `4271`, `result` без `session_id` всё равно называет
+  сессию; десять ходов подряд и ни один не унёс сумму предыдущих; ход через ручку пишет
+  сессию/cwd/версию, второй ход получает подсказку первого, API-бэкенд после пяти ходов
+  оставляет `cli_session_id` пустым, смена `CHAT_CONTEXT_VERSION` обнуляет id и реплей несёт
+  то же число; реплей идёт по `seq`, а не по `created_at` (две строки с перевёрнутым временем);
+  `resume_ready` в трёх состояниях.
+- `tests/test_chat_cli_args.py`, `tests/test_chat_stream.py` — **mod**: подписи под новый
+  параметр `resume` и под `build_argv(prompt, strategy)`.
+- `tests/test_insights.py` — **mod**, чужая находка по ходу: тест звал `date.today()`, тогда как
+  окно контекста считает `today_local()`. Между полуночью и часом начала дня это разные числа,
+  и тест краснел по времени суток. Второе определение «какое сегодня число» убрано.
 
-## 2026-08-30 — PHASE-03/121 (быстрая отметка: справочник + один эндпоинт записи)
+Feedback loops (backend): pytest **719/719 green**, `ruff check` clean, `ruff format --check`
+clean (154 файла), `mypy --strict app` clean (112 файлов), `alembic heads` — одна голова
+`a8d0c2e4b6f1`. Docker-демон не поднят, `make check` целиком **не отрабатывал**: тесты шли
+против постгреса на localhost:5432 (`habit_tracker_test`). Живого прогона `claude -p --resume`
+не было — запуск CLI из этой сессии не разрешён; наличие флагов сверено по `claude --help`.
 
-Тронуто 9 файлов бэкенда.
+## 2026-08-31 — PHASE-03/143, закрытие дня в два касания
 
-- `app/models/quick_mark.py` — **new**: `quick_marks` (кнопка: подпись, `(category_id, field_id)`,
-  `kind`, `step`, `unit_label`, `hotkey`, порядок, флаги) и `quick_mark_events` (журнал: дельта
-  или галка, источник, `idempotency_key`, `undone_at` под #124). Словари `kind`/`source` —
-  константы модуля, из них же собраны CHECK-констрейнты и текст миграции. Уникальность хоткея —
-  именованный частичный индекс `uq_quick_mark_hotkey` (`WHERE hotkey IS NOT NULL`): у постгреса
-  частичного UNIQUE-констрейнта не существует вовсе.
-- `app/schemas/quick_mark.py` — **new**: `QuickMarkCreate`, `QuickMarkResponse`,
-  `QuickMarkTodayResponse` (справочник + состояние дня), `QuickMarkEventRequest`,
-  `QuickMarkEventResponse`. В теле тапа нет ни `category_id`, ни `field_id`, ни `display_mode`.
-- `app/crud/quick_mark.py` — **new**: валидация справочника списком причин (образец —
-  `validate_metric_ops`), накопление инкремента через `entry_crud.checklist_entry_id` и
-  `values.format_number`, срыв отдельной записью, состояние дня и запись события. День берётся
-  вызовом `core.daytime.local_date(at)`; часов этот модуль не читает вообще — момент приходит
-  аргументом, поэтому тест «00:30» проверяем без подмены времени.
-- `app/api/quick_marks.py` — **new**: `GET /quick-marks?date=`, `POST /quick-marks`,
-  `POST /quick-marks/{id}/events` с `Idempotency-Key` (повтор — 200 и то же `event_id`).
-  Клиентский `entry_date` — сверка часов, а не адрес: расхождение с `local_date()` — 409.
-- `app/models/entry.py` — **mod**: `ix_entries_category_date` — прямая цена горячего пути.
-- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_quick_marks.py` — **new**: обе таблицы, четыре
-  индекса и индекс на `entries`; `downgrade` снимает всё это и не трогает данные.
-  `down_revision = d5a7c9e1f3b6` — фактическая голова ветки на момент реализации.
-- `app/main.py`, `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: роутер в периметр
-  API-key, модели и DTO в реестры.
-- `tests/test_quick_marks.py` — **new**: 25 тестов — пять тапов в одну строку, сумма в ответе,
-  повтор ключа, срыв записью на тап, четыре отказа справочника (чужое поле, галка на числе,
-  срыв на `build`, инкремент без шага), занятый хоткей, тап в 00:30 против `local_date()`,
-  пустой справочник, состояние дня в справочнике, журнал, offline-SQL миграции в обе стороны,
-  grep-тесты на PII и на отсутствие второй даты.
-
-Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff check` clean,
-`ruff format --check` clean (138 файлов), `mypy --strict app` clean (100 файлов),
-`alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не работает, `make check` целиком
-**не отрабатывал**. Тесты — против постгреса на localhost:5432 в базе
-`habit_tracker_test_fast4` (в общей `habit_tracker_test` по-прежнему лежат таблицы других
-веток, и `drop_all` фикстуры падает на их внешних ключах). Обратимость миграции проверена не
-только offline-SQL: на отдельной базе `habit_migrate_fast4` прогнаны `upgrade head` →
-`downgrade -1` → `upgrade head`, и `alembic check` не видит расхождений между моделью и схемой
-по новым таблицам.
+Тронуто 7 файлов бэкенда.
 
 Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
 кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.
@@ -1505,3 +1565,37 @@ Feedback loops (backend): pytest **593/593 green**, `ruff check app tests` clean
 против постгреса на localhost:5432 в отдельной базе `habit_tracker_test_fast2` — в общей
 `habit_tracker_test` лежит `work_interval` из параллельной ветки, и `drop_all` спотыкается о
 её внешний ключ на `day`.
+- `alembic/versions/2026_09_02_1000-b9e1d3f5a7c2_day_summary_stage_and_idempotency.py` —
+  **new**: `stage` (`open`/`reviewed`/`closed`, server_default `closed`), `reviewed_at` и два
+  ключа идемпотентности на `day_summary`; `CHECK` на словарь стадий и `CHECK` «вердикт только
+  на закрытом дне»; по unique на каждый ключ. `downgrade()` снимает четыре колонки и четыре
+  ограничения, вердиктов и прозы не касается. Прогнана вживую: `upgrade` → `downgrade -1` →
+  `upgrade` на чистой базе `habit_migrate_fast4`.
+- `app/models/summary.py` — **mod**: стадия и ключи как колонки, два новых `CHECK`. Отдельной
+  таблицы `day_closing` из ADR-0015 не заводится — итог дня уже целиком в этой строке.
+- `app/schemas/summary.py` — **mod**: `DayReviewIn` (касание 15:40) рядом с `DayCloseIn`; `null`
+  в теле теперь «не трогать», а не «стереть»; ответ несёт `stage`, `reviewed_at`,
+  `review_skipped`. Вердикта в теле приёма нет ни у одного касания — `extra="forbid"` даёт 422.
+- `app/crud/summary.py` — **mod**: `review_day` рядом с `close_day`, обе двигают одну строку
+  через общий `_store`; ключ ищется до записи, повтор ничего не пишет, чужая дата поднимает
+  `KeyBelongsToAnotherDay`. Пересчёт истории теперь знает стадию: полузакрытый день не носит
+  стрика и не принимает переопределения. Починена ловушка на стыке Core-upsert и ORM: строка,
+  уже загруженная в сессию, после `pg_insert` оставалась старой, и `recompute_history`
+  записывала прежние цифры поверх только что сохранённых — после записи строка обновляется.
+- `app/api/day.py` — **mod**: `POST /day/{date}/close/review` и `.../close/final`, оба с
+  `Idempotency-Key` и 409 на ключ с чужой даты; старый `POST /day/{date}/close` помечен
+  `deprecated` и зовёт `final`, а не повторяет его.
+- `app/imports/personal_os.py` — **mod**: импорт называет `stage='closed'` явно. Иначе импорт
+  поверх дня, у которого сегодня было только касание 15:40, упирался бы в `CHECK`.
+- `tests/test_day_close_two_touches.py` — **new**, 18 тестов: стадии `open → reviewed → closed`,
+  живой пересчёт полузакрытого дня, повтор с тем же ключом (и `updated_at` на месте), другой
+  ключ и одна строка, ключ ревью отдельно от вечернего, чужая дата → 409, ревью после закрытия
+  не откатывает день, `verdict` в теле → 422, закрытие вчера двигает стрик сегодня, записка
+  переопределения переживает перезакрытие, устаревшая ручка — синоним `final`.
+
+Feedback loops (backend): pytest **737/737 green**, `ruff check` clean, `ruff format --check`
+clean (155 файлов), `mypy --strict app` clean (112 файлов), `alembic heads` — одна голова
+`b9e1d3f5a7c2`. `make check` целиком **не отрабатывал**: docker-демон на машине не поднят,
+тесты шли обходом против постгреса на localhost:5432 (база `habit_tracker_test_fast4` — общая
+`habit_tracker_test` занята соседними дорожками роя, и `drop_all` в ней падал на чужих
+таблицах).

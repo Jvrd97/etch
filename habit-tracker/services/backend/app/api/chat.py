@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
-# summary: the chat router — conversations created, listed and read back with their messages, and one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
+# summary: the chat router — conversations created, listed and read back with their messages and with whether the next turn continues a CLI session, and one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
 """
@@ -31,6 +31,12 @@
 **Удаление отвечает 204 и тогда, когда файла сессии на диске нет.** Исход по
 файлу — машинный код в логе, а не статус ответа: разговор либо удалён целиком,
 либо не удалён вовсе, и третьего состояния у кнопки нет.
+
+**Стратегию хода выбирает транспорт, а не ручка.** Отсюда уходит подсказка из
+таблицы (`ResumeHint`), обратно приезжает id сессии; продолжать её или собирать
+разговор заново — решает `app/llm/chat`. Ручка знает ровно одно решение сама:
+устаревшую версию контекста она обнуляет до хода, чтобы таблица не показывала
+сессию, которой уже нельзя пользоваться.
 """
 
 from __future__ import annotations
@@ -56,6 +62,7 @@ from app.llm.chat.prompt import (
     ChatTurn,
     compose_system_prompt,
 )
+from app.llm.chat.session import ResumeHint
 from app.llm.client import LLMError
 from app.models.chat import (
     CONVERSATION_KINDS,
@@ -131,15 +138,33 @@ def _feed_item(
     )
 
 
+def _hint(conversation: ChatConversation) -> ResumeHint:
+    """Что таблица помнит о сессии прошлого хода этого разговора."""
+    return ResumeHint(
+        session_id=conversation.cli_session_id,
+        cwd=conversation.cli_cwd,
+        context_version=conversation.context_version,
+    )
+
+
 def _detail(
     conversation: ChatConversation,
     messages: list[MessageResponse],
     usage: chat_crud.ConversationUsage,
+    *,
+    client: ChatLLMClient | None,
 ) -> ConversationDetail:
-    """Разговор с сообщениями и расходом — DTO, а не доменная модель наружу."""
+    """
+    Разговор с сообщениями и расходом — DTO, а не доменная модель наружу.
+
+    `resume_ready` считает транспорт, а не эта функция: условий продолжения
+    четыре, и второе их описание разошлось бы с первым молча. Выключенный чат
+    (`client is None`) продолжать нечего, и флаг у него ложный.
+    """
     return ConversationDetail(
         **_feed_item(conversation, usage).model_dump(),
         messages=messages,
+        resume_ready=client is not None and client.resumes(_hint(conversation)),
     )
 
 
@@ -201,9 +226,17 @@ async def list_conversations(
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(
-    conversation_id: int, db: AsyncSession = Depends(get_db)
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    client: ChatLLMClient | None = Depends(get_chat_llm_client),
 ) -> ConversationDetail:
-    """Разговор целиком: сообщения в порядке `seq`, а не по времени записи."""
+    """
+    Разговор целиком: сообщения в порядке `seq`, а не по времени записи.
+
+    `resume_ready` отвечает на вопрос «следующий ход продолжит сессию или
+    пересоберёт разговор». Без него разница в цене хода не видна нигде: счётчики
+    в `chat_messages` рассказывают про ход прошлый, а не про следующий.
+    """
     conversation = await chat_crud.get_conversation(db, conversation_id)
     if conversation is None:
         raise HTTPException(
@@ -216,6 +249,7 @@ async def get_conversation(
         conversation,
         [MessageResponse.model_validate(one) for one in messages],
         usage,
+        client=client,
     )
 
 
@@ -284,20 +318,27 @@ class _TurnContext:
     turns: list[ChatTurn]
     answer_seq: int
     system_prompt: str
+    resume: ResumeHint
 
 
 async def _record_question(
     factory: SessionFactory, conversation_id: int, content: str
 ) -> _TurnContext:
     """
-    Записать реплику человека и вернуть контекст хода вместе с позицией ответа.
+    Записать реплику человека и вернуть контекст хода, позицию ответа и подсказку.
 
     Сессия открывается и закрывается здесь целиком: к моменту, когда начнётся
     генерация, соединение уже возвращено в пул.
 
     Здесь же разговор приводится к текущей версии контекста: системный промпт с
     карточкой — не тот, под которым собиралась прежняя сессия CLI, и продолжать
-    её было бы продолжением разговора с другой моделью поведения.
+    её было бы продолжением разговора с другой моделью поведения. Обнуление
+    происходит до хода, поэтому таблица и подсказка расходятся ровно ноль
+    времени: наружу уходит уже вычищенный `ResumeHint`.
+
+    История читается `list_messages`, то есть в порядке `seq`. Порядок по
+    `created_at` переставил бы местами два сообщения одной секунды, и разговор
+    реплеился бы задом наперёд.
     """
     async with factory() as db:
         conversation = await chat_crud.get_conversation(db, conversation_id)
@@ -306,9 +347,10 @@ async def _record_question(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"conversation {conversation_id} not found",
             )
-        await chat_crud.reset_stale_context(
-            db, conversation, version=CHAT_CONTEXT_VERSION
+        await chat_crud.drop_stale_session(
+            db, conversation, context_version=CHAT_CONTEXT_VERSION
         )
+        hint = _hint(conversation)
         card = await build_day_card(db, conversation.started_on)
         history = await chat_crud.list_messages(db, conversation_id)
         turns = [ChatTurn(role=one.role, content=one.content) for one in history]
@@ -334,6 +376,7 @@ async def _record_question(
         turns=turns,
         answer_seq=seq + 1,
         system_prompt=compose_system_prompt(card.text),
+        resume=hint,
     )
 
 
@@ -374,6 +417,7 @@ async def _record_answer(
                 llm_backend=client.backend,
                 cli_session_id=usage.session_id if usage else None,
                 cli_cwd=client.cwd,
+                context_version=CHAT_CONTEXT_VERSION,
             )
         await db.commit()
         return message.id
@@ -387,6 +431,7 @@ async def _turn_events(
     answer_seq: int,
     turns: list[ChatTurn],
     system_prompt: str,
+    resume: ResumeHint,
 ) -> AsyncIterator[str]:
     """
     Ход целиком как поток событий SSE.
@@ -405,7 +450,7 @@ async def _turn_events(
     try:
         try:
             async for chunk in client.stream_turn(
-                system_prompt=system_prompt, turns=turns
+                system_prompt=system_prompt, turns=turns, resume=resume
             ):
                 if chunk.kind == CHUNK_DELTA:
                     parts.append(chunk.text)
@@ -499,6 +544,7 @@ async def post_message(
             answer_seq=context.answer_seq,
             turns=context.turns,
             system_prompt=context.system_prompt,
+            resume=context.resume,
         ),
         media_type=SSE_MEDIA_TYPE,
         headers=SSE_HEADERS,

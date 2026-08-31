@@ -1,20 +1,22 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/121
-// summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, and a tap on a remaining quick-input card opens the full entry modal for today's record in that category
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/121, PHASE-03/122
+// summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import QuickMarkRow from '@/components/QuickMarkRow';
+import HotkeyLegend from '@/components/HotkeyLegend';
 import EntryForm from '@/components/EntryForm';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { useToday } from '@/hooks/useToday';
-import { Check, Sun } from 'lucide-react';
+import { useQuickMarkHotkeys } from '@/hooks/useQuickMarkHotkeys';
+import { Check, Keyboard, Sun } from 'lucide-react';
 
 export default function TodayPage() {
   const {
@@ -39,6 +41,22 @@ export default function TodayPage() {
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one editor can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
+  const [legendOpen, setLegendOpen] = useState(false);
+
+  const markByKey = useCallback((id: number) => void tapQuickMark(id), [tapQuickMark]);
+  const openLegend = useCallback(() => setLegendOpen(true), []);
+  const closeLegend = useCallback(() => setLegendOpen(false), []);
+
+  // The keyboard belongs to this screen alone: the listener lives and dies with
+  // it, so the same keys mark nothing on any other route. A modal takes it back
+  // for as long as it is up — the legend answers Escape itself, and the entry
+  // editor is being typed into.
+  useQuickMarkHotkeys({
+    marks: quickMarks,
+    dialogOpen: legendOpen || editing !== null,
+    onMark: markByKey,
+    onLegend: openLegend,
+  });
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -86,12 +104,24 @@ export default function TodayPage() {
                   Быстрые отметки
                 </span>
                 <div className="flex-1 h-px bg-white/5" />
+                <button
+                  type="button"
+                  onClick={openLegend}
+                  aria-label="Клавиши быстрых отметок"
+                  className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors duration-200"
+                >
+                  <Keyboard className="w-4 h-4" strokeWidth={2} />
+                  <kbd className="px-1.5 py-0.5 rounded-md border border-white/15 text-[10px] leading-none">
+                    ?
+                  </kbd>
+                </button>
               </div>
               <QuickMarkRow
                 marks={quickMarks}
-                onTap={(id) => void tapQuickMark(id)}
+                onTap={markByKey}
                 lastEvent={lastQuickMarkEvent}
                 onUndo={() => void undoLastQuickMark()}
+                showHotkeys
               />
             </section>
           )}
@@ -180,6 +210,8 @@ export default function TodayPage() {
           )}
         </>
       )}
+
+      {legendOpen && <HotkeyLegend marks={quickMarks} onClose={closeLegend} />}
 
       {editing && (
         <EntryForm

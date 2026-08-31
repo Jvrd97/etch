@@ -1,7 +1,6 @@
-# [review:need-review] PHASE-03/111, PHASE-03/117, PHASE-03/113
-# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, and the append that records what a turn cost
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
+# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, the append that records what a turn cost, and the CLI-session hint written from a finished turn or dropped when the system prompt it was built under is gone
 # summary: PHASE-03/117 adds the delete that takes the four tables and the CLI session file with it, and the usage rollup that sums a conversation's tokens without reading one `content`
-# summary: PHASE-03/113 adds reset_stale_context — a dialogue built under an older system prompt loses its CLI session hint instead of being resumed under a prompt that no longer exists
 """
 Доступ к таблицам разговора.
 
@@ -26,6 +25,12 @@
 и берёт медиану задержки одним запросом с `GROUP BY`, не выбирая `content`:
 лента из пятидесяти разговоров иначе тянула бы через сеть весь их текст ради
 трёх чисел в шапке.
+
+**Подсказка о сессии стирается здесь же, где пишется.** `--resume` продолжает
+сессию, собранную под прежним системным промптом; когда `CHAT_CONTEXT_VERSION`
+уезжает вперёд, `cli_session_id` обнуляется до хода, а не после. Разговор от
+этого не теряет ни реплики: история лежит в `chat_messages`, и следующий ход
+просто уходит реплеем.
 """
 
 from __future__ import annotations
@@ -192,28 +197,6 @@ async def add_message(
     return message
 
 
-async def reset_stale_context(
-    db: AsyncSession, conversation: ChatConversation, *, version: int
-) -> bool:
-    """
-    Привести разговор к текущей версии контекста, обнулив подсказку сессии CLI.
-
-    `--resume` продолжает сессию, собранную под прежним системным промптом:
-    карточка дня и правила поведения в ней уже другие, а модель об этом не
-    узнает. Поэтому смена версии стоит подсказки, а не разговора — сообщения
-    остаются на месте, следующий ход просто уходит реплеем.
-
-    Возвращает, пришлось ли что-то менять, чтобы вызывающий не писал в базу
-    на каждом ходу уже актуального разговора.
-    """
-    if conversation.context_version == version:
-        return False
-    conversation.context_version = version
-    conversation.cli_session_id = None
-    await db.flush()
-    return True
-
-
 async def touch_conversation(
     db: AsyncSession,
     conversation: ChatConversation,
@@ -223,12 +206,21 @@ async def touch_conversation(
     llm_backend: str | None = None,
     cli_session_id: str | None = None,
     cli_cwd: str | None = None,
+    context_version: int | None = None,
 ) -> ChatConversation:
     """
     Отметить разговор ходом: время последнего сообщения и подсказки о сессии.
 
     Заголовок ставится один раз — первой репликой человека. Переписывать его на
     каждом ходу значило бы менять имя разговора в ленте по ходу разговора.
+
+    Пустые подсказки не затирают заполненные: ход на API-бэкенде приезжает без
+    `cli_session_id`, и обнулять им сессию CLI, которой отвечали вчера, нечестно.
+    Стирает сессию одна функция — `drop_stale_session`.
+
+    `context_version` записывается вместе с id сессии: версия без сессии ничего
+    не значит, а сессия без версии — это `--resume` под системным промптом,
+    которого уже нет.
     """
     conversation.last_message_at = at
     if title is not None and conversation.title is None:
@@ -237,6 +229,8 @@ async def touch_conversation(
         conversation.llm_backend = llm_backend
     if cli_session_id is not None:
         conversation.cli_session_id = cli_session_id
+        if context_version is not None:
+            conversation.context_version = context_version
     if cli_cwd is not None:
         conversation.cli_cwd = cli_cwd
     await db.flush()
@@ -375,3 +369,29 @@ async def delete_conversation(db: AsyncSession, conversation: ChatConversation) 
             conversation_id,
         )
     return outcome
+
+
+async def drop_stale_session(
+    db: AsyncSession, conversation: ChatConversation, *, context_version: int
+) -> bool:
+    """
+    Обнулить подсказку о сессии, собранной под другим системным промптом.
+
+    `--resume` продолжает сессию, собранную под прежним системным промптом:
+    карточка дня и правила поведения в ней уже другие, а модель об этом не
+    узнает. Поэтому смена версии стоит подсказки, а не разговора — сообщения
+    остаются на месте, следующий ход просто уходит реплеем.
+
+    Возвращает, случилось ли обнуление. Версия при этом переписывается на
+    текущую вместе с id: иначе следующий ход стирал бы уже пустое поле снова и
+    снова, а таблица так и показывала бы версию, которой больше нет.
+
+    Разговор с уже совпадающей версией не трогается вовсе — ни записи, ни
+    лишнего flush.
+    """
+    if conversation.context_version == context_version:
+        return False
+    conversation.cli_session_id = None
+    conversation.context_version = context_version
+    await db.flush()
+    return True
