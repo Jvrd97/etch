@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/138
+# [review:need-review] PHASE-03/134, PHASE-03/138, PHASE-03/139
 # summary: the roles endpoints — directory and rules CRUD, minutes and acts written/corrected/deleted by hand, and GET /roles/day[/{date}] returning the distribution of the day's minutes together with its acts; a request naming an unknown role or asking for zero minutes comes back 422 (the second because the table refused it, not because a check here did)
 """
 HTTP surface of the roles.
@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date as date_type
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
@@ -31,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.daytime import today_local
 from app.crud import role as role_crud
+from app.roles import classify
 from app.roles.report import render_summary_md
 from app.models.role import (
     SOURCE_MANUAL,
@@ -50,7 +52,13 @@ from app.schemas.role import (
     RoleResponse,
     RoleRuleCreate,
     RoleRulePatch,
+    RoleReclassifyIn,
+    RoleReclassifyResponse,
+    RoleRuleDryRun,
+    RoleRuleDryRunExample,
+    RoleRuleDryRunResponse,
     RoleRuleResponse,
+    RoleShareResponse,
     RoleSummaryResponse,
     RoleSummarySlice,
     RoleTimeBlockIn,
@@ -293,6 +301,120 @@ async def patch_rule(
         if body.is_active is not None:
             rule.is_active = body.is_active
     return _rule_dto(rule, await _role_codes(db))
+
+
+@router.post("/role-rules/dry-run", response_model=RoleRuleDryRunResponse)
+async def dry_run_rule(
+    body: RoleRuleDryRun, db: AsyncSession = Depends(get_db)
+) -> RoleRuleDryRunResponse:
+    """
+    Прогнать правило по истории, ничего не записав.
+
+    Обязательная половина экрана правил, а не удобство: правило
+    `window_title_regex` без проверки на реальных данных ловит либо ничего, либо
+    всё, а на приёме «сначала сохрани, потом посмотри» человек молча перестаёт
+    трогать правила.
+
+    В ответе — сколько интервалов и актов зацепило бы правило и у какого
+    существующего правила оно отбирает совпадения: правило, ловящее сто строк,
+    из которых девяносто уже размечены верно, не улучшает разметку.
+    """
+    role = await _role_or_422(db, body.role_code)
+    date_to = today_local()
+    date_from = date_to - timedelta(days=body.days_back - 1)
+    outcome = await classify.dry_run(
+        db,
+        role_id=role.id,
+        source=body.source,
+        matcher_kind=body.matcher_kind,
+        pattern=body.pattern,
+        priority=body.priority,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return RoleRuleDryRunResponse(
+        date_from=outcome.date_from,
+        date_to=outcome.date_to,
+        scanned_rows=outcome.scanned_rows,
+        matched_time_blocks=outcome.matched_time_blocks,
+        matched_acts=outcome.matched_acts,
+        taken_from=dict(outcome.taken_from),
+        taken_from_nobody=outcome.taken_from_nobody,
+        examples=[
+            RoleRuleDryRunExample(
+                kind=one.kind,
+                work_day=one.work_day,
+                label=one.label,
+                current_role_id=one.current_role_id,
+                taken_from_rule_id=one.taken_from_rule_id,
+            )
+            for one in outcome.examples
+        ],
+    )
+
+
+@router.post("/roles/reclassify", response_model=RoleReclassifyResponse)
+async def reclassify_period(
+    body: RoleReclassifyIn, db: AsyncSession = Depends(get_db)
+) -> RoleReclassifyResponse:
+    """
+    Разметить период заново по действующим правилам.
+
+    Правило, добавленное сегодня, иначе размечает только завтрашние строки, и
+    месяц, разложенный неверно, так неверным и остаётся — то есть срабатывает
+    названный в ADR сигнал «автоматика не работает», хотя не работает не
+    автоматика, а невозможность её починить задним числом.
+
+    Записи, подтверждённые человеком, не трогаются, и их число названо в ответе.
+    """
+    if body.date_to < body.date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_to is earlier than date_from",
+        )
+    async with _written(db):
+        outcome = await classify.reclassify(
+            db, date_from=body.date_from, date_to=body.date_to
+        )
+    return RoleReclassifyResponse(
+        date_from=outcome.date_from,
+        date_to=outcome.date_to,
+        scanned_rows=outcome.scanned_rows,
+        changed_time_blocks=outcome.changed_time_blocks,
+        changed_acts=outcome.changed_acts,
+        protected=outcome.protected,
+        before=[
+            RoleShareResponse(
+                role_id=one.role_id, minutes=one.minutes, share_pct=one.share_pct
+            )
+            for one in outcome.before
+        ],
+        after=[
+            RoleShareResponse(
+                role_id=one.role_id, minutes=one.minutes, share_pct=one.share_pct
+            )
+            for one in outcome.after
+        ],
+    )
+
+
+@router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_role(role_id: int, db: AsyncSession = Depends(get_db)) -> Response:
+    """
+    Убрать роль из справочника.
+
+    Роль, на которую ссылается правило разметки, минута или акт, база удалить не
+    даёт (`ON DELETE RESTRICT`), и отказ приезжает сюда `IntegrityError`.
+    Отказывает именно база, а не проверка здесь: сервисную проверку обходят
+    импорт, миграция и сессия `psql`, а молча осиротевшая разметка — это
+    `unassigned`, появившийся из ниоткуда.
+    """
+    role = await role_crud.get_role(db, role_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="role")
+    async with _written(db):
+        await db.delete(role)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

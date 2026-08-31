@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/138
+# [review:need-review] PHASE-03/134, PHASE-03/138, PHASE-03/139
 # summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day
 """
 Wire types of the roles.
@@ -51,6 +51,13 @@ ACT_KINDS: tuple[str, ...] = (
     "ci_change",
     "wrote_from_scratch",
 )
+
+
+# Окно сухого прогона по умолчанию и его потолок. Тридцать дней — тот же
+# масштаб, на котором считается сигнал «правила отстали»: правило смотрят на
+# том же отрезке, на котором его потом судят.
+DRY_RUN_DAYS = 30
+DRY_RUN_MAX_DAYS = 365
 
 
 def _one_of(value: str, allowed: tuple[str, ...], field_name: str) -> str:
@@ -434,8 +441,102 @@ class RoleSummaryResponse(BaseModel):
     )
 
 
+class RoleRuleDryRun(RoleRuleCreate):
+    """
+    Правило целиком плюс окно, по которому его прогоняют.
+
+    Наследует проверки `RoleRuleCreate` до последней: прогон обязан отвергнуть
+    ровно то, что отвергнет сохранение, — иначе человек увидит совпадения у
+    правила, которое потом не примут.
+    """
+
+    days_back: int = Field(
+        default=DRY_RUN_DAYS,
+        ge=1,
+        le=DRY_RUN_MAX_DAYS,
+        description="Сколько последних дней прогонять; по умолчанию 30",
+    )
+
+
+class RoleRuleDryRunExample(BaseModel):
+    """Одно совпадение, как его читает человек перед сохранением."""
+
+    kind: str = Field(description="`time_block` или `act`")
+    work_day: date
+    label: str = Field(description="Текст, на котором правило совпало")
+    current_role_id: int
+    taken_from_rule_id: int | None = Field(
+        default=None, description="Правило, у которого отобрано; null — было ничьё"
+    )
+
+
+class RoleRuleDryRunResponse(BaseModel):
+    """
+    Итог прогона: сколько зацепило, у кого отобрало и на чём это считалось.
+
+    `scanned_rows` стоит рядом со счётчиками, потому что ноль совпадений на
+    нулевой истории и ноль совпадений на месяце данных — разные ответы, и
+    только второй читается как «правило не ловит».
+    """
+
+    date_from: date
+    date_to: date
+    scanned_rows: int
+    matched_time_blocks: int
+    matched_acts: int
+    taken_from: dict[int, int] = Field(
+        default_factory=dict,
+        description="Сколько совпадений отобрано у каждого правила, по его id",
+    )
+    taken_from_nobody: int
+    examples: list[RoleRuleDryRunExample] = Field(default_factory=list)
+
+
+class RoleReclassifyIn(BaseModel):
+    """Диапазон, который размечают заново. Обе границы включительно."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date_from: date
+    date_to: date
+
+
+class RoleShareResponse(BaseModel):
+    """Доля одной роли — половина отчёта «до/после»."""
+
+    role_id: int
+    minutes: int
+    share_pct: int
+
+
+class RoleReclassifyResponse(BaseModel):
+    """
+    Что переразметка сделала и чего не тронула.
+
+    `protected` называется вслух: «ничего не изменилось» и «изменилось всё,
+    кроме ваших правок» — разные исходы одной кнопки, и различать их человек
+    должен на экране, а не в базе.
+    """
+
+    date_from: date
+    date_to: date
+    scanned_rows: int
+    changed_time_blocks: int
+    changed_acts: int
+    protected: int
+    before: list[RoleShareResponse]
+    after: list[RoleShareResponse]
+
+
 __all__ = [
     "ACT_KINDS",
+    "DRY_RUN_DAYS",
+    "RoleReclassifyIn",
+    "RoleReclassifyResponse",
+    "RoleRuleDryRun",
+    "RoleRuleDryRunExample",
+    "RoleRuleDryRunResponse",
+    "RoleShareResponse",
     "RoleSummaryResponse",
     "RoleSummarySlice",
     "RoleActIn",

@@ -112,7 +112,9 @@ export const APP_ROUTES: readonly AppRoute[] = [
     name: 'Roles',
     href: '/roles',
     hasMobile: true,
-    hasMobileNested: false,
+    // `/roles/rules` — настоящий экран на обеих оболочках (`#139`), и вложенность
+    // здесь именно затем, чтобы переход между ними не терял его.
+    hasMobileNested: true,
     // Under "More": minutes and acts are written when a piece of work ends, not
     // several times an hour, and the tab bar's five slots are already spoken
     // for.

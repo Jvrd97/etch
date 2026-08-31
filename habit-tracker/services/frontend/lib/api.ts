@@ -1806,6 +1806,74 @@ export interface RoleDay {
   acts: RoleAct[];
 }
 
+/** One line of the markup: this pattern from this source means that role. */
+export interface RoleRule {
+  id: number;
+  role_id: number;
+  role_code: string;
+  source: string;
+  matcher_kind: string;
+  pattern: string;
+  priority: number;
+  is_active: boolean;
+}
+
+/** A rule as it is written, plus the window a dry run tries it over. */
+export interface RoleRuleDraft {
+  role_code: string;
+  source: string;
+  matcher_kind: string;
+  pattern: string;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface RoleRuleDryRunExample {
+  kind: string;
+  work_day: string;
+  label: string;
+  current_role_id: number;
+  taken_from_rule_id: number | null;
+}
+
+/**
+ * What a rule would catch, counted before it is saved.
+ *
+ * `scanned_rows` travels beside the counters on purpose: nothing matched out of
+ * nothing and nothing matched out of a month of history are different answers,
+ * and only the second one reads as «правило не ловит».
+ */
+export interface RoleRuleDryRun {
+  date_from: string;
+  date_to: string;
+  scanned_rows: number;
+  matched_time_blocks: number;
+  matched_acts: number;
+  /** Сколько совпадений отобрано у каждого правила, по его id. */
+  taken_from: Record<string, number>;
+  taken_from_nobody: number;
+  examples: RoleRuleDryRunExample[];
+}
+
+export interface RoleShare {
+  role_id: number;
+  minutes: number;
+  share_pct: number;
+}
+
+/** What a re-markup did, and what it deliberately did not touch. */
+export interface RoleReclassified {
+  date_from: string;
+  date_to: string;
+  scanned_rows: number;
+  changed_time_blocks: number;
+  changed_acts: number;
+  /** Записи, подтверждённые человеком: их не трогали, и это сказано числом. */
+  protected: number;
+  before: RoleShare[];
+  after: RoleShare[];
+}
+
 /** «Полтора часа на найм» as it is sent. The day is the server's when omitted. */
 export interface RoleTimeBlockDraft {
   role_code: string;
@@ -1873,6 +1941,45 @@ export const rolesAPI = {
 
   deleteAct: async (id: number) => {
     return fetcher<Record<string, never>>(`/role-acts/${id}`, { method: 'DELETE' });
+  },
+
+  listRules: async () => {
+    return fetcher<RoleRule[]>('/role-rules');
+  },
+
+  addRule: async (draft: RoleRuleDraft) => {
+    return fetcher<RoleRule>('/role-rules', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patchRule: async (id: number, patch: Partial<RoleRuleDraft>) => {
+    return fetcher<RoleRule>(`/role-rules/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /**
+   * Прогнать правило по истории, ничего не сохранив.
+   *
+   * Обязательная половина формы: правило `window_title_regex` без проверки на
+   * реальных данных ловит либо ничего, либо всё.
+   */
+  dryRunRule: async (draft: RoleRuleDraft & { days_back?: number }) => {
+    return fetcher<RoleRuleDryRun>('/role-rules/dry-run', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Разметить период заново по действующим правилам. */
+  reclassify: async (dateFrom: string, dateTo: string) => {
+    return fetcher<RoleReclassified>('/roles/reclassify', {
+      method: 'POST',
+      body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+    });
   },
 };
 
