@@ -6,6 +6,7 @@
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
+import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySchedule from '@/components/day/DaySchedule';
@@ -189,6 +190,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
       )}
 
       <DayMapCard map={detail.day_map} compact />
+      {/* «Где прошёл день» (#160) — тот же блок, компактной вёрсткой. */}
+      <DayIntervals date={detail.day.date} compact />
       <WorkIntervals
         work={intervals.work}
         saving={intervals.saving}

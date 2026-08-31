@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/135
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
 # summary: database access for the agent's tables — the catalogue lookup that refuses an unknown bundle, the batch upsert of intervals on `(source, started_at, app_id)`, the intervals of one work day read through `day_bounds()`, and the mode of a date, where a manual row overrides the schedule and nothing else does
 """
 Database access for the activity the macOS agent records.
@@ -28,13 +28,14 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import day_bounds
 from app.models.activity import (
     ACTIVITY_SOURCE_AGENT,
+    ACTIVITY_SOURCE_MANUAL,
     MATCH_BUNDLE_ID,
     MATCH_BUNDLE_PREFIX,
     MATCH_TITLE_REGEX,
@@ -55,22 +56,30 @@ ORDER_STEP = 10
 
 __all__ = [
     "ORDER_STEP",
+    "BackwardInterval",
     "BadPattern",
     "DayModeAnswer",
     "IntervalDraft",
     "UnknownApp",
+    "IntervalPatch",
+    "KeyBelongsToAnotherRecord",
+    "TaskTime",
     "app_names",
+    "create_manual_interval",
     "create_title_rule",
     "day_intervals",
     "day_mode",
+    "get_interval",
     "get_settings",
     "get_title_rule",
     "list_apps",
     "list_title_rules",
     "reorder_title_rules",
     "rule_hits",
+    "patch_interval",
     "rule_matches",
     "seed_settings",
+    "task_time_seconds",
     "upsert_intervals",
     "validate_pattern",
 ]
@@ -450,3 +459,207 @@ async def get_settings(db: AsyncSession) -> AgentSetting:
             "agent configuration"
         )
     return row
+
+
+# --- правка постфактум и подсчёт по объединению диапазонов (#160) -----------
+#
+# Ручной ввод объявлен первичным, автоматика — подсказкой. Здесь это перестаёт
+# быть декларацией.
+
+
+class BackwardInterval(ValueError):
+    """Границы интервала попросили поставить так, что конец раньше начала."""
+
+
+class KeyBelongsToAnotherRecord(ValueError):
+    """
+    Тот же `Idempotency-Key` пришёл с другим телом.
+
+    Повтор после обрыва обязан вернуть ту же строку; тот же ключ с другими
+    границами — это не повтор, а ошибка вызывающего, и молча отдать ему чужую
+    запись значило бы потерять его собственную.
+    """
+
+
+@dataclass(frozen=True)
+class IntervalPatch:
+    """
+    A correction of one interval, field by field.
+
+    `fields` names what the request actually carried, because `None` is a
+    legitimate value for a task link and for a note: «убрать привязку» and «не
+    трогать привязку» are different orders and a sentinel would merge them. The
+    two ends are outside that — an interval with no start is not a state, so
+    absence there simply means «оставить как есть».
+    """
+
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    plan_task_id: int | None = None
+    clickup_task_id: str | None = None
+    note: str | None = None
+    fields: frozenset[str] = frozenset()
+
+    def has(self, name: str) -> bool:
+        return name in self.fields
+
+
+async def get_interval(db: AsyncSession, interval_id: int) -> ActivityInterval | None:
+    """One interval by id."""
+    return await db.get(ActivityInterval, interval_id)
+
+
+async def patch_interval(
+    db: AsyncSession, interval: ActivityInterval, patch: IntervalPatch, at: datetime
+) -> ActivityInterval:
+    """
+    Move the ends of an interval, link it to a task, leave a note.
+
+    `source` is deliberately left alone: the interval is still what the agent
+    measured, and rewriting it to `manual` would lose the fact that a person
+    corrected a measurement rather than typing one. What is recorded instead is
+    `is_corrected` and `corrected_at` — «я поправил» has to stay distinguishable
+    from «агент так посчитал», or the number is trusted in neither direction.
+
+    An end before the start is refused here as well as by the table's CHECK, so
+    the caller gets a 422 that names the rule rather than an `IntegrityError`.
+    """
+    started: datetime = (
+        patch.started_at if patch.started_at is not None else interval.started_at
+    )
+    ended: datetime = (
+        patch.ended_at if patch.ended_at is not None else interval.ended_at
+    )
+    if ended < started:
+        raise BackwardInterval(
+            f"конец {ended.isoformat()} раньше начала {started.isoformat()}"
+        )
+
+    interval.started_at = started
+    interval.ended_at = ended
+    if patch.has("plan_task_id"):
+        interval.plan_task_id = patch.plan_task_id
+    if patch.has("clickup_task_id"):
+        interval.clickup_task_id = patch.clickup_task_id
+    if patch.has("note"):
+        interval.note = patch.note
+    interval.is_corrected = True
+    interval.corrected_at = at
+    await db.flush()
+    await db.refresh(interval)
+    return interval
+
+
+async def create_manual_interval(
+    db: AsyncSession, draft: IntervalDraft, *, idempotency_key: str
+) -> tuple[ActivityInterval, bool]:
+    """
+    Record an interval a person typed. Returns the row and whether it is new.
+
+    Idempotent by the header rather than by the natural key, and that difference
+    is the whole point: a manual record carries no `app_id`, NULLs in a unique
+    key are distinct in postgres, and two honest records starting at the same
+    minute are two records. The key is what tells a retry from a second record.
+
+    A key already used with different ends is refused rather than answered with
+    the row it names — that is a caller's mistake, and handing back somebody
+    else's interval would lose the one they meant to write.
+    """
+    existing = (
+        await db.execute(
+            select(ActivityInterval).where(
+                ActivityInterval.idempotency_key == idempotency_key
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if (
+            existing.started_at != draft.started_at
+            or existing.ended_at != draft.ended_at
+        ):
+            raise KeyBelongsToAnotherRecord(idempotency_key)
+        return existing, False
+
+    if draft.ended_at < draft.started_at:
+        raise BackwardInterval(
+            f"конец {draft.ended_at.isoformat()} раньше начала "
+            f"{draft.started_at.isoformat()}"
+        )
+
+    row = ActivityInterval(
+        source=ACTIVITY_SOURCE_MANUAL,
+        app_id=None,
+        started_at=draft.started_at,
+        ended_at=draft.ended_at,
+        local_date=draft.local_date,
+        utc_offset_minutes=draft.utc_offset_minutes,
+        title=None,
+        title_source=TITLE_DROPPED,
+        note=draft.note,
+        idempotency_key=idempotency_key,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return row, True
+
+
+@dataclass(frozen=True)
+class TaskTime:
+    """Seconds spent on one task, counted as the union of its intervals."""
+
+    plan_task_id: int | None
+    clickup_task_id: str | None
+    seconds: int
+
+
+async def task_time_seconds(
+    db: AsyncSession, work_day: date
+) -> tuple[list[TaskTime], int]:
+    """
+    Time per task and time on nothing, as the **union** of ranges.
+
+    `SUM(duration_seconds)` would give a plausible and wrong number: overlapping
+    records are allowed on purpose — a person may write «созвон» over an hour the
+    agent charged to Chrome — and adding them would count that hour twice. The
+    union is the only number in this theme that may be called «время по задаче»,
+    and postgres computes it: `range_agg(tstzrange(started_at, ended_at))`.
+
+    Returns the tasks and, separately, the seconds that belong to no task at all
+    — «работа сверх плана», visible in the same hour rather than out of the
+    evening notebook.
+    """
+    start, end = day_bounds(work_day)
+    statement = text(
+        """
+        SELECT
+            plan_task_id,
+            clickup_task_id,
+            (
+                SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (upper(r) - lower(r)))), 0)
+                FROM unnest(range_agg(tstzrange(started_at, ended_at))) AS r
+            )::bigint AS seconds
+        FROM activity_interval
+        WHERE started_at < :day_end AND ended_at > :day_start
+        GROUP BY plan_task_id, clickup_task_id
+        ORDER BY seconds DESC
+        """
+    )
+    rows = (
+        await db.execute(statement, {"day_start": start, "day_end": end})
+    ).fetchall()
+
+    tasks: list[TaskTime] = []
+    untasked = 0
+    for row in rows:
+        if row.plan_task_id is None and row.clickup_task_id is None:
+            untasked += int(row.seconds)
+            continue
+        tasks.append(
+            TaskTime(
+                plan_task_id=row.plan_task_id,
+                clickup_task_id=row.clickup_task_id,
+                seconds=int(row.seconds),
+            )
+        )
+    return tasks, untasked

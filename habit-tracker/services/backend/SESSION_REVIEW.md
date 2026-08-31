@@ -1830,3 +1830,29 @@ downgrade → upgrade проверен на `habit_mig_f4b`.
 Feedback loops (backend): pytest **1264 passed, 2 skipped**, `ruff check app tests`,
 `ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
 голова `f2e4a6c8b0d1`. `make check` целиком не отрабатывал: docker.
+
+## 2026-08-31 — PHASE-03/160, правка постфактум и подсчёт объединением
+
+**Схема (new)**: `alembic/versions/2026_09_02_1500-a3c5e7b9d1f4_activity_interval_idempotency.py`
+— `activity_interval.idempotency_key` с частичным уникальным индексом. Естественный ключ
+ручную запись не ловит (`app_id IS NULL`, NULL в уникальном ключе различны), и это
+правильно: два дела в одно окно времени — два дела. Ключ отличает повтор от второй записи.
+`down_revision = f2e4a6c8b0d1`; upgrade → downgrade → upgrade проверен.
+
+**mod**: `app/models/activity.py`, `app/crud/activity.py` (`patch_interval`,
+`create_manual_interval`, `task_time_seconds` через `range_agg`),
+`app/schemas/activity.py`, `app/api/agent.py` (`PATCH /agent/activity/{id}`,
+`POST /agent/activity/manual`, свёртка по задачам в ответе дня).
+**Тесты (new)**: `tests/test_agent_manual_intervals.py` (14).
+
+Что стоит назвать вслух. Первое: время по задаче считает Postgres —
+`range_agg(tstzrange(started_at, ended_at))` с суммированием длин. `SUM(duration_seconds)`
+на тех же данных даёт правдоподобное и завышенное число, и тест на пересекающихся записях
+(3 ч объединением против 5 ч суммой) ловит подмену, а не чтение кода. Второе: правка границ
+пересчитывает минуты ролей за задетые дни — иначе `/roles` продолжал бы показывать два часа
+там, где человек написал полтора. Третье: `source` при правке остаётся прежним, факт правки
+записывается в `is_corrected`/`corrected_at`.
+
+Feedback loops (backend): pytest **1278 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `a3c5e7b9d1f4`. `make check` целиком не отрабатывал: docker.

@@ -44,6 +44,21 @@ let deleteCategory: ReturnType<typeof mock>;
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete `tableAPI` for whichever file loads later.
 mock.module('@/lib/api', () => ({
+  // Активность агента (#158, #160): экран дня читает её ради блока «где прошёл
+  // день», а bun фиксирует имена экспортов модуля при первой линковке — мок,
+  // забывший экспорт, удаляет его для всех, кто линкуется следом.
+  agentAPI: {
+    day: () => Promise.resolve(null),
+    patchInterval: () => Promise.resolve(null),
+    addManualInterval: () => Promise.resolve(null),
+    titleRules: () => Promise.resolve([]),
+    addTitleRule: () => Promise.resolve([]),
+    patchTitleRule: () => Promise.resolve([]),
+    deleteTitleRule: () => Promise.resolve([]),
+    reorderTitleRules: () => Promise.resolve([]),
+    settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+  },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
   // что и остальная поверхность: bun фиксирует имена экспортов модуля при

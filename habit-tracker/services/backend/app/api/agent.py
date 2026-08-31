@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158
-# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, and GET /agent/config hands the whole lot to the agent
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
+# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges
 """
 HTTP surface of the macOS agent.
 
@@ -24,24 +24,27 @@ from __future__ import annotations
 from datetime import date as date_type
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.daytime import today_local
+from app.core.daytime import now_utc, today_local
 from app.crud import activity as activity_crud
-from app.models.activity import ActivityInterval
+from app.models.activity import ACTIVITY_SOURCE_MANUAL, ActivityInterval
 from app.roles import classify
 from app.schemas.activity import (
     ActivityAppSlice,
-    AgentConfigResponse,
-    AgentSettingsIn,
-    AgentSettingsResponse,
     ActivityBatchIn,
     ActivityBatchResponse,
     ActivityDayResponse,
+    ActivityIntervalPatch,
     ActivityIntervalResponse,
+    ActivityTaskSlice,
+    AgentConfigResponse,
+    AgentSettingsIn,
+    AgentSettingsResponse,
     DayModeResponse,
+    ManualIntervalIn,
     TitleRuleIn,
     TitleRuleOrderIn,
     TitleRulePatch,
@@ -71,6 +74,9 @@ def _interval_dto(
         app_id=interval.app_id,
         bundle_id=bundles.get(interval.app_id) if interval.app_id else None,
         app_name=names.get(interval.app_id) if interval.app_id else None,
+        plan_task_id=interval.plan_task_id,
+        clickup_task_id=interval.clickup_task_id,
+        corrected_at=interval.corrected_at,
         started_at=interval.started_at,
         ended_at=interval.ended_at,
         duration_seconds=interval.duration_seconds,
@@ -158,6 +164,7 @@ async def get_activity(
     """
     intervals = await activity_crud.day_intervals(db, work_day)
     mode = await activity_crud.day_mode(db, work_day)
+    tasks, untasked = await activity_crud.task_time_seconds(db, work_day)
     apps = await activity_crud.list_apps(db)
     bundles = {app.id: app.bundle_id for app in apps}
     names = {app.id: app.display_name for app in apps}
@@ -184,7 +191,134 @@ async def get_activity(
         mode=mode.kind,
         total_minutes=sum(row.minutes for row in slices),
         apps=slices,
+        tasks=[
+            ActivityTaskSlice(
+                plan_task_id=task.plan_task_id,
+                clickup_task_id=task.clickup_task_id,
+                minutes=task.seconds // SECONDS_PER_MINUTE,
+            )
+            for task in tasks
+        ],
+        untasked_minutes=untasked // SECONDS_PER_MINUTE,
         intervals=[_interval_dto(row, bundles, names) for row in intervals],
+    )
+
+
+@router.patch("/activity/{interval_id}", response_model=ActivityIntervalResponse)
+async def patch_activity(
+    interval_id: int,
+    body: ActivityIntervalPatch,
+    db: AsyncSession = Depends(get_db),
+) -> ActivityIntervalResponse:
+    """
+    Поправить интервал постфактум: границы, задача, заметка.
+
+    `source` остаётся прежним — интервал по-прежнему то, что измерил агент, а
+    факт правки записывается отдельно, в `is_corrected` и `corrected_at`.
+    Иначе «я поправил» становится неотличимо от «агент так посчитал», и доверия
+    к цифре нет ни в одну сторону.
+
+    422 — конец раньше начала. Строка при этом не меняется: проверка стоит до
+    записи, а не после неё.
+    """
+    interval = await activity_crud.get_interval(db, interval_id)
+    if interval is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="activity interval"
+        )
+    try:
+        stored = await activity_crud.patch_interval(
+            db,
+            interval,
+            activity_crud.IntervalPatch(
+                started_at=body.started_at,
+                ended_at=body.ended_at,
+                plan_task_id=body.plan_task_id,
+                clickup_task_id=body.clickup_task_id,
+                note=body.note,
+                fields=frozenset(body.model_fields_set),
+            ),
+            now_utc(),
+        )
+    except activity_crud.BackwardInterval as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+
+    # Границы двинулись — минуты ролей за этот день пересчитываются, иначе
+    # правка живёт только на экране активности (`#135`).
+    for day in classify.touched_days(stored):
+        await classify.classify_day(db, day)
+    await db.commit()
+    apps = await activity_crud.list_apps(db)
+    return _interval_dto(
+        stored,
+        {app.id: app.bundle_id for app in apps},
+        {app.id: app.display_name for app in apps},
+    )
+
+
+@router.post(
+    "/activity/manual",
+    response_model=ActivityIntervalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_manual_activity(
+    body: ManualIntervalIn,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+) -> ActivityIntervalResponse:
+    """
+    Записать интервал руками. Приложения у такой записи нет и быть не может.
+
+    Идемпотентность даёт заголовок, а не естественный ключ: у ручной записи
+    `app_id IS NULL`, NULL в уникальном ключе Postgres различны, и две честные
+    записи с одинаковым началом — это две записи, а не дубль. Ключ отличает
+    повтор от второй записи.
+
+    409 — тот же ключ с другими границами: это ошибка вызывающего, и молча
+    отдать ему чужую строку значило бы потерять его собственную.
+    """
+    try:
+        stored, created = await activity_crud.create_manual_interval(
+            db,
+            activity_crud.IntervalDraft(
+                bundle_id=None,
+                started_at=body.started_at,
+                ended_at=body.ended_at,
+                local_date=body.local_date,
+                utc_offset_minutes=body.utc_offset_minutes,
+                source=ACTIVITY_SOURCE_MANUAL,
+                note=body.note,
+            ),
+            idempotency_key=idempotency_key,
+        )
+    except activity_crud.BackwardInterval as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except activity_crud.KeyBelongsToAnotherRecord as clash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Idempotency-Key {clash} уже занят записью с другими границами. "
+                "Возьмите новый ключ."
+            ),
+        ) from clash
+
+    if created:
+        if body.plan_task_id is not None or body.clickup_task_id is not None:
+            stored.plan_task_id = body.plan_task_id
+            stored.clickup_task_id = body.clickup_task_id
+            await db.flush()
+        for day in classify.touched_days(stored):
+            await classify.classify_day(db, day)
+    await db.commit()
+    apps = await activity_crud.list_apps(db)
+    return _interval_dto(
+        stored,
+        {app.id: app.bundle_id for app in apps},
+        {app.id: app.display_name for app in apps},
     )
 
 

@@ -1510,3 +1510,22 @@ Feedback loops (frontend): `bun test` **1087 pass, 0 fail** (97 файлов),
 
 Feedback loops (frontend): `bun test` **1097 pass, 0 fail** (98 файлов),
 `bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/160, блок «где прошёл день»
+
+**new**: `components/agent/DayIntervals.tsx`, `components/agent/IntervalEditor.tsx`,
+`components/agent/DayIntervals.test.tsx` (7), `lib/interval-rollup.ts` +
+`lib/interval-rollup.test.ts` (11), `hooks/useDayActivity.ts`.
+**mod**: `lib/api.ts` (типы активности и три ручки в `agentAPI`),
+`components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`.
+
+Три среза одного дня: лента, приложения, задачи. Число по задаче берётся у сервера целиком —
+это объединение диапазонов, и сложение нарисованных строк в браузере дало бы второе, большее
+число рядом с тем же списком. Скрытый заголовок подписан «заголовок скрыт правилом» со
+ссылкой на экран правил (`#158`), а не пустой ячейкой.
+
+Механически тронуты 29 тест-файлов: заглушка `agentAPI` дописана в каждую подмену
+`mock.module('@/lib/api')`.
+
+Feedback loops (frontend): `bun test` **1115 pass, 0 fail** (100 файлов),
+`bunx tsc --noEmit` clean.

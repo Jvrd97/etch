@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158
-# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, the mode of a date with who decided it, and (since #158) the title rules with the number of intervals each one touches, the order of the policy as one list, and the settings the agent polls
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
+# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, the mode of a date with who decided it, and (since #158) the title rules with the number of intervals each one touches, the order of the policy as one list, the settings the agent polls, and (since #160) the correction of one interval, the manual record with its idempotency key, and the day's time per task counted as the union of ranges
 """
 Wire types of the measured activity.
 
@@ -115,6 +115,9 @@ class ActivityIntervalResponse(BaseModel):
     app_id: int | None
     bundle_id: str | None
     app_name: str | None
+    plan_task_id: int | None
+    clickup_task_id: str | None
+    corrected_at: datetime | None
     started_at: datetime
     ended_at: datetime
     duration_seconds: int
@@ -124,6 +127,59 @@ class ActivityIntervalResponse(BaseModel):
     switch_count: int
     is_corrected: bool
     note: str | None
+
+
+class ActivityIntervalPatch(BaseModel):
+    """
+    A correction of one interval. Only what is sent is written.
+
+    `source` is not here and cannot be: the interval stays what the agent
+    measured, and the record of a person having moved its ends is `is_corrected`,
+    which the server sets. A client that could write `source` could erase that
+    distinction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    plan_task_id: int | None = None
+    clickup_task_id: str | None = Field(default=None, max_length=40)
+    note: str | None = None
+
+
+class ManualIntervalIn(BaseModel):
+    """
+    An interval a person types. No application, and none can be named.
+
+    «Созвон» is not an application in front of a window, and letting a manual
+    record claim a `bundle_id` would put a second, unmeasured writer into the
+    per-application roll-up.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    started_at: datetime
+    ended_at: datetime
+    local_date: date
+    utc_offset_minutes: int = 0
+    plan_task_id: int | None = None
+    clickup_task_id: str | None = Field(default=None, max_length=40)
+    note: str | None = None
+
+
+class ActivityTaskSlice(BaseModel):
+    """
+    Time on one task, counted as the union of the intervals that name it.
+
+    The only number in this theme that may be called «время по задаче».
+    `SUM(duration_seconds)` over the same rows is plausible and larger, because
+    a manual record deliberately overlaps what the agent measured.
+    """
+
+    plan_task_id: int | None
+    clickup_task_id: str | None
+    minutes: int
 
 
 class ActivityAppSlice(BaseModel):
@@ -150,12 +206,23 @@ class ActivityBatchResponse(BaseModel):
 
 
 class ActivityDayResponse(BaseModel):
-    """Where a day went, by application, plus the intervals it is made of."""
+    """
+    Where a day went: three readings of the same intervals.
+
+    The tape (`intervals`), the roll-up per application (`apps`) and the roll-up
+    per task (`tasks`). The third one is counted differently from the other two —
+    by the union of ranges — and `untasked_minutes` is the fourth number the
+    screen needs: work outside the plan, visible in the same hour.
+    """
 
     work_day: date
     mode: str
     total_minutes: int
     apps: list[ActivityAppSlice]
+    tasks: list[ActivityTaskSlice]
+    untasked_minutes: int = Field(
+        description="Время вне какой-либо задачи — работа сверх плана, считается так же объединением"
+    )
     intervals: list[ActivityIntervalResponse]
 
 
@@ -294,6 +361,9 @@ __all__ = [
     "TitleRulePatch",
     "TitleRuleResponse",
     "ActivityAppSlice",
+    "ActivityIntervalPatch",
+    "ActivityTaskSlice",
+    "ManualIntervalIn",
     "ActivityBatchIn",
     "ActivityBatchResponse",
     "ActivityDayResponse",

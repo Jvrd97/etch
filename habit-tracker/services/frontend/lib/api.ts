@@ -1874,6 +1874,77 @@ export interface TitleRuleDraft {
   is_active?: boolean;
 }
 
+/** Один интервал активности, как его отдаёт сервер. */
+export interface ActivityInterval {
+  id: number;
+  source: 'agent' | 'manual';
+  app_id: number | null;
+  bundle_id: string | null;
+  app_name: string | null;
+  plan_task_id: number | null;
+  clickup_task_id: string | null;
+  corrected_at: string | null;
+  started_at: string;
+  ended_at: string;
+  /** Считает Postgres от границ: разъехаться с ними не может. */
+  duration_seconds: number;
+  local_date: string;
+  title_source: 'full' | 'masked' | 'dropped';
+  idle_seconds: number;
+  switch_count: number;
+  is_corrected: boolean;
+  note: string | null;
+}
+
+/** Время по одному приложению за день. */
+export interface ActivityAppSlice {
+  app_id: number | null;
+  bundle_id: string | null;
+  app_name: string;
+  minutes: number;
+}
+
+/**
+ * Время по одной задаче — длина ОБЪЕДИНЕНИЯ диапазонов, а не сумма длительностей.
+ *
+ * Единственное число, которое можно называть «время по задаче»: пересечения
+ * ручной и автоматической записи разрешены сознательно, и сумма их удвоила бы.
+ */
+export interface ActivityTaskSlice {
+  plan_task_id: number | null;
+  clickup_task_id: string | null;
+  minutes: number;
+}
+
+/** Где прошёл день: лента, свёртка по приложениям, свёртка по задачам. */
+export interface ActivityDay {
+  work_day: string;
+  mode: string;
+  total_minutes: number;
+  apps: ActivityAppSlice[];
+  tasks: ActivityTaskSlice[];
+  untasked_minutes: number;
+  intervals: ActivityInterval[];
+}
+
+/** Правка одного интервала: едет только то, что человек поменял. */
+export interface ActivityIntervalPatch {
+  started_at?: string;
+  ended_at?: string;
+  plan_task_id?: number | null;
+  clickup_task_id?: string | null;
+  note?: string | null;
+}
+
+/** Запись руками. Приложения у неё нет и быть не может. */
+export interface ManualIntervalDraft {
+  started_at: string;
+  ended_at: string;
+  local_date: string;
+  plan_task_id?: number | null;
+  note?: string | null;
+}
+
 /** Рубильники агента: собирать ли заголовки и как часто опрашивать фокус. */
 export interface AgentSettings {
   titles_enabled: boolean;
@@ -1887,6 +1958,33 @@ export interface AgentSettings {
  * поэтому перестановка едет целым списком id, а не по одному шагу.
  */
 export const agentAPI = {
+  /** Где прошёл день — тремя срезами сразу, потому что порознь они врут. */
+  day: async (date: string) => {
+    return fetcher<ActivityDay>(`/agent/activity/${date}`);
+  },
+
+  /**
+   * Поправить интервал постфактум.
+   *
+   * `source` не отправляется и отправлен быть не может: интервал остаётся тем,
+   * что измерил агент, а факт правки ставит сервер в `is_corrected`.
+   */
+  patchInterval: async (id: number, patch: ActivityIntervalPatch) => {
+    return fetcher<ActivityInterval>(`/agent/activity/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Записать интервал руками. Ключ отличает повтор от второй записи. */
+  addManualInterval: async (draft: ManualIntervalDraft, idempotencyKey: string) => {
+    return fetcher<ActivityInterval>('/agent/activity/manual', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(draft),
+    });
+  },
+
   titleRules: async () => {
     return fetcher<TitleRule[]>('/agent/title-rules');
   },
