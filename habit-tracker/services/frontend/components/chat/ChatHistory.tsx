@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/111
-// summary: the list of conversations beside the chat — «Новый разговор», the feed broken into the days the conversations started, the open one marked with aria-current, and an unread history told apart from an empty one
+// summary: the list of conversations beside the chat — «Новый разговор», the feed broken into the days the conversations started, the open one marked with aria-current, an unread history told apart from an empty one, and the whole column pinned so it stays in place while the conversation scrolls
 
 import Link from 'next/link';
 import { MessagesSquare, Plus } from 'lucide-react';
@@ -40,6 +40,16 @@ export interface ChatHistoryProps {
  *
  * Открытая строка помечена `aria-current`, а не только цветом: «какой из них
  * сейчас открыт» — вопрос, на который экран обязан отвечать и без цвета.
+ *
+ * Колонка закреплена и живёт во всю высоту окна, а не стоит карточкой вверху
+ * страницы: длинный разговор прокручивается на несколько экранов, и список,
+ * уехавший вверх вместе с ним, перестаёт быть навигацией — до него надо
+ * возвращаться.
+ *
+ * Прокручивается внутри колонки только сам список. «Новый разговор» остаётся
+ * на месте: действие, до которого надо доскроллить, — это действие, которого на
+ * экране нет. На узком экране колонка снова становится обычным блоком сверху:
+ * там она одна, прокручивать её отдельно нечего и незачем.
  */
 export default function ChatHistory({
   conversations,
@@ -53,7 +63,7 @@ export default function ChatHistory({
   const groups = groupByDay(conversations, today);
 
   return (
-    <aside className="bg-card border border-white/5 rounded-3xl p-4">
+    <aside className="bg-card border border-white/5 rounded-3xl p-4 lg:sticky lg:top-4 lg:flex lg:flex-col lg:h-[calc(100vh-2rem)]">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-medium text-text-secondary">{HISTORY_TITLE}</h2>
       </div>
@@ -68,6 +78,10 @@ export default function ChatHistory({
         {NEW_CONVERSATION}
       </button>
 
+      {/* Прокручивается только список: кнопка «Новый разговор» и заголовок
+          стоят на месте, потому что действие, до которого надо доскроллить,
+          на экране отсутствует. */}
+      <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto lg:-mr-2 lg:pr-2">
       {error !== null && <p className="mt-4 text-sm text-danger">{error}</p>}
 
       {error === null && conversations.length === 0 && (
@@ -111,6 +125,7 @@ export default function ChatHistory({
           </ul>
         </section>
       ))}
+      </div>
     </aside>
   );
 }

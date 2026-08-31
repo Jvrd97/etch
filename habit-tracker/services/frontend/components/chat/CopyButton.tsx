@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/120
-// summary: the copy button of one chat message — writes the plain text of the message to the clipboard, says «Скопировано» for a moment afterwards, and stays silent when the browser refuses the clipboard instead of claiming a copy that did not happen
+// summary: the copy button of one chat message — sits under the text rather than over its first line, writes the plain text of the message to the clipboard, says «Скопировано» for a moment afterwards, and stays silent when the browser refuses the clipboard instead of claiming a copy that did not happen
 
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
@@ -63,7 +63,7 @@ export default function CopyButton({ text, onAccent = false }: CopyButtonProps) 
       aria-label={copied ? COPIED_LABEL : COPY_LABEL}
       title={copied ? COPIED_LABEL : COPY_LABEL}
       style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
-      className={`copy-affordance absolute top-0.5 right-0.5 inline-flex items-center justify-center rounded-2xl ${
+      className={`copy-affordance inline-flex items-center justify-center rounded-2xl ${
         onAccent
           ? 'text-background/50 hover:text-background'
           : 'text-text-disabled hover:text-text-primary'
