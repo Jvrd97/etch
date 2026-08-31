@@ -4,6 +4,7 @@
 from app.models.activity import (
     ActivityInterval,
     AgentHeartbeat,
+    AgentSetting,
     ClaudeSession,
     DayMode,
     ModeSchedule,
@@ -48,6 +49,7 @@ from app.models.work_interval import WorkInterval
 __all__ = [
     "ActivityInterval",
     "AgentHeartbeat",
+    "AgentSetting",
     "AIReport",
     "ClaudeSession",
     "DayMode",

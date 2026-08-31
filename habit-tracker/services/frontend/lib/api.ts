@@ -1852,6 +1852,82 @@ export const rolesAPI = {
   },
 };
 
+/** One line of the window-title privacy policy, with what it actually did. */
+export interface TitleRule {
+  id: number;
+  ord: number;
+  match_kind: 'bundle_id' | 'bundle_prefix' | 'title_regex';
+  pattern: string;
+  action: 'keep' | 'mask' | 'drop';
+  note: string | null;
+  is_active: boolean;
+  /** Сколько интервалов за 7 дней правило затрагивает; 0 — обычно опечатка. */
+  hits_7d: number;
+}
+
+/** A new line of the policy. Without `ord` it lands at the end — the weakest. */
+export interface TitleRuleDraft {
+  match_kind: TitleRule['match_kind'];
+  pattern: string;
+  action: TitleRule['action'];
+  note?: string | null;
+  is_active?: boolean;
+}
+
+/** Рубильники агента: собирать ли заголовки и как часто опрашивать фокус. */
+export interface AgentSettings {
+  titles_enabled: boolean;
+  sampling_seconds: number;
+}
+
+/**
+ * Правила приватности заголовков и рубильник.
+ *
+ * Порядок правил — семантика, а не оформление: первое совпавшее выигрывает,
+ * поэтому перестановка едет целым списком id, а не по одному шагу.
+ */
+export const agentAPI = {
+  titleRules: async () => {
+    return fetcher<TitleRule[]>('/agent/title-rules');
+  },
+
+  addTitleRule: async (draft: TitleRuleDraft) => {
+    return fetcher<TitleRule[]>('/agent/title-rules', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patchTitleRule: async (id: number, patch: Partial<TitleRuleDraft>) => {
+    return fetcher<TitleRule[]>(`/agent/title-rules/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  deleteTitleRule: async (id: number) => {
+    return fetcher<TitleRule[]>(`/agent/title-rules/${id}`, { method: 'DELETE' });
+  },
+
+  reorderTitleRules: async (order: number[]) => {
+    return fetcher<TitleRule[]>('/agent/title-rules/order', {
+      method: 'PUT',
+      body: JSON.stringify({ order }),
+    });
+  },
+
+  settings: async () => {
+    return fetcher<AgentSettings>('/agent/settings');
+  },
+
+  saveSettings: async (patch: Partial<AgentSettings>) => {
+    return fetcher<AgentSettings>('/agent/settings', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+  },
+};
+
 // ============ Chat ============
 
 /** Why a conversation was started. Mirrors `CONVERSATION_KINDS` on the server. */

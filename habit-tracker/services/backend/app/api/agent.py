@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135
-# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, and GET /agent/day-mode/{date} says which kind of day it is and who decided
+# [review:need-review] PHASE-03/135, PHASE-03/158
+# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, and GET /agent/config hands the whole lot to the agent
 """
 HTTP surface of the macOS agent.
 
@@ -22,21 +22,30 @@ hand would be a markup nobody triggers. The same run is available on its own as
 from __future__ import annotations
 
 from datetime import date as date_type
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.daytime import today_local
 from app.crud import activity as activity_crud
 from app.models.activity import ActivityInterval
 from app.roles import classify
 from app.schemas.activity import (
     ActivityAppSlice,
+    AgentConfigResponse,
+    AgentSettingsIn,
+    AgentSettingsResponse,
     ActivityBatchIn,
     ActivityBatchResponse,
     ActivityDayResponse,
     ActivityIntervalResponse,
     DayModeResponse,
+    TitleRuleIn,
+    TitleRuleOrderIn,
+    TitleRulePatch,
+    TitleRuleResponse,
 )
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -46,6 +55,11 @@ SECONDS_PER_MINUTE = 60
 # What a roll-up calls the time of an interval that names no application: a
 # manual record has a note, not a bundle, and «—» on a screen is worse than a word.
 MANUAL_APP_NAME = "вручную"
+
+# Окно, за которое считаются срабатывания правила. Неделя, потому что вопрос,
+# на который отвечает число, — «это правило вообще работает», а рабочая неделя
+# успевает задеть каждое приложение, которым человек пользуется.
+HITS_WINDOW_DAYS = 7
 
 
 def _interval_dto(
@@ -188,4 +202,216 @@ async def get_day_mode(
     mode = await activity_crud.day_mode(db, on)
     return DayModeResponse(
         date=on, kind=mode.kind, nocode=mode.nocode, source=mode.source
+    )
+
+
+# --- правила заголовков и рубильник (#158) ---------------------------------
+#
+# Единственная часть темы, которую человек правит регулярно и в спешке: поставил
+# приложение, увидел в интервалах лишнее, закрыл. Править это `psql`-ом в час
+# ночи — прямой путь к утечке, ради которой всё и городилось.
+
+
+async def _rules_response(db: AsyncSession) -> list[TitleRuleResponse]:
+    """The policy with the number of intervals each line touched in a week."""
+    since = today_local() - timedelta(days=HITS_WINDOW_DAYS)
+    hits = await activity_crud.rule_hits(db, since)
+    return [
+        TitleRuleResponse(
+            id=rule.id,
+            ord=rule.ord,
+            match_kind=rule.match_kind,
+            pattern=rule.pattern,
+            action=rule.action,
+            note=rule.note,
+            is_active=rule.is_active,
+            hits_7d=hits.get(rule.id, 0),
+        )
+        for rule in await activity_crud.list_title_rules(db)
+    ]
+
+
+def _bad_pattern(error: activity_crud.BadPattern) -> HTTPException:
+    """A pattern `re` cannot compile, refused on write with the reason shown."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Выражение {error.pattern!r} не компилируется: {error.reason}. "
+            "Правило не сохранено — битый шаблон на маке молча ничего не "
+            "матчит и оставляет заголовок правилу ниже."
+        ),
+    )
+
+
+@router.get("/title-rules", response_model=list[TitleRuleResponse])
+async def get_title_rules(
+    db: AsyncSession = Depends(get_db),
+) -> list[TitleRuleResponse]:
+    """
+    Правила приватности заголовков в порядке применения.
+
+    Порядок — семантика, а не оформление: первое совпавшее правило выигрывает,
+    и экран показывает их в том же порядке, в каком их применяет мак.
+
+    Рядом с каждым — сколько интервалов за 7 дней оно затрагивает. Без этого
+    правило, ни разу не сработавшее из-за опечатки, выглядит ровно как
+    работающее.
+    """
+    return await _rules_response(db)
+
+
+@router.post(
+    "/title-rules",
+    response_model=list[TitleRuleResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_title_rule(
+    body: TitleRuleIn, db: AsyncSession = Depends(get_db)
+) -> list[TitleRuleResponse]:
+    """
+    Завести правило. Без `ord` оно встаёт в конец списка — самым слабым.
+
+    В конец, а не в начало: правило, добавленное в спешке, не должно молча
+    перебить запрет, который стоял выше. Поднять его — отдельное действие.
+    """
+    existing = await activity_crud.list_title_rules(db)
+    tail = (existing[-1].ord + activity_crud.ORDER_STEP) if existing else 0
+    try:
+        await activity_crud.create_title_rule(
+            db,
+            ord=body.ord if body.ord is not None else tail,
+            match_kind=body.match_kind,
+            pattern=body.pattern,
+            action=body.action,
+            note=body.note,
+            is_active=body.is_active,
+        )
+    except activity_crud.BadPattern as error:
+        raise _bad_pattern(error) from error
+    await db.commit()
+    return await _rules_response(db)
+
+
+@router.patch("/title-rules/{rule_id}", response_model=list[TitleRuleResponse])
+async def patch_title_rule(
+    rule_id: int, body: TitleRulePatch, db: AsyncSession = Depends(get_db)
+) -> list[TitleRuleResponse]:
+    """
+    Поправить правило: шаблон, действие, заметку или его включённость.
+
+    Выключенное правило остаётся строкой, а не удаляется: «это правило я
+    когда-то написал и выключил» — факт, который через месяц объясняет, почему
+    заголовки этого приложения снова видно.
+    """
+    rule = await activity_crud.get_title_rule(db, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="title rule")
+
+    match_kind = body.match_kind if body.match_kind is not None else rule.match_kind
+    pattern = body.pattern if body.pattern is not None else rule.pattern
+    try:
+        activity_crud.validate_pattern(match_kind, pattern)
+    except activity_crud.BadPattern as error:
+        raise _bad_pattern(error) from error
+
+    rule.match_kind = match_kind
+    rule.pattern = pattern
+    if body.action is not None:
+        rule.action = body.action
+    if body.note is not None:
+        rule.note = body.note
+    if body.is_active is not None:
+        rule.is_active = body.is_active
+    await db.commit()
+    return await _rules_response(db)
+
+
+@router.delete("/title-rules/{rule_id}", response_model=list[TitleRuleResponse])
+async def delete_title_rule(
+    rule_id: int, db: AsyncSession = Depends(get_db)
+) -> list[TitleRuleResponse]:
+    """Убрать правило совсем. Порядок остальных не меняется."""
+    rule = await activity_crud.get_title_rule(db, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="title rule")
+    await db.delete(rule)
+    await db.commit()
+    return await _rules_response(db)
+
+
+@router.put("/title-rules/order", response_model=list[TitleRuleResponse])
+async def put_title_rule_order(
+    body: TitleRuleOrderIn, db: AsyncSession = Depends(get_db)
+) -> list[TitleRuleResponse]:
+    """
+    Переставить правила: весь порядок одним списком id, сильные впереди.
+
+    Целиком, а не «подвинь это вверх»: порядок решает, какое правило выиграет, и
+    построчная перестановка оставила бы политику в промежуточном состоянии — с
+    `keep` над `drop` — ровно на время второго запроса.
+    """
+    try:
+        await activity_crud.reorder_title_rules(db, body.order)
+    except LookupError as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(missing)
+        ) from missing
+    await db.commit()
+    return await _rules_response(db)
+
+
+@router.get("/settings", response_model=AgentSettingsResponse)
+async def get_settings(db: AsyncSession = Depends(get_db)) -> AgentSettingsResponse:
+    """Рубильники агента: собирать ли заголовки и как часто опрашивать фокус."""
+    row = await activity_crud.get_settings(db)
+    return AgentSettingsResponse(
+        titles_enabled=row.titles_enabled, sampling_seconds=row.sampling_seconds
+    )
+
+
+@router.put("/settings", response_model=AgentSettingsResponse)
+async def put_settings(
+    body: AgentSettingsIn, db: AsyncSession = Depends(get_db)
+) -> AgentSettingsResponse:
+    """
+    Переключить рубильники. `titles_enabled=false` гасит сбор заголовков целиком.
+
+    Гасит именно заголовки: интервалы и строки приложений продолжают приходить,
+    потому что «где прошёл день» и «что было в окне» — разные вопросы, и второй
+    можно закрыть, не потеряв первый.
+
+    Уже уехавшие заголовки выключение **не удаляет**. Чистка — руками по ADR;
+    экран говорит об этом прямо, потому что рубильник, который выглядит как
+    «стереть всё», однажды будет нажат вместо чистки.
+    """
+    row = await activity_crud.get_settings(db)
+    if body.titles_enabled is not None:
+        row.titles_enabled = body.titles_enabled
+    if body.sampling_seconds is not None:
+        row.sampling_seconds = body.sampling_seconds
+    await db.commit()
+    return AgentSettingsResponse(
+        titles_enabled=row.titles_enabled, sampling_seconds=row.sampling_seconds
+    )
+
+
+@router.get("/config", response_model=AgentConfigResponse)
+async def get_config(db: AsyncSession = Depends(get_db)) -> AgentConfigResponse:
+    """
+    Всё, что агент спрашивает у сервера перед тем, как что-то собирать.
+
+    Правила приезжают сюда, поэтому правило, сохранённое в вебе, начинает
+    действовать на маке со следующего опроса — без пересборки `.app` и без
+    перезапуска агента.
+    """
+    row = await activity_crud.get_settings(db)
+    today = today_local()
+    mode = await activity_crud.day_mode(db, today)
+    return AgentConfigResponse(
+        titles_enabled=row.titles_enabled,
+        sampling_seconds=row.sampling_seconds,
+        day_mode=DayModeResponse(
+            date=today, kind=mode.kind, nocode=mode.nocode, source=mode.source
+        ),
+        title_rules=await _rules_response(db),
     )

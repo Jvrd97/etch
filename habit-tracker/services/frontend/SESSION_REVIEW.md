@@ -1495,3 +1495,18 @@ Feedback loops (frontend): `bun test` **1078 pass, 0 fail** (96 файлов),
 
 Feedback loops (frontend): `bun test` **1087 pass, 0 fail** (97 файлов),
 `bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/158, веб-экран правил заголовков
+
+**new**: `app/agent/title-rules/page.tsx`, `components/agent/TitleRuleList.tsx`,
+`components/agent/TitleRuleList.test.tsx` (10), `hooks/useTitleRules.ts`,
+`lib/title-rules.ts`.
+**mod**: `lib/api.ts` (`agentAPI`, `TitleRule`, `AgentSettings`).
+
+Порядок правил рисуется первым и переставляется стрелками — выигрывает первое совпавшее,
+поэтому порядок это смысл, а не оформление; перестановка едет целым списком id, чтобы
+политика не побывала в промежуточном состоянии с `keep` над `drop`. Предупреждение
+рубильника («уже уехавшее не удаляется») стоит на самом рубильнике, а не рядом.
+
+Feedback loops (frontend): `bun test` **1097 pass, 0 fail** (98 файлов),
+`bunx tsc --noEmit` clean.

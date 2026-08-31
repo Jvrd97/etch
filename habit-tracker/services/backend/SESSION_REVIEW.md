@@ -1804,3 +1804,29 @@ Feedback loops (backend): pytest **1249 passed, 2 skipped**, `ruff check app tes
 `ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
 голова `e1d3f5a7c9b0`. `make check` целиком не отрабатывал: docker; тесты шли против
 постгреса на localhost:5432, база `habit_test_f4`.
+
+## 2026-08-31 — PHASE-03/158, экран правил заголовков и рубильник
+
+**Схема (new)**: `alembic/versions/2026_09_02_1400-f2e4a6c8b0d1_agent_setting.py` — одна
+строка настроек агента (`titles_enabled`, `sampling_seconds`), CHECK `id = 1`, сид в теле
+ревизии. `agent_heartbeat.titles_enabled` на роль рубильника не годится: агент
+перезаписывал бы его на каждом ударе сердца. `down_revision = e1d3f5a7c9b0`; upgrade →
+downgrade → upgrade проверен на `habit_mig_f4b`.
+
+**mod**: `app/models/activity.py` (`AgentSetting`), `app/crud/activity.py` (CRUD правил с
+`re.compile` при сохранении, перестановка целым списком, счётчик срабатываний за 7 дней,
+`seed_settings`), `app/schemas/activity.py`, `app/api/agent.py` (семь ручек).
+**Тесты (new)**: `tests/test_agent_title_rules.py` (15).
+
+Что стоит назвать вслух. Первое: рубильник действует **и на сервере** —
+`upsert_intervals` снимает заголовок, когда `titles_enabled=false`, потому что агент это
+клиент, а клиенту нельзя доверять единственную проверку того, что заголовков не будет.
+Второе: счётчик срабатываний считается переприменением правил к сохранённым интервалам —
+правила работают на маке, и интервал не несёт записи о том, какое из них сработало. У этого
+есть честный предел: `title_regex` с действием `drop` стёр заголовок до записи и по нему не
+считается; правила по `bundle_id` и `bundle_prefix` — а это почти вся политика — считаются
+точно.
+
+Feedback loops (backend): pytest **1264 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `f2e4a6c8b0d1`. `make check` целиком не отрабатывал: docker.

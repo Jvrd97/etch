@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135
-# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, and the mode of a date with who decided it
+# [review:need-review] PHASE-03/135, PHASE-03/158
+# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, the mode of a date with who decided it, and (since #158) the title rules with the number of intervals each one touches, the order of the policy as one list, and the settings the agent polls
 """
 Wire types of the measured activity.
 
@@ -28,7 +28,11 @@ from app.models.activity import (
     ACTIVITY_SOURCE_AGENT,
     ACTIVITY_SOURCES,
     DAY_MODE_KINDS,
+    SAMPLING_MAX_SECONDS,
+    SAMPLING_MIN_SECONDS,
     TITLE_DROPPED,
+    TITLE_MATCH_KINDS,
+    TITLE_POLICIES,
     TITLE_SOURCES,
 )
 
@@ -169,8 +173,126 @@ class DayModeResponse(BaseModel):
     source: str
 
 
+class TitleRuleResponse(BaseModel):
+    """One line of the title policy, with what it actually did."""
+
+    id: int
+    ord: int
+    match_kind: str
+    pattern: str
+    action: str
+    note: str | None
+    is_active: bool
+    hits_7d: int = Field(
+        description=(
+            "Сколько интервалов за 7 дней правило затрагивает. Ноль у правила, "
+            "которое не сработало ни разу, — обычно это опечатка в шаблоне"
+        )
+    )
+
+
+class TitleRuleIn(BaseModel):
+    """A new line of the policy. `ord` is optional: it lands at the end."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    match_kind: str = Field(description=f"Одно из: {', '.join(TITLE_MATCH_KINDS)}")
+    pattern: str = Field(min_length=1, max_length=300)
+    action: str = Field(description=f"Одно из: {', '.join(TITLE_POLICIES)}")
+    note: str | None = None
+    is_active: bool = True
+    ord: int | None = None
+
+    @field_validator("match_kind")
+    @classmethod
+    def _check_match_kind(cls, value: str) -> str:
+        return _one_of(value, TITLE_MATCH_KINDS, "match_kind")
+
+    @field_validator("action")
+    @classmethod
+    def _check_action(cls, value: str) -> str:
+        return _one_of(value, TITLE_POLICIES, "action")
+
+
+class TitleRulePatch(BaseModel):
+    """A correction of one line. Only what is sent is written."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    match_kind: str | None = None
+    pattern: str | None = Field(default=None, min_length=1, max_length=300)
+    action: str | None = None
+    note: str | None = None
+    is_active: bool | None = None
+
+    @field_validator("match_kind")
+    @classmethod
+    def _check_match_kind(cls, value: str | None) -> str | None:
+        return (
+            None if value is None else _one_of(value, TITLE_MATCH_KINDS, "match_kind")
+        )
+
+    @field_validator("action")
+    @classmethod
+    def _check_action(cls, value: str | None) -> str | None:
+        return None if value is None else _one_of(value, TITLE_POLICIES, "action")
+
+
+class TitleRuleOrderIn(BaseModel):
+    """
+    The whole order as one list of ids, strongest first.
+
+    Whole rather than «подвинь это вверх»: the order is what decides which rule
+    wins, and a screen sending one move at a time would leave a `keep` above a
+    `drop` for as long as the second request took.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[int] = Field(min_length=1)
+
+
+class AgentSettingsIn(BaseModel):
+    """The switches a person flips in the web."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    titles_enabled: bool | None = None
+    sampling_seconds: int | None = Field(
+        default=None, ge=SAMPLING_MIN_SECONDS, le=SAMPLING_MAX_SECONDS
+    )
+
+
+class AgentSettingsResponse(BaseModel):
+    """The switches as they stand right now."""
+
+    titles_enabled: bool
+    sampling_seconds: int
+
+
+class AgentConfigResponse(BaseModel):
+    """
+    What the agent asks the server before it collects anything.
+
+    The title policy comes with it, so a rule saved in the web takes effect on
+    the mac at the next poll — no rebuild of the `.app`, no restart.
+    """
+
+    titles_enabled: bool
+    sampling_seconds: int
+    day_mode: DayModeResponse
+    title_rules: list[TitleRuleResponse]
+
+
 __all__ = [
     "MAX_BATCH_INTERVALS",
+    "AgentConfigResponse",
+    "AgentSettingsIn",
+    "AgentSettingsResponse",
+    "TitleRuleIn",
+    "TitleRuleOrderIn",
+    "TitleRulePatch",
+    "TitleRuleResponse",
     "ActivityAppSlice",
     "ActivityBatchIn",
     "ActivityBatchResponse",

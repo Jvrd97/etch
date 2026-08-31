@@ -24,6 +24,7 @@ believed.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -34,23 +35,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.daytime import day_bounds
 from app.models.activity import (
     ACTIVITY_SOURCE_AGENT,
+    MATCH_BUNDLE_ID,
+    MATCH_BUNDLE_PREFIX,
+    MATCH_TITLE_REGEX,
     MODE_SOURCE_SCHEDULE,
+    SETTINGS_ROW_ID,
     TITLE_DROPPED,
     ActivityInterval,
+    AgentSetting,
     DayMode,
     ModeSchedule,
+    TitleRule,
     TrackedApp,
 )
 
+# Шаг нумерации правил при перестановке. Не единица: между двумя правилами
+# должно оставаться место, чтобы вставить третье, не перенумеровывая список.
+ORDER_STEP = 10
+
 __all__ = [
+    "ORDER_STEP",
+    "BadPattern",
     "DayModeAnswer",
     "IntervalDraft",
     "UnknownApp",
     "app_names",
+    "create_title_rule",
     "day_intervals",
     "day_mode",
+    "get_settings",
+    "get_title_rule",
     "list_apps",
+    "list_title_rules",
+    "reorder_title_rules",
+    "rule_hits",
+    "rule_matches",
+    "seed_settings",
     "upsert_intervals",
+    "validate_pattern",
 ]
 
 
@@ -134,9 +156,19 @@ async def upsert_intervals(
     already wrote. That is the reason this stream needs no `Idempotency-Key`:
     the natural key is the idempotency, exactly as in the health contour's
     `upsert_buckets`.
+
+    With `titles_enabled` off (`#158`) no title reaches a row, whatever the
+    batch said. The mac applies the switch first; this is the second lock, and
+    it is the one a stale build or a hand-written `curl` cannot walk past.
     """
     if not drafts:
         return []
+
+    # Рубильник `#158` действует и на сервере, а не только на маке. Агент —
+    # клиент, а клиенту нельзя доверять единственную проверку того, что
+    # заголовков не будет: старая сборка, отладочный `curl`, восстановленная
+    # очередь. Выключен рубильник — заголовок не доезжает до строки.
+    titles_allowed = (await get_settings(db)).titles_enabled
 
     known = await _app_ids(db)
     for draft in drafts:
@@ -146,6 +178,8 @@ async def upsert_intervals(
     written: list[ActivityInterval] = []
     for draft in drafts:
         app_id = known.get(draft.bundle_id) if draft.bundle_id else None
+        title = draft.title if titles_allowed else None
+        title_source = draft.title_source if titles_allowed else TITLE_DROPPED
         statement = pg_insert(ActivityInterval).values(
             source=draft.source,
             app_id=app_id,
@@ -153,8 +187,8 @@ async def upsert_intervals(
             ended_at=draft.ended_at,
             local_date=draft.local_date,
             utc_offset_minutes=draft.utc_offset_minutes,
-            title=draft.title,
-            title_source=draft.title_source,
+            title=title,
+            title_source=title_source,
             idle_seconds=draft.idle_seconds,
             switch_count=draft.switch_count,
             note=draft.note,
@@ -240,3 +274,179 @@ async def day_mode(db: AsyncSession, on: date) -> DayModeAnswer:
     if row is None:
         return DayModeAnswer(kind="work", nocode=False, source=MODE_SOURCE_SCHEDULE)
     return DayModeAnswer(kind=row.kind, nocode=row.nocode, source=MODE_SOURCE_SCHEDULE)
+
+
+class BadPattern(ValueError):
+    """
+    A `title_regex` rule was saved with an expression `re` cannot compile.
+
+    Refused on write rather than on use. A broken pattern that reaches the mac
+    matches nothing and silently leaves the title to whatever rule sits below it
+    — which, since the rules are ordered and the first match wins, can be a
+    `keep`. «Правило, которое молча ничего не матчит» is exactly the failure the
+    privacy policy cannot afford.
+    """
+
+    def __init__(self, pattern: str, reason: str) -> None:
+        super().__init__(reason)
+        self.pattern = pattern
+        self.reason = reason
+
+
+def validate_pattern(match_kind: str, pattern: str) -> None:
+    """Refuse a `title_regex` rule whose expression does not compile."""
+    if match_kind != MATCH_TITLE_REGEX:
+        return
+    try:
+        re.compile(pattern)
+    except re.error as error:
+        raise BadPattern(pattern, str(error)) from error
+
+
+async def list_title_rules(db: AsyncSession) -> list[TitleRule]:
+    """
+    The policy in the order it is applied: `ord` first, `id` to break a tie.
+
+    The same order the mac applies it in and the same order the screen has to
+    show, because first match wins and the order is therefore meaning rather
+    than presentation.
+    """
+    return list(
+        (await db.execute(select(TitleRule).order_by(TitleRule.ord, TitleRule.id)))
+        .scalars()
+        .all()
+    )
+
+
+async def get_title_rule(db: AsyncSession, rule_id: int) -> TitleRule | None:
+    """One rule by id."""
+    return await db.get(TitleRule, rule_id)
+
+
+async def create_title_rule(
+    db: AsyncSession,
+    *,
+    ord: int,
+    match_kind: str,
+    pattern: str,
+    action: str,
+    note: str | None = None,
+    is_active: bool = True,
+) -> TitleRule:
+    """Add one line to the policy, refusing a pattern that does not compile."""
+    validate_pattern(match_kind, pattern)
+    rule = TitleRule(
+        ord=ord,
+        match_kind=match_kind,
+        pattern=pattern,
+        action=action,
+        note=note,
+        is_active=is_active,
+    )
+    db.add(rule)
+    await db.flush()
+    return rule
+
+
+async def reorder_title_rules(db: AsyncSession, order: list[int]) -> list[TitleRule]:
+    """
+    Renumber the policy from a list of rule ids, first in the list first applied.
+
+    A whole list rather than «move this one up»: the order is what decides which
+    rule wins, and a screen that sent one move at a time would leave the policy
+    in an intermediate order between two requests — with `keep` above a `drop`
+    for as long as the second request took.
+    """
+    rules = {rule.id: rule for rule in await list_title_rules(db)}
+    missing = [rule_id for rule_id in order if rule_id not in rules]
+    if missing:
+        raise LookupError(f"unknown title rule ids: {missing}")
+    for position, rule_id in enumerate(order):
+        rules[rule_id].ord = position * ORDER_STEP
+    await db.flush()
+    return await list_title_rules(db)
+
+
+def rule_matches(rule: TitleRule, bundle_id: str | None, title: str | None) -> bool:
+    """
+    Whether one rule would fire on one interval, as the mac decides it.
+
+    A broken stored pattern misses rather than raises — a row that got in another
+    way (`psql`, a restored dump) must not take the whole count down with it.
+    """
+    if rule.match_kind == MATCH_BUNDLE_ID:
+        return bundle_id == rule.pattern
+    if rule.match_kind == MATCH_BUNDLE_PREFIX:
+        return bundle_id is not None and bundle_id.startswith(rule.pattern)
+    if rule.match_kind == MATCH_TITLE_REGEX:
+        if title is None:
+            return False
+        try:
+            return re.search(rule.pattern, title) is not None
+        except re.error:
+            return False
+    return False
+
+
+async def rule_hits(db: AsyncSession, since: date) -> dict[int, int]:
+    """
+    How many intervals since `since` each rule touches, by rule id.
+
+    Counted by re-applying the rules to what is stored, because the rules
+    themselves run on the mac and the interval carries no record of which one
+    fired. The number answers the question the screen exists to answer — «это
+    правило вообще работает или в нём опечатка» — and a rule that fires on
+    nothing shows a zero instead of looking exactly like a working one.
+
+    One honest limit, and it is on the screen rather than hidden here: a
+    `title_regex` rule whose action is `drop` removed the title before it was
+    stored, so it cannot be counted against titles it already erased. Rules on
+    `bundle_id` and `bundle_prefix` — which is most of the policy — count exactly.
+    """
+    rules = await list_title_rules(db)
+    bundles = {app.id: app.bundle_id for app in await list_apps(db)}
+    result = await db.execute(
+        select(ActivityInterval).where(ActivityInterval.local_date >= since)
+    )
+    hits = {rule.id: 0 for rule in rules}
+    for interval in result.scalars().all():
+        bundle = bundles.get(interval.app_id) if interval.app_id else None
+        for rule in rules:
+            if rule_matches(rule, bundle, interval.title):
+                hits[rule.id] += 1
+                # First match wins on the mac, and the count says the same thing.
+                break
+    return hits
+
+
+async def seed_settings(db: AsyncSession) -> AgentSetting:
+    """
+    Ensure the single row of agent settings exists, without disturbing it.
+
+    The migration inserts it; `tests/conftest.py` builds its schema with
+    `create_all` and never sees a migration, so the seed lives twice on purpose —
+    exactly as `role_crud.seed_roles` does, and for the same reason. Idempotent:
+    a row a person has already switched is left alone.
+    """
+    row = await db.get(AgentSetting, SETTINGS_ROW_ID)
+    if row is None:
+        row = AgentSetting(id=SETTINGS_ROW_ID)
+        db.add(row)
+        await db.flush()
+    return row
+
+
+async def get_settings(db: AsyncSession) -> AgentSetting:
+    """
+    The one row of agent settings, seeded by the migration.
+
+    Raises when it is missing rather than inventing it: a database that never got
+    the migration must say so, not answer with defaults that look like a decision.
+    """
+    row = await db.get(AgentSetting, SETTINGS_ROW_ID)
+    if row is None:
+        raise LookupError(
+            "agent_setting has no row: run the migration before reading the "
+            "agent configuration"
+        )
+    return row

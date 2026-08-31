@@ -59,13 +59,14 @@ ZONE = ZoneInfo(settings.APP_TIMEZONE)
 @pytest.fixture(autouse=True)
 async def seeded(db_session: AsyncSession) -> AsyncGenerator[None, None]:
     """
-    The role directory, the mode schedule and three applications.
+    The role directory, the agent settings, the mode schedule and three apps.
 
     `create_all` never sees a migration's seed, so the rows the migration
     inserts are inserted here as well — the same reason `seed_roles` exists in
     two places.
     """
     await role_crud.seed_roles(db_session)
+    await activity_crud.seed_settings(db_session)
     for weekday, kind in ((1, "work"), (4, "dayoff")):
         db_session.add(ModeSchedule(weekday=weekday, kind=kind, nocode=False))
     for bundle, name in ((VSCODE, "VS Code"), (CHROME, "Chrome"), (FIGMA, "Figma")):
