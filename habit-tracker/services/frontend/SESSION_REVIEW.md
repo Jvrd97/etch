@@ -1463,3 +1463,31 @@ Feedback loops (frontend): `bun test` **704/704 green**, `bunx tsc --noEmit` cle
 
 Feedback loops (frontend): `bun test` **761/761 green**, `bunx tsc --noEmit` clean,
 `bun run lint` 0 errors (6 warnings — в чужом `components/day/DayAnchors.test.tsx`).
+
+## 2026-08-31 — дорожка fast-2: #125, #123, #129, #148
+
+**#125 — экран справочника быстрых отметок:**
+- `lib/quick-mark-form.ts`, `components/QuickMarkEditor.tsx`, `components/QuickMarksScreen.tsx`,
+  `app/quick-marks/page.tsx`, `app/m/quick-marks/page.tsx` — **new**.
+- `components/QuickMarksScreen.test.tsx` — **new** (8 тестов).
+
+**#123 — холодный путь ведёт на кнопки:**
+- `components/QuickMarkSkeleton.tsx` — **new**.
+- `app/page.tsx`, `app/m/page.tsx` — **mod**: редиректы; дашборд уехал в `app/dashboard/`
+  и `app/m/dashboard/` — **mod (moved)**.
+- `lib/routes.ts` (`HOME_PATH`, `DASHBOARD_PATH`), `lib/view-mode.ts` (`MOBILE_HOME`),
+  `app/manifest.ts`, `hooks/useToday.ts` (два круга загрузки), `lib/today-entries.ts`
+  (`loadStreaks` с `failed`), `app/today/page.tsx`, `app/m/today/page.tsx`,
+  `components/Navigation.tsx`, `app/insights/page.tsx` — **mod**.
+- `hooks/useToday.test.ts`, `lib/view-mode.test.ts`, `lib/routes.test.ts` — **mod**.
+
+**#129 — блок «Предложено» на Today:**
+- `components/ProposedChallengeCard.tsx` — **new**, `+ .test.tsx` (9 тестов).
+- `lib/challenges.ts` (`isProposal`, `describeRule`), `hooks/useChallenges.ts` (`accept`,
+  `decline`), `components/ChallengesSection.tsx`, `lib/api.ts` — **mod**.
+
+**#148 — авторство плана на экране дня:**
+- `lib/plan-violations.ts` (`planFallbackLabel`), `components/DayScreen.tsx`,
+  `components/mobile/MobileDayScreen.tsx`, `lib/api.ts` — **mod**.
+
+Feedback loops (frontend): `bun test` **1094 passed / 0 failed**, `bunx tsc --noEmit` clean.
