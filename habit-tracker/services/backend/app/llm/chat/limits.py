@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/116
+# [review:need-review] PHASE-03/116, PHASE-03/114
 # summary: the ceilings of a chat turn — the worker-wide slot counter that keeps two CLI processes from becoming three, and the watchdog that ends a turn silent on its first delta long before the overall deadline
 """
 Потолки одного хода разговора.
@@ -217,10 +217,23 @@ async def guard_stream(
             await aclose()
 
 
-def guarded_turn(source: AsyncIterator[ChatChunk]) -> AsyncIterator[ChatChunk]:
-    """Тот же поток под сроками из настроек — одна точка, где они читаются."""
+def guarded_turn(
+    source: AsyncIterator[ChatChunk], *, budget: float | None = None
+) -> AsyncIterator[ChatChunk]:
+    """
+    Тот же поток под сроками из настроек — одна точка, где они читаются.
+
+    `budget` — сколько секунд осталось **всему ходу**, а не этому потоку. Ход с
+    именованными выборками (`#114`) состоит из нескольких потоков подряд, и без
+    общего остатка каждый из них получал бы полный срок: три захода по сто
+    восемьдесят секунд — это девять минут ожидания под одним вопросом. Срок
+    хода назван один раз в настройках и не умножается на число заходов.
+    """
+    total = float(settings.CHAT_TURN_TIMEOUT_SECONDS)
+    if budget is not None:
+        total = min(total, budget)
     return guard_stream(
         source,
         first_delta_timeout=float(settings.CHAT_FIRST_DELTA_TIMEOUT_SECONDS),
-        total_timeout=float(settings.CHAT_TURN_TIMEOUT_SECONDS),
+        total_timeout=total,
     )

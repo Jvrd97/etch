@@ -73,6 +73,7 @@ from app.models.chat import (
     ChatConversation,
     ChatMessage,
     ChatPlan,
+    ChatRetrieval,
 )
 
 logger = logging.getLogger(__name__)
@@ -454,6 +455,61 @@ async def plans_for_messages(
         select(ChatPlan).where(ChatPlan.message_id.in_(message_ids))
     )
     return {row.message_id: row for row in result.scalars().all()}
+
+
+async def save_retrieval(
+    db: AsyncSession,
+    *,
+    message_id: int,
+    query_name: str,
+    params: dict[str, Any],
+    row_count: int,
+    chars: int,
+) -> ChatRetrieval:
+    """
+    Записать след одной выборки рядом с ответом, ради которого её сделали.
+
+    Пишется и отвергнутая выборка — с нулевым `row_count`. Журнал отвечает на
+    вопрос «какие мои данные и когда покинули сервер», и попытка, до базы не
+    дошедшая, — часть этого ответа: без неё нельзя отличить «модель не просила»
+    от «модель просила, и ей отказали».
+
+    Самих данных здесь нет и не будет: имя, параметры и размер. Иначе таблица
+    аудита стала бы вторым местом, где лежит текст дневника.
+    """
+    row = ChatRetrieval(
+        message_id=message_id,
+        query_name=query_name,
+        params=params,
+        row_count=row_count,
+        chars=chars,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return row
+
+
+async def retrievals_for_messages(
+    db: AsyncSession, message_ids: Sequence[int]
+) -> dict[int, list[ChatRetrieval]]:
+    """
+    Выборки лентой: один запрос на весь экран, а не на сообщение.
+
+    Список, а не одна строка на ключ: у одного ответа их столько, сколько имён
+    модель попросила за ход, и все они показываются под ним.
+    """
+    if not message_ids:
+        return {}
+    result = await db.execute(
+        select(ChatRetrieval)
+        .where(ChatRetrieval.message_id.in_(message_ids))
+        .order_by(ChatRetrieval.id)
+    )
+    grouped: dict[int, list[ChatRetrieval]] = {}
+    for row in result.scalars().all():
+        grouped.setdefault(row.message_id, []).append(row)
+    return grouped
 
 
 async def mark_stale_for_date(

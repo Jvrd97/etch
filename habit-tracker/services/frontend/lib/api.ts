@@ -1856,6 +1856,24 @@ export interface ChatMessage {
   created_at: string;
   /** The plan proposed in this message, if it proposed one. */
   plan_id?: number | null;
+  /**
+   * What the model pulled while answering this message.
+   *
+   * Name, parameters and size — never the data. The row exists to answer «какие
+   * мои данные покинули сервер» without reading the data itself, and a field
+   * carrying the rows back would undo exactly that.
+   */
+  retrievals?: ChatRetrieval[];
+}
+
+/** One named retrieval as the audit trail records it. */
+export interface ChatRetrieval {
+  id: number;
+  query_name: string;
+  params: Record<string, unknown>;
+  row_count: number;
+  chars: number;
+  created_at: string;
 }
 
 /**

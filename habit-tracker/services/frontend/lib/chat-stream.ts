@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/114
 // summary: pure parser of the chat SSE stream — frames buffered across network chunks, `event:`/`data:` turned into a discriminated union, and anything unknown skipped instead of thrown
 
 /**
@@ -17,6 +17,20 @@ export type ChatStreamEvent =
       cacheReadTokens: number | null;
     }
   | { kind: 'done'; messageId: number; seq: number; status: string }
+  /**
+   * Одна именованная выборка, исполненная посреди хода (`#114`).
+   *
+   * Своё событие, а не `delta`: строка «модель полезла за данными» — это не
+   * слова модели, и подмешивать её в текст ответа значило бы приписывать ей
+   * сказанное сервером.
+   */
+  | {
+      kind: 'retrieval';
+      queryName: string;
+      rowCount: number;
+      chars: number;
+      refusal: string | null;
+    }
   | { kind: 'error'; code: string };
 
 /** Frame boundary of SSE. Two newlines end an event, wherever the chunk ended. */
@@ -30,6 +44,7 @@ const EVENT_DELTA = 'delta';
 const EVENT_USAGE = 'usage';
 const EVENT_DONE = 'done';
 const EVENT_ERROR = 'error';
+const EVENT_RETRIEVAL = 'retrieval';
 
 /** JSON object of a frame, before we know which event it belongs to. */
 type Payload = Record<string, unknown>;
@@ -62,6 +77,17 @@ function toEvent(name: string, payload: Payload): ChatStreamEvent | null {
     const status = asString(payload.status);
     if (messageId === null || seq === null || status === null) return null;
     return { kind: 'done', messageId, seq, status };
+  }
+  if (name === EVENT_RETRIEVAL) {
+    const queryName = asString(payload.query_name);
+    if (queryName === null) return null;
+    return {
+      kind: 'retrieval',
+      queryName,
+      rowCount: asNumber(payload.row_count) ?? 0,
+      chars: asNumber(payload.chars) ?? 0,
+      refusal: asString(payload.refusal),
+    };
   }
   if (name === EVENT_ERROR) {
     const code = asString(payload.code);

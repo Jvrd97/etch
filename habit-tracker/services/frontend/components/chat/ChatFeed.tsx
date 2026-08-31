@@ -1,10 +1,12 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114
 // summary: PHASE-03/116 draws a stored turn by its status — partial text under a note for `interrupted`, the machine code spelled out for `failed`, an unclosed `streaming` row named as such with the button that unsticks it; the conversation feed both shells draw — stored messages as bubbles, the turn in flight growing delta by delta, the machine error code turned into a sentence, and the bottom anchor that keeps the newest line in view while the answer arrives
 
 import { useEffect, useRef } from 'react';
 import { MessagesSquare } from 'lucide-react';
 import Markdown from '@/components/Markdown';
+import ChatRetrievals from '@/components/chat/ChatRetrievals';
+import { RETRIEVALS_PREFIX, liveRetrievalLine } from '@/lib/chat-retrievals';
 import type { ChatMessage } from '@/lib/api';
 import {
   MESSAGE_STATUS_NOTE,
@@ -111,6 +113,9 @@ export default function ChatFeed({
             {note !== null && (
               <p className="mt-2 text-xs text-text-disabled">{note}</p>
             )}
+            {/* Что модель достала ради этого ответа. Под текстом, а не над:
+                сначала ответ, потом чем он подкреплён. */}
+            <ChatRetrievals rows={message.retrievals ?? []} />
             {message.status === 'streaming' && onReset && (
               <button
                 type="button"
@@ -134,6 +139,17 @@ export default function ChatFeed({
               <span className="whitespace-pre-wrap">{turn.text}</span>
             ) : (
               <span className="text-text-disabled">…</span>
+            )}
+            {(turn.retrievals ?? []).length > 0 && (
+              // Идущий ход, ушедший за данными: сорок секунд ожидания иначе
+              // неотличимы от зависшего бэкенда.
+              <p
+                className="mt-2 text-xs text-text-disabled"
+                data-testid="turn-retrievals"
+              >
+                {RETRIEVALS_PREFIX +
+                  (turn.retrievals ?? []).map(liveRetrievalLine).join('; ')}
+              </p>
             )}
             {turn.phase === 'failed' && (
               <p className="mt-2 text-xs text-danger">

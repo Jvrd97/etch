@@ -1,7 +1,8 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/116, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/114, PHASE-03/115, PHASE-03/116, PHASE-03/117
 # summary: the chat router — conversations created, listed and read back with their messages, the plans proposed in them and whether the next turn continues a CLI session, one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context, and the apply that goes through the existing transactional `apply_daily_summary` rather than writing anything of its own
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
+# summary: PHASE-03/114 turns one turn into a loop of passes — an answer that carries a `need` block buys the named retrievals, writes one `chat_retrievals` row per call (refusals included), hands them back inside the same CLI session and lets the model finish in words, under a ceiling of passes and the turn's own remaining budget
 # summary: PHASE-03/116 opens the answer row as `streaming` before generation (it is also the lock that makes a second POST a 409), closes it from `finally` on every exit, refuses with 502 when the backend dies before the first frame, and unsticks a dialogue by a reset handle when the worker died with it
 """
 Ручки разговора.
@@ -71,6 +72,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SessionFactory, get_chat_llm_client, get_session_factory
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.daytime import now_utc, today_local
 from app.crud import category as category_crud
@@ -90,6 +92,14 @@ from app.llm.chat.limits import (
     guarded_turn,
 )
 from app.llm.chat.plan import plan_from_answer
+from app.llm.chat.retrieval import (
+    MAX_NEED_PASSES,
+    NeedItem,
+    RetrievalOutcome,
+    parse_need,
+    render_outcomes,
+    run_need,
+)
 from app.llm.chat.prompt import (
     CHAT_CONTEXT_VERSION,
     ChatTurn,
@@ -100,6 +110,7 @@ from app.llm.client import LLMError
 from app.schemas.daily_summary import DailySummaryApplyRequest
 from app.models.chat import (
     CONVERSATION_KINDS,
+    MESSAGE_ROLE_ASSISTANT,
     PLAN_STATUS_APPLIED,
     PLAN_STATUS_DISMISSED,
     PLAN_STATUS_PROPOSED,
@@ -117,9 +128,11 @@ from app.schemas.chat import (
     ChatPlanApply,
     ChatPlanApplyResponse,
     ChatPlanResponse,
+    ChatRetrievalResponse,
     SSE_EVENT_DELTA,
     SSE_EVENT_DONE,
     SSE_EVENT_ERROR,
+    SSE_EVENT_RETRIEVAL,
     SSE_EVENT_USAGE,
     ConversationContext,
     ConversationCreate,
@@ -310,12 +323,21 @@ async def get_conversation(
     # Один запрос на все планы ленты: плашка висит под сообщением, но запрос на
     # сообщение превратил бы открытие разговора в N обращений в базу.
     plans = await chat_crud.plans_for_messages(db, [one.id for one in messages])
+    # Тем же одним запросом и по той же причине: выборки висят под сообщением,
+    # но запрос на сообщение превратил бы открытие разговора в N обращений.
+    retrievals = await chat_crud.retrievals_for_messages(
+        db, [one.id for one in messages]
+    )
     return _detail(
         conversation,
         [
             MessageResponse.model_validate(one).model_copy(
                 update={
                     "plan_id": plans[one.id].id if one.id in plans else None,
+                    "retrievals": [
+                        ChatRetrievalResponse.model_validate(row)
+                        for row in retrievals.get(one.id, [])
+                    ],
                 }
             )
             for one in messages
@@ -545,6 +567,66 @@ async def _attach_plan(
     )
 
 
+# Чем разделяются заходы одного хода в сохранённом тексте ответа. Пустая
+# строка, а не склейка встык: иначе последнее слово блока `need` срастается с
+# первым словом настоящего ответа.
+TURN_PASS_SEPARATOR = "\n\n"
+
+
+def _remaining(started: float) -> float:
+    """Сколько секунд осталось всему ходу с момента его начала."""
+    return float(settings.CHAT_TURN_TIMEOUT_SECONDS) - (time.monotonic() - started)
+
+
+def _next_resume(client: ChatLLMClient, usage: ChatChunk | None) -> ResumeHint | None:
+    """
+    Подсказка для следующего захода того же хода, либо `None`.
+
+    Второй заход обязан продолжать сессию первого, а не пересобирать разговор:
+    иначе выборка, только что выданная модели, уезжает к ней вторым полным
+    промптом. Условия продолжения по-прежнему считает `app.llm.chat.session` —
+    здесь только собирается подсказка из того, что вернул прошлый заход. Ход без
+    сессии (бэкенд `api`, оборванный `result`) отвечает `None`, и следующий заход
+    честно идёт реплеем — дороже, но верно.
+    """
+    if usage is None or not usage.session_id:
+        return None
+    return ResumeHint(
+        session_id=usage.session_id,
+        cwd=client.cwd,
+        context_version=CHAT_CONTEXT_VERSION,
+    )
+
+
+async def _run_retrievals(
+    factory: SessionFactory, *, message_id: int, items: list[NeedItem]
+) -> list[RetrievalOutcome]:
+    """
+    Исполнить просьбы модели своей сессией и записать след каждой из них.
+
+    Сессия открывается и закрывается здесь целиком, как и у `_open_turn`: ход
+    длится десятки секунд, и держать соединение из пула всё это время ради
+    одного `SELECT` посреди него — тот же самый выеденный пул.
+
+    Строка журнала пишется на каждую выборку, включая отвергнутые: без них
+    нельзя отличить «модель не просила» от «модель просила, и ей отказали», а
+    именно на этот вопрос таблица и заведена.
+    """
+    async with factory() as db:
+        outcomes = await run_need(db, items)
+        for one in outcomes:
+            await chat_crud.save_retrieval(
+                db,
+                message_id=message_id,
+                query_name=one.query_name,
+                params=one.params,
+                row_count=one.row_count,
+                chars=one.chars,
+            )
+        await db.commit()
+    return outcomes
+
+
 async def _turn_frames(
     *,
     factory: SessionFactory,
@@ -571,28 +653,63 @@ async def _turn_frames(
     usage: ChatChunk | None = None
     status_value = MESSAGE_STATUS_INTERRUPTED
     error_code: str | None = None
+    turns = list(context.turns)
+    resume = context.resume
+    passes = 0
     try:
         try:
-            async for chunk in guarded_turn(
-                client.stream_turn(
-                    system_prompt=context.system_prompt,
-                    turns=context.turns,
-                    resume=context.resume,
+            while True:
+                answered: list[str] = []
+                async for chunk in guarded_turn(
+                    client.stream_turn(
+                        system_prompt=context.system_prompt,
+                        turns=turns,
+                        resume=resume,
+                    ),
+                    budget=_remaining(started),
+                ):
+                    if chunk.kind == CHUNK_DELTA:
+                        answered.append(chunk.text)
+                        parts.append(chunk.text)
+                        yield SSE_EVENT_DELTA, {"text": chunk.text}
+                    else:
+                        usage = chunk
+                        yield (
+                            SSE_EVENT_USAGE,
+                            {
+                                "input_tokens": chunk.input_tokens,
+                                "output_tokens": chunk.output_tokens,
+                                "cache_read_tokens": chunk.cache_read_tokens,
+                            },
+                        )
+                answer = "".join(answered)
+                items = parse_need(answer) if passes < MAX_NEED_PASSES else None
+                if items is None:
+                    break
+                passes += 1
+                outcomes = await _run_retrievals(
+                    factory, message_id=context.message_id, items=items
                 )
-            ):
-                if chunk.kind == CHUNK_DELTA:
-                    parts.append(chunk.text)
-                    yield SSE_EVENT_DELTA, {"text": chunk.text}
-                else:
-                    usage = chunk
+                for one in outcomes:
                     yield (
-                        SSE_EVENT_USAGE,
+                        SSE_EVENT_RETRIEVAL,
                         {
-                            "input_tokens": chunk.input_tokens,
-                            "output_tokens": chunk.output_tokens,
-                            "cache_read_tokens": chunk.cache_read_tokens,
+                            "query_name": one.query_name,
+                            "params": one.params,
+                            "row_count": one.row_count,
+                            "chars": one.chars,
+                            "refusal": one.refusal,
                         },
                     )
+                turns.append(ChatTurn(MESSAGE_ROLE_ASSISTANT, answer))
+                turns.append(
+                    ChatTurn(
+                        MESSAGE_ROLE_USER,
+                        render_outcomes(outcomes, exhausted=passes >= MAX_NEED_PASSES),
+                    )
+                )
+                parts.append(TURN_PASS_SEPARATOR)
+                resume = _next_resume(client, usage) or resume
         except LLMError as exc:
             # Текст исключения не пересылается наружу: у него нет обязательства
             # не содержать куска промпта. Наружу идёт код.

@@ -26,7 +26,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -39,6 +39,10 @@ SSE_EVENT_DELTA = "delta"
 SSE_EVENT_USAGE = "usage"
 SSE_EVENT_DONE = "done"
 SSE_EVENT_ERROR = "error"
+# Кадр именованной выборки (`#114`). Отдельное событие, а не `delta`: строка
+# «запрошено сон за 14 дней» — это не текст ответа, и подмешивать её в пузырь
+# значило бы вписывать в слова модели то, чего она не говорила.
+SSE_EVENT_RETRIEVAL = "retrieval"
 
 # Потолок длины реплики. Не вкусовой: реплика уходит в промпт целиком, и
 # мегабайт, вставленный в поле ввода, — это ход, который не закончится.
@@ -134,6 +138,28 @@ class MessageResponse(BaseModel):
     # разговора: у самой строки `chat_messages` такого столбца нет — план живёт
     # своей таблицей и своим жизненным циклом.
     plan_id: int | None = None
+    # Что модель достала, отвечая этим сообщением. Пустой список — обычный
+    # случай: карточки дня хватило, и наружу за данными никто не ходил.
+    retrievals: list["ChatRetrievalResponse"] = Field(default_factory=list)
+
+
+class ChatRetrievalResponse(BaseModel):
+    """
+    Одна именованная выборка так, как её видит экран.
+
+    Данных здесь нет — имя, параметры и размер. Строка под ответом отвечает на
+    вопрос «какие мои данные ушли», не заставляя открывать ни базу, ни сами
+    данные, и это единственное, ради чего таблица существует.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    query_name: str
+    params: dict[str, Any]
+    row_count: int
+    chars: int
+    created_at: datetime
 
 
 class ConversationDetail(ConversationResponse):
