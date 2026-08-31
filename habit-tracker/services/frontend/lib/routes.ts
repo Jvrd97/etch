@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/111, PHASE-03/118
-// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat reached through "More"
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/125
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -82,6 +82,18 @@ export const APP_ROUTES: readonly AppRoute[] = [
     // Under "More": the goals are read when a quarter turns or a milestone
     // closes, not several times a day, and the tab bar's five slots are already
     // spoken for.
+    inTabBar: null,
+  },
+  {
+    id: 'quick-marks',
+    name: 'Быстрые отметки',
+    href: '/quick-marks',
+    // Мобильный близнец есть: кнопку заводят там же, где по ней потом бьют, а
+    // бьют по ней с телефона.
+    hasMobile: true,
+    hasMobileNested: false,
+    // Под «More»: справочник настраивают раз в месяц, а таб-бар — для того,
+    // что открывают каждый день.
     inTabBar: null,
   },
   {

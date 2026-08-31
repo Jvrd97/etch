@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/121, PHASE-03/130
+# [review:need-review] PHASE-03/121, PHASE-03/130, PHASE-03/125
 # summary: wire types of the quick mark — the button as it is created and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode
 """
 Wire types of the quick mark.
@@ -181,3 +181,71 @@ class QuickMarkEventResponse(BaseModel):
     occurred_at: datetime
     today_total: float | None = None
     done: bool
+
+
+# Кто спрашивает справочник. Веб показывает всё, окно агента — только то, что
+# помечено `show_in_agent`, iOS пока читает как веб. Неизвестное значение —
+# 422, а не молчаливый полный список: опечатка в клиенте иначе выглядит как
+# рабочее поведение и находится через месяц.
+SURFACE_WEB = "web"
+SURFACE_AGENT = "agent"
+SURFACE_IOS = "ios"
+SURFACES: tuple[str, ...] = (SURFACE_WEB, SURFACE_AGENT, SURFACE_IOS)
+
+
+class QuickMarkUpdate(BaseModel):
+    """
+    Правка кнопки: только присланные поля.
+
+    Как и патч пункта плана (#110), различает «не прислали» и «обнулили»:
+    `null` в `hotkey` снимает клавишу, отсутствие ключа её не трогает. Склеить
+    их значило бы отбирать клавишу на каждом переименовании кнопки.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(None, min_length=1, max_length=60)
+    category_id: int | None = None
+    field_id: int | None = None
+    kind: str | None = Field(
+        None, description=f"Одно из: {', '.join(QUICK_MARK_KINDS)}"
+    )
+    step: float | None = None
+    unit_label: str | None = Field(None, max_length=20)
+    icon: str | None = Field(None, max_length=50)
+    color: str | None = Field(None, max_length=7)
+    hotkey: str | None = Field(None, min_length=1, max_length=1)
+    order: int | None = None
+    show_in_agent: bool | None = None
+    is_active: bool | None = None
+
+
+class QuickMarkOrderIn(BaseModel):
+    """
+    Новый порядок справочника: список id сверху вниз.
+
+    Списком, а не парами «id и номер»: порядок — свойство списка, и клиент,
+    присылающий номера, рано или поздно пришлёт два одинаковых. Сервер
+    нумерует то, что получил, ровно как приём плана нумерует его секции (#87).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] = Field(..., min_length=1)
+
+
+class HotkeyTaken(BaseModel):
+    """
+    Тело 409: клавиша занята, и названа кнопка, которая её держит.
+
+    Имя занявшей кнопки здесь намеренно. В остальном модуле сообщения строятся
+    из id, чтобы в лог не попадало ничего, что человек напечатал; это сообщение
+    в лог не идёт — оно отвечает на вопрос «а кто её занял», ради которого
+    человек иначе полезет в базу.
+    """
+
+    error: str = Field("hotkey_taken", description="Машинный код отказа")
+    message: str
+    hotkey: str
+    quick_mark_id: int = Field(..., description="Кнопка, которая держит клавишу")
+    label: str = Field(..., description="Её подпись — по ней её и находят")

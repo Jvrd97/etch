@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/110, PHASE-03/111, PHASE-03/121, PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/110, PHASE-03/111, PHASE-03/121, PHASE-03/125, PHASE-03/118, PHASE-03/116
 // summary: PHASE-03/110 adds the per-item plan editor — patch, create, delete and move of one line, each answering with the whole plan and the document rules a human's edit broke; PHASE-03/116 adds chatAPI.reset and exports APIError so a refused turn keeps its status; entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
@@ -1685,6 +1685,45 @@ export interface QuickMarkEvent {
   done: boolean;
 }
 
+/** Which client is asking; `agent` gets only the buttons marked for it. */
+export type QuickMarkSurface = 'web' | 'agent' | 'ios';
+
+/**
+ * A new button, or a patch of one.
+ *
+ * The same shape both ways: the create refuses a missing `label`, the patch
+ * takes whatever it is given. `hotkey: null` in a patch takes the key off; a
+ * key left out of the object does not touch it.
+ */
+export interface QuickMarkDraft {
+  label?: string;
+  category_id?: number;
+  field_id?: number;
+  kind?: QuickMarkKind;
+  step?: number | null;
+  unit_label?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  hotkey?: string | null;
+  order?: number;
+  show_in_agent?: boolean;
+  is_active?: boolean;
+}
+
+/**
+ * The body of a 409: the key is taken, and by which button.
+ *
+ * Named rather than counted, because the repair is "take it off that one" and
+ * the person has to know which one that is without opening the database.
+ */
+export interface HotkeyTaken {
+  error: 'hotkey_taken';
+  message: string;
+  hotkey: string;
+  quick_mark_id: number;
+  label: string;
+}
+
 /** What a tap says beyond the button's own id. */
 export interface QuickMarkTap {
   /** Overrides the button's step; for a tick, 0 unticks. */
@@ -1700,9 +1739,56 @@ export const quickMarksAPI = {
    * No date is sent: which day is running is the server's answer
    * (`local_date()`), and a browser that computed its own would disagree with
    * it between midnight and the boundary hour.
+   *
+   * `surface` narrows the list the way the asking client needs it; an unknown
+   * value is a 422 rather than a full list, so a typo is found on the first
+   * call instead of a month later.
    */
-  list: async () => {
-    return fetcher<QuickMark[]>('/quick-marks');
+  list: async (options: { surface?: QuickMarkSurface; activeOnly?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (options.surface) query.set('surface', options.surface);
+    if (options.activeOnly === false) query.set('active_only', 'false');
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return fetcher<QuickMark[]>(`/quick-marks${suffix}`);
+  },
+
+  /** Enter a button. 409 carries the button that holds the key it asked for. */
+  create: async (draft: QuickMarkDraft) => {
+    return fetcher<QuickMark>('/quick-marks', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Edit a button; only the fields sent are written. */
+  update: async (id: number, draft: QuickMarkDraft) => {
+    return fetcher<QuickMark>(`/quick-marks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Remove a button. Nothing it ever recorded is removed with it — the day's
+   * values stay where they are, and only the button leaves the screen.
+   */
+  remove: async (id: number) => {
+    return fetcher<Record<string, never>>(`/quick-marks/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * Reorder the directory by sending the ids top to bottom.
+   *
+   * A list rather than a number per button: order is a property of the list,
+   * and a client that sends numbers eventually sends two of the same.
+   */
+  reorder: async (ids: number[]) => {
+    return fetcher<QuickMark[]>('/quick-marks/order', {
+      method: 'PATCH',
+      body: JSON.stringify({ ids }),
+    });
   },
 
   /**

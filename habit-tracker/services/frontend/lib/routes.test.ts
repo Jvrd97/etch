@@ -86,6 +86,7 @@ describe('MORE_ROUTES', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
       'day',
       'goals',
+      'quick-marks',
       'chat',
       'daily-summary',
       'table',

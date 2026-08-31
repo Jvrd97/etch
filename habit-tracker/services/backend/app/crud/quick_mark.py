@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/121, PHASE-03/130
+# [review:need-review] PHASE-03/121, PHASE-03/125, PHASE-03/130
 # summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write
 """
 What a quick mark means and where its value lands.
@@ -56,7 +56,11 @@ from app.models.quick_mark import (
     QuickMark,
     QuickMarkEvent,
 )
-from app.schemas.quick_mark import QuickMarkCreate
+from app.schemas.quick_mark import (
+    SURFACE_AGENT,
+    QuickMarkCreate,
+    QuickMarkUpdate,
+)
 
 __all__ = [
     "DayState",
@@ -174,7 +178,11 @@ class ListedMark:
 
 
 async def list_quick_marks(
-    db: AsyncSession, *, on: date, active_only: bool = True
+    db: AsyncSession,
+    *,
+    on: date,
+    active_only: bool = True,
+    surface: str | None = None,
 ) -> list[ListedMark]:
     """
     The directory with the state of the day `on` attached to every button.
@@ -192,10 +200,19 @@ async def list_quick_marks(
 
     День без плана — пустой словарь и порядок справочника: ни пустого блока, ни
     сообщения «плана нет» посреди кнопок.
+
+    `surface='agent'` оставляет только кнопки с `show_in_agent` (#125). Порядок
+    и `planned` при этом те же самые — в окне помещается пять-шесть кнопок, но
+    это те же пять-шесть, что стоят первыми на Today.
     """
     query = _ordered()
     if active_only:
         query = query.where(QuickMark.is_active.is_(True))
+    if surface == SURFACE_AGENT:
+        # Фильтр здесь, внутри общей выборки, а не отдельной функцией (#125):
+        # вторая выборка — это второй порядок и второй `planned`, то есть окно
+        # агента, показывающее не то, что веб.
+        query = query.where(QuickMark.show_in_agent.is_(True))
     result = await db.execute(query)
     marks = list(result.scalars().all())
     planned = await planned_marks(db, on)
@@ -542,3 +559,106 @@ async def replayed_event(
         occurred_at=event.occurred_at,
         state=await day_state(db, mark, event.entry_date),
     )
+
+
+# --- Управление справочником (#125) ---------------------------------------
+#
+# Справочник, который нельзя завести из интерфейса, заводится SQL-ом, а человек
+# не станет писать INSERT, чтобы поменять шаг воды с 250 на 300.
+
+
+async def hotkey_owner(
+    db: AsyncSession, hotkey: str, *, exclude_id: int | None = None
+) -> QuickMark | None:
+    """
+    Кнопка, которая уже держит эту клавишу, либо None.
+
+    Уникальность гарантирует частичный индекс, а это — ответ. `IntegrityError`
+    называет имя ограничения, а человеку нужно «эта клавиша занята кнопкой
+    «Отжимания»» и возможность поправить, не потеряв заполненную форму.
+    """
+    query = select(QuickMark).where(QuickMark.hotkey == hotkey)
+    if exclude_id is not None:
+        query = query.where(QuickMark.id != exclude_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+def merged_for_validation(mark: QuickMark, data: QuickMarkUpdate) -> QuickMarkCreate:
+    """
+    Кнопка после правки — в том виде, в каком её судит `validate_quick_mark`.
+
+    Правка проверяется целиком, а не по присланным полям: `kind`, `field_id` и
+    `step` образуют одно утверждение, и патч, меняющий только `kind`, способен
+    сделать невозможной пару, которую он не трогал.
+    """
+    fields = data.model_dump(exclude_unset=True)
+    return QuickMarkCreate(
+        label=fields.get("label", mark.label),
+        category_id=fields.get("category_id", mark.category_id),
+        field_id=fields.get("field_id", mark.field_id),
+        kind=fields.get("kind", mark.kind),
+        step=fields.get("step", None if mark.step is None else float(mark.step)),
+        unit_label=fields.get("unit_label", mark.unit_label),
+        icon=fields.get("icon", mark.icon),
+        color=fields.get("color", mark.color),
+        hotkey=fields.get("hotkey", mark.hotkey),
+        order=fields.get("order", mark.order),
+        show_in_agent=fields.get("show_in_agent", mark.show_in_agent),
+        is_active=fields.get("is_active", mark.is_active),
+    )
+
+
+async def update_quick_mark(
+    db: AsyncSession, mark: QuickMark, data: QuickMarkUpdate
+) -> QuickMark:
+    """
+    Записать правку кнопки. Валидация — забота вызывающего, как и при создании.
+
+    `step` кладётся строкой в `Decimal`: путь через `float` теряет 0.1 так же
+    надёжно, как и везде, а шаг кнопки — то число, которое человек напечатал.
+    """
+    fields = data.model_dump(exclude_unset=True)
+    for name, value in fields.items():
+        if name == "step":
+            mark.step = None if value is None else Decimal(str(value))
+        else:
+            setattr(mark, name, value)
+    await db.flush()
+    return mark
+
+
+async def delete_quick_mark(db: AsyncSession, mark: QuickMark) -> None:
+    """
+    Убрать кнопку из справочника.
+
+    Ни `entries`, ни `entry_values` не трогаются: выпитая вода остаётся
+    выпитой, и удаление кнопки — это про экран, а не про прожитый день.
+    Журнал тапов уезжает каскадом внешнего ключа — он и есть журнал этой
+    кнопки, и без неё отвечать ему не на что.
+    """
+    await db.delete(mark)
+    await db.flush()
+
+
+async def reorder_quick_marks(db: AsyncSession, ids: list[int]) -> list[QuickMark]:
+    """
+    Перенумеровать справочник по присланному списку сверху вниз.
+
+    Кнопки, которых в списке нет, уезжают под него в прежнем порядке: экран мог
+    прислать порядок, собранный до того, как соседняя вкладка завела новую
+    кнопку, и терять её из-за этого не за что.
+
+    Возвращается весь справочник в новом порядке — тем же чтением, которым его
+    рисует экран, чтобы ответ не пришлось сверять со вторым запросом.
+    """
+    result = await db.execute(_ordered())
+    marks = list(result.scalars().all())
+    by_id = {mark.id: mark for mark in marks}
+    ordered = [by_id[one] for one in ids if one in by_id]
+    named = {one.id for one in ordered}
+    ordered.extend(mark for mark in marks if mark.id not in named)
+    for position, mark in enumerate(ordered):
+        mark.order = position
+    await db.flush()
+    return ordered
