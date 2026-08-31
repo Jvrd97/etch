@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/86, PHASE-03/147, PHASE-03/88, PHASE-03/90
-// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day (whether the server honours it is the server's call since #90)
+// summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches without blanking the day it is re-reading, a new date still shows the spinner, and only an explicit flag claims a person opened the day (whether the server honours it is the server's call since #90)
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -348,5 +348,56 @@ describe('useDay', () => {
 
     act(() => result.current.reload());
     await waitFor(() => expect(getDay).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not blank the day it is re-reading', async () => {
+    // Отметка якоря перечитывает день целиком: вердикт пересчитывает сервер.
+    // Пока это шло через общий `loading`, экран на время запроса подменялся
+    // спиннером, и один клик по галочке выглядел как перезагрузка страницы.
+    // Уже прочитанный день остаётся на месте, а обновление идёт тихо.
+    let finish: (detail: DayDetail) => void = () => {};
+    const { result } = renderHook(() => useDay('2026-08-30'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    getDay = mock(
+      () =>
+        new Promise<DayDetail>((resolve) => {
+          finish = resolve;
+        })
+    );
+    act(() => result.current.reload());
+
+    await waitFor(() => expect(result.current.refreshing).toBe(true));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.detail).toEqual(DAY);
+
+    await act(async () => {
+      finish(DAY);
+    });
+    await waitFor(() => expect(result.current.refreshing).toBe(false));
+  });
+
+  it('still shows the spinner when the date changes', async () => {
+    // Другая дата — других данных на экране ещё нет. Оставить вчерашние под
+    // новым числом было бы уже не «тихо», а неверно.
+    const { result, rerender } = renderHook(({ date }) => useDay(date), {
+      initialProps: { date: '2026-08-14' as string | null },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let finish: (detail: DayDetail) => void = () => {};
+    getDay = mock(
+      () =>
+        new Promise<DayDetail>((resolve) => {
+          finish = resolve;
+        })
+    );
+    rerender({ date: '2026-08-30' });
+
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    await act(async () => {
+      finish(DAY);
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
   });
 });
