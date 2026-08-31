@@ -125,6 +125,13 @@ let state: {
   deleteTimeBlock: (id: number) => Promise<void>;
 };
 
+// Сводка ролей подменяется на уровне хука, а не `@/lib/api`: подмена модуля в
+// bun действует на весь прогон, и соседний набор тестов, подменивший `@/lib/api`
+// без `rolesAPI`, ронял бы этот файл на импорте.
+mock.module('@/hooks/useRoleSummary', () => ({
+  useRoleSummary: () => ({ summary: null, loading: false, error: null }),
+}));
+
 mock.module('@/hooks/useRoles', () => ({
   useRoles: () => state,
 }));

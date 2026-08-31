@@ -7,6 +7,7 @@ Test configuration and fixtures.
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
+from datetime import date
 from typing import Any
 
 import pytest
@@ -15,10 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core import daytime
+from app.crud import role as role_crud
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 from app.models.goal import QuarterGoal
+from app.models.role import ROLE_CODE_ARCHITECT
 
 # Test database URL: default targets the docker-compose network ("postgres"
 # host); override via env for local runs (e.g. localhost:5432).
@@ -196,3 +199,36 @@ async def smoking(client: AsyncClient) -> dict[str, Any]:
     )
     assert response.status_code == 201
     return response.json()
+
+
+async def record_role_act(
+    db: AsyncSession,
+    on: date,
+    *,
+    role_code: str = ROLE_CODE_ARCHITECT,
+    act_kind: str = "adr_written",
+    title: str = "ADR-0020: роли как измеряемая величина",
+) -> None:
+    """
+    Закрыть клауз роли (`#137`) для одного дня.
+
+    Помощник, а не фикстура: клауз нужен ровно тем тестам, которые ждут
+    выигранный рабочий день, и включать его во все подряд значило бы прятать в
+    автоиспользуемой фикстуре условие, которое эти тесты и проверяют.
+
+    Пишет через crud, а не через ручку: тесту вердикта нужен факт в таблице, а
+    не проверка контракта `POST /role-acts` — её делает `test_roles.py`.
+    """
+    await role_crud.seed_roles(db)
+    role = await role_crud.get_role_by_code(db, role_code)
+    assert role is not None, "справочник ролей не засеян"
+    await role_crud.write_act(
+        db,
+        role_crud.ActDraft(
+            work_day=on,
+            role_id=role.id,
+            act_kind=act_kind,
+            title=title,
+        ),
+    )
+    await db.flush()

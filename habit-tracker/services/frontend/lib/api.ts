@@ -1079,6 +1079,10 @@ export interface DayRuleSet {
   hard_edge_kinds: string[];
   anchors: string[];
   verdict_rule: Record<string, unknown>;
+  /** Судит ли канон рабочий день по акту роли, отличной от тимлида. */
+  role_clause_enabled: boolean;
+  /** Коды ролей клауза через запятую. */
+  role_clause_roles: string;
   note_md: string;
 }
 
@@ -1146,6 +1150,10 @@ export interface DayRuleSetPublish {
   workdays: number[];
   nocode_days: number[];
   required_anchors: string[];
+  /** Судить ли рабочий день по акту роли, отличной от тимлида. */
+  role_clause_enabled: boolean;
+  /** Коды ролей клауза через запятую. */
+  role_clause_roles: string;
   note_md: string;
 }
 
@@ -1448,7 +1456,25 @@ export type Verdict = 'won' | 'lost';
  * at them would send the reader to fix the wrong thing. An empty string means
  * every condition was met.
  */
-export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
+export type VerdictReason =
+  | 'tasks'
+  | 'anchors'
+  | 'overtime'
+  | 'not_closed'
+  | 'role_act';
+
+/**
+ * One condition of the canon and how the day stood against it.
+ *
+ * The verdict is derived from the list rather than counted beside it, so a
+ * screen showing the clauses is showing the reasoning itself and not a
+ * paraphrase of it.
+ */
+export interface DayClause {
+  code: VerdictReason;
+  passed: boolean;
+  detail: string;
+}
 
 /** What the day could not be judged on. `work_minutes` is "не измерено". */
 export type MissingData = 'work_minutes' | 'anchor_kinds';
@@ -1506,6 +1532,8 @@ export interface DaySummary {
   reviewed_today: number | null;
   body_md: string;
   missing_data: MissingData[];
+  /** Условия канона, взвешенные для этого дня, в порядке взвешивания. */
+  clauses?: DayClause[];
   /** Texts of the anchors that were neither closed nor set aside. */
   missing_anchors: string[];
   source: 'close' | 'import';
@@ -1804,12 +1832,119 @@ export interface RoleAct {
 }
 
 /** Where a day went and which roles happened on it, in one answer. */
+/** One role over a period: minutes, share, the target and the gap from it. */
+export interface RoleSummarySlice {
+  role_id: number;
+  role_code: string;
+  title: string;
+  minutes: number;
+  share_pct: number;
+  /** Гипотеза квартала, не норма периода. */
+  target_share_pct: number | null;
+  /** Доля минус целевая, в пунктах; null — целевой нет. */
+  delta_pct: number | null;
+  /** Акты по видам за период. */
+  act_counts: Record<string, number>;
+  act_total: number;
+}
+
+/**
+ * The fold of a period — what the Friday report is assembled from.
+ *
+ * `markdown` is the finished block, rendered on the server. The screen shows
+ * that very text rather than building its own: a second formatter would drift
+ * from the first on the first edit of the target shares, and silently.
+ */
+export interface RoleSummary {
+  date_from: string;
+  date_to: string;
+  total_minutes: number;
+  roles: RoleSummarySlice[];
+  unassigned_minutes: number;
+  unassigned_share_pct: number;
+  window_from: string;
+  window_minutes: number;
+  window_unassigned_share_pct: number;
+  lag_threshold_pct: number;
+  /** Правила разметки отстали: доля `unassigned` за окно выше порога. */
+  rules_lag: boolean;
+  markdown: string;
+}
+
 export interface RoleDay {
   work_day: string;
   total_minutes: number;
   roles: RoleDaySlice[];
   blocks: RoleTimeBlock[];
   acts: RoleAct[];
+}
+
+/** One line of the markup: this pattern from this source means that role. */
+export interface RoleRule {
+  id: number;
+  role_id: number;
+  role_code: string;
+  source: string;
+  matcher_kind: string;
+  pattern: string;
+  priority: number;
+  is_active: boolean;
+}
+
+/** A rule as it is written, plus the window a dry run tries it over. */
+export interface RoleRuleDraft {
+  role_code: string;
+  source: string;
+  matcher_kind: string;
+  pattern: string;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface RoleRuleDryRunExample {
+  kind: string;
+  work_day: string;
+  label: string;
+  current_role_id: number;
+  taken_from_rule_id: number | null;
+}
+
+/**
+ * What a rule would catch, counted before it is saved.
+ *
+ * `scanned_rows` travels beside the counters on purpose: nothing matched out of
+ * nothing and nothing matched out of a month of history are different answers,
+ * and only the second one reads as «правило не ловит».
+ */
+export interface RoleRuleDryRun {
+  date_from: string;
+  date_to: string;
+  scanned_rows: number;
+  matched_time_blocks: number;
+  matched_acts: number;
+  /** Сколько совпадений отобрано у каждого правила, по его id. */
+  taken_from: Record<string, number>;
+  taken_from_nobody: number;
+  examples: RoleRuleDryRunExample[];
+}
+
+export interface RoleShare {
+  role_id: number;
+  minutes: number;
+  share_pct: number;
+}
+
+/** What a re-markup did, and what it deliberately did not touch. */
+export interface RoleReclassified {
+  date_from: string;
+  date_to: string;
+  scanned_rows: number;
+  changed_time_blocks: number;
+  changed_acts: number;
+  /** Записи, подтверждённые человеком: их не трогали, и это сказано числом. */
+  protected: number;
+  before: RoleShare[];
+  after: RoleShare[];
 }
 
 /** «Полтора часа на найм» as it is sent. The day is the server's when omitted. */
@@ -1845,6 +1980,18 @@ export const rolesAPI = {
     return fetcher<Role[]>('/roles');
   },
 
+  /**
+   * Свёртка ролей за произвольный период — неделя, месяц, что угодно.
+   *
+   * Готовый текст пятничного отчёта приезжает полем `markdown` того же ответа,
+   * поэтому второго запроса за ним нет и второго форматирования — тоже.
+   */
+  summary: async (dateFrom: string, dateTo: string) => {
+    return fetcher<RoleSummary>(
+      `/roles/summary?date_from=${dateFrom}&date_to=${dateTo}`
+    );
+  },
+
   addTimeBlock: async (draft: RoleTimeBlockDraft) => {
     return fetcher<RoleTimeBlock>('/role-time-blocks', {
       method: 'POST',
@@ -1867,6 +2014,45 @@ export const rolesAPI = {
 
   deleteAct: async (id: number) => {
     return fetcher<Record<string, never>>(`/role-acts/${id}`, { method: 'DELETE' });
+  },
+
+  listRules: async () => {
+    return fetcher<RoleRule[]>('/role-rules');
+  },
+
+  addRule: async (draft: RoleRuleDraft) => {
+    return fetcher<RoleRule>('/role-rules', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patchRule: async (id: number, patch: Partial<RoleRuleDraft>) => {
+    return fetcher<RoleRule>(`/role-rules/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /**
+   * Прогнать правило по истории, ничего не сохранив.
+   *
+   * Обязательная половина формы: правило `window_title_regex` без проверки на
+   * реальных данных ловит либо ничего, либо всё.
+   */
+  dryRunRule: async (draft: RoleRuleDraft & { days_back?: number }) => {
+    return fetcher<RoleRuleDryRun>('/role-rules/dry-run', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Разметить период заново по действующим правилам. */
+  reclassify: async (dateFrom: string, dateTo: string) => {
+    return fetcher<RoleReclassified>('/roles/reclassify', {
+      method: 'POST',
+      body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+    });
   },
 };
 
@@ -1929,6 +2115,24 @@ export interface ChatMessage {
   created_at: string;
   /** The plan proposed in this message, if it proposed one. */
   plan_id?: number | null;
+  /**
+   * What the model pulled while answering this message.
+   *
+   * Name, parameters and size — never the data. The row exists to answer «какие
+   * мои данные покинули сервер» without reading the data itself, and a field
+   * carrying the rows back would undo exactly that.
+   */
+  retrievals?: ChatRetrieval[];
+}
+
+/** One named retrieval as the audit trail records it. */
+export interface ChatRetrieval {
+  id: number;
+  query_name: string;
+  params: Record<string, unknown>;
+  row_count: number;
+  chars: number;
+  created_at: string;
 }
 
 /**

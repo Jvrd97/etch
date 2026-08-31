@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/138
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
 
 import Link from 'next/link';
@@ -7,7 +7,9 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
 import DaySquare from '@/components/life/DaySquare';
+import RoleWeekSummary from '@/components/RoleWeekSummary';
 import { useDays } from '@/hooks/useDays';
+import { useRoleSummary } from '@/hooks/useRoleSummary';
 import { LOAD_WEEK_ERROR, useWeek } from '@/hooks/useWeek';
 import { dayStatus, daysByDate, toISODate, WEEKDAY_SHORT } from '@/lib/life';
 
@@ -37,6 +39,9 @@ export default function WeekScreen({ iso, compact = false, today = new Date() }:
   // are now — that difference is the whole point of `computed_at`.
   const { days } = useDays(week?.starts_on ?? todayISO, week?.ends_on ?? todayISO);
   const byDate = daysByDate(days);
+  // Сводка ролей за ту же неделю: числа пятничного отчёта живут там же, где
+  // разбор недели, а не собираются отдельно перед его написанием.
+  const { summary } = useRoleSummary(week?.starts_on ?? null, week?.ends_on ?? null);
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error !== null || week === null) {
@@ -120,6 +125,12 @@ export default function WeekScreen({ iso, compact = false, today = new Date() }:
           </ul>
         )}
       </section>
+
+      {summary !== null && (
+        // Сводка стоит перед ретро, а не после: числа пишутся в отчёт, и
+        // читать их после написанного разбора поздно.
+        <RoleWeekSummary summary={summary} title="Роли за неделю" />
+      )}
 
       <section aria-label="Ретро недели" className="space-y-3">
         <h2 className="text-xl font-semibold text-text-primary">Ретро</h2>

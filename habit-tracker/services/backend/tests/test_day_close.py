@@ -38,6 +38,7 @@ from app.day.evaluate import (
 )
 from app.models.mark import MARK_DONE
 from app.models.summary import DaySummary
+from tests.conftest import record_role_act
 
 DAY_URL = "/api/v1/day"
 
@@ -129,8 +130,11 @@ async def a_won_day(client: AsyncClient) -> None:
 
 
 async def test_closing_a_day_writes_the_verdict_the_reason_and_the_streak(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    # Клауз роли (`#137`): рабочий день без акта роли, отличной от тимлида, не
+    # выигран, каким бы ровным он ни был по задачам и якорям.
+    await record_role_act(db_session, CLOSE_DAY)
     await a_won_day(client)
 
     closed = await close(client, CLOSE_DAY, work_minutes=400, body_md="ровный день")
@@ -242,9 +246,10 @@ async def test_nine_hours_of_work_lose_the_day_to_overtime(
 
 
 async def test_a_day_whose_work_was_never_measured_says_so(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """`work_minutes` допускает NULL до `#91`; пропуск проверки назван вслух."""
+    await record_role_act(db_session, CLOSE_DAY)
     await a_won_day(client)
 
     closed = await close(client, CLOSE_DAY, body_md="времени не мерил")

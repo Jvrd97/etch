@@ -50,6 +50,8 @@ const RULE: DayRuleSet = {
   hard_edge_kinds: ['anchor', 'hard_point'],
   anchors: ['подъём', 'relationship'],
   verdict_rule: { reason_order: ['overtime', 'anchors', 'tasks'] },
+  role_clause_enabled: true,
+  role_clause_roles: 'cto,architect',
   note_md: 'канон',
 };
 

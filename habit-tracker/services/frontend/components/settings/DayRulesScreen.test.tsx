@@ -36,6 +36,8 @@ function rule(overrides: Partial<DayRuleSet> = {}): DayRuleSet {
     workdays: [1, 2, 3, 4, 5],
     nocode_days: [2, 4],
     required_anchors: ['подъём', 'спорт', 'старт работы', 'ревью', 'отбой'],
+    role_clause_enabled: true,
+    role_clause_roles: 'cto,architect',
     note_md: 'действующий канон по config.md',
     ...overrides,
   };
@@ -48,6 +50,8 @@ const LEGACY = rule({
   work_cap_min: 600,
   work_hard_cap_min: 600,
   tasks_required_ratio: '0.80',
+  role_clause_enabled: true,
+  role_clause_roles: 'cto,architect',
   note_md: 'legacy: канон до 2026-08-17',
 });
 

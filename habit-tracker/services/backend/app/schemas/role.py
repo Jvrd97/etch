@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134
+# [review:need-review] PHASE-03/134, PHASE-03/138, PHASE-03/139
 # summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day
 """
 Wire types of the roles.
@@ -51,6 +51,13 @@ ACT_KINDS: tuple[str, ...] = (
     "ci_change",
     "wrote_from_scratch",
 )
+
+
+# Окно сухого прогона по умолчанию и его потолок. Тридцать дней — тот же
+# масштаб, на котором считается сигнал «правила отстали»: правило смотрят на
+# том же отрезке, на котором его потом судят.
+DRY_RUN_DAYS = 30
+DRY_RUN_MAX_DAYS = 365
 
 
 def _one_of(value: str, allowed: tuple[str, ...], field_name: str) -> str:
@@ -369,8 +376,169 @@ class RoleDayResponse(BaseModel):
     acts: list[RoleActResponse]
 
 
+class RoleSummarySlice(BaseModel):
+    """
+    Одна роль за период: минуты, доля, целевая и расхождение с ней.
+
+    `delta_pct` отдаётся сервером, а не вычитается на экране: то же число нужно
+    в тексте пятничного отчёта, и второе вычитание разошлось бы с первым на
+    первом же округлении.
+    """
+
+    role_id: int
+    role_code: str
+    title: str
+    minutes: int
+    share_pct: int = Field(description="Доля минут периода, целые проценты")
+    target_share_pct: int | None = Field(
+        default=None, description="Гипотеза квартала, не норма периода"
+    )
+    delta_pct: int | None = Field(
+        default=None,
+        description="Доля минус целевая, в пунктах; null — целевой нет",
+    )
+    act_counts: dict[str, int] = Field(
+        default_factory=dict, description="Акты по видам за период"
+    )
+    act_total: int
+
+
+class RoleSummaryResponse(BaseModel):
+    """
+    Свёртка периода — то, из чего собирается пятничный отчёт.
+
+    `unassigned_share_pct` стоит рядом с ролями, а не в «прочем»: доля
+    неотнесённой работы — единственный признак того, что правила разметки
+    отстали, и спрятанная она перестаёт быть сигналом.
+
+    `rules_lag` считается по скользящему окну, а не по этому периоду: неделя
+    отпуска даёт сто процентов `unassigned` и ничего не говорит о правилах.
+    """
+
+    date_from: date
+    date_to: date
+    total_minutes: int
+    roles: list[RoleSummarySlice]
+    unassigned_minutes: int
+    unassigned_share_pct: int
+    window_from: date
+    window_minutes: int
+    window_unassigned_share_pct: int
+    lag_threshold_pct: int = Field(
+        description="Порог доли `unassigned`, выше которого автоматика не работает"
+    )
+    rules_lag: bool = Field(
+        description=(
+            "Правила разметки отстали: доля `unassigned` за окно выше порога. "
+            "По ADR-0020 это сигнал выключить автоматику в пользу ручного ввода"
+        )
+    )
+    markdown: str = Field(
+        description=(
+            "Готовый блок пятничного отчёта. Тот же текст, что отдаёт "
+            "`format=md`, — рендер один и живёт на сервере"
+        )
+    )
+
+
+class RoleRuleDryRun(RoleRuleCreate):
+    """
+    Правило целиком плюс окно, по которому его прогоняют.
+
+    Наследует проверки `RoleRuleCreate` до последней: прогон обязан отвергнуть
+    ровно то, что отвергнет сохранение, — иначе человек увидит совпадения у
+    правила, которое потом не примут.
+    """
+
+    days_back: int = Field(
+        default=DRY_RUN_DAYS,
+        ge=1,
+        le=DRY_RUN_MAX_DAYS,
+        description="Сколько последних дней прогонять; по умолчанию 30",
+    )
+
+
+class RoleRuleDryRunExample(BaseModel):
+    """Одно совпадение, как его читает человек перед сохранением."""
+
+    kind: str = Field(description="`time_block` или `act`")
+    work_day: date
+    label: str = Field(description="Текст, на котором правило совпало")
+    current_role_id: int
+    taken_from_rule_id: int | None = Field(
+        default=None, description="Правило, у которого отобрано; null — было ничьё"
+    )
+
+
+class RoleRuleDryRunResponse(BaseModel):
+    """
+    Итог прогона: сколько зацепило, у кого отобрало и на чём это считалось.
+
+    `scanned_rows` стоит рядом со счётчиками, потому что ноль совпадений на
+    нулевой истории и ноль совпадений на месяце данных — разные ответы, и
+    только второй читается как «правило не ловит».
+    """
+
+    date_from: date
+    date_to: date
+    scanned_rows: int
+    matched_time_blocks: int
+    matched_acts: int
+    taken_from: dict[int, int] = Field(
+        default_factory=dict,
+        description="Сколько совпадений отобрано у каждого правила, по его id",
+    )
+    taken_from_nobody: int
+    examples: list[RoleRuleDryRunExample] = Field(default_factory=list)
+
+
+class RoleReclassifyIn(BaseModel):
+    """Диапазон, который размечают заново. Обе границы включительно."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date_from: date
+    date_to: date
+
+
+class RoleShareResponse(BaseModel):
+    """Доля одной роли — половина отчёта «до/после»."""
+
+    role_id: int
+    minutes: int
+    share_pct: int
+
+
+class RoleReclassifyResponse(BaseModel):
+    """
+    Что переразметка сделала и чего не тронула.
+
+    `protected` называется вслух: «ничего не изменилось» и «изменилось всё,
+    кроме ваших правок» — разные исходы одной кнопки, и различать их человек
+    должен на экране, а не в базе.
+    """
+
+    date_from: date
+    date_to: date
+    scanned_rows: int
+    changed_time_blocks: int
+    changed_acts: int
+    protected: int
+    before: list[RoleShareResponse]
+    after: list[RoleShareResponse]
+
+
 __all__ = [
     "ACT_KINDS",
+    "DRY_RUN_DAYS",
+    "RoleReclassifyIn",
+    "RoleReclassifyResponse",
+    "RoleRuleDryRun",
+    "RoleRuleDryRunExample",
+    "RoleRuleDryRunResponse",
+    "RoleShareResponse",
+    "RoleSummaryResponse",
+    "RoleSummarySlice",
     "RoleActIn",
     "RoleActPatch",
     "RoleActResponse",

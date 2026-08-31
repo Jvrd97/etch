@@ -314,3 +314,43 @@ describe('DayVerdict', () => {
     expect(screen.queryByText('из записи')).toBeNull();
   });
 });
+
+describe('условия канона (#137)', () => {
+  const CLAUSES: DaySummary['clauses'] = [
+    { code: 'overtime', passed: true, detail: '6 ч 40 мин при потолке 8 ч 0 мин' },
+    { code: 'anchors', passed: true, detail: 'якоря 5/5' },
+    { code: 'tasks', passed: true, detail: 'задачи 4/4 при планке 1.00' },
+    { code: 'role_act', passed: false, detail: 'ни одного акта CTO или Архитектор' },
+  ];
+
+  it('показывает каждое условие с расшифровкой, а не одно «не выполнено»', () => {
+    show({ verdict: 'lost', verdict_reason: 'role_act', clauses: CLAUSES });
+
+    const block = screen.getByTestId('day-clauses');
+    expect(block.textContent).toContain('якоря 5/5');
+    expect(block.textContent).toContain('ни одного акта CTO или Архитектор');
+  });
+
+  it('непройденный клауз роли ведёт туда, где акт заводится', () => {
+    show({ verdict: 'lost', verdict_reason: 'role_act', clauses: CLAUSES });
+
+    const link = screen.getByRole('link', { name: 'Записать акт' });
+    expect(link.getAttribute('href')).toBe('/roles');
+  });
+
+  it('пройденный клауз ссылки не носит: чинить нечего', () => {
+    show({
+      verdict: 'won',
+      verdict_reason: '',
+      clauses: CLAUSES.map((one) => ({ ...one, passed: true })),
+    });
+
+    expect(screen.queryByRole('link', { name: 'Записать акт' })).toBeNull();
+  });
+
+  it('день без клаузов блок не рисует', () => {
+    show({ clauses: [] });
+
+    expect(screen.queryByTestId('day-clauses')).toBeNull();
+  });
+});

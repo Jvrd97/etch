@@ -66,6 +66,11 @@ def rule(seed: RuleSeed, rule_id: int) -> DayRuleSet:
         workdays=list(seed.workdays),
         nocode_days=list(seed.nocode_days),
         required_anchors=list(seed.required_anchors),
+        # Клауз роли (`#137`) переносится из сида, а не оставляется пустым:
+        # незаполненное поле ORM-объекта — `None`, то есть «клауз выключён»
+        # молча, и половина этих тестов проверяла бы не тот канон.
+        role_clause_enabled=seed.role_clause_enabled,
+        role_clause_roles=seed.role_clause_roles,
         note_md=seed.note_md,
     )
 

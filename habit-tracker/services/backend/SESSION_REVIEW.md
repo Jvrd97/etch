@@ -1822,3 +1822,61 @@ Feedback loops (backend): pytest **1218 passed / 2 skipped** на своей б�
 `ruff check`, `ruff format --check`, `mypy --strict app` (158 файлов), `alembic heads` — одна
 голова `e5a7c9b1d3f6`, миграции проверены up → down → up на `habit_migrate_f2`.
 `make check` целиком не гонялся: docker на машине не поднят.
+
+---
+
+## 2026-08-31 — дорожка fast-3: PHASE-03/114, /137, /138, /139
+
+Четыре тикета одной сессией, коммиты `7c6f2f0`, `c50c8b2`, `de6daeb`, `29319a0`.
+
+**#114 — именованные выборки чата.** `app/llm/chat/retrieval.py` — **new**;
+`app/api/chat.py`, `app/crud/chat.py`, `app/schemas/chat.py`, `app/llm/chat/prompt.py`,
+`app/llm/chat/limits.py` — **mod**. Фронт: `lib/chat-retrievals.ts`,
+`components/chat/ChatRetrievals.tsx` — **new**; `lib/api.ts`, `lib/chat-stream.ts`,
+`hooks/useChat.ts`, `components/chat/ChatFeed.tsx` — **mod**.
+Что стоит назвать вслух: ход перестал быть одним потоком и стал циклом заходов, поэтому
+`guarded_turn` получил параметр `budget` — иначе срок хода умножался бы на число заходов.
+`CHAT_CONTEXT_VERSION` вырос до 3.
+
+**#137 — клауз роли в вердикте дня.** `alembic/versions/*_day_rule_set_role_clause.py`,
+`tests/test_day_role_clause.py` — **new**; `app/models/day.py`, `app/day/evaluate.py`,
+`app/day/rules.py`, `app/crud/day.py`, `app/crud/role.py`, `app/crud/summary.py`,
+`app/schemas/day.py`, `app/schemas/summary.py`, `app/crud/day_rules.py` — **mod**.
+Фронт: `lib/day-format.ts`, `lib/day-rules.ts`, `lib/api.ts`, `components/day/DayVerdict.tsx`,
+`components/settings/DayRulesScreen.tsx` — **mod**.
+Что стоит назвать вслух: `evaluate_day` перестал возвращаться на первом сорванном условии и
+теперь выводит вердикт из списка клаузов. Пятнадцать существующих тестов получили строку
+`record_role_act` из `tests/conftest.py`: все они утверждали выигранный рабочий день, а такой
+день теперь закрывает акт роли.
+
+**#138 — недельная сводка по ролям.** `app/roles/report.py`, `tests/test_role_summary.py` —
+**new**; `app/crud/role.py`, `app/api/roles.py`, `app/schemas/role.py` — **mod**.
+Фронт: `components/RoleWeekSummary.tsx`, `lib/role-share.ts`, `hooks/useRoleSummary.ts` — **new**;
+`lib/api.ts`, `components/week/WeekScreen.tsx`, `components/roles/RolesScreen.tsx` — **mod**.
+Что стоит назвать вслух: флаг «правила разметки отстали» считается отношением, а не
+округлённым процентом — 30,1% показывается как «30» и молча не поднимал бы сигнал.
+
+**#139 — экран правил разметки.** `app/roles/samples.py`, `app/roles/classify.py`,
+`tests/test_role_rules_editor.py` — **new**; `app/api/roles.py`, `app/schemas/role.py` — **mod**.
+Фронт: `components/roles/RoleRulesScreen.tsx`, `components/RoleRuleForm.tsx`,
+`components/RoleReclassifyPanel.tsx`, `lib/role-rules.ts`, `app/roles/rules/page.tsx`,
+`app/m/roles/rules/page.tsx` — **new**; `lib/api.ts`, `lib/routes.ts` — **mod**.
+Что стоит назвать вслух: `app/roles/samples.py` — намеренный шов. Настоящего источника
+образцов (`activity_interval` из `#155`, `day_signal` из `#146`) ещё нет, и до его приезда
+образец восстанавливается из строк, которые автоматические источники уже записали. Ревьюеру
+смотреть в первую очередь сюда: когда источник приедет, меняться должна ровно эта функция.
+
+**Тесты (new)**: `tests/test_chat_retrieval.py`, `tests/test_day_role_clause.py`,
+`tests/test_role_summary.py`, `tests/test_role_rules_editor.py`; на фронте —
+`components/chat/ChatRetrievals.test.tsx`, `components/RoleWeekSummary.test.tsx`,
+`components/RoleRuleForm.test.tsx`, `lib/role-share.test.ts`, `lib/role-rules.test.ts`.
+Механически тронуты семь фронтовых тест-файлов: две сьюты подменяют `@/lib/api` целиком, и
+новый хук `useRoleSummary` ронял их на импорте — подмена сделана на уровне хука.
+
+Feedback loops (backend): pytest **1277 passed, 2 skipped**, `ruff check app tests` clean,
+`ruff format --check` clean (232 файла), `mypy --strict app` clean (158 файлов),
+`alembic heads` — одна голова `e2c4a6b8d0f3`, миграция `#137` проверена
+`upgrade → downgrade → upgrade` на отдельной базе `habit_mig_f3`. Фронт: `bun test` — **1122
+pass**, `bunx tsc --noEmit` clean. `make check` целиком не отрабатывал: docker не поднимается.
+Тесты шли против постгреса на localhost:5432 в отдельной базе `habit_test_f3` — общая
+`habit_tracker_test` в этот день делилась между четырьмя дорожками.

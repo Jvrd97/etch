@@ -91,6 +91,12 @@ export function ruleLines(rule: DayRuleSet): RuleLine[] {
         ? 'день не выигран'
         : 'на вердикт не влияет',
     },
+    {
+      label: 'Акт роли',
+      value: rule.role_clause_enabled
+        ? `рабочий день закрывает акт: ${rule.role_clause_roles}`
+        : 'на вердикт не влияет',
+    },
     { label: 'Рабочие дни', value: weekdayNames(rule.workdays).join(', ') },
     {
       label: 'No-code дни',
@@ -177,6 +183,7 @@ const REASON_LABEL: Record<VerdictReason, string> = {
   anchors: 'якоря',
   overtime: 'переработка',
   not_closed: 'день не закрыт',
+  role_act: 'акт роли',
 };
 
 export function verdictReasonLabel(reason: VerdictReason | ''): string {
@@ -192,6 +199,24 @@ const MISSING_LABEL: Record<MissingData, string> = {
 export function missingDataLabel(code: MissingData): string {
   return MISSING_LABEL[code];
 }
+
+/**
+ * Куда ведёт непройденный клауз, либо `null` — чинить его отсюда некуда.
+ *
+ * Красное условие без ссылки — это тупик: человек видит, что день не выигран,
+ * и остаётся один на один с вопросом «а где это исправляют». Клауз роли
+ * (`#137`) ведёт на экран, где акт заводится; задачи и якоря живут на самой
+ * странице дня, и уводить с неё некуда.
+ */
+export function clauseFixHref(code: VerdictReason): string | null {
+  return code === 'role_act' ? '/roles' : null;
+}
+
+/** Что написано на этой ссылке. */
+export const CLAUSE_FIX_LABEL = 'Записать акт';
+
+/** Заголовок блока условий над списком. */
+export const CLAUSES_TITLE = 'Условия канона';
 
 /**
  * A streak of days, counted the way Russian counts.

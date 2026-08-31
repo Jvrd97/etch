@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/86, PHASE-03/142
+# [review:need-review] PHASE-03/86, PHASE-03/137, PHASE-03/142
 # summary: the day tables — versioned canon `day_rule_set` (no two intervals may overlap, enforced by a GiST exclusion constraint) and `day` with kind/is_nocode materialised at creation; since #142 the rule row also carries the map of the day — edges as times, the free evening, the evening with the family — the ceilings of the generator and the verdict formula
 from __future__ import annotations
 
@@ -61,6 +61,32 @@ DEFAULT_ANCHORS: tuple[str, ...] = DEFAULT_ANCHOR_CODES
 DEFAULT_VERDICT_RULE: dict[str, Any] = {
     "reason_order": ["overtime", "anchors", "tasks"]
 }
+
+# Роли, акт одной из которых обязан закрыть рабочий день (`#137`). Строкой
+# через запятую, а не массивом: список из двух кодов, и колонка читается на
+# экране правил как есть. Коды — те же, что в `app.models.role`.
+DEFAULT_ROLE_CLAUSE_ROLES = "cto,architect"
+
+# Разделитель кодов в `role_clause_roles`. Назван, потому что его читают в двух
+# местах: разбор строки и её сборка на экране правил.
+ROLE_CLAUSE_SEPARATOR = ","
+
+
+def role_clause_roles(raw: str) -> tuple[str, ...]:
+    """
+    Коды ролей клауза из строки колонки, без пустых и без повторов.
+
+    Функция, а не `split` по месту: разбор нужен и вердикту, и экрану правил, а
+    два разных разбора одной колонки разошлись бы на первом же пробеле после
+    запятой.
+    """
+    seen: list[str] = []
+    for part in raw.split(ROLE_CLAUSE_SEPARATOR):
+        code = part.strip()
+        if code and code not in seen:
+            seen.append(code)
+    return tuple(seen)
+
 
 # ISO weekday numbers of the days off, kept apart from `workdays` because
 # "не рабочий" and "выходной" are not the same statement: the generator plans
@@ -188,6 +214,24 @@ class DayRuleSet(Base):
             """'["подъём", "спорт", "старт работы", "ревью", "отбой", "relationship"]'"""
         ),
     )
+    # Клауз роли (`#137`): рабочий день, не закрывший ни одного акта роли,
+    # отличной от тимлида, не выигран. Два поля строки правила, а не четвёртая
+    # таблица правил: версионированный канон дня уже существует этой строкой, и
+    # двух версионированных критериев в одной базе быть не должно.
+    #
+    # Доля времени в вердикт не входит намеренно: день из восьми часов ревью
+    # стопроцентно тимлидский по минутам и может нести единственный
+    # архитектурный акт, ради которого он и был. Доли идут в недельную сводку
+    # (`#138`).
+    role_clause_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
+    role_clause_roles: Mapped[str] = mapped_column(
+        String(100),
+        default=DEFAULT_ROLE_CLAUSE_ROLES,
+        server_default=DEFAULT_ROLE_CLAUSE_ROLES,
+    )
+
     # The verdict formula: which conditions lower a day, in which order.
     verdict_rule: Mapped[dict[str, Any]] = mapped_column(
         JSONB,

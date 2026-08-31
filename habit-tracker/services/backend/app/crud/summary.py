@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/143, PHASE-03/144
-# summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at a touch only where nothing measured it), the two touches that move one row from `open` through `reviewed` to `closed` with an idempotency key each, the whole-history recompute that never touches an imported verdict and now names the days it left alone instead of skipping them silently, and full-text search over the prose
+# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/137, PHASE-03/143, PHASE-03/144
+# summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at a touch only where nothing measured it), the two touches that move one row from `open` through `reviewed` to `closed` with an idempotency key each, the whole-history recompute that never touches an imported verdict and now names the days it left alone instead of skipping them silently, the clauses the verdict is derived from, and full-text search over the prose
 # summary: persistence of the day's итог — the facts gathered from rows that already exist (anchors now read off `day_anchor` rather than off the anchor lines of the plan), the upsert that closes a day, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
 """
 Database access for the итог of a day.
@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -68,8 +69,16 @@ from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import role as role_crud
 from app.crud import work_interval as work_crud
-from app.day.evaluate import VERDICT_WON, DayFacts, Verdict, evaluate_day
+from app.day.evaluate import (
+    VERDICT_WON,
+    Clause,
+    DayFacts,
+    RoleActFact,
+    Verdict,
+    evaluate_day,
+)
 from app.day.rules import resolve_rule
 from app.day.streak import step_streak
 from app.models.anchor import DayAnchor
@@ -85,7 +94,12 @@ from app.models.summary import (
     DaySummary,
     verdict_origin,
 )
-from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
+from app.schemas.summary import (
+    DayClauseResponse,
+    DayCloseIn,
+    DayReviewIn,
+    DaySummaryResponse,
+)
 
 __all__ = [
     "ImportedDayIsNotClosable",
@@ -175,6 +189,10 @@ def facts_of(
     *,
     work_minutes: int | None,
     closed: bool,
+    day_kind: str | None = None,
+    is_nocode: bool = False,
+    role_acts: Sequence[RoleActFact] = (),
+    role_titles: Mapping[str, str] | None = None,
 ) -> DayFacts:
     """
     Everything the verdict is decided from, read off rows already in hand.
@@ -192,6 +210,12 @@ def facts_of(
     `work_minutes` is passed in rather than read here, because the two callers
     resolve it differently: a live preview measures the intervals as they stand,
     a recompute takes the sum it already read for the whole history at once.
+
+    **Вид дня приезжает сюда, а не считается по правилу.** `kind` и `is_nocode`
+    материализованы строкой `day` при её создании (`#86`), и прошлый вторник
+    обязан остаться тем, чем был, даже если расписание недели с тех пор
+    переписали. День, у которого строки нет вовсе — импортированная история, —
+    приходит с `day_kind=None`, и клауз роли к нему не применяется.
     """
     counted = anchor_crud.anchor_counts(rule, anchors)
     return DayFacts(
@@ -206,6 +230,10 @@ def facts_of(
             if counted is not None
             else mark_crud.closed_anchor_kinds(plan, marks)
         ),
+        day_kind=day_kind,
+        is_nocode=is_nocode,
+        role_acts=tuple(role_acts),
+        role_titles=dict(role_titles or {}),
     )
 
 
@@ -236,7 +264,19 @@ async def get_summary(db: AsyncSession, on: date) -> DaySummary | None:
     return result.scalar_one_or_none()
 
 
-def _to_response(row: DaySummary, *, missing_anchors: list[str]) -> DaySummaryResponse:
+def _clause_dto(clause: Clause) -> DayClauseResponse:
+    """Один клауз как его несёт провод."""
+    return DayClauseResponse(
+        code=clause.code, passed=clause.passed, detail=clause.detail
+    )
+
+
+def _to_response(
+    row: DaySummary,
+    *,
+    missing_anchors: list[str],
+    clauses: tuple[Clause, ...] = (),
+) -> DaySummaryResponse:
     """
     A stored row as the wire carries it.
 
@@ -253,6 +293,11 @@ def _to_response(row: DaySummary, *, missing_anchors: list[str]) -> DaySummaryRe
     of missed anchors is a reachable state. Reconciling the two means deciding
     whether a closed day may still change its verdict, which is `#143`; until
     then the difference is named here rather than hidden.
+
+    `clauses` — того же живого рода, что и `missing_anchors`: разбор условий
+    канона, посчитанный по фактам дня как они есть сейчас. Хранить его рядом со
+    снимком счётчиков было бы третьим местом, где записан один и тот же
+    вердикт, и разошлись бы они молча.
     """
     return DaySummaryResponse(
         day_date=row.day_date,
@@ -324,6 +369,7 @@ def _preview(
         verdict_origin=verdict_origin(
             SOURCE_CLOSE if stored is None else stored.source, verdict.verdict
         ),
+        clauses=[_clause_dto(one) for one in verdict.clauses],
     )
 
 
@@ -345,25 +391,51 @@ async def summary_for(
     anchors = await anchor_crud.list_day_anchors(db, on)
     missing = await missing_anchor_names(db, rule, plan, marks, anchors)
     stored = await get_summary(db, on)
-    if stored is not None and stored.stage == STAGE_CLOSED:
-        return _to_response(stored, missing_anchors=missing)
+    shape = await _day_shape(db, on)
+    role_acts = await role_crud.day_act_facts(db, on)
+    role_titles = await role_crud.titles_by_code(db)
     # The intervals of the day are the measurement; a day that is not closed has
     # no other source for the number beyond whatever the 15:40 touch estimated,
     # and reading them here is what lets the screen show «уже 7 ч 40 мин» before
     # anybody presses «закрыть день».
     measured = await work_crud.minutes_for_day(db, on)
     estimated = None if stored is None else stored.work_minutes
+    closed = stored is not None and stored.stage == STAGE_CLOSED
     facts = facts_of(
         plan,
         marks,
         rule,
         anchors,
-        work_minutes=measured if measured is not None else estimated,
-        closed=False,
+        work_minutes=(
+            stored.work_minutes
+            if closed and stored is not None
+            else (measured if measured is not None else estimated)
+        ),
+        closed=closed,
+        day_kind=shape[0],
+        is_nocode=shape[1],
+        role_acts=role_acts,
+        role_titles=role_titles,
     )
-    return _preview(
-        on, evaluate_day(rule, facts), missing_anchors=missing, stored=stored
-    )
+    verdict = evaluate_day(rule, facts)
+    if closed and stored is not None:
+        return _to_response(stored, missing_anchors=missing, clauses=verdict.clauses)
+    return _preview(on, verdict, missing_anchors=missing, stored=stored)
+
+
+async def _day_shape(db: AsyncSession, on: date) -> tuple[str | None, bool]:
+    """
+    Чем день был по календарю канона — из строки `day`, а не из правила.
+
+    Вид дня материализован при создании строки (`#86`) именно затем, чтобы
+    переписанное расписание недели не переименовывало прошлые вторники. Строки
+    нет — импортированная история, которую никто не открывал, — и ответ
+    `(None, False)`: «неизвестно», а не «рабочий».
+    """
+    day = await day_crud.get_day(db, on)
+    if day is None:
+        return None, False
+    return day.kind, day.is_nocode
 
 
 async def _stored_source(db: AsyncSession, on: date) -> str | None:
@@ -629,6 +701,9 @@ async def recompute_history(db: AsyncSession) -> RecomputeReport:
     # Every day that has intervals, in one read: this walks the whole history,
     # and a query per row would turn a recompute into a query per day.
     measured = await work_crud.minutes_by_day(db)
+    # Справочник ролей читается один раз на весь пересчёт: он не меняется по
+    # ходу истории, а запрос на день превратил бы пересчёт в запрос на строку.
+    titles = await role_crud.titles_by_code(db)
     result = await db.execute(select(DaySummary).order_by(DaySummary.day_date))
     streak = 0
 
@@ -647,6 +722,7 @@ async def recompute_history(db: AsyncSession) -> RecomputeReport:
             row.work_minutes = measured.get(row.day_date, row.work_minutes)
             anchors = await anchor_crud.list_day_anchors(db, row.day_date)
             rule = resolve_rule(rules, row.day_date)
+            shape = await _day_shape(db, row.day_date)
             facts = facts_of(
                 plan,
                 marks,
@@ -654,6 +730,10 @@ async def recompute_history(db: AsyncSession) -> RecomputeReport:
                 anchors,
                 work_minutes=row.work_minutes,
                 closed=closed,
+                day_kind=shape[0],
+                is_nocode=shape[1],
+                role_acts=await role_crud.day_act_facts(db, row.day_date),
+                role_titles=titles,
             )
             verdict = evaluate_day(rule, facts)
             # Переопределение действует только на закрытом дне: «выигран» на

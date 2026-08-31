@@ -43,6 +43,8 @@ const RULE: DayRuleSet = {
   workdays: [1, 2, 3, 4, 5],
   nocode_days: [2, 4],
   required_anchors: ['подъём', 'спорт', 'старт работы', 'ревью', 'отбой'],
+  role_clause_enabled: true,
+  role_clause_roles: 'cto,architect',
   note_md: 'действующий канон',
 };
 
@@ -139,6 +141,8 @@ describe('draftToPayload', () => {
       workdays: [1, 2, 3, 4, 5],
       nocode_days: [2, 4],
       required_anchors: ['подъём', 'спорт', 'старт работы', 'ревью', 'отбой'],
+      role_clause_enabled: true,
+      role_clause_roles: 'cto,architect',
       note_md: 'семь часов',
     });
   });
@@ -208,5 +212,29 @@ describe('ruleStanding', () => {
     expect(ruleStandingLabel('past')).toContain('прожит');
     expect(ruleStandingLabel('current')).toContain('действует');
     expect(ruleStandingLabel('scheduled')).toContain('вступит');
+  });
+});
+
+describe('клауз роли в версии канона (#137)', () => {
+  it('включённый клауз без единой роли не даёт опубликовать версию', () => {
+    const result = draftToPayload(
+      draft({ roleClauseEnabled: true, roleClauseRoles: '  ,  ' }),
+      EARLIEST
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('Клауз роли');
+  });
+
+  it('выключенный клауз ролей не требует', () => {
+    const result = draftToPayload(
+      draft({ roleClauseEnabled: false, roleClauseRoles: '' }),
+      EARLIEST
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload.role_clause_enabled).toBe(false);
   });
 });

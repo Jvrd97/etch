@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/152
+// [review:need-review] PHASE-03/137, PHASE-03/152
 // summary: экран правил дня — действующая версия целиком, история версий с датами и форма «новая версия с даты»; правка действующей строки недоступна и объяснена на месте, а рядом с кнопкой публикации написано, что вердикты прошедших дней не пересчитываются
 
 import { useState, type FormEvent } from 'react';
@@ -333,6 +333,13 @@ export default function DayRulesScreen() {
               onChange={(value) => set('requiredAnchors', value)}
             />
             <DraftField
+              id="role-clause-roles"
+              label="Роли клауза дня"
+              value={draft.roleClauseRoles}
+              hint="коды через запятую; акт любой из них закрывает рабочий день"
+              onChange={(value) => set('roleClauseRoles', value)}
+            />
+            <DraftField
               id="note"
               label="Зачем поменяли"
               value={draft.noteMd}
@@ -345,6 +352,14 @@ export default function DayRulesScreen() {
                 onChange={(event) => set('overtimeDisqualifies', event.target.checked)}
               />
               Переработка валит день
+            </label>
+            <label className="flex items-center gap-2 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                checked={draft.roleClauseEnabled}
+                onChange={(event) => set('roleClauseEnabled', event.target.checked)}
+              />
+              Рабочий день закрывает акт роли
             </label>
           </div>
 

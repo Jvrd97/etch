@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114
 // summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -25,11 +25,31 @@ export type ChatScreen =
   | { status: 'failed'; message: string }
   | { status: 'ready'; conversationId: number };
 
+/**
+ * Одна выборка, о которой сервер сообщил посреди хода.
+ *
+ * Живёт только до конца хода: после него разговор перечитывается из таблицы, и
+ * та же выборка приезжает строкой `chat_retrievals` под сообщением. Здесь она
+ * нужна ровно затем, чтобы сорок секунд ожидания не выглядели как молчание.
+ */
+export interface LiveRetrieval {
+  queryName: string;
+  rowCount: number;
+  chars: number;
+  refusal: string | null;
+}
+
 /** Ход в полёте, если он есть. `text` растёт по куску на событие. */
 export type ChatTurn =
   | { phase: 'idle' }
-  | { phase: 'streaming'; question: string; text: string }
-  | { phase: 'failed'; question: string; text: string; code: string };
+  | { phase: 'streaming'; question: string; text: string; retrievals?: LiveRetrieval[] }
+  | {
+      phase: 'failed';
+      question: string;
+      text: string;
+      code: string;
+      retrievals?: LiveRetrieval[];
+    };
 
 /**
  * Машинный код отказа, когда сервер отдал его кодом ответа, а не событием.
@@ -213,6 +233,23 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
             setTurn((current) =>
               current.phase === 'streaming'
                 ? { ...current, text: current.text + event.text }
+                : current
+            );
+          } else if (event.kind === 'retrieval') {
+            setTurn((current) =>
+              current.phase === 'streaming'
+                ? {
+                    ...current,
+                    retrievals: [
+                      ...(current.retrievals ?? []),
+                      {
+                        queryName: event.queryName,
+                        rowCount: event.rowCount,
+                        chars: event.chars,
+                        refusal: event.refusal,
+                      },
+                    ],
+                  }
                 : current
             );
           } else if (event.kind === 'error') {
