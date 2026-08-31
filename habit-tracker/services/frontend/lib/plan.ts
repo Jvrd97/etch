@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/87, PHASE-03/88
-// summary: pure reading of a plan — clock labels for a window, the duration the server measured, which schedule lines collide, the kinds of every item by id, and the plain-Russian names of section kinds and item rigidity
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110
+// summary: pure reading of a plan — clock labels for a window, the duration the server measured, which schedule lines collide, the kinds of every item by id, the plain-Russian names of section kinds and item rigidity, and the warnings of an edit indexed by the code of the line they name
 
 import type {
   Plan,
@@ -7,6 +7,7 @@ import type {
   PlanItemKind,
   PlanRigidity,
   PlanSection,
+  PlanWarning,
   ScheduleOverlap,
 } from '@/lib/api';
 
@@ -156,4 +157,21 @@ export function extraLines(item: PlanItem): { label: string; value: string }[] {
     label,
     value: typeof value === 'string' ? value : JSON.stringify(value),
   }));
+}
+
+/**
+ * The warnings of an edit, indexed by the code of the line that earned them.
+ *
+ * Indexed by code and not by id because that is what the server names: a
+ * rejection of `#87` and a warning of `#110` are the same rule with the same
+ * address, and the screen that draws the second must not invent a second way to
+ * find the line. A warning about a line without a code stays out of the map —
+ * it is shown above the plan, where it can still be read.
+ */
+export function warningsByCode(warnings: PlanWarning[]): Map<string, string> {
+  const byCode = new Map<string, string>();
+  for (const warning of warnings) {
+    if (warning.item_code !== null) byCode.set(warning.item_code, warning.message);
+  }
+  return byCode;
 }

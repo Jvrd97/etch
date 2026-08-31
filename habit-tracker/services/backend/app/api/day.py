@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/92, PHASE-03/142
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); all three plan writes claim `opened_at` only inside the open window
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/92, PHASE-03/110, PHASE-03/142
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); #110 adds the per-item editor — PATCH/POST/DELETE of one line and POST .../move for its place, where a human's edit passes everything the database passes and comes back with the document rules it broke as warnings; all three plan writes claim `opened_at` only inside the open window
 from datetime import date
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -38,7 +39,16 @@ from app.schemas.mark import (
     NotebookIn,
     NotebookResponse,
 )
-from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
+from app.schemas.plan import (
+    PlanDocument,
+    PlanEditResponse,
+    PlanItemCreate,
+    PlanItemMove,
+    PlanItemPatch,
+    PlanItemResponse,
+    PlanRejection,
+    PlanResponse,
+)
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
 from app.schemas.training import TrainingDayIn, TrainingDayResponse
 
@@ -393,6 +403,204 @@ async def post_close(
     """
     day, _ = await _resolve(db, on)
     return await summary_crud.close_day(db, day.day_date, body)
+
+
+# Правка пункта — операция человека, и отвечает она планом целиком: правка
+# одной строки двигает соседей, расписание и пересечения окон, а второй запрос
+# за днём ради того, что сервер уже знает, — это лишний круг на каждое слово.
+EDIT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Пункта или секции нет в плане этого дня"},
+    422: {"model": PlanRejection},
+}
+
+
+async def _edited(
+    db: AsyncSession,
+    day: Day,
+    rule: DayRuleSet,
+    item_id: UUID | None,
+) -> PlanEditResponse:
+    """
+    Ответ правки: план целиком, тронутый пункт и предупреждения канона.
+
+    Предупреждения считаются **после** записи и по сохранённому плану, а не по
+    намерению: асимметрия строгости из ADR-0015 в том и состоит, что правка
+    человека проходит, а канон о ней сообщает. Отказ остаётся только за базой.
+    """
+    plan = await plan_crud.get_plan(db, day.day_date)
+    if plan is None:  # pragma: no cover - правка без плана уже отдала 404
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"На {day.day_date.isoformat()} плана нет.",
+        )
+    await day_crud.touch_day(db, day, opened=_person_is_here(day.day_date))
+    response = await plan_crud.to_response(db, plan)
+    item = None
+    if item_id is not None:
+        item = _find_item(response, item_id)
+    return PlanEditResponse(
+        plan=response,
+        item=item,
+        warnings=[
+            PlanRejection(**broken.as_detail())
+            for broken in await plan_crud.human_warnings(db, plan, rule)
+        ],
+    )
+
+
+def _find_item(plan: PlanResponse, item_id: UUID) -> PlanItemResponse | None:
+    """Найти пункт в уже собранном ответе, чтобы не пересобирать его вторым разом."""
+    stack = [item for section in plan.sections for item in section.items]
+    while stack:
+        item = stack.pop()
+        if item.id == item_id:
+            return item
+        stack.extend(item.children)
+    return None
+
+
+def _plan_rejection(rejected: PlanRejected) -> HTTPException:
+    """Отказ правила как 422 в той же форме, что и отказ документа из #87."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=rejected.as_detail(),
+    )
+
+
+@router.patch(
+    "/{on}/plan/items/{item_id}",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def patch_plan_item(
+    on: date,
+    item_id: UUID,
+    patch: PlanItemPatch,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Поправить один пункт плана, сохранив его id и отметку.
+
+    Присланные поля меняются, остальные не трогаются: `null` в теле — «убрать
+    значение», отсутствие ключа — «не трогать». Замена плана целиком остаётся
+    `POST .../plan` и операцией генератора; здесь `plan_item.id` переживает
+    правку, иначе отметка #88 теряет якорь на каждое исправление слова.
+
+    422 приходит только оттуда, откуда его не миновать, — от `CHECK` базы:
+    задача без окна или без критерия, окно в свободном пункте, задача без цели
+    квартала и без причины. Правила документа человека не останавливают и
+    возвращаются в `warnings`.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.edit_item(db, day.day_date, item_id, patch)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item_id)
+
+
+@router.post(
+    "/{on}/plan/sections/{section_id}/items",
+    response_model=PlanEditResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=EDIT_RESPONSES,
+)
+async def post_plan_item(
+    on: date,
+    section_id: UUID,
+    payload: PlanItemCreate,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Добавить пункт в секцию. Он встаёт в конец своего уровня.
+
+    `parent_id` делает пункт ребёнком — шагом задачи или «Минимумом»
+    тренировки; уровень определяется парой «секция плюс родитель», поэтому
+    родитель из чужой секции — 404, а не тихая перевязка.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        item = await plan_crud.add_item(db, day.day_date, section_id, payload)
+    except plan_crud.PlanSectionNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет секции {section_id}.",
+        ) from missing
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {payload.parent_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item.id)
+
+
+@router.delete(
+    "/{on}/plan/items/{item_id}",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def delete_plan_item(
+    on: date, item_id: UUID, db: AsyncSession = Depends(get_db)
+) -> PlanEditResponse:
+    """
+    Удалить пункт вместе с его детьми и сомкнуть уровень.
+
+    Дочерний «Минимум» уезжает с родителем: минимум без своей задачи — сирота,
+    и 29 августа уже показало, чем это кончается на экране.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.remove_item(db, day.day_date, item_id)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    return await _edited(db, day, rule, None)
+
+
+@router.post(
+    "/{on}/plan/items/{item_id}/move",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def move_plan_item(
+    on: date,
+    item_id: UUID,
+    move: PlanItemMove,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Переставить пункт: в другое место своей секции или в другую секцию.
+
+    Отдельная операция, а не поле `ord` в патче: перетаскивание меняет порядок
+    сразу нескольких строк, и построчная запись `ord` оставила бы уровень с
+    дырами и дублями. Оба уровня — исходный и приёмный — перенумеровываются
+    одной транзакцией.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.move_item(db, day.day_date, item_id, move)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    except plan_crud.PlanSectionNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет секции {move.section_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item_id)
 
 
 @router.get("/{on}/anchors", response_model=DayAnchorsResponse)

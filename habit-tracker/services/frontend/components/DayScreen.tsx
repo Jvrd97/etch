@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/92, PHASE-03/142
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/92, PHASE-03/110, PHASE-03/142
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day beside it, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
 import { useMemo } from 'react';
@@ -15,6 +15,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
+import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
 import {
   dayAPI,
@@ -30,7 +31,7 @@ import {
   ruleValidity,
 } from '@/lib/day-format';
 import { DAY_NEVER_OPENED, taskCountsLine } from '@/lib/marks';
-import { itemKindsById, overlappingItemIds } from '@/lib/plan';
+import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
 
 /**
  * Stable empty list for a day that has not loaded yet.
@@ -52,6 +53,9 @@ export default function DayScreen({ date }: DayScreenProps) {
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
   const training = useTrainingState();
+  // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
+  // и правится, и отмечается, и обе операции обязаны пережить друг друга.
+  const editor = usePlanItemEdit(detail?.day.date ?? '');
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -63,7 +67,10 @@ export default function DayScreen({ date }: DayScreenProps) {
     );
   }
 
-  const { day, rule, plan } = detail;
+  const { day, rule } = detail;
+  // Ответ правки — новая истина: сервер перенумеровал уровень и пересчитал
+  // расписание, и склеивать это на экране значило бы завести второй `ord`.
+  const plan = editor.plan ?? detail.plan;
   const KindIcon = day.kind === 'work' ? Sun : Moon;
 
   return (
@@ -113,6 +120,9 @@ export default function DayScreen({ date }: DayScreenProps) {
             <ErrorAlert message={marking.error} onDismiss={() => reload()} />
           )}
           <DaySchedule schedule={plan.schedule} overlaps={plan.overlaps} />
+          {editor.error && (
+            <ErrorAlert message={editor.error} onDismiss={editor.dismissError} />
+          )}
           <PlanSections
             sections={plan.sections}
             overlapping={overlappingItemIds(plan.overlaps)}
@@ -122,6 +132,16 @@ export default function DayScreen({ date }: DayScreenProps) {
               onCycle: marking.cycle,
               onSetState: marking.setState,
               onSetNote: marking.setNote,
+            }}
+            editing={{
+              openId: editor.openId,
+              saving: editor.saving,
+              warnings: warningsByCode(editor.warnings),
+              onOpen: editor.open,
+              onSave: editor.edit,
+              onDelete: editor.remove,
+              onMove: editor.move,
+              onAdd: editor.add,
             }}
           />
         </>

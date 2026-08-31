@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/116
-// summary: PHASE-03/116 adds chatAPI.reset and exports APIError so a refused turn keeps its status; entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/110, PHASE-03/111, PHASE-03/118, PHASE-03/116
+// summary: PHASE-03/110 adds the per-item plan editor — patch, create, delete and move of one line, each answering with the whole plan and the document rules a human's edit broke; PHASE-03/116 adds chatAPI.reset and exports APIError so a refused turn keeps its status; entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -12,10 +12,35 @@ import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
 export class APIError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * The body's `detail` as it arrived, beside the message built from it.
+   *
+   * FastAPI answers a rule of the plan with an object — `{error, message,
+   * item_code}` — and flattening it into a string loses the code the screen
+   * needs in order to point at the field. `message` stays a sentence for
+   * everything that only ever shows one.
+   */
+  readonly detail: unknown;
+
+  constructor(public status: number, message: string, detail?: unknown) {
     super(message);
     this.name = 'APIError';
+    this.detail = detail ?? message;
   }
+}
+
+/** The sentence inside a `detail`, whether it arrived as a string or an object. */
+function detailMessage(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail;
+  if (
+    typeof detail === 'object' &&
+    detail !== null &&
+    'message' in detail &&
+    typeof (detail as { message: unknown }).message === 'string'
+  ) {
+    return (detail as { message: string }).message;
+  }
+  return null;
 }
 
 async function fetcher<T>(
@@ -34,7 +59,11 @@ async function fetcher<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
-    throw new APIError(response.status, error.detail || 'An error occurred');
+    throw new APIError(
+      response.status,
+      detailMessage(error.detail) ?? 'An error occurred',
+      error.detail
+    );
   }
 
   // Handle 204 No Content
@@ -329,6 +358,50 @@ export const dayAPI = {
     return fetcher<Plan>(`/day/${date}/plan`, {
       method: 'POST',
       body: JSON.stringify(document),
+    });
+  },
+
+  /**
+   * Edit one line of the plan in place, keeping its id and its mark.
+   *
+   * Only the fields sent are touched: `null` means "clear this", and a key left
+   * out means "do not touch this". The whole-plan `savePlan` is the generator's
+   * operation — it replaces the document; this is the person's, and it is the
+   * only one under which `plan_item.id` survives a change of wording.
+   */
+  patchPlanItem: async (date: string, itemId: string, patch: PlanItemPatch) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Add a line to a section; it lands at the end of its level. */
+  addPlanItem: async (date: string, sectionId: string, draft: PlanItemDraft) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/sections/${sectionId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Remove a line together with its children — a minimum leaves with its task. */
+  deletePlanItem: async (date: string, itemId: string) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * Move a line to a place: another position, another parent, another section.
+   *
+   * Its own request rather than an `ord` in the patch — one drag renumbers a
+   * whole level, and writing positions one at a time is what leaves a plan with
+   * holes and twins halfway through.
+   */
+  movePlanItem: async (date: string, itemId: string, move: PlanItemMove) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}/move`, {
+      method: 'POST',
+      body: JSON.stringify(move),
     });
   },
 
@@ -867,6 +940,77 @@ export interface PlanItem {
   carried_from_item_id: string | null;
   carry_count: number;
   children: PlanItem[];
+}
+
+/**
+ * A patch of one plan line: only what is sent gets written.
+ *
+ * Every field is optional twice over — it may be absent (do not touch) or
+ * `null` (clear). The two are different orders, and merging them would wipe
+ * half a task on every corrected word.
+ */
+export interface PlanItemPatch {
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md?: string;
+  /** "ЧЧ:ММ-ЧЧ:ММ" in the day's local clock, or null to take the window off. */
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  why_md?: string | null;
+  plan_md?: string | null;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+}
+
+/** A new line for a section. Position is not sent: it lands at the end. */
+export interface PlanItemDraft {
+  parent_id?: string | null;
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md: string;
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+}
+
+/** Where a line goes: which section, under which parent, in which place. */
+export interface PlanItemMove {
+  section_id: string;
+  parent_id?: string | null;
+  position: number;
+}
+
+/**
+ * What a rule broken by a human's edit looks like on the wire.
+ *
+ * The same shape a 422 carries, because it is the same rule — the difference is
+ * only who broke it. A machine's document is refused; a person's edit is saved
+ * and told.
+ */
+export interface PlanWarning {
+  error: string;
+  message: string;
+  item_code: string | null;
+  item_text: string | null;
+}
+
+/**
+ * The answer of any per-item edit: the plan whole, the line touched, the
+ * warnings earned.
+ *
+ * The plan comes back whole because editing one line moves its neighbours, the
+ * schedule and the overlap list; a second read for what the server already knew
+ * would be a round trip per keystroke.
+ */
+export interface PlanEdit {
+  plan: Plan;
+  item: PlanItem | null;
+  warnings: PlanWarning[];
 }
 
 export interface PlanSection {

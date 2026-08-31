@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93
-# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110
+# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key; #110 adds who last touched a line and when, and makes a position unique inside its level so a reorder cannot leave holes or twins
 from __future__ import annotations
 
 import uuid
@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSTZRANGE, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import event
 from sqlalchemy.sql import func
 
 from app.core.database import Base
@@ -67,6 +68,31 @@ ITEM_KINDS: tuple[str, ...] = (
 RIGIDITY_VALUES: tuple[str, ...] = ("hard", "soft", "free")
 
 PLAN_STATUSES: tuple[str, ...] = ("draft", "active", "closed")
+
+# Кто последним трогал строку плана. Три значения, а не булев «человек ли»:
+# правка скиллом `/day-open` и правка агентом — разные источники, и различать
+# их придётся раньше, чем появится желание завести четвёртое значение.
+EDITED_BY_HUMAN = "human"
+EDITED_BY_AI = "ai"
+EDITED_BY_SKILL = "skill"
+EDITORS: tuple[str, ...] = (EDITED_BY_HUMAN, EDITED_BY_AI, EDITED_BY_SKILL)
+
+# Позиция уникальна внутри уровня, а уровень — это `(section_id, parent_id)`:
+# `ord` нумерует братьев между собой, поэтому родитель на позиции 0 и его
+# ребёнок на позиции 0 в одной секции законны, а уникальность по
+# `(section_id, ord)` была бы ложной.
+#
+# Пишется DDL-строкой, а не `UniqueConstraint`: `NULLS NOT DISTINCT` (без него
+# правило не действует для корневых пунктов, у которых `parent_id` пуст) в
+# SQLAlchemy 2.0.23 ещё не выражается, а `DEFERRABLE` обязателен — перестановка
+# проходит через промежуточное состояние с дублями и должна падать только на
+# коммите. Дословный близнец живёт в ревизии `b2d4f6a8c0e3`.
+POSITION_UNIQUE_NAME = "uq_plan_item_position"
+POSITION_UNIQUE_DDL = (
+    f"ALTER TABLE plan_item ADD CONSTRAINT {POSITION_UNIQUE_NAME} "
+    "UNIQUE NULLS NOT DISTINCT (section_id, parent_id, ord) "
+    "DEFERRABLE INITIALLY DEFERRED"
+)
 PLAN_SOURCES: tuple[str, ...] = ("day-open", "import", "manual")
 
 
@@ -220,6 +246,7 @@ class PlanItem(Base):
     __tablename__ = "plan_item"
     __table_args__ = (
         CheckConstraint(_in_list("kind", ITEM_KINDS), name="ck_plan_item_kind"),
+        CheckConstraint(_in_list("edited_by", EDITORS), name="ck_plan_item_edited_by"),
         CheckConstraint(
             _in_list("rigidity", RIGIDITY_VALUES), name="ck_plan_item_rigidity"
         ),
@@ -343,6 +370,13 @@ class PlanItem(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Ставится сервисом на каждой правке, а не триггером: правка через `#110`
+    # проходит одним местом, и триггер здесь был бы вторым автором того же
+    # значения — тем самым дублем, от которого проект уходит.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    edited_by: Mapped[str] = mapped_column(String(8), server_default=EDITED_BY_AI)
 
     section: Mapped[PlanSection] = relationship(back_populates="items")
     children: Mapped[list[PlanItem]] = relationship(
@@ -359,3 +393,19 @@ class PlanItem(Base):
 
     def __repr__(self) -> str:
         return f"<PlanItem(kind='{self.kind}', ord={self.ord}, code={self.code!r})>"
+
+
+# Ограничение вешается после создания таблицы, а не в `__table_args__`: так один
+# и тот же DDL достаётся и рабочей базе (через ревизию), и тестовой, которую
+# `create_all` собирает из метаданных, минуя Alembic.
+def _add_position_constraint(
+    target: Any,
+    connection: Any,
+    **kw: Any,  # noqa: ANN401 - подпись события SQLAlchemy
+) -> None:
+    """Повесить `uq_plan_item_position` сразу после создания таблицы."""
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(POSITION_UNIQUE_DDL)
+
+
+event.listen(PlanItem.__table__, "after_create", _add_position_constraint)

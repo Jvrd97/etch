@@ -38,9 +38,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import delete, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -50,16 +51,23 @@ from app.crud import mark as mark_crud
 from app.day.plan_validate import (
     ItemFacts,
     PlanRejected,
+    check_goal_exists,
+    check_hard_rigidity,
+    check_item_shape,
+    check_task_bar,
     parse_window,
     resolve_window,
     to_plain,
     validate_plan,
 )
 from app.models.day import DayRuleSet
-from app.models.plan import DayPlan, PlanItem, PlanSection
+from app.models.plan import EDITED_BY_HUMAN, DayPlan, PlanItem, PlanSection
 from app.schemas.plan import (
     PlanDocument,
+    PlanItemCreate,
     PlanItemIn,
+    PlanItemMove,
+    PlanItemPatch,
     PlanItemResponse,
     PlanResponse,
     PlanSectionResponse,
@@ -514,13 +522,451 @@ async def to_response(db: AsyncSession, plan: DayPlan) -> PlanResponse:
     )
 
 
+class PlanItemNotFound(LookupError):
+    """Пункта с таким id нет в плане запрошенного дня."""
+
+
+class PlanSectionNotFound(LookupError):
+    """Секции с таким id нет в плане запрошенного дня."""
+
+
+# --- Правка одного пункта (#110) ------------------------------------------
+#
+# Замена плана целиком отсюда не вызывается и не подменяется: `replace_plan` —
+# операция генератора, она сносит план и кладёт новый, а человеку нужна
+# противоположная — при которой `plan_item.id` переживает правку вместе с
+# отметкой `#88`.
+
+
+# Имя ограничения в базе → машинный код правила и его формулировка. Отказ базы
+# обязан выглядеть так же, как отказ документа: код правила и пункт, а не
+# «validation error» и имя constraint, которого нет ни в одном тексте канона.
+CONSTRAINT_RULES: dict[str, tuple[str, str]] = {
+    "ck_plan_item_task_has_window_and_criterion": (
+        "task_without_window_or_criterion",
+        "у задачи должны быть окно и критерий «Сделано». Задача без них — "
+        "не задача, а пожелание.",
+    ),
+    "ck_plan_item_free_has_no_window": (
+        "free_item_has_window",
+        "пункт свободного блока не может иметь окна: свободный вечер на то и "
+        "свободный, что расписанию в нём места нет.",
+    ),
+    "ck_plan_item_task_is_linked_or_explained": (
+        "task_is_not_linked_or_explained",
+        "задача называет либо цель квартала, либо причину, по которой цели "
+        "нет. Молча чужая срочность в план не попадает.",
+    ),
+    "ck_plan_item_window_is_forward": (
+        "window_is_not_forward",
+        "окно кончается раньше, чем начинается.",
+    ),
+    "ck_plan_item_kind": ("unknown_item_kind", "неизвестный вид пункта."),
+    "ck_plan_item_rigidity": ("unknown_rigidity", "неизвестная жёсткость пункта."),
+    "ck_plan_item_edited_by": ("unknown_editor", "неизвестный автор правки."),
+    "uq_plan_item_position": (
+        "duplicate_position",
+        "два пункта заняли одно место в секции.",
+    ),
+    "fk_plan_item_quarter_goal_id": (
+        "quarter_goal_missing",
+        "цели квартала с таким id нет.",
+    ),
+}
+
+# Поля патча, которые кладутся в колонку под тем же именем. `window` в списке
+# нет: оно приезжает строкой «ЧЧ:ММ-ЧЧ:ММ» и разворачивается в две колонки.
+PATCH_COLUMNS: tuple[str, ...] = (
+    "kind",
+    "rigidity",
+    "text_md",
+    "window_comment",
+    "code",
+    "done_criterion",
+    "why_md",
+    "plan_md",
+    "external_ref",
+    "extra",
+    "quarter_goal_id",
+    "unlinked_reason",
+)
+
+
+def _reject_from_db(error: IntegrityError) -> PlanRejected:
+    """
+    Отказ базы, переведённый на язык правил канона.
+
+    Ищется по имени ограничения в тексте ошибки: asyncpg кладёт его туда, а
+    разбирать приватные поля драйвера значило бы привязаться к его версии.
+    Неизвестное имя даёт общий код — молчаливого 500 не остаётся.
+    """
+    text_of = str(error.orig) if error.orig is not None else str(error)
+    for name, (code, message) in CONSTRAINT_RULES.items():
+        if name in text_of:
+            return PlanRejected(error=code, message=f"Правка отклонена: {message}")
+    return PlanRejected(
+        error="plan_item_rejected",
+        message="Правка отклонена базой: она нарушает правило плана.",
+    )
+
+
+async def _level(
+    db: AsyncSession, section_id: uuid.UUID, parent_id: uuid.UUID | None
+) -> list[PlanItem]:
+    """Братья одного уровня по возрастанию `ord`; уровень — секция плюс родитель."""
+    condition = (
+        PlanItem.parent_id.is_(None)
+        if parent_id is None
+        else PlanItem.parent_id == parent_id
+    )
+    result = await db.execute(
+        select(PlanItem)
+        .where(PlanItem.section_id == section_id, condition)
+        .order_by(PlanItem.ord, PlanItem.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def _renumber(
+    db: AsyncSession,
+    section_id: uuid.UUID,
+    parent_id: uuid.UUID | None,
+    order: list[PlanItem] | None = None,
+) -> None:
+    """
+    Перенумеровать уровень в 0…n−1 одной транзакцией.
+
+    Дыры и дубли `ord` не «почти незаметны»: по `ord` строится и порядок на
+    экране, и вложенность в ответе, и уникальное ограничение позиции. Поэтому
+    перестановка не правит один `ord`, а переписывает уровень целиком —
+    промежуточное состояние с дублями законно, потому что ограничение отложено
+    до коммита.
+    """
+    rows = order if order is not None else await _level(db, section_id, parent_id)
+    for position, row in enumerate(rows):
+        if row.ord != position:
+            row.ord = position
+    await db.flush()
+
+
+async def _item_of_day(
+    db: AsyncSession, on: date, item_id: uuid.UUID
+) -> PlanItem | None:
+    """Пункт `item_id`, но только если он в плане дня `on`."""
+    result = await db.execute(
+        select(PlanItem)
+        .join(PlanSection, PlanSection.id == PlanItem.section_id)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on, PlanItem.id == item_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _section_of_day(
+    db: AsyncSession, on: date, section_id: uuid.UUID
+) -> PlanSection | None:
+    """Секция `section_id`, но только если она в плане дня `on`."""
+    result = await db.execute(
+        select(PlanSection)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on, PlanSection.id == section_id)
+    )
+    return result.scalar_one_or_none()
+
+
+def _apply_window(
+    item: PlanItem, window: str | None, on: date, boundary: DayBoundary
+) -> None:
+    """Развернуть окно «ЧЧ:ММ-ЧЧ:ММ» в две колонки; `None` — снять окно."""
+    if window is None:
+        item.starts_at = None
+        item.ends_at = None
+        return
+    start, end = parse_window(window)
+    resolved = resolve_window(on, start, end, boundary)
+    item.starts_at = resolved.starts_at
+    item.ends_at = resolved.ends_at
+
+
+async def edit_item(
+    db: AsyncSession,
+    on: date,
+    item_id: uuid.UUID,
+    patch: PlanItemPatch,
+    editor: str = EDITED_BY_HUMAN,
+    boundary: DayBoundary | None = None,
+) -> PlanItem:
+    """
+    Правка одного пункта: только присланные поля, id и отметка на месте.
+
+    `PlanItemNotFound` — пункта нет в плане этого дня. `PlanRejected` — база не
+    пустила: это единственный источник отказа для правки человека, потому что
+    правила документа человеку не запрещают, а предупреждают (`human_warnings`).
+    """
+    item = await _item_of_day(db, on, item_id)
+    if item is None:
+        raise PlanItemNotFound(item_id)
+
+    fields = patch.model_dump(exclude_unset=True)
+    for name in PATCH_COLUMNS:
+        if name in fields:
+            setattr(item, name, fields[name])
+    if "text_md" in fields:
+        item.text_plain = to_plain(item.text_md)
+    if "window" in fields:
+        _apply_window(
+            item,
+            fields["window"],
+            on,
+            boundary if boundary is not None else current_boundary(),
+        )
+    item.edited_by = editor
+    item.updated_at = datetime.now(timezone.utc)
+    try:
+        await _check_row_rules(db, item)
+    except PlanRejected:
+        # Отвергнутая правка не должна дожить до чужого `flush`: объект в
+        # сессии всё ещё несёт её, и следующая запись в той же транзакции
+        # унесла бы её в базу. `expire` забывает изменения вместе с состоянием.
+        db.expire(item)
+        raise
+    try:
+        await db.flush()
+    except IntegrityError as error:
+        db.expire(item)
+        raise _reject_from_db(error) from error
+    return item
+
+
+async def add_item(
+    db: AsyncSession,
+    on: date,
+    section_id: uuid.UUID,
+    payload: PlanItemCreate,
+    editor: str = EDITED_BY_HUMAN,
+    boundary: DayBoundary | None = None,
+) -> PlanItem:
+    """
+    Новый пункт в конец своего уровня секции.
+
+    `PlanSectionNotFound` — секции нет в плане этого дня; родитель из другой
+    секции — тот же отказ, потому что уровень определяется парой «секция плюс
+    родитель», и половина пары из чужого плана уровнем не является.
+    """
+    section = await _section_of_day(db, on, section_id)
+    if section is None:
+        raise PlanSectionNotFound(section_id)
+    if payload.parent_id is not None:
+        parent = await _item_of_day(db, on, payload.parent_id)
+        if parent is None or parent.section_id != section_id:
+            raise PlanItemNotFound(payload.parent_id)
+
+    siblings = await _level(db, section_id, payload.parent_id)
+    item = PlanItem(
+        id=uuid.uuid4(),
+        section_id=section_id,
+        parent_id=payload.parent_id,
+        ord=len(siblings),
+        kind=payload.kind,
+        rigidity=payload.rigidity,
+        text_md=payload.text_md,
+        text_plain=to_plain(payload.text_md),
+        window_comment=payload.window_comment,
+        code=payload.code,
+        done_criterion=payload.done_criterion,
+        why_md=payload.why_md,
+        plan_md=payload.plan_md,
+        external_ref=payload.external_ref,
+        extra=dict(payload.extra),
+        quarter_goal_id=payload.quarter_goal_id,
+        unlinked_reason=payload.unlinked_reason,
+        carry_count=0,
+        edited_by=editor,
+        updated_at=datetime.now(timezone.utc),
+    )
+    _apply_window(
+        item,
+        payload.window,
+        on,
+        boundary if boundary is not None else current_boundary(),
+    )
+    # Проверка до `db.add`: пункт, который правила не пропускают, в сессию не
+    # попадает вовсе, и убирать его оттуда потом не приходится.
+    await _check_row_rules(db, item)
+    db.add(item)
+    try:
+        await db.flush()
+    except IntegrityError as error:
+        db.expunge(item)
+        raise _reject_from_db(error) from error
+    return item
+
+
+async def remove_item(db: AsyncSession, on: date, item_id: uuid.UUID) -> None:
+    """
+    Удалить пункт вместе с его детьми и сомкнуть уровень.
+
+    Дети уезжают каскадом внешнего ключа: «Минимум» тренировки без своей задачи
+    — сирота, которую 29 августа уже показало как пункт, никем не сделанный.
+    """
+    item = await _item_of_day(db, on, item_id)
+    if item is None:
+        raise PlanItemNotFound(item_id)
+    section_id, parent_id = item.section_id, item.parent_id
+    await db.delete(item)
+    await db.flush()
+    await _renumber(db, section_id, parent_id)
+
+
+async def move_item(
+    db: AsyncSession, on: date, item_id: uuid.UUID, move: PlanItemMove
+) -> PlanItem:
+    """
+    Перенести пункт на место `position` уровня `(section_id, parent_id)`.
+
+    Оба уровня — исходный и приёмный — перенумеровываются одной транзакцией.
+    Позиция больше длины уровня означает «в конец», а не отказ: перетаскивание
+    в пустоту под последним пунктом — это «в конец», и отвечать на него 422
+    значит спорить с рукой.
+    """
+    item = await _item_of_day(db, on, item_id)
+    if item is None:
+        raise PlanItemNotFound(item_id)
+    section = await _section_of_day(db, on, move.section_id)
+    if section is None:
+        raise PlanSectionNotFound(move.section_id)
+    if move.parent_id is not None:
+        parent = await _item_of_day(db, on, move.parent_id)
+        if parent is None or parent.section_id != move.section_id:
+            raise PlanItemNotFound(move.parent_id)
+        if move.parent_id == item.id:
+            raise PlanRejected(
+                error="item_cannot_parent_itself",
+                message="Пункт не может стать своим же родителем.",
+            )
+
+    source_section, source_parent = item.section_id, item.parent_id
+    same_level = source_section == move.section_id and source_parent == move.parent_id
+
+    target = [
+        row
+        for row in await _level(db, move.section_id, move.parent_id)
+        if row.id != item.id
+    ]
+    target.insert(min(move.position, len(target)), item)
+
+    item.section_id = move.section_id
+    item.parent_id = move.parent_id
+    item.edited_by = EDITED_BY_HUMAN
+    item.updated_at = datetime.now(timezone.utc)
+
+    # Перестановка не может нарушить ни одного `CHECK`: меняются только место и
+    # родитель. Уникальность позиции отложена до коммита и потому переживает
+    # промежуточное состояние, в котором два пункта на миг делят один `ord`.
+    await _renumber(db, move.section_id, move.parent_id, target)
+    if not same_level:
+        await _renumber(db, source_section, source_parent)
+    return item
+
+
+def _facts_of(item: PlanItem) -> ItemFacts:
+    """Один хранимый пункт как факты, которые умеет судить `plan_validate`."""
+    return ItemFacts(
+        kind=item.kind,
+        rigidity=item.rigidity,
+        code=item.code,
+        text_plain=item.text_plain,
+        has_window=item.starts_at is not None and item.ends_at is not None,
+        has_criterion=bool(item.done_criterion),
+        is_goal_linked=(item.quarter_goal_id is not None or bool(item.unlinked_reason)),
+        quarter_goal_id=item.quarter_goal_id,
+    )
+
+
+async def _check_row_rules(db: AsyncSession, item: PlanItem) -> None:
+    """
+    Правила строки — до записи, чтобы отказ назвал пункт, а не ограничение.
+
+    Дублирование с `CHECK` одностороннее и намеренное, как в `plan_validate`:
+    база делает правило истинным для всех писателей, а это — ответ, в котором
+    есть код пункта. Проверка до `flush` нужна ещё и затем, чтобы отвергнутая
+    правка не оставила в сессии грязный объект: `IntegrityError` в разгар
+    записи чинится откатом, а откат уносит и всё, что транзакция уже сделала.
+    """
+    facts = _facts_of(item)
+    check_item_shape([facts])
+    named = {facts.quarter_goal_id} if facts.quarter_goal_id is not None else set()
+    check_goal_exists([facts], await goal_crud.existing_goal_ids(db, named))
+
+
+def _stored_facts(plan: DayPlan) -> list[ItemFacts]:
+    """Хранимый план как факты, которые умеет судить `app.day.plan_validate`."""
+    return [
+        ItemFacts(
+            kind=item.kind,
+            rigidity=item.rigidity,
+            code=item.code,
+            text_plain=item.text_plain,
+            has_window=item.starts_at is not None and item.ends_at is not None,
+            has_criterion=bool(item.done_criterion),
+            is_goal_linked=(
+                item.quarter_goal_id is not None or bool(item.unlinked_reason)
+            ),
+            quarter_goal_id=item.quarter_goal_id,
+        )
+        for section in plan.sections
+        for item in section.items
+    ]
+
+
+async def human_warnings(
+    db: AsyncSession, plan: DayPlan, rule: DayRuleSet
+) -> list[PlanRejected]:
+    """
+    Правила документа, которые правка человека нарушила, но которые её не рвут.
+
+    Асимметрия строгости: машине нарушение блокирует запись (`replace_plan`
+    поднимает `PlanRejected` до единой строки), человеку — нет. Здесь те же
+    правила прогоняются по уже сохранённому плану и возвращаются списком.
+
+    Проверки зовутся по одной, а не через `validate_plan`: он поднимает первое
+    же нарушение, и человек чинил бы их по одному за запрос.
+    """
+    facts = _stored_facts(plan)
+    named = {fact.quarter_goal_id for fact in facts if fact.quarter_goal_id is not None}
+    if plan.quarter_goal_id is not None:
+        named.add(plan.quarter_goal_id)
+    known = await goal_crud.existing_goal_ids(db, named)
+    warnings: list[PlanRejected] = []
+    try:
+        check_goal_exists(facts, known, plan.quarter_goal_id)
+    except PlanRejected as broken:
+        warnings.append(broken)
+    try:
+        check_hard_rigidity(facts, rule)
+    except PlanRejected as broken:
+        warnings.append(broken)
+    try:
+        check_task_bar(facts, rule)
+    except PlanRejected as broken:
+        warnings.append(broken)
+    return warnings
+
+
 __all__ = [
+    "PlanItemNotFound",
     "PlanRejected",
+    "PlanSectionNotFound",
+    "add_item",
     "build_schedule",
     "delete_plan",
+    "edit_item",
     "find_overlaps",
     "get_plan",
+    "human_warnings",
+    "move_item",
     "prepare_plan",
+    "remove_item",
     "replace_plan",
     "to_response",
 ]
