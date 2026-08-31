@@ -20,12 +20,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.day import DEFAULT_ROLE_CLAUSE_ROLES, role_clause_roles
 from app.schemas.anchor import DayAnchorsResponse
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
 from app.schemas.summary import DaySummaryResponse
 from app.schemas.work_interval import WorkDayResponse
 from app.schemas.training import TrainingDayResponse
+
+
+# Длина колонки `role_clause_roles`. Названа здесь, потому что схема обязана
+# отказать раньше базы: отказ базы приезжает человеку стектрейсом.
+ROLE_CLAUSE_ROLES_MAX = 100
 
 
 class DayRuleSetResponse(BaseModel):
@@ -87,6 +93,19 @@ class DayRuleSetResponse(BaseModel):
     verdict_rule: dict[str, Any] = Field(
         ...,
         description="Формула вердикта: какие условия снимают день и в каком порядке",
+    )
+    role_clause_enabled: bool = Field(
+        ...,
+        description=(
+            "Судит ли этот канон рабочий день по акту роли. У легаси-строки "
+            "выключен: в те дни роли не измерялись"
+        ),
+    )
+    role_clause_roles: str = Field(
+        ...,
+        description=(
+            "Коды ролей клауза через запятую — акт любой из них закрывает день"
+        ),
     )
     note_md: str
 
@@ -219,7 +238,39 @@ class DayRuleSetPublish(BaseModel):
     )
     nocode_days: list[int]
     required_anchors: list[str]
+    # Значения по умолчанию, а не обязательные поля: экран правил дня старше
+    # клауза роли (`#152` против `#137`), и запрос без этих двух полей — это
+    # прежний экран, а не опечатка клиента. Умолчания равны умолчаниям колонок.
+    role_clause_enabled: bool = Field(
+        True,
+        description=(
+            "Судить ли рабочий день по акту роли. false — новая версия канона "
+            "клауз снимает, и дни под ней им не судятся"
+        ),
+    )
+    role_clause_roles: str = Field(
+        DEFAULT_ROLE_CLAUSE_ROLES,
+        max_length=ROLE_CLAUSE_ROLES_MAX,
+        description="Коды ролей клауза через запятую",
+    )
     note_md: str = Field("", description="Зачем правило поменяли — читает человек")
+
+    @field_validator("role_clause_roles")
+    @classmethod
+    def _named_clause_roles(cls, value: str) -> str:
+        """
+        Клауз, включённый без ролей, невыполним никогда.
+
+        Пустая строка при `role_clause_enabled=True` объявила бы проигранным
+        каждый рабочий день, и человек узнал бы об этом вечером, а не в момент
+        публикации правила.
+        """
+        if not role_clause_roles(value):
+            raise ValueError(
+                "Клауз роли не называет ни одной роли: акт «никакой роли» "
+                "закрыть нельзя, и день был бы проигран всегда."
+            )
+        return value
 
     @field_validator("timezone")
     @classmethod

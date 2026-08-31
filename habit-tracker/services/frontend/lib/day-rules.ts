@@ -45,6 +45,10 @@ export interface RuleDraft {
   nocodeDays: string;
   /** Anchors, comma-separated. */
   requiredAnchors: string;
+  /** Судит ли новая версия рабочий день по акту роли (`#137`). */
+  roleClauseEnabled: boolean;
+  /** Коды ролей клауза через запятую. */
+  roleClauseRoles: string;
   noteMd: string;
 }
 
@@ -75,6 +79,8 @@ export function draftFromRule(rule: DayRuleSet, validFrom: string): RuleDraft {
     workdays: rule.workdays.join(', '),
     nocodeDays: rule.nocode_days.join(', '),
     requiredAnchors: rule.required_anchors.join(', '),
+    roleClauseEnabled: rule.role_clause_enabled,
+    roleClauseRoles: rule.role_clause_roles,
     noteMd: rule.note_md,
   };
 }
@@ -156,6 +162,11 @@ export function draftError(draft: RuleDraft, earliest: string): string | null {
   }
   const anchors = parseAnchors(draft.requiredAnchors);
   if (new Set(anchors).size !== anchors.length) return 'Якорь назван дважды.';
+  // Включённый клауз без ролей объявил бы проигранным каждый рабочий день, и
+  // человек узнал бы об этом вечером, а не сейчас.
+  if (draft.roleClauseEnabled && parseAnchors(draft.roleClauseRoles).length === 0) {
+    return 'Клауз роли включён, но ни одна роль не названа: акт «никакой роли» закрыть нельзя.';
+  }
   return null;
 }
 
@@ -187,6 +198,8 @@ export function draftToPayload(draft: RuleDraft, earliest: string): DraftResult 
       workdays: parseWeekdays(draft.workdays) ?? [],
       nocode_days: parseWeekdays(draft.nocodeDays) ?? [],
       required_anchors: parseAnchors(draft.requiredAnchors),
+      role_clause_enabled: draft.roleClauseEnabled,
+      role_clause_roles: draft.roleClauseRoles.trim(),
       note_md: draft.noteMd,
     },
   };

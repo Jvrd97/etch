@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.week import MAX_RANGE_DAYS
 from app.crud import day as day_crud
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
+from tests.conftest import record_role_act
 
 DAYS_URL = "/api/v1/days"
 DAY_URL = "/api/v1/day"
@@ -100,7 +101,9 @@ async def test_the_range_answers_in_the_shape_the_old_api_days_had(
     assert body[0]["done"] == 0
 
 
-async def test_an_unclosed_day_is_not_a_lost_one(client: AsyncClient) -> None:
+async def test_an_unclosed_day_is_not_a_lost_one(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     """
     Three states, not two.
 
@@ -108,6 +111,9 @@ async def test_an_unclosed_day_is_not_a_lost_one(client: AsyncClient) -> None:
     from lost, so a day nobody had closed looked exactly like a day that was
     lost. Here the unclosed day carries `verdict: null`.
     """
+    # Клауз роли (`#137`) закрыт только у пятницы: суббота проигрывается по
+    # задачам, воскресенье не закрывают вовсе.
+    await record_role_act(db_session, FRIDAY)
     items = await _post_plan(client, FRIDAY, "Пятница", tasks=1)
     await _post_plan(client, SATURDAY, "Суббота", tasks=1)
     # Friday closes with its one task done — a won day.

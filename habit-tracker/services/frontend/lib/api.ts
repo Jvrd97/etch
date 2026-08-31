@@ -1046,6 +1046,10 @@ export interface DayRuleSet {
   hard_edge_kinds: string[];
   anchors: string[];
   verdict_rule: Record<string, unknown>;
+  /** Судит ли канон рабочий день по акту роли, отличной от тимлида. */
+  role_clause_enabled: boolean;
+  /** Коды ролей клауза через запятую. */
+  role_clause_roles: string;
   note_md: string;
 }
 
@@ -1113,6 +1117,10 @@ export interface DayRuleSetPublish {
   workdays: number[];
   nocode_days: number[];
   required_anchors: string[];
+  /** Судить ли рабочий день по акту роли, отличной от тимлида. */
+  role_clause_enabled: boolean;
+  /** Коды ролей клауза через запятую. */
+  role_clause_roles: string;
   note_md: string;
 }
 
@@ -1386,7 +1394,25 @@ export type Verdict = 'won' | 'lost';
  * at them would send the reader to fix the wrong thing. An empty string means
  * every condition was met.
  */
-export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
+export type VerdictReason =
+  | 'tasks'
+  | 'anchors'
+  | 'overtime'
+  | 'not_closed'
+  | 'role_act';
+
+/**
+ * One condition of the canon and how the day stood against it.
+ *
+ * The verdict is derived from the list rather than counted beside it, so a
+ * screen showing the clauses is showing the reasoning itself and not a
+ * paraphrase of it.
+ */
+export interface DayClause {
+  code: VerdictReason;
+  passed: boolean;
+  detail: string;
+}
 
 /** What the day could not be judged on. `work_minutes` is "не измерено". */
 export type MissingData = 'work_minutes' | 'anchor_kinds';
@@ -1435,6 +1461,8 @@ export interface DaySummary {
   reviewed_today: number | null;
   body_md: string;
   missing_data: MissingData[];
+  /** Условия канона, взвешенные для этого дня, в порядке взвешивания. */
+  clauses?: DayClause[];
   /** Texts of the anchors that were neither closed nor set aside. */
   missing_anchors: string[];
   source: 'close' | 'import';

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import day as day_crud
 from app.day.week import BadWeekCode, iso_code, week_bounds, week_codes
 from app.imports import week_md
+from tests.conftest import record_role_act
 
 DAY_URL = "/api/v1/day"
 WEEKS_URL = "/api/v1/weeks"
@@ -104,8 +105,15 @@ async def _post_plan(client: AsyncClient, on: date) -> str:
     return item_id
 
 
-async def _win(client: AsyncClient, on: date) -> None:
-    """Plan a day, close its single task and close the day: a won day."""
+async def _win(client: AsyncClient, db: AsyncSession, on: date) -> None:
+    """
+    Plan a day, close its single task and close the day: a won day.
+
+    Клауз роли (`#137`) закрывается здесь же: с ним рабочий день без единого
+    акта роли, отличной от тимлида, выигранным не бывает, каким бы полным ни
+    был план.
+    """
+    await record_role_act(db, on)
     item_id = await _post_plan(client, on)
     await client.put(
         f"{DAY_URL}/{on.isoformat()}/marks/{item_id}", json={"state": "done"}
@@ -142,10 +150,10 @@ async def test_a_code_that_names_no_week_is_a_404(client: AsyncClient) -> None:
 
 
 async def test_the_week_counts_won_days_and_the_streak_at_its_end(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    await _win(client, MONDAY)
-    await _win(client, date(2026, 8, 25))
+    await _win(client, db_session, MONDAY)
+    await _win(client, db_session, date(2026, 8, 25))
 
     response = await client.get(f"{WEEKS_URL}/{WEEK}")
 
@@ -171,7 +179,7 @@ async def test_the_streak_is_null_while_no_day_of_the_week_is_closed(
 
 
 async def test_recompute_moves_the_counters_and_the_stamp_but_not_the_retro(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """
     The acceptance case the whole table exists for.
@@ -188,7 +196,7 @@ async def test_recompute_moves_the_counters_and_the_stamp_but_not_the_retro(
     before = written.json()
     assert before["won_days"] == 0
 
-    await _win(client, MONDAY)
+    await _win(client, db_session, MONDAY)
 
     after = (await client.get(f"{WEEKS_URL}/{WEEK}")).json()
 

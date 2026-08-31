@@ -1,12 +1,16 @@
 'use client';
-// [review:need-review] PHASE-03/90, PHASE-03/143
+// [review:need-review] PHASE-03/90, PHASE-03/137, PHASE-03/143
 // summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form an unclosed one is closed through and the two touches it feeds — ревью 15:40 и вечернее закрытие — with the stage saying «вердикт будет вечером» instead of «проиграл», the note a day closed in one touch carries, and the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose
 
 import { useState } from 'react';
+import Link from 'next/link';
 import Markdown from '@/components/Markdown';
 import type { DayCloseDraft, DayReviewDraft, DaySummary } from '@/lib/api';
 import {
+  CLAUSES_TITLE,
+  CLAUSE_FIX_LABEL,
   REVIEW_SKIPPED,
+  clauseFixHref,
   closingHeadline,
   formatMinutes,
   missingDataLabel,
@@ -162,6 +166,45 @@ export default function DayVerdict({
           </dd>
         </div>
       </dl>
+
+      {(summary.clauses ?? []).length > 0 && (
+        // Условия канона списком — то, из чего вердикт выведен. Клауз, который
+        // можно пойти закрыть, ведёт ссылкой туда, где это делается: красное
+        // условие без адреса оставляет человека наедине с «а где чинить».
+        <div className="mt-5" data-testid="day-clauses">
+          <p className="text-sm text-text-secondary">{CLAUSES_TITLE}</p>
+          <ul className="mt-2 space-y-1.5">
+            {(summary.clauses ?? []).map((clause) => {
+              const href = clause.passed ? null : clauseFixHref(clause.code);
+              return (
+                <li
+                  key={clause.code}
+                  className="flex flex-wrap items-baseline gap-x-2 text-sm"
+                >
+                  <span
+                    className={clause.passed ? 'text-lime' : 'text-warning'}
+                    aria-hidden="true"
+                  >
+                    {clause.passed ? '\u2713' : '\u2717'}
+                  </span>
+                  <span className="text-text-primary">
+                    {verdictReasonLabel(clause.code)}
+                  </span>
+                  <span className="text-text-secondary">{clause.detail}</span>
+                  {href !== null && (
+                    <Link
+                      href={href}
+                      className="text-lime underline underline-offset-2"
+                    >
+                      {CLAUSE_FIX_LABEL}
+                    </Link>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {summary.missing_data.length > 0 && (
         <ul className="mt-4 flex flex-wrap gap-2">

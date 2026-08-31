@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134
+# [review:need-review] PHASE-03/134, PHASE-03/137
 # summary: persistence of the roles — the idempotent seed of the four-role directory, CRUD of the directory and the rules, the resolver's database half (rules in, role out, `unassigned` when nothing matched), and the write of minutes and acts that neither doubles a re-imported `(source, external_ref)` nor overwrites what a person confirmed
 """
 Database access for the roles.
@@ -47,6 +47,7 @@ from app.models.role import (
     RoleRule,
     RoleTimeBlock,
 )
+from app.day.evaluate import RoleActFact
 from app.roles.catalog import SEED_ROLES
 from app.roles.matcher import MatchSample, RuleCandidate, resolve_rule
 
@@ -437,6 +438,43 @@ async def day_acts(db: AsyncSession, work_day: date) -> list[RoleAct]:
     )
 
 
+async def day_act_facts(db: AsyncSession, work_day: date) -> list[RoleActFact]:
+    """
+    Акты дня вместе с названиями их ролей — то, чем судит клауз роли (`#137`).
+
+    Одним запросом с join, а не «акты, потом справочник по одному»: вердикт дня
+    считается на каждое открытие страницы дня, и запрос на строку превратил бы
+    его в запрос на акт.
+
+    Название роли едет вместе с кодом, потому что код решает клауз, а название
+    читает человек, и собирать второе из первого по словарю в питоне значило бы
+    завести копию справочника, которая отстанет от переименования.
+    """
+    result = await db.execute(
+        select(RoleAct, Role.code, Role.title)
+        .join(Role, Role.id == RoleAct.role_id)
+        .where(RoleAct.work_day == work_day)
+        .order_by(RoleAct.id)
+    )
+    return [
+        RoleActFact(
+            role_code=code, role_title=title, act_kind=act.act_kind, title=act.title
+        )
+        for act, code, title in result.all()
+    ]
+
+
+async def titles_by_code(db: AsyncSession) -> dict[str, str]:
+    """
+    Названия ролей по коду — расшифровка клауза, у которого актов нет.
+
+    Отдельным запросом, потому что нужен он ровно тогда, когда `day_act_facts`
+    вернул пусто: сказать «ни одного акта CTO или архитектора» больше не из чего.
+    """
+    result = await db.execute(select(Role.code, Role.title))
+    return {code: title for code, title in result.all()}
+
+
 __all__ = [
     "ActDraft",
     "RoleResolution",
@@ -445,6 +483,7 @@ __all__ = [
     "apply_role_patch",
     "create_role",
     "create_rule",
+    "day_act_facts",
     "day_acts",
     "day_time_blocks",
     "fallback_role_id",
@@ -457,6 +496,7 @@ __all__ = [
     "list_rules",
     "resolve_role",
     "seed_roles",
+    "titles_by_code",
     "write_act",
     "write_time_block",
 ]

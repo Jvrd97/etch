@@ -25,6 +25,7 @@ from app.crud import day as day_crud
 from app.day.evaluate import REASON_NOT_CLOSED, VERDICT_WON
 from app.models.mark import MARK_DONE
 from app.models.summary import STAGE_CLOSED, STAGE_OPEN, STAGE_REVIEWED, DaySummary
+from tests.conftest import record_role_act
 
 DAY_URL = "/api/v1/day"
 
@@ -161,6 +162,8 @@ async def test_the_1540_touch_records_the_work_without_a_verdict(
 async def test_the_evening_touch_closes_the_day_the_review_started(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    # Клауз роли (`#137`): выигранный рабочий день закрывает акт роли.
+    await record_role_act(db_session, FIRST_DAY)
     await a_won_day(client)
     await review(client, FIRST_DAY, work_minutes=300)
 
@@ -209,9 +212,10 @@ async def test_a_mark_put_after_1540_still_shows_before_the_evening(
 
 
 async def test_a_day_closed_in_one_touch_says_the_review_was_skipped(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """«Стадия `open → closed`, признак `review_skipped` виден в разборе»."""
+    await record_role_act(db_session, FIRST_DAY)
     await a_won_day(client)
 
     closed = await final(client, FIRST_DAY, work_minutes=400)
@@ -258,6 +262,7 @@ async def test_another_key_recloses_the_day_and_leaves_one_row(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """«Тот же запрос с другим ключом пересчитывает вердикт; строка одна»."""
+    await record_role_act(db_session, FIRST_DAY)
     await a_won_day(client)
     await final(client, FIRST_DAY, key="evening-1", work_minutes=400)
 
@@ -270,9 +275,10 @@ async def test_another_key_recloses_the_day_and_leaves_one_row(
 
 
 async def test_the_review_key_is_separate_from_the_final_one(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Один ключ на касание: ключ ревью не закрывает вечернее касание."""
+    await record_role_act(db_session, FIRST_DAY)
     await a_won_day(client)
     await review(client, FIRST_DAY, key="same-key", work_minutes=300)
 
@@ -313,9 +319,10 @@ async def test_a_repeated_review_key_does_not_move_the_review_stamp(
 
 
 async def test_a_review_after_the_evening_does_not_reopen_the_day(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Ревью, пришедшее после закрытия, уточняет цифры, а не отменяет вердикт."""
+    await record_role_act(db_session, FIRST_DAY)
     await a_won_day(client)
     await final(client, FIRST_DAY, work_minutes=400)
 
@@ -359,8 +366,12 @@ async def test_the_review_touch_refuses_a_verdict_too(client: AsyncClient) -> No
 # --- задним числом и переопределение ---------------------------------------
 
 
-async def test_closing_yesterday_moves_todays_streak(client: AsyncClient) -> None:
+async def test_closing_yesterday_moves_todays_streak(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     """«Закрытие вчерашнего дня пересчитывает стрик сегодняшнего»."""
+    await record_role_act(db_session, FIRST_DAY)
+    await record_role_act(db_session, SECOND_DAY)
     await a_won_day(client, FIRST_DAY)
     await a_won_day(client, SECOND_DAY)
 

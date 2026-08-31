@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/142
+# [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/137, PHASE-03/142
 # summary: pure day-canon logic — which rule row was in force on a date, which rule is in force now, the kind/is_nocode a date gets under a rule, the window in which opening a day counts as opening it, the two seed rows, and (since #142) `day_map` — the whole map of the day as one object: edges, free evening, evening with the family, ceilings and the composition of anchors
 """
 The canon of a day, decided without a database.
@@ -39,6 +39,7 @@ from app.day.evaluate import verdict_reasons
 from app.models.anchor import LEGACY_ANCHOR_CODES
 from app.models.day import (
     DEFAULT_ANCHORS,
+    DEFAULT_ROLE_CLAUSE_ROLES,
     DEFAULT_DAYS_OFF,
     DEFAULT_HARD_EDGE_KINDS,
     DEFAULT_VERDICT_RULE,
@@ -167,6 +168,8 @@ class RuleSeed:
     hard_edge_kinds: tuple[str, ...]
     anchors: tuple[str, ...]
     verdict_rule: dict[str, Any]
+    role_clause_enabled: bool
+    role_clause_roles: str
     note_md: str
 
 
@@ -207,6 +210,12 @@ SEED_RULES: tuple[RuleSeed, ...] = (
         hard_edge_kinds=DEFAULT_HARD_EDGE_KINDS,
         anchors=REQUIRED_ANCHORS,
         verdict_rule=dict(DEFAULT_VERDICT_RULE),
+        # Клауз роли выключен: в дни легаси-правила роли не измерялись вовсе —
+        # `role_act` не существовало, — и требовать акт задним числом значило бы
+        # снимать день за то, чего в тот день нельзя было ни сделать, ни
+        # записать (`#137`).
+        role_clause_enabled=False,
+        role_clause_roles=DEFAULT_ROLE_CLAUSE_ROLES,
         note_md=(
             "legacy: канон до 2026-08-17 — потолок 10 ч и планка 80% задач. "
             "Существует ради импортированной истории: её вердикты переносятся "
@@ -242,6 +251,8 @@ SEED_RULES: tuple[RuleSeed, ...] = (
         hard_edge_kinds=DEFAULT_HARD_EDGE_KINDS,
         anchors=DEFAULT_ANCHORS,
         verdict_rule=dict(DEFAULT_VERDICT_RULE),
+        role_clause_enabled=True,
+        role_clause_roles=DEFAULT_ROLE_CLAUSE_ROLES,
         note_md=(
             "Действующий канон по config.md: 8 ч со стопом в 16:00, потолок 9 ч "
             "для исключений, четыре рабочие задачи, закрыты все, переработка "

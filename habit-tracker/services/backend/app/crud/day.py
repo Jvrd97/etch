@@ -98,6 +98,8 @@ async def seed_rules(db: AsyncSession) -> None:
                 hard_edge_kinds=list(seed.hard_edge_kinds),
                 anchors=list(seed.anchors),
                 verdict_rule=dict(seed.verdict_rule),
+                role_clause_enabled=seed.role_clause_enabled,
+                role_clause_roles=seed.role_clause_roles,
                 note_md=seed.note_md,
             )
         )

@@ -160,6 +160,28 @@ class DayCloseIn(BaseModel):
         return self
 
 
+class DayClauseResponse(BaseModel):
+    """
+    Одно условие канона и его исход — то, из чего выведен вердикт дня.
+
+    Список клаузов идёт наравне с якорями, задачами и переработкой не ради
+    полноты: пока условия были только счётчиками, «день не выигран» приходилось
+    расшифровывать глазами, сопоставляя четыре числа с текстом канона. Здесь
+    каждое условие называет себя само.
+
+    `detail` человекочитаем и собирается там же, где условие взвешивается: «ни
+    одного акта CTO или архитектора» — это то, что человек может пойти и
+    исправить, а «условие role_act не выполнено» — нет.
+    """
+
+    code: str = Field(
+        ...,
+        description="Код условия: overtime | anchors | tasks | role_act",
+    )
+    passed: bool
+    detail: str = Field(..., description="Расшифровка условия словами")
+
+
 class DaySummaryResponse(BaseModel):
     """
     The итог of a day as the screen reads it, closed or not.
@@ -244,4 +266,13 @@ class DaySummaryResponse(BaseModel):
     )
     source: str = Field(
         "close", description="close — день закрыт здесь; import — вердикт пришёл прозой"
+    )
+    clauses: list[DayClauseResponse] = Field(
+        default_factory=list,
+        description=(
+            "Условия канона, взвешенные для этого дня, в порядке взвешивания. "
+            "Вердикт выведен из них: `verdict_reason` — код первого "
+            "непройденного. Считается живьём по фактам дня, как и "
+            "`missing_anchors`"
+        ),
     )

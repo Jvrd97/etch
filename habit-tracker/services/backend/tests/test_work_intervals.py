@@ -47,6 +47,7 @@ from app.day.work import (
     span_minutes,
 )
 from app.models.work_interval import WorkInterval
+from tests.conftest import record_role_act
 
 DAY_URL = "/api/v1/day"
 
@@ -582,9 +583,10 @@ async def test_four_of_four_tasks_and_nine_hours_is_lost_by_overtime(
 
 
 async def test_a_day_without_intervals_is_not_judged_on_overtime(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Приёмка: без интервалов нет `overtime`, а в итоге видно «время не измерено»."""
+    await record_role_act(db_session, WORK_DAY)
     await a_day_of_four_closed_tasks(client)
 
     response = await client.post(f"{WORK_PATH}/close", json={})
@@ -623,9 +625,10 @@ async def test_the_measurement_replaces_the_number_typed_at_close(
 
 
 async def test_a_day_closed_without_intervals_keeps_the_number_it_was_given(
-    client: AsyncClient,
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """История, закрытая до появления интервалов, своё число не теряет."""
+    await record_role_act(db_session, WORK_DAY)
     await a_day_of_four_closed_tasks(client)
 
     response = await client.post(f"{WORK_PATH}/close", json={"work_minutes": 400})

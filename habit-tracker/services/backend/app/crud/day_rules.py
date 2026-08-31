@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/152
+# [review:need-review] PHASE-03/137, PHASE-03/152
 # summary: publishing a version of the day canon — closing the rule in force and inserting the new one inside one SAVEPOINT, refusing a start date that is not in the future, and turning the exclusion constraint's refusal into a sentence a person can read
 """
 Changing the canon of a day without SQL, and without rewriting the past.
@@ -171,6 +171,8 @@ async def publish_rule_set(db: AsyncSession, draft: DayRuleSetPublish) -> DayRul
         workdays=list(draft.workdays),
         nocode_days=list(draft.nocode_days),
         required_anchors=list(draft.required_anchors),
+        role_clause_enabled=draft.role_clause_enabled,
+        role_clause_roles=draft.role_clause_roles,
         note_md=draft.note_md,
     )
 

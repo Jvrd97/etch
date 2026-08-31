@@ -30,6 +30,7 @@ from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.day.evaluate import REASON_ANCHORS, VERDICT_LOST, VERDICT_WON
 from app.models.anchor import ANCHOR_RELATIONSHIP, AnchorKind, DayAnchor
+from tests.conftest import record_role_act
 
 DAY_URL = "/api/v1/day"
 
@@ -130,7 +131,12 @@ async def test_a_day_closed_without_the_family_evening_is_lost_on_anchors(
     assert summary["missing_anchors"] == ["вечер с близкими"]
 
 
-async def test_closing_the_family_evening_wins_the_day(client: AsyncClient) -> None:
+async def test_closing_the_family_evening_wins_the_day(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    # Клауз роли (`#137`): выигранный рабочий день закрывает акт роли, отличной
+    # от тимлида. Без него день проигран за роль, а не за якоря.
+    await record_role_act(db_session, ANCHOR_DAY)
     for kind in ALL_KINDS:
         await mark_anchor(client, kind, "done")
 
@@ -143,7 +149,10 @@ async def test_closing_the_family_evening_wins_the_day(client: AsyncClient) -> N
     assert summary["missing_anchors"] == []
 
 
-async def test_a_skipped_anchor_does_not_lower_the_day(client: AsyncClient) -> None:
+async def test_a_skipped_anchor_does_not_lower_the_day(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await record_role_act(db_session, ANCHOR_DAY)
     for kind in ALL_KINDS[:-1]:
         await mark_anchor(client, kind, "done")
     await mark_anchor(client, ANCHOR_RELATIONSHIP, "skipped")
