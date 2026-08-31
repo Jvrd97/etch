@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
+    inbox,
     agent,
     auth,
     categories,
@@ -94,6 +95,7 @@ API_ROUTERS = (
     week.weeks_router,
     quick_marks.router,
     challenges.router,
+    inbox.router,
 )
 
 

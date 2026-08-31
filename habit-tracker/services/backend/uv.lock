@@ -366,6 +366,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "greenlet" },
     { name = "gunicorn" },
+    { name = "httpx" },
     { name = "itsdangerous" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
@@ -382,7 +383,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "asyncpg-stubs" },
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -399,6 +399,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.104.1" },
     { name = "greenlet", specifier = ">=3.0" },
     { name = "gunicorn", specifier = ">=26.0.0" },
+    { name = "httpx", specifier = "==0.25.2" },
     { name = "itsdangerous", specifier = ">=2.2" },
     { name = "psycopg2-binary", specifier = "==2.9.9" },
     { name = "pydantic", specifier = "==2.5.0" },
@@ -415,7 +416,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "asyncpg-stubs", specifier = ">=0.29" },
-    { name = "httpx", specifier = "==0.25.2" },
     { name = "mypy", specifier = ">=1.10" },
     { name = "pytest", specifier = "==7.4.3" },
     { name = "pytest-asyncio", specifier = "==0.21.1" },

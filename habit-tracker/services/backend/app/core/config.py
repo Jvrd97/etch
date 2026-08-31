@@ -108,6 +108,13 @@ class Settings(BaseSettings):
     # AI insights: empty string disables the api backend (endpoint returns 503)
     ANTHROPIC_API_KEY: str = ""
 
+    # Входящие (`#97`, ADR-0016). Токены объявлены здесь, а лежат в окружении:
+    # в базе у источника хранится только **имя** переменной (`credential_ref`),
+    # и дамп Postgres поэтому не выносит секрета наружу. Пустое значение — это
+    # не поломка, а состояние «источник не подключён»: контур отвечает на poll
+    # машинным кодом `no_credentials` и в сеть не идёт.
+    CLICKUP_PERSONAL_TOKEN: str = ""
+
     # LLM backend: "cli" (claude CLI binary) or "api" (Anthropic API).
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""

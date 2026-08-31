@@ -96,6 +96,7 @@ describe('MORE_ROUTES', () => {
       'week',
       'goals',
       'roles',
+      'inbox',
       'quick-marks',
       'chat',
       'daily-summary',
@@ -245,6 +246,7 @@ describe('NAV_SECTIONS', () => {
     expect(data?.routes.map((route) => route.id)).toEqual([
       'dashboard',
       'roles',
+      'inbox',
       'table',
       'entries',
       'journal',
