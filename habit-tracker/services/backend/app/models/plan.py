@@ -93,7 +93,16 @@ POSITION_UNIQUE_DDL = (
     "UNIQUE NULLS NOT DISTINCT (section_id, parent_id, ord) "
     "DEFERRABLE INITIALLY DEFERRED"
 )
-PLAN_SOURCES: tuple[str, ...] = ("day-open", "import", "manual")
+# Кем собран план. `llm` и `fallback` приехали с #148: «кем собран» — это часть
+# состояния дня, а не примечание к нему, и день, собранный скелетом потому что
+# модель молчала, обязан отличаться от дня, который человек написал руками.
+PLAN_SOURCES: tuple[str, ...] = (
+    "day-open",
+    "import",
+    "manual",
+    "llm",
+    "fallback",
+)
 
 
 def _in_list(column: str, values: tuple[str, ...]) -> str:
@@ -159,6 +168,10 @@ class DayPlan(Base):
 
     status: Mapped[str] = mapped_column(String(16), server_default="active")
     source: Mapped[str] = mapped_column(String(16), server_default="day-open")
+    # Почему план собран скелетом, кодом: `llm_timeout`, `llm_error`,
+    # `llm_not_configured`, `llm_plan_invalid`. NULL у всего, что собрано не
+    # запасным путём. Код, а не предложение: его читает и экран, и тест.
+    fallback_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     raw_md: Mapped[str | None] = mapped_column(Text, nullable=True)
 

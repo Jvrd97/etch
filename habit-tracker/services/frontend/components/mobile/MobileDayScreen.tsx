@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and its two closing touches, the notebook, the rule as a plain list, no text below text-sm
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day beside it, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
@@ -17,6 +17,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import {
   planAuthorLabel,
+  planFallbackLabel,
   planWideViolations,
   ruleLabel,
   violationsByItem,
@@ -142,6 +143,9 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
             <p className="text-sm text-text-secondary">{plan.lede}</p>
           )}
           <p className="text-xs text-text-secondary">{planAuthorLabel(plan)}</p>
+          {planFallbackLabel(plan) !== null && (
+            <p className="text-xs text-text-secondary">{planFallbackLabel(plan)}</p>
+          )}
           {brokenPlanWide.length > 0 && (
             // Above the plan, because the line each of these is about is the one
             // that is not there: a missing health anchor has nothing to hang on.

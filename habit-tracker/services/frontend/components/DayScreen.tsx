@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day beside it, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
@@ -18,6 +18,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import {
   planAuthorLabel,
+  planFallbackLabel,
   planWideViolations,
   ruleLabel,
   violationsByItem,
@@ -149,6 +150,12 @@ export default function DayScreen({ date }: DayScreenProps) {
             <p className="text-text-secondary max-w-3xl">{plan.lede}</p>
           )}
           <p className="text-sm text-text-secondary">{planAuthorLabel(plan)}</p>
+          {planFallbackLabel(plan) !== null && (
+            // Причина стоит рядом с авторством, а не в логах: «почему в плане
+            // именно это» — вопрос человека к экрану, и «модель не настроена»
+            // и «план дважды нарушил канон» чинятся по-разному.
+            <p className="text-sm text-text-secondary">{planFallbackLabel(plan)}</p>
+          )}
           {brokenPlanWide.length > 0 && (
             // Above the plan, because the line each of these is about is the one
             // that is not there: a missing health anchor has nothing to hang on.

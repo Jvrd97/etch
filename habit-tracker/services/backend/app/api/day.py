@@ -19,7 +19,9 @@ from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
-from app.day import constraints, skeleton
+from app.api.deps import get_llm_client
+from app.day import constraints, generate, skeleton
+from app.llm.client import LLMClient
 from app.crud import training as training_crud
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
@@ -705,6 +707,75 @@ async def get_plan_violations(
     await _resolve(db, on)
     rows = await violation_crud.list_violations(db, on)
     return [PlanViolationResponse.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{on}/plan/generate",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_plan_generate(
+    on: date,
+    db: AsyncSession = Depends(get_db),
+    llm: LLMClient | None = Depends(get_llm_client),
+) -> PlanResponse:
+    """
+    Собрать план дня моделью, а если не вышло — скелетом.
+
+    Модель возвращает **данные**: JSON по схеме, который проверяется восемью
+    ограничениями и пишется тем же `replace_plan`, что принимает план человека.
+    Ни файлов, ни правок, ни доверия к промпту.
+
+    День без плана не остаётся никогда. Модель не настроена, упала, не уложилась
+    в бюджет, дважды нарушила канон — записывается скелет с `source='fallback'`
+    и кодом причины в `fallback_reason`. 503 здесь нет вовсе: отсутствие модели
+    перестаёт быть состоянием дня.
+
+    Синхронно и в пределах своего бюджета: не больше двух обращений к модели,
+    120 секунд на вызов, 300 на всё. Фоновое исполнение — `#149`.
+
+    - **201** — план записан; `source` говорит, кем он собран
+    - **404** — дата вне всех интервалов канона
+    - **422** — план не прошёл запись (отказ базы или канона на записи)
+    """
+    day, rule = await _resolve(db, on)
+
+    built = await generate.generate_plan(llm, day.day_date, rule)
+    try:
+        stored = await plan_crud.replace_plan(db, day.day_date, rule, built.document)
+    except PlanRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=rejected.as_detail(),
+        ) from rejected
+
+    stored.fallback_reason = built.reason
+    # Запись причины двигает `updated_at` на стороне базы, и без этого чтения
+    # столбец остаётся протухшим: обращение к нему после `commit` — это уже
+    # новое соединение, то есть `MissingGreenlet` в ответе. Перечитываются
+    # ровно два столбца, а не объект: `refresh` без списка сбросил бы и
+    # секции, которые ответу нужны загруженными.
+    await db.flush()
+    await db.refresh(stored, attribute_names=["fallback_reason", "updated_at"])
+    # Прежние нарушения дня снимаются: они относились к плану, которого больше
+    # нет. Нарушения последнего ответа модели пишутся под своим происхождением —
+    # это причина, по которой день собран скелетом, и она обязана пережить ответ.
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_FALLBACK
+    )
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_AI
+    )
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_HUMAN
+    )
+    if built.violations:
+        await violation_crud.record_violations(
+            db, day.day_date, list(built.violations), origin=constraints.ORIGIN_AI
+        )
+    await day_crud.touch_day(db, day, opened=False)
+    await db.commit()
+    return await plan_crud.to_response(db, stored)
 
 
 @router.post(

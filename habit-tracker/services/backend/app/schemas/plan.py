@@ -265,6 +265,13 @@ class PlanResponse(BaseModel):
     condition_tomorrow: str | None
     status: str
     source: str
+    fallback_reason: str | None = Field(
+        None,
+        description=(
+            "Почему план собран скелетом: llm_timeout, llm_error, "
+            "llm_not_configured, llm_plan_invalid. null у всего остального"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     sections: list[PlanSectionResponse] = Field(default_factory=list)

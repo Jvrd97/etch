@@ -135,6 +135,7 @@ const PLAN: Plan = {
   condition_tomorrow: null,
   status: 'active',
   source: 'day-open',
+  fallback_reason: null,
   created_at: '2026-08-30T06:00:00Z',
   updated_at: '2026-08-30T06:00:00Z',
   sections: [

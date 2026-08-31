@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { PlanViolation } from '@/lib/api';
 import {
+  FALLBACK_REASON_LABELS,
   planAuthorLabel,
+  planFallbackLabel,
   planWideViolations,
   ruleLabel,
   violationsByItem,
@@ -81,5 +83,32 @@ describe('planAuthorLabel', () => {
     expect(planAuthorLabel({ source: 'manual' })).toBe('Собран скелетом из канона');
     expect(planAuthorLabel({ source: 'import' })).toBe('Перенесён из файлов');
     expect(planAuthorLabel({ source: 'day-open' })).toBe('Собран на /day-open');
+  });
+
+  it('tells a plan the model wrote from one the skeleton wrote', () => {
+    expect(planAuthorLabel({ source: 'llm' })).toBe('Собран моделью и проверен каноном');
+    expect(planAuthorLabel({ source: 'fallback' })).toBe('Собран скелетом из канона');
+  });
+});
+
+describe('planFallbackLabel', () => {
+  it('names the reason the model did not write the day', () => {
+    expect(
+      planFallbackLabel({ source: 'fallback', fallback_reason: 'llm_timeout' })
+    ).toBe(`Почему: ${FALLBACK_REASON_LABELS.llm_timeout}`);
+  });
+
+  it('answers four different reasons, not one «не получилось»', () => {
+    const said = new Set(Object.values(FALLBACK_REASON_LABELS));
+    expect(said.size).toBe(4);
+  });
+
+  it('says nothing about a plan the skeleton did not write', () => {
+    expect(planFallbackLabel({ source: 'llm', fallback_reason: null })).toBeNull();
+    expect(
+      // Причина без запасного авторства — это рассинхрон, и экран молчит,
+      // а не печатает «Почему» под планом, который собрала модель.
+      planFallbackLabel({ source: 'day-open', fallback_reason: 'llm_error' })
+    ).toBeNull();
   });
 });

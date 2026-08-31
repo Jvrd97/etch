@@ -1281,6 +1281,16 @@ export interface ScheduleOverlap {
   overlap_minutes: number;
 }
 
+/** Кем собран план дня. Зеркало `PLAN_SOURCES` из `app/models/plan.py`. */
+export type PlanAuthor = 'day-open' | 'import' | 'manual' | 'llm' | 'fallback';
+
+/** Почему план собрал скелет. Зеркало кодов из `app/day/generate.py`. */
+export type PlanFallbackReason =
+  | 'llm_not_configured'
+  | 'llm_error'
+  | 'llm_timeout'
+  | 'llm_plan_invalid';
+
 export interface Plan {
   id: string;
   day_date: string;
@@ -1292,7 +1302,17 @@ export interface Plan {
   counters: unknown[];
   condition_tomorrow: string | null;
   status: 'draft' | 'active' | 'closed';
-  source: 'day-open' | 'import' | 'manual';
+  /**
+   * Кем собран план.
+   *
+   * `llm` и `fallback` приехали с #148: «кем собран» — часть состояния дня, а
+   * не примечание к нему. День, собранный скелетом потому что модель молчала,
+   * отличается от дня, который человек написал руками, — и человек имеет право
+   * это видеть.
+   */
+  source: PlanAuthor;
+  /** Почему план собран скелетом. Код, а не предложение; null у остальных. */
+  fallback_reason: PlanFallbackReason | null;
   created_at: string;
   updated_at: string;
   sections: PlanSection[];
