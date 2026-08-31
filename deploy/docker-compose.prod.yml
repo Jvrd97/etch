@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109
+# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109, PHASE-03/188
 # summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job, and SESSION_SECRET — empty kills the start the same way an empty API_KEY does; plus the two things that make a deploy provable — every dev mount dropped, and the deployed commit stamped on each image
+# summary: PHASE-03/188 binds every published port to BIND_ADDR (the host's Tailscale address, default 127.0.0.1) and actually unpublishes postgres with `!reset` — the empty list it carried before merged into the base mapping and left the database open on the public IP
 # Usage (on VPS, from habit-tracker/): `make up` — it exports the GIT_SHA this file
 # needs and runs deploy/verify-deploy.sh afterwards. The raw command underneath is
 #   docker compose --profile web -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
@@ -36,13 +37,40 @@
 # production unnoticed. The `!reset` / `!override` tags below are what actually
 # drop them (Compose Specification merge tags; `docker compose config` prints
 # the result, and an empty `volumes` there is the proof).
+# ─── Why every published port is bound to an address ─────────────────────────
+# `- "8000:8000"` in the base file publishes on 0.0.0.0, and docker writes its
+# own iptables chain ahead of ufw's INPUT: a published port is reachable from
+# the internet whether or not the host firewall says otherwise, and `ufw deny`
+# on it changes nothing. On this server that meant the API without an API key,
+# the whole interface and the database with the compose defaults
+# (`habit_user`/`habit_pass`) answering on the public IP.
+#
+# So the address is part of the mapping. `BIND_ADDR` is the Tailscale IP of the
+# host, and the default is `127.0.0.1` rather than the real one on purpose: a
+# deploy that forgot the variable must end up unreachable, not public. Set it in
+# `habit-tracker/.env` on the server:
+#
+#   BIND_ADDR=100.121.220.42
+#
+# `!override` is not decoration here. Compose merges `ports` by target port, so
+# a shorter list — including the empty one this file used to carry for postgres
+# — merges into the base list and removes nothing. That is exactly how the
+# database stayed published on 0.0.0.0:5433 under a line claiming it was
+# "reachable only from the compose network". Proof is the rendered config:
+#
+#   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml \
+#     --profile web config | grep -B2 -A6 published
 services:
   postgres:
     restart: always
-    ports: []  # DB is reachable only from the compose network
+    # Not published at all: the backend and the worker reach it by service name
+    # inside the compose network, and `make backup` runs inside the container.
+    ports: !reset []
 
   backend:
     restart: always
+    ports: !override
+      - "${BIND_ADDR:-127.0.0.1}:8000:8000"
     # Stamp the deployed commit onto the image as an OCI label. The Dockerfile is
     # untouched: compose applies `build.labels` to the finished image itself.
     # deploy/verify-deploy.sh reads it back and compares with `git rev-parse HEAD`
@@ -135,6 +163,8 @@ services:
   frontend:
     restart: always
     profiles: ["web"]  # optional: enable with --profile web
+    ports: !override
+      - "${BIND_ADDR:-127.0.0.1}:3000:3000"
     build:
       context: ./services/frontend
       labels:
