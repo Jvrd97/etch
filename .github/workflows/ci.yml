@@ -1,5 +1,15 @@
-# [review:need-review] PHASE-01/adhoc-ci-precommit
-# summary: CI — backend (ruff, mypy --strict, pytest vs postgres); frontend (lint, bun unit tests, build); runs on all pushes + PRs
+# [review:need-review] PHASE-01/adhoc-ci-precommit, PHASE-03/07-priemka-fazy
+# summary: CI — backend (make lint / type / heads, then pytest vs postgres); frontend (lint, bun unit tests, build + check:bundle); deploy only on a push to main
+#
+# The gates are called through the Makefile targets on purpose. Reproducing the
+# same commands by hand here is what let `heads` fall out of CI while staying in
+# `make check` — and that cost commit deae933, four alembic heads after two
+# branches merged. One definition, two callers.
+#
+# `make check` itself is not called: its `test` target starts postgres in docker
+# through docker compose, and here postgres is a service container the runner
+# already provides. So `test` is the one gate spelled out below instead of
+# delegated.
 name: CI
 
 on:
@@ -32,9 +42,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
       - name: Lint
-        run: uv run ruff check app tests && uv run ruff format --check app tests
+        run: make lint
       - name: Types
-        run: uv run mypy --strict app
+        run: make type
+      # The fourth gate of `make check`. Reads alembic/versions only — no
+      # database, no docker. Two heads mean two branches grew from the same
+      # parent and someone will hand-write a merge revision.
+      - name: Migration chain has exactly one head
+        run: make heads
       - name: Tests
         env:
           TEST_DATABASE_URL: postgresql+asyncpg://habit_user:habit_pass@localhost:5432/habit_tracker_test
@@ -54,12 +69,28 @@ jobs:
         run: bun run lint
       - name: Unit tests
         run: bun test
-      - name: Typecheck and build
-        run: bun run build
+      # `make front-check` = `bun run build` (which typechecks) plus
+      # `check:bundle`, the pair the deploy checklist runs by hand.
+      # API_KEY here is a sentinel, not a real key, and that is the point: the
+      # build receives it through the very variable production uses, so an edit
+      # that ever drags the key into client code leaves this literal in .next
+      # and the scan reddens. A real key is never needed to prove the invariant.
+      - name: Build and prove the API key is not in the bundle
+        run: make -C ../.. front-check API_KEY=ci-bundle-sentinel-9f3a7c1e5b8d2046a1c7e3f95b0d846271ae0c93
 
   deploy:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
+    # Without this the job fired on every push to every branch and on every
+    # pull_request, a fork's included — `make up` builds and starts whatever
+    # code triggered it. Production is deployed from main and from nowhere else.
+    #
+    # Read the step below for what it does today: `ubuntu-latest` is a GitHub
+    # runner, not the VPS, so `make up` raises the stack on a throwaway machine
+    # that is discarded minutes later. Nothing reaches production; the real
+    # deploy is `make preflight && make deploy` run on the server. Do not read a
+    # green tick here as "released".
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to production
