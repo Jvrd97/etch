@@ -1,13 +1,23 @@
 'use client';
-// [review:need-review] PHASE-03/127
-// summary: the Today card of one obligation — «день N из M, промахов K» plus the state of today's day, with every number taken from the server response rather than recounted here
+// [review:need-review] PHASE-03/127, PHASE-03/128
+// summary: the Today card of one obligation — «день N из M, промахов K из N», the state of today's day, how the challenge ended, and the one button that counts a day by hand; every number comes from the server response rather than being recounted here
 
 import { Flag } from 'lucide-react';
 import type { Challenge } from '@/lib/api';
-import { formatMisses, formatProgress, formatToday } from '@/lib/challenges';
+import {
+  canCountToday,
+  formatMisses,
+  formatProgress,
+  formatStatus,
+  formatToday,
+} from '@/lib/challenges';
 
 interface ChallengeCardProps {
   challenge: Challenge;
+  /** Count today by hand. Absent on a card that cannot be acted on. */
+  onCountToday?: (challenge: Challenge) => void;
+  /** True while that write is in flight. */
+  counting?: boolean;
 }
 
 /** How today's state colours the card. Discriminated on the verdict, not on flags. */
@@ -20,14 +30,19 @@ const TODAY_TONE: Record<string, string> = {
 /**
  * Одно обязательство на экране сегодняшнего дня.
  *
- * Карточка ничего не считает. `день N из M` и `промахов K` приходят с сервера
- * готовыми — там же, где живёт ленивая материализация, — и второй арифметики
- * обязательства в браузере не заводится.
+ * Карточка ничего не считает. «День N из M», «промахов K из N» и статус
+ * приходят с сервера готовыми — там же, где живёт ленивая материализация, — и
+ * второй арифметики обязательства в браузере не заводится.
  */
-export default function ChallengeCard({ challenge }: ChallengeCardProps) {
+export default function ChallengeCard({
+  challenge,
+  onCountToday,
+  counting = false,
+}: ChallengeCardProps) {
   const tone = challenge.today_verdict
     ? TODAY_TONE[challenge.today_verdict]
     : 'text-slate-500 dark:text-slate-400';
+  const showCount = onCountToday !== undefined && canCountToday(challenge);
 
   return (
     <article
@@ -39,13 +54,28 @@ export default function ChallengeCard({ challenge }: ChallengeCardProps) {
         <h3 className="font-medium text-slate-900 dark:text-slate-100">
           {challenge.title}
         </h3>
+        <span className="ml-auto text-xs uppercase tracking-wide text-slate-400">
+          {formatStatus(challenge)}
+        </span>
       </header>
 
       <p className="text-sm text-slate-600 dark:text-slate-300">
         {formatProgress(challenge)}, {formatMisses(challenge)}
       </p>
 
-      <p className={`text-sm ${tone}`}>{formatToday(challenge.today_verdict)}</p>
+      <div className="flex items-center gap-3">
+        <p className={`text-sm ${tone}`}>{formatToday(challenge.today_verdict)}</p>
+        {showCount && (
+          <button
+            type="button"
+            className="text-sm text-lime"
+            disabled={counting}
+            onClick={() => onCountToday(challenge)}
+          >
+            {counting ? 'Записываю…' : 'Засчитать день'}
+          </button>
+        )}
+      </div>
     </article>
   );
 }

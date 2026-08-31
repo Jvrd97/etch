@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127
+# [review:need-review] PHASE-03/127, PHASE-03/128
 # summary: lazy materialization of a challenge — one query of the window's entries, `verdict_for_day` over each day, and an upsert on `(challenge_id, day)` that refuses to touch a row a person set by hand; plus the counts the card prints
 """
 Челлендж: чтение окна, ленивая материализация вердиктов, счёт.
@@ -42,14 +42,25 @@ from app.challenge.rules import (
     ChallengeRule,
     DaySample,
     Verdict,
+    misses_left,
+    outcome_for,
     verdict_for_day,
 )
 from app.core.daytime import today_local
 from app.models import Entry, EntryValue, Field
-from app.models.challenge import Challenge, ChallengeDay
+from app.models.challenge import (
+    STATUS_ACTIVE,
+    STATUS_FAILED,
+    Challenge,
+    ChallengeDay,
+)
 from app.models.field import FieldType
 
 logger = logging.getLogger(__name__)
+
+# Из чего ручной вердикт умеет вытащить челлендж обратно. `won` сюда не входит —
+# закрытая история не переписывается; `abandoned` тоже — его поставил человек.
+RECOVERABLE_STATUSES: tuple[str, ...] = (STATUS_ACTIVE, STATUS_FAILED)
 
 
 class ChallengeRejected(Exception):
@@ -74,6 +85,7 @@ class ChallengeCounts:
     day_number: int
     done_count: int
     misses_used: int
+    misses_left: int
     today_verdict: Verdict | None
 
 
@@ -245,6 +257,9 @@ def counts_of(
         day_number=day_number,
         done_count=done_count,
         misses_used=misses_used,
+        misses_left=misses_left(
+            challenge.failure_mode, challenge.allowed_misses, misses_used
+        ),
         today_verdict=today_verdict,
     )
 
@@ -312,3 +327,87 @@ async def list_challenges(db: AsyncSession) -> Sequence[Challenge]:
         select(Challenge).order_by(Challenge.starts_on.desc(), Challenge.id.desc())
     )
     return result.scalars().all()
+
+
+def apply_outcome(
+    challenge: Challenge,
+    days: Sequence[ChallengeDay],
+    *,
+    today: date,
+    by_hand: bool = False,
+) -> None:
+    """
+    Пересчитать статус обязательства по его дням.
+
+    Автоматический пересчёт трогает только `active`: раз закрытая история
+    обязательства сама себя не переписывает, и отметка, поставленная задним
+    числом, не отыгрывает назад ни выигрыш, ни провал.
+
+    `by_hand=True` — ручной вердикт, и он единственный, кто может вернуть
+    челлендж из `failed` в `active`. Иначе «засчитываю этот день» было бы
+    косметикой на дне, который уже никого не спасает. `won` и `abandoned` не
+    отыгрываются и руками: первое — закрытая история, второе — прямое решение
+    человека.
+    """
+    allowed_from = RECOVERABLE_STATUSES if by_hand else (STATUS_ACTIVE,)
+    if challenge.status not in allowed_from:
+        return
+
+    miss_days = [row.day for row in days if row.verdict == VERDICT_MISS]
+    outcome = outcome_for(
+        miss_days,
+        failure_mode=challenge.failure_mode,
+        allowed_misses=challenge.allowed_misses,
+        ends_on=challenge.ends_on,
+        today=today,
+    )
+    challenge.status = outcome.status
+    challenge.failed_on = outcome.failed_on
+
+
+async def set_manual_verdict(
+    db: AsyncSession,
+    challenge: Challenge,
+    day: date,
+    *,
+    verdict: str,
+    note: str | None,
+) -> ChallengeDay:
+    """
+    Вердикт, поставленный человеком, — и статус, пересчитанный следом.
+
+    Пересчёт этой строки больше не касается: `source='manual'` стоит в условии
+    `ON CONFLICT DO UPDATE` материализации. Ручной ввод правит автоматику, а не
+    наоборот, и это свойство записи, а не порядка вызовов.
+    """
+    statement = pg_insert(ChallengeDay).values(
+        challenge_id=challenge.id,
+        day=day,
+        verdict=verdict,
+        source=SOURCE_MANUAL,
+        note=note,
+    )
+    await db.execute(
+        statement.on_conflict_do_update(
+            constraint="uq_challenge_day",
+            set_={
+                "verdict": statement.excluded.verdict,
+                "source": statement.excluded.source,
+                "note": statement.excluded.note,
+            },
+        )
+    )
+    await db.flush()
+
+    result = await db.execute(
+        select(ChallengeDay).where(
+            ChallengeDay.challenge_id == challenge.id, ChallengeDay.day == day
+        )
+    )
+    row = result.scalar_one()
+    # `pg_insert` пишет мимо ORM, поэтому строка, уже загруженная в сессию,
+    # осталась бы старой; без refresh следующее чтение вернуло бы прошлый
+    # вердикт.
+    await db.refresh(row)
+    logger.info("challenge %s day %s set by hand to %s", challenge.id, day, verdict)
+    return row

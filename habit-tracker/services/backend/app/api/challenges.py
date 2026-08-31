@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127
+# [review:need-review] PHASE-03/127, PHASE-03/128
 # summary: the challenge endpoints — create, list and read all bring the verdicts up to today before answering (there is no scheduler to do it for them), PATCH edits the promise without touching a single past verdict, and POST /recompute is the same materialization asked for out loud
 """
 Периметр обязательств.
@@ -21,6 +21,7 @@ from app.crud import challenge as challenge_crud
 from app.crud.challenge import ChallengeRejected
 from app.models.challenge import Challenge
 from app.schemas.challenge import (
+    ChallengeDayIn,
     ChallengeDayResponse,
     ChallengeDetailResponse,
     ChallengeIn,
@@ -31,6 +32,10 @@ from app.schemas.challenge import (
 router = APIRouter(prefix="/challenges", tags=["challenges"])
 
 CHALLENGE_NOT_FOUND = "челлендж {challenge_id} не найден"
+DAY_OUTSIDE_WINDOW = (
+    "день {day} лежит вне окна челленджа ({starts_on} — {ends_on}): "
+    "засчитать можно только день, который в обязательство входит"
+)
 
 
 def _response(
@@ -54,6 +59,7 @@ def _response(
         day_number=counts.day_number,
         done_count=counts.done_count,
         misses_used=counts.misses_used,
+        misses_left=counts.misses_left,
         today_verdict=counts.today_verdict,
         created_at=challenge.created_at,
     )
@@ -62,9 +68,15 @@ def _response(
 async def _bring_up_to_date(
     db: AsyncSession, challenge: Challenge, today: date
 ) -> challenge_crud.ChallengeCounts:
-    """Досчитать вердикты до сегодня и вернуть счёт по ним."""
+    """
+    Досчитать вердикты до сегодня, пересчитать статус и вернуть счёт.
+
+    Порядок здесь не свободный: статус выводится из дней, поэтому сначала дни.
+    Обратный порядок отдавал бы вчерашний статус вместе с сегодняшним счётом.
+    """
     await challenge_crud.materialize(db, challenge, today=today)
     days = await challenge_crud.load_days(db, challenge.id)
+    challenge_crud.apply_outcome(challenge, days, today=today)
     return challenge_crud.counts_of(challenge, days, today=today)
 
 
@@ -132,6 +144,7 @@ async def get_challenge(
     challenge = await _require(db, challenge_id)
     await challenge_crud.materialize(db, challenge, today=today)
     days = await challenge_crud.load_days(db, challenge.id)
+    challenge_crud.apply_outcome(challenge, days, today=today)
     counts = challenge_crud.counts_of(challenge, days, today=today)
     await db.commit()
     return ChallengeDetailResponse(
@@ -159,9 +172,56 @@ async def patch_challenge(
 
     today = today_local()
     days = await challenge_crud.load_days(db, challenge.id)
+    # Бюджет мог поменяться этим же запросом, поэтому статус пересчитывается —
+    # но брошенный руками челлендж пересчёт назад не отыграет.
+    challenge_crud.apply_outcome(challenge, days, today=today)
     counts = challenge_crud.counts_of(challenge, days, today=today)
     await db.commit()
     return _response(challenge, counts)
+
+
+@router.put("/{challenge_id}/days/{day}", response_model=ChallengeDetailResponse)
+async def set_day_verdict(
+    challenge_id: int,
+    day: date,
+    payload: ChallengeDayIn,
+    db: AsyncSession = Depends(get_db),
+) -> ChallengeDetailResponse:
+    """
+    Засчитать или не засчитать день руками.
+
+    Прямая реализация «ручной ввод правит автоматику»: строка получает
+    `source='manual'`, и пересчёт её больше не трогает — ни в этот раз, ни через
+    три `recompute`.
+
+    Статус после этого считается заново, и это единственный путь, которым
+    челлендж возвращается из `failed` в `active`. Без него «засчитываю этот
+    день» было бы косметикой на дне, который уже никого не спасает.
+    """
+    challenge = await _require(db, challenge_id)
+    if not (challenge.starts_on <= day <= challenge.ends_on):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=DAY_OUTSIDE_WINDOW.format(
+                day=day.isoformat(),
+                starts_on=challenge.starts_on.isoformat(),
+                ends_on=challenge.ends_on.isoformat(),
+            ),
+        )
+
+    today = today_local()
+    await challenge_crud.materialize(db, challenge, today=today)
+    await challenge_crud.set_manual_verdict(
+        db, challenge, day, verdict=payload.verdict, note=payload.note
+    )
+    days = await challenge_crud.load_days(db, challenge.id)
+    challenge_crud.apply_outcome(challenge, days, today=today, by_hand=True)
+    counts = challenge_crud.counts_of(challenge, days, today=today)
+    await db.commit()
+    return ChallengeDetailResponse(
+        **_response(challenge, counts).model_dump(),
+        days=[ChallengeDayResponse.model_validate(row) for row in days],
+    )
 
 
 @router.post("/{challenge_id}/recompute", response_model=ChallengeResponse)

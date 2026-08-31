@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/127
-# summary: the vocabulary of a challenge (four rule kinds, three verdicts, two sources) and `verdict_for_day` — the pure answer to «этот день сделан», where a day nobody recorded is a miss rather than «нет данных»
+# [review:need-review] PHASE-03/127, PHASE-03/128
+# summary: the vocabulary of a challenge (four rule kinds, three verdicts, two sources), `verdict_for_day` — the pure answer to «этот день сделан», where a day nobody recorded is a miss rather than «нет данных» — and `outcome_for`, which turns the miss days into `active`/`won`/`failed` and names the day the budget ran out
 """
 Правило челленджа и вердикт одного его дня.
 
@@ -23,12 +23,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
 from app.crud.streak import is_relapse_value
 from app.crud.values import is_true_value, parse_number
+from app.models.challenge import (
+    FAILURE_BUDGET,
+    STATUS_ACTIVE,
+    STATUS_FAILED,
+    STATUS_WON,
+)
 from app.models.field import FieldType
 
 # Что именно обещано. Составные правила («и вода, и зал») вынесены из скоупа
@@ -151,3 +159,51 @@ def _is_satisfied(
     if rule.kind == RULE_METRIC_AT_MOST:
         return total <= rule.target
     return False
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """Чем челлендж кончился — и в какой день это стало правдой."""
+
+    status: str
+    failed_on: date | None
+
+
+def outcome_for(
+    miss_days: Sequence[date],
+    *,
+    failure_mode: str,
+    allowed_misses: int,
+    ends_on: date,
+    today: date,
+) -> Outcome:
+    """
+    Статус обязательства по его промахам.
+
+    `any_miss` заваливает первый промах, `budget` — `allowed_misses + 1`-й.
+    Второй режим существует не ради мягкости: «месяц без единого пропуска»
+    человек ставит один раз и заваливает на пятый день, после чего челлендж
+    превращается в мёртвую строку. Бюджет делает обязательство переживаемым.
+
+    `won` ставится, когда последний день окна закрыт и бюджет не исчерпан.
+    Незакрытое окно с уложившимся бюджетом — это `active`: обязательство ещё
+    можно завалить.
+    """
+    allowed = allowed_misses if failure_mode == FAILURE_BUDGET else 0
+    ordered = sorted(miss_days)
+    if len(ordered) > allowed:
+        return Outcome(status=STATUS_FAILED, failed_on=ordered[allowed])
+    if today > ends_on:
+        return Outcome(status=STATUS_WON, failed_on=None)
+    return Outcome(status=STATUS_ACTIVE, failed_on=None)
+
+
+def misses_left(failure_mode: str, allowed_misses: int, misses_used: int) -> int:
+    """
+    Сколько промахов ещё переживёт обязательство.
+
+    Ноль в режиме `any_miss` — не «нисколько не осталось», а «бюджета не было»:
+    карточка печатает «промахов K из 0», и это честно.
+    """
+    allowed = allowed_misses if failure_mode == FAILURE_BUDGET else 0
+    return max(allowed - misses_used, 0)

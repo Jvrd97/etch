@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/127
-# summary: wire types of a challenge — a window the schema refuses to accept backwards or longer than 92 days, a threshold that must be present for `metric_*` and absent for the other two, and a read model that carries the count («день N из M, промахов K») rather than making the card derive it
+# [review:need-review] PHASE-03/127, PHASE-03/128
+# summary: wire types of a challenge — a window the schema refuses to accept backwards or longer than 92 days, a threshold that must be present for `metric_*` and absent for the other two, and a read model that carries the count («день N из M, промахов K из N») rather than making the card derive it, and the manual verdict — which may be `done` or `miss` but never `pending`, because a person putting a day down by hand has decided about it
 """
 Проволочные типы обязательства.
 
@@ -106,6 +106,29 @@ class ChallengePatch(BaseModel):
     ends_on: date | None = None
     failure_mode: FailureMode | None = None
     allowed_misses: int | None = Field(None, ge=0, le=MAX_CHALLENGE_DAYS)
+    status: Literal["abandoned"] | None = Field(
+        None,
+        description=(
+            "Единственный статус, который ставится руками: брошенный челлендж "
+            "уходит с Today и остаётся в списке. `won` и `failed` вычисляются "
+            "из промахов и присланными не принимаются"
+        ),
+    )
+
+
+class ChallengeDayIn(BaseModel):
+    """
+    Вердикт, который человек ставит на день сам.
+
+    `pending` здесь нет намеренно: «ещё не решено» — это состояние, в которое
+    день попадает сам, пока идут сутки, а не то, что можно объявить. Человек,
+    открывший день руками, про него уже решил.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["done", "miss"]
+    note: str | None = Field(None, max_length=1000)
 
 
 class ChallengeDayResponse(BaseModel):
@@ -152,6 +175,13 @@ class ChallengeResponse(BaseModel):
     )
     done_count: int
     misses_used: int
+    misses_left: int = Field(
+        ...,
+        description=(
+            "Сколько промахов ещё переживёт обязательство; 0 в режиме any_miss, "
+            "где бюджета не было вовсе"
+        ),
+    )
     today_verdict: DayVerdict | None = Field(
         None, description="Состояние сегодняшнего дня; null, если он вне окна"
     )

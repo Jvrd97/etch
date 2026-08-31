@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/127
-// summary: pure label helpers of a challenge card — «день N из M, промахов K», the state of today's day, and the plural forms Russian needs for both counts
+// [review:need-review] PHASE-03/127, PHASE-03/128
+// summary: pure label helpers of a challenge card — «день N из M», «промахов K из N», the state of today's day and of the challenge itself, and the plural forms Russian needs for both counts
 
 import type { Challenge, ChallengeDayVerdict } from '@/lib/api';
 
@@ -27,10 +27,38 @@ export function formatProgress(challenge: Challenge): string {
   return `день ${challenge.day_number} из ${challenge.total_days}`;
 }
 
-/** «промахов 0» — счёт провалов, всегда видимый, а не только когда он ненулевой. */
+/**
+ * «промахов 1 из 2» — израсходованный бюджет, а не голое число дней.
+ *
+ * В режиме `any_miss` бюджета не было, и знаменатель равен нулю. Это честнее
+ * отдельной формулировки: «из 0» ровно и значит «ни одного не прощается».
+ */
 export function formatMisses(challenge: Challenge): string {
+  const allowed = challenge.failure_mode === 'budget' ? challenge.allowed_misses : 0;
   const word = plural(challenge.misses_used, 'промах', 'промаха', 'промахов');
-  return `${word} ${challenge.misses_used}`;
+  return `${word} ${challenge.misses_used} из ${allowed}`;
+}
+
+/** Чем обязательство кончилось — и кончилось ли. */
+export function formatStatus(challenge: Challenge): string {
+  if (challenge.status === 'won') return 'выигран';
+  if (challenge.status === 'abandoned') return 'брошен';
+  if (challenge.status === 'failed') {
+    return challenge.failed_on ? `завален ${challenge.failed_on}` : 'завален';
+  }
+  return 'идёт';
+}
+
+/**
+ * Можно ли засчитать этот день руками прямо с карточки.
+ *
+ * Только у идущего обязательства и только когда сегодняшний день ещё не
+ * засчитан: кнопка «засчитать» на уже засчитанном дне ничего не меняет и
+ * только предлагает нажать зря.
+ */
+export function canCountToday(challenge: Challenge): boolean {
+  if (challenge.status === 'won' || challenge.status === 'abandoned') return false;
+  return challenge.today_verdict === 'pending' || challenge.today_verdict === 'miss';
 }
 
 /** Что происходит с сегодняшним днём обязательства. */
@@ -44,9 +72,12 @@ export function formatToday(verdict: ChallengeDayVerdict | null): string {
 /**
  * Показывать ли обязательство на Today.
  *
- * Только идущее и только внутри окна: завершённое остаётся в списке как факт,
- * но экран сегодняшнего дня — про то, что делается сегодня.
+ * Выигранное и брошенное уходят: они остаются в общем списке как факт, а экран
+ * сегодняшнего дня — про то, что делается сегодня.
  */
 export function isOnToday(challenge: Challenge): boolean {
-  return challenge.status === 'active' && challenge.today_verdict !== null;
+  if (challenge.status === 'abandoned' || challenge.status === 'won') return false;
+  // Заваленный остаётся на Today: его ещё можно вернуть засчитанным днём, и
+  // спрятать его значило бы спрятать единственную кнопку, которая это делает.
+  return challenge.today_verdict !== null;
 }

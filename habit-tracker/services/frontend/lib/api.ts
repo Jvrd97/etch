@@ -1412,6 +1412,8 @@ export interface Challenge {
   day_number: number;
   done_count: number;
   misses_used: number;
+  /** How many misses the obligation still survives; 0 under `any_miss`. */
+  misses_left: number;
   /** null when today is outside the window. */
   today_verdict: ChallengeDayVerdict | null;
   created_at: string;
@@ -1439,6 +1441,17 @@ export interface ChallengePatch {
   ends_on?: string;
   failure_mode?: ChallengeFailureMode;
   allowed_misses?: number;
+  /**
+   * The only status a person sets. `won` and `failed` are derived from the
+   * misses, and the server refuses them here.
+   */
+  status?: 'abandoned';
+}
+
+/** A verdict put on a day by hand. `pending` is deliberately not offerable. */
+export interface ChallengeDayDraft {
+  verdict: 'done' | 'miss';
+  note?: string;
 }
 
 /**
@@ -1474,5 +1487,18 @@ export const challengesAPI = {
 
   recompute: async (id: number) => {
     return fetcher<Challenge>(`/challenges/${id}/recompute`, { method: 'POST' });
+  },
+
+  /**
+   * Count a day, or refuse it, by hand.
+   *
+   * A recompute never overwrites this afterwards, and the status is recomputed
+   * from it — which is the only way a failed challenge comes back to active.
+   */
+  setDayVerdict: async (id: number, day: string, draft: ChallengeDayDraft) => {
+    return fetcher<ChallengeDetail>(`/challenges/${id}/days/${day}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
   },
 };

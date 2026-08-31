@@ -1,12 +1,18 @@
 'use client';
-// [review:need-review] PHASE-03/127
-// summary: the Today block of obligations — the cards of the ones running now plus the create form, in one component so that the desktop and the mobile shell mount the same behaviour and differ only in the page around it
+// [review:need-review] PHASE-03/127, PHASE-03/128
+// summary: the Today block of obligations — the cards of the ones running now, the failure mode and budget chosen at creation, and the button that counts today by hand; one component so both shells mount the same behaviour
 
 import { useState } from 'react';
 import ChallengeCard from '@/components/ChallengeCard';
 import { useChallenges } from '@/hooks/useChallenges';
 import { isOnToday } from '@/lib/challenges';
-import type { Category, ChallengeRuleKind } from '@/lib/api';
+import type {
+  Category,
+  Challenge,
+  ChallengeFailureMode,
+  ChallengeRuleKind,
+} from '@/lib/api';
+import { todayISO } from '@/lib/date';
 
 interface ChallengesSectionProps {
   /** Categories already loaded by the Today screen; the rule points into one. */
@@ -24,6 +30,18 @@ const RULE_LABELS: { value: ChallengeRuleKind; label: string; needsTarget: boole
 /** Default window: a week, because that is the promise people actually keep. */
 const DEFAULT_WINDOW_DAYS = 6;
 
+/**
+ * Как обязательство заканчивается.
+ *
+ * Бюджет промахов стоит рядом с «первый промах заваливает» не ради мягкости:
+ * «месяц без единого пропуска» ставится один раз и заваливается на пятый день,
+ * после чего челлендж превращается в мёртвую строку.
+ */
+const FAILURE_LABELS: { value: ChallengeFailureMode; label: string }[] = [
+  { value: 'any_miss', label: 'первый промах заваливает' },
+  { value: 'budget', label: 'бюджет промахов' },
+];
+
 function isoDaysFromToday(offset: number): string {
   const day = new Date();
   day.setDate(day.getDate() + offset);
@@ -37,13 +55,15 @@ function isoDaysFromToday(offset: number): string {
  * но сегодняшний экран — про то, что делается сегодня.
  */
 export default function ChallengesSection({ categories }: ChallengesSectionProps) {
-  const { challenges, loading, error, create } = useChallenges();
+  const { challenges, loading, error, create, countToday, counting } = useChallenges();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [fieldId, setFieldId] = useState<number | null>(null);
   const [ruleKind, setRuleKind] = useState<ChallengeRuleKind>('metric_at_least');
   const [target, setTarget] = useState('');
+  const [failureMode, setFailureMode] = useState<ChallengeFailureMode>('any_miss');
+  const [allowedMisses, setAllowedMisses] = useState('0');
   const [startsOn, setStartsOn] = useState(isoDaysFromToday(0));
   const [endsOn, setEndsOn] = useState(isoDaysFromToday(DEFAULT_WINDOW_DAYS));
   const [saving, setSaving] = useState(false);
@@ -70,6 +90,11 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
         target: needsTarget ? target : undefined,
         starts_on: startsOn,
         ends_on: endsOn,
+        failure_mode: failureMode,
+        // `any_miss` бюджета не имеет, и сервер отказывает ненулевому: два
+        // способа сказать «первый промах заваливает» — это один способ и одна
+        // ошибка.
+        allowed_misses: failureMode === 'budget' ? Number(allowedMisses) : 0,
       });
       setOpen(false);
       setTitle('');
@@ -99,7 +124,12 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
       {error && <p className="text-sm text-rose-500">{error}</p>}
 
       {running.map((challenge) => (
-        <ChallengeCard key={challenge.id} challenge={challenge} />
+        <ChallengeCard
+          key={challenge.id}
+          challenge={challenge}
+          onCountToday={(item: Challenge) => void countToday(item.id, todayISO())}
+          counting={counting.has(challenge.id)}
+        />
       ))}
 
       {open && (
@@ -158,6 +188,32 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
               </option>
             ))}
           </select>
+
+          <select
+            aria-label="Режим провала"
+            className="w-full bg-transparent border-b border-white/10 py-1"
+            value={failureMode}
+            onChange={(event) =>
+              setFailureMode(event.target.value as ChallengeFailureMode)
+            }
+          >
+            {FAILURE_LABELS.map((mode) => (
+              <option key={mode.value} value={mode.value}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+
+          {failureMode === 'budget' && (
+            <input
+              aria-label="Бюджет промахов"
+              className="w-full bg-transparent border-b border-white/10 py-1"
+              value={allowedMisses}
+              onChange={(event) => setAllowedMisses(event.target.value)}
+              inputMode="numeric"
+              required
+            />
+          )}
 
           {needsTarget && (
             <input
