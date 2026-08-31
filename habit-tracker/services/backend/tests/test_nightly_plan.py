@@ -254,7 +254,7 @@ async def test_the_badge_is_cleared_by_the_first_mark(
 
 def test_the_job_is_registered_in_the_one_scheduler() -> None:
     """
-    Задание стоит в реестре `#108`, а не в crontab на VPS.
+    Задание стоит в реестре `#108`, а не в расписании хоста на VPS.
 
     Реестр — единственный список того, что крутится в фоне; задание, которого в
     нём нет, не попадёт ни в лог расписания, ни в `deploy/README.md`.
