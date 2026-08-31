@@ -53,7 +53,7 @@ jobs:
       - name: Lint
         run: bun run lint
       - name: Unit tests
-        run: bun test lib/
+        run: bun test
       - name: Typecheck and build
         run: bun run build
 

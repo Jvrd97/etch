@@ -94,6 +94,27 @@ export default function ChatPage() {
   const [plans, setPlans] = useState<Record<number, ChatPlan>>({});
   const bottom = useRef<HTMLDivElement | null>(null);
 
+  /**
+   * Подтянуть планы ленты.
+   *
+   * План читается отдельным запросом, а не приезжает вместе с сообщением:
+   * `chat_plans` — это то, чем можно доказать, что применено ровно показанное, и
+   * читать его надо из его собственной строки.
+   */
+  const loadPlans = useCallback(async (feed: ChatMessage[], cancelled = false) => {
+    const ids = feed
+      .map((message) => message.plan_id)
+      .filter((id): id is number => id != null);
+    if (ids.length === 0) return;
+    const loaded = await Promise.all(ids.map((id) => chatAPI.getPlan(id)));
+    if (cancelled) return;
+    setPlans((current) => {
+      const next = { ...current };
+      for (const plan of loaded) next[plan.id] = plan;
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -119,7 +140,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloads]);
+  }, [reloads, loadPlans]);
 
   const remove = useCallback(async (conversationId: number) => {
     setRemoval('deleting');
@@ -144,27 +165,6 @@ export default function ChatPage() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, turn]);
-
-  /**
-   * Подтянуть планы ленты.
-   *
-   * План читается отдельным запросом, а не приезжает вместе с сообщением:
-   * `chat_plans` — это то, чем можно доказать, что применено ровно показанное, и
-   * читать его надо из его собственной строки.
-   */
-  const loadPlans = useCallback(async (feed: ChatMessage[], cancelled = false) => {
-    const ids = feed
-      .map((message) => message.plan_id)
-      .filter((id): id is number => id != null);
-    if (ids.length === 0) return;
-    const loaded = await Promise.all(ids.map((id) => chatAPI.getPlan(id)));
-    if (cancelled) return;
-    setPlans((current) => {
-      const next = { ...current };
-      for (const plan of loaded) next[plan.id] = plan;
-      return next;
-    });
-  }, []);
 
   const applyPlan = useCallback(
     async (planId: number, selection: ChatPlanSelection) => {
