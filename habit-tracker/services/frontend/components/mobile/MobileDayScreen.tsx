@@ -6,7 +6,9 @@
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
+import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
+import ProfileProposal from '@/components/day/ProfileProposal';
 import DayNotebook from '@/components/day/DayNotebook';
 import DayReportPreview from '@/components/day/DayReportPreview';
 import { usePlanDiff } from '@/hooks/usePlanDiff';
@@ -212,7 +214,11 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
         </>
       )}
 
+      {/* Предложение поднять потолок (#179) — та же карточка, компактно. */}
+      <ProfileProposal onSettled={reload} compact />
       <DayMapCard map={detail.day_map} compact />
+      {/* «Где прошёл день» (#160) — тот же блок, компактной вёрсткой. */}
+      <DayIntervals date={detail.day.date} compact />
       <WorkIntervals
         work={intervals.work}
         saving={intervals.saving}

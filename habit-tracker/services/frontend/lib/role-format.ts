@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-03/134
-// summary: pure labels for the role screen — the act vocabulary in Russian, the target share always printed with the word «гипотеза», the day's roles read as «архитектор — 1 акт» or as «актов роли сегодня нет», and the mark that says a record was typed by a person
+// [review:need-review] PHASE-03/134, PHASE-03/135
+// summary: pure labels for the role screen — the act vocabulary in Russian, the target share always printed with the word «гипотеза», the day's roles read as «архитектор — 1 акт» or as «актов роли сегодня нет», the mark that says a record was typed by a person, the mark that says one was computed by the markup with the rule and application behind it, and the share of the day nothing could be attributed to
 
-import type { RoleAct, RoleDay, RoleDaySlice } from '@/lib/api';
+import type { RoleAct, RoleDay, RoleDaySlice, RoleTimeBlock } from '@/lib/api';
 import { countable } from '@/lib/plural';
 
 /**
@@ -22,6 +22,18 @@ export const NO_MINUTES_TEXT = 'Минут за день пока не запи�
 
 /** Mark on a record a person typed, as opposed to one an importer computed. */
 export const MANUAL_MARK = 'вручную';
+
+/** Mark on a record the markup of `#135` computed from measured activity. */
+export const AUTOMATIC_MARK = 'автоматически';
+
+/** Label of the button that freezes an automatic record against the next run. */
+export const CONFIRM_LABEL = 'подтвердить';
+
+/** Mark on a record a person has confirmed; the markup no longer touches it. */
+export const CONFIRMED_MARK = 'подтверждено';
+
+/** The code of the role work that could not be attributed is charged to. */
+export const UNASSIGNED_CODE = 'unassigned';
 
 /** Shown when the day cannot be read at all. */
 export const LOAD_ROLES_ERROR = 'Не удалось загрузить роли';
@@ -84,6 +96,36 @@ export function actsSummary(day: RoleDay): string {
   return withActs
     .map((slice) => `${slice.title} — ${actsCount(slice.act_count)}`)
     .join(', ');
+}
+
+/**
+ * Why an automatic record says what it says, or null when it is not automatic.
+ *
+ * The rule and the application, both of them, because they answer different
+ * halves of «почему эти два часа — тимлид»: the rule is the decision, the
+ * application is what it was applied to. A record whose rule has since been
+ * deleted still names its application, which is more than nothing.
+ */
+export function markupSource(block: RoleTimeBlock): string | null {
+  if (!block.is_automatic) return null;
+  const parts = [block.app_name, block.rule_summary].filter(
+    (part): part is string => Boolean(part)
+  );
+  if (parts.length === 0) return AUTOMATIC_MARK;
+  return `${AUTOMATIC_MARK}: ${parts.join(' · ')}`;
+}
+
+/**
+ * The share of the day nothing could be attributed to, as a line, or null.
+ *
+ * A number rather than a silence. «Не удалось отнести» is a fact worth seeing —
+ * it is the number that says the rules need another line — and a screen that
+ * showed only the three roles that matched would hide exactly that.
+ */
+export function unassignedLine(day: RoleDay): string | null {
+  const slice = day.roles.find((row) => row.role_code === UNASSIGNED_CODE);
+  if (!slice || slice.minutes === 0) return null;
+  return `не отнесено: ${slice.share_pct}%`;
 }
 
 /** One act as the line the screen prints. */

@@ -1,6 +1,6 @@
-# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/137, PHASE-03/142
+# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/137, PHASE-03/142, PHASE-03/179
 # summary: PHASE-03/137 adds the role clause — a workday closes at least one act of a role other than tech lead — and turns the verdict into a derivation over an explicit list of clauses, so a verdict that disagrees with its own clauses has no path to exist
-# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero; since #142 the order of the reasons and the composition of the anchors come from the rule row (`verdict_rule`, `anchors`) instead of from constants
+# summary: the verdict of a day as one pure function — `evaluate_day(rule, facts)` with the reasons ordered not_closed → overtime → anchors → tasks, `skipped` out of both denominators and `work_minutes IS NULL` read as "не измерено" rather than as zero; since #142 the order of the reasons and the composition of the anchors come from the rule row (`verdict_rule`, `anchors`) instead of from constants; #179 lets the ceiling of the day come from the profile in force on its date, while the reason stays the same `overtime`
 """
 Whether a day was won, decided without a database.
 
@@ -399,21 +399,29 @@ def _hours(minutes: int) -> str:
     return f"{minutes // MINUTES_PER_HOUR} ч {minutes % MINUTES_PER_HOUR} мин"
 
 
-def _overtime_clause(rule: DayRuleSet, facts: DayFacts) -> Clause:
-    """Переработка: сравнение с обычным потолком канона, а не с исключением."""
+def _overtime_clause(
+    rule: DayRuleSet, facts: DayFacts, work_cap_min: int | None = None
+) -> Clause:
+    """
+    Переработка: сравнение с обычным потолком, а не с исключением.
+
+    Потолок берётся у профиля, действовавшего на этой дате (`#179`), а строка
+    правила отвечает, когда профиль ничего не сказал: день, прожитый до
+    профилей, или день, который не накрыла ни одна активация. Жёсткий потолок
+    (`work_hard_cap_min`) здесь по-прежнему ни при чём — это исключение, за
+    которым день имеет право потянуться, а не линия, по которой его судят.
+    """
     if facts.work_minutes is None:
         return Clause(REASON_OVERTIME, True, "работа не измерена")
     if not rule.overtime_disqualifies:
         return Clause(
             REASON_OVERTIME, True, f"{_hours(facts.work_minutes)}, потолок не судит"
         )
-    passed = facts.work_minutes <= rule.work_cap_min
+    cap = work_cap_min if work_cap_min is not None else rule.work_cap_min
     return Clause(
         code=REASON_OVERTIME,
-        passed=passed,
-        detail=(
-            f"{_hours(facts.work_minutes)} при потолке {_hours(rule.work_cap_min)}"
-        ),
+        passed=facts.work_minutes <= cap,
+        detail=f"{_hours(facts.work_minutes)} при потолке {_hours(cap)}",
     )
 
 
@@ -435,7 +443,9 @@ def _tasks_clause(rule: DayRuleSet, done: int, total: int) -> Clause:
     )
 
 
-def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
+def evaluate_day(
+    rule: DayRuleSet, facts: DayFacts, *, work_cap_min: int | None = None
+) -> Verdict:
     """
     Judge one day against the canon it was lived under.
 
@@ -469,7 +479,7 @@ def evaluate_day(rule: DayRuleSet, facts: DayFacts) -> Verdict:
         missing_data += (MISSING_ANCHOR_KINDS,)
 
     built = {
-        REASON_OVERTIME: lambda: _overtime_clause(rule, facts),
+        REASON_OVERTIME: lambda: _overtime_clause(rule, facts, work_cap_min),
         REASON_ANCHORS: lambda: _anchors_clause(
             anchors_done, anchors_total, missing_anchor_kinds
         ),

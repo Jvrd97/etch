@@ -1880,3 +1880,146 @@ Feedback loops (backend): pytest **1277 passed, 2 skipped**, `ruff check app tes
 pass**, `bunx tsc --noEmit` clean. `make check` целиком не отрабатывал: docker не поднимается.
 Тесты шли против постгреса на localhost:5432 в отдельной базе `habit_test_f3` — общая
 `habit_tracker_test` в этот день делилась между четырьмя дорожками.
+
+---
+
+## 2026-08-31 — PHASE-03/140, план как источник ролей
+
+**Схема (new)**: `alembic/versions/2026_09_02_1200-d0c2e4a6b8f1_plan_item_role_act.py` —
+`plan_item.act_kind`, `plan_item.role_id`, `plan_section.role_id`, обе ссылки на `role`
+с `ON DELETE SET NULL` и частичными индексами. `down_revision = f7c9e1a3b5d8` — фактическая
+голова ветки на момент реализации. Проверено на живой базе `habit_mig_f4`:
+upgrade → downgrade (три колонки и обе ссылки исчезают) → upgrade.
+
+**Сервис (new)**: `app/roles/precedence.py` — чистая арифметика отрезков (`merge`,
+`subtract`, `minutes_of`) и ранг источника, выведенный из `ROLE_TIME_SOURCES`;
+`app/roles/plan_source.py` — акт из отметки, минуты из секций, вытеснение слабых
+источников. **mod**: `app/models/plan.py`, `app/schemas/plan.py`, `app/schemas/role.py`,
+`app/crud/plan.py`, `app/api/day.py`, `app/api/roles.py`.
+
+**Тесты (new)**: `tests/test_plan_role_acts.py` (19), `tests/test_role_precedence.py` (19).
+
+Что стоит назвать вслух: разметка минут пересчитывается на записи плана, а не на отметке.
+Секция говорит, как день был разложен, — а это она сделала независимо от того, каждая ли
+строка получила галочку; галочку меряют акт и вердикт `#90`. Второе: `apply_precedence`
+спрашивает окна плановой записи у самого плана, а не у её `started_at`/`ended_at` — это
+края секции, и секция с двухчасовой дырой посреди иначе вытеснила бы час агента,
+которого никто не планировал.
+
+Feedback loops (backend): pytest **1228 passed, 2 skipped**, `ruff check app tests` clean,
+`ruff format --check app tests` clean, `mypy --strict app` clean (156 файлов),
+`alembic heads` — одна голова `d0c2e4a6b8f1`. `make check` целиком не отрабатывал: docker
+не поднимается; тесты шли против постгреса на localhost:5432, база `habit_test_f4`.
+
+## 2026-08-31 — PHASE-03/135, интервалы агента становятся минутами ролей
+
+**Схема (new)**: `alembic/versions/2026_09_02_1300-e1d3f5a7c9b0_phase03_mac_agent_tables.py` —
+семь таблиц темы macOS-агента одной ревизией, как предписывают ADR-0019 и `#155`:
+`tracked_app`, `title_rule`, `activity_interval`, `mode_schedule`, `day_mode`,
+`agent_heartbeat`, `claude_session`, с сидами расписания режимов, правил заголовков и
+каталога приложений. `down_revision = d0c2e4a6b8f1`. Схемный слой `#155` взят сюда потому,
+что `#135`, `#158` и `#160` все на нём стоят, а в ветке его не было; заявка объявлена на
+доске роя до реализации. Проверено на чистой базе `habit_mig_f4b`: upgrade → downgrade
+(ни одной из семи таблиц нет) → upgrade, сиды на месте.
+
+**Модель/сервис (new)**: `app/models/activity.py`, `app/crud/activity.py`,
+`app/roles/classify.py`, `app/schemas/activity.py`, `app/api/agent.py`.
+**mod**: `app/models/__init__.py`, `app/main.py` (роутер `agent`), `app/api/roles.py`
+(`POST /roles/classify`, объяснение автоматической записи), `app/schemas/role.py`,
+`app/crud/activity.py`, `app/roles/plan_source.py` (запасной вариант окон плановой записи).
+
+**Тесты (new)**: `tests/test_role_classify.py` (21).
+
+Что стоит назвать вслух. Первое: `day_intervals` выбирает интервалы **по пересечению** с
+окном дня, а не по началу — сессия 03:30-04:30 иначе отдавала бы вторую половину никому.
+Второе: приём пачки размечает все дни, которых интервал коснулся (`classify.touched_days`),
+а не один день его начала. Третье: `external_ref` автоматической записи — `"<id интервала>:
+<дата>"`, потому что разрезанный по границе интервал пишет две строки, а ключ
+`(source, external_ref)` уникален.
+
+Feedback loops (backend): pytest **1249 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `e1d3f5a7c9b0`. `make check` целиком не отрабатывал: docker; тесты шли против
+постгреса на localhost:5432, база `habit_test_f4`.
+
+## 2026-08-31 — PHASE-03/158, экран правил заголовков и рубильник
+
+**Схема (new)**: `alembic/versions/2026_09_02_1400-f2e4a6c8b0d1_agent_setting.py` — одна
+строка настроек агента (`titles_enabled`, `sampling_seconds`), CHECK `id = 1`, сид в теле
+ревизии. `agent_heartbeat.titles_enabled` на роль рубильника не годится: агент
+перезаписывал бы его на каждом ударе сердца. `down_revision = e1d3f5a7c9b0`; upgrade →
+downgrade → upgrade проверен на `habit_mig_f4b`.
+
+**mod**: `app/models/activity.py` (`AgentSetting`), `app/crud/activity.py` (CRUD правил с
+`re.compile` при сохранении, перестановка целым списком, счётчик срабатываний за 7 дней,
+`seed_settings`), `app/schemas/activity.py`, `app/api/agent.py` (семь ручек).
+**Тесты (new)**: `tests/test_agent_title_rules.py` (15).
+
+Что стоит назвать вслух. Первое: рубильник действует **и на сервере** —
+`upsert_intervals` снимает заголовок, когда `titles_enabled=false`, потому что агент это
+клиент, а клиенту нельзя доверять единственную проверку того, что заголовков не будет.
+Второе: счётчик срабатываний считается переприменением правил к сохранённым интервалам —
+правила работают на маке, и интервал не несёт записи о том, какое из них сработало. У этого
+есть честный предел: `title_regex` с действием `drop` стёр заголовок до записи и по нему не
+считается; правила по `bundle_id` и `bundle_prefix` — а это почти вся политика — считаются
+точно.
+
+Feedback loops (backend): pytest **1264 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `f2e4a6c8b0d1`. `make check` целиком не отрабатывал: docker.
+
+## 2026-08-31 — PHASE-03/160, правка постфактум и подсчёт объединением
+
+**Схема (new)**: `alembic/versions/2026_09_02_1500-a3c5e7b9d1f4_activity_interval_idempotency.py`
+— `activity_interval.idempotency_key` с частичным уникальным индексом. Естественный ключ
+ручную запись не ловит (`app_id IS NULL`, NULL в уникальном ключе различны), и это
+правильно: два дела в одно окно времени — два дела. Ключ отличает повтор от второй записи.
+`down_revision = f2e4a6c8b0d1`; upgrade → downgrade → upgrade проверен.
+
+**mod**: `app/models/activity.py`, `app/crud/activity.py` (`patch_interval`,
+`create_manual_interval`, `task_time_seconds` через `range_agg`),
+`app/schemas/activity.py`, `app/api/agent.py` (`PATCH /agent/activity/{id}`,
+`POST /agent/activity/manual`, свёртка по задачам в ответе дня).
+**Тесты (new)**: `tests/test_agent_manual_intervals.py` (14).
+
+Что стоит назвать вслух. Первое: время по задаче считает Postgres —
+`range_agg(tstzrange(started_at, ended_at))` с суммированием длин. `SUM(duration_seconds)`
+на тех же данных даёт правдоподобное и завышенное число, и тест на пересекающихся записях
+(3 ч объединением против 5 ч суммой) ловит подмену, а не чтение кода. Второе: правка границ
+пересчитывает минуты ролей за задетые дни — иначе `/roles` продолжал бы показывать два часа
+там, где человек написал полтора. Третье: `source` при правке остаётся прежним, факт правки
+записывается в `is_corrected`/`corrected_at`.
+
+Feedback loops (backend): pytest **1278 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `a3c5e7b9d1f4`. `make check` целиком не отрабатывал: docker.
+
+## 2026-08-31 — PHASE-03/179, потолок работы дышит
+
+**Схема (new)**: `alembic/versions/2026_09_02_1600-b4d6f8a0c2e5_day_rule_profiles.py` —
+`day_rule_profile` (три именованных набора, ровно один по умолчанию частичным уникальным
+индексом), `day_rule_activation` (какой профиль на какие даты, почему и подтверждён ли),
+`overtime_debt` (долг за день сверх базового потолка). Сиды профилей в теле ревизии.
+`down_revision = a3c5e7b9d1f4`; upgrade → downgrade → upgrade проверен.
+
+**Сервис (new)**: `app/models/day_profile.py`, `app/day/profiles.py` (чистые
+`resolve_profile`/`propose_profile`), `app/day/debt.py` (чистые `accrue`/`repay`/
+`week_is_won`), `app/crud/day_profile.py`, `app/schemas/day_profile.py`,
+`app/api/day_profiles.py`.
+**mod**: `app/day/evaluate.py` (потолок дня приходит аргументом), `app/crud/summary.py`
+(вердикт считается профилем даты, закрытие дня начисляет и гасит долг),
+`app/crud/week.py` + `app/schemas/week.py` (`debt_minutes`, `is_won`),
+`app/api/day.py` (`profile` в ответе дня), `app/main.py`.
+**Тесты (new)**: `tests/test_day_profiles.py` (19), `tests/test_overtime_debt.py` (18).
+
+Что стоит назвать вслух. Первое: `#179` **аддитивен** — на базе без профилей
+`resolve_profile` отдаёт `None`, и день судится потолком своей строки правила ровно как до
+тикета. Фича, которую не настроили, не должна менять вердикты. Второе: роутер профилей
+зарегистрирован **раньше** `day.router`: `/day/debt` и `/day/{date}` для FastAPI одной формы,
+и выигрывает объявленный первым. Третье: долг считается от базового потолка, а не от
+поднятого; тест `test_the_debt_is_counted_from_the_baseline_and_not_from_the_raise`
+сравнивает оба числа прямо.
+
+Feedback loops (backend): pytest **1315 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (167 файлов), `alembic heads` — одна
+голова `b4d6f8a0c2e5`. `make check` целиком не отрабатывал: docker.

@@ -6,7 +6,9 @@
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
+import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
+import ProfileProposal from '@/components/day/ProfileProposal';
 import DayNotebook from '@/components/day/DayNotebook';
 import DayReportPreview from '@/components/day/DayReportPreview';
 import { usePlanDiff } from '@/hooks/usePlanDiff';
@@ -28,6 +30,7 @@ import {
   violationsByItem,
 } from '@/lib/plan-violations';
 import { useDay } from '@/hooks/useDay';
+import { useRoleDirectory } from '@/hooks/useRoleDirectory';
 import { useDayMarks } from '@/hooks/useDayMarks';
 import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
@@ -78,6 +81,9 @@ export interface DayScreenProps {
 export default function DayScreen({ date }: DayScreenProps) {
   // `true`: a person is looking at this day, which is what fills `opened_at`.
   const { detail, loading, error, violations, reload } = useDay(date, true);
+  // Справочник ролей: два необязательных поля в редакторе пункта и подпись
+  // «что закроет эта галочка» на строке (#140). Не приехал — план тот же.
+  const roles = useRoleDirectory();
   const marks = useMemo(() => detail?.marks ?? NO_MARKS, [detail]);
   const brokenByItem = useMemo(() => violationsByItem(violations), [violations]);
   // Violations that name no line: a health anchor that is not in the plan, a
@@ -200,6 +206,7 @@ export default function DayScreen({ date }: DayScreenProps) {
             overlapping={overlappingItemIds(plan.overlaps)}
             violations={brokenByItem}
             proposals={proposals}
+            roles={roles}
             marking={{
               marks: marking.marks,
               saving: marking.saving,
@@ -221,7 +228,11 @@ export default function DayScreen({ date }: DayScreenProps) {
         </>
       )}
 
+      {/* Предложение поднять потолок (#179). Появляется редко и не само. */}
+      <ProfileProposal onSettled={reload} />
       <DayMapCard map={detail.day_map} />
+      {/* «Где прошёл день» (#160): лента, приложения, задачи и работа вне плана. */}
+      <DayIntervals date={detail.day.date} />
       <WorkIntervals
         work={intervals.work}
         saving={intervals.saving}

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/138, PHASE-03/139
+# [review:need-review] PHASE-03/134, PHASE-03/135, PHASE-03/138, PHASE-03/139, PHASE-03/140
 # summary: the roles endpoints — directory and rules CRUD, minutes and acts written/corrected/deleted by hand, and GET /roles/day[/{date}] returning the distribution of the day's minutes together with its acts; a request naming an unknown role or asking for zero minutes comes back 422 (the second because the table refused it, not because a check here did)
 """
 HTTP surface of the roles.
@@ -19,8 +19,10 @@ importer is refused by the same authority as a row inserted by the form.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date as date_type
 from datetime import timedelta
 
@@ -31,20 +33,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import today_local
+from app.crud import activity as activity_crud
+from app.crud import plan as plan_crud
 from app.crud import role as role_crud
-from app.roles import classify
 from app.roles.report import render_summary_md
+from app.roles import rules_editor
 from app.models.role import (
+    SOURCE_APP_USAGE,
     SOURCE_MANUAL,
     Role,
     RoleAct,
     RoleRule,
     RoleTimeBlock,
 )
+from app.roles import classify
 from app.schemas.role import (
     RoleActIn,
     RoleActPatch,
     RoleActResponse,
+    RoleClassifyDay,
+    RoleClassifyIn,
+    RoleClassifyResponse,
     RoleCreate,
     RoleDayResponse,
     RoleDaySlice,
@@ -101,8 +110,30 @@ def _rule_dto(rule: RoleRule, codes: dict[int, str]) -> RoleRuleResponse:
     )
 
 
-def _block_dto(block: RoleTimeBlock, codes: dict[int, str]) -> RoleTimeBlockResponse:
+def _rule_summary(rule: RoleRule | None) -> str | None:
+    """
+    The rule that produced a row, in one line a person can argue with.
+
+    `bundle_id = com.microsoft.VSCode` rather than `rule 7`: the whole reason
+    `#135` stores `rule_id` is that markup nobody can question is markup nobody
+    can correct, and an id alone is not a question anybody can ask.
+    """
+    if rule is None:
+        return None
+    return f"{rule.matcher_kind} = {rule.pattern}"
+
+
+def _block_dto(
+    block: RoleTimeBlock,
+    codes: dict[int, str],
+    rules: dict[int, RoleRule] | None = None,
+    apps: dict[str, str] | None = None,
+) -> RoleTimeBlockResponse:
+    rule = (rules or {}).get(block.rule_id) if block.rule_id is not None else None
     return RoleTimeBlockResponse(
+        is_automatic=block.source == SOURCE_APP_USAGE,
+        rule_summary=_rule_summary(rule),
+        app_name=(apps or {}).get(block.external_ref or ""),
         id=block.id,
         work_day=block.work_day,
         role_id=block.role_id,
@@ -121,8 +152,22 @@ def _block_dto(block: RoleTimeBlock, codes: dict[int, str]) -> RoleTimeBlockResp
     )
 
 
-def _act_dto(act: RoleAct, codes: dict[int, str]) -> RoleActResponse:
+def _act_dto(
+    act: RoleAct,
+    codes: dict[int, str],
+    plan_lines: dict[str, PlanLine] | None = None,
+) -> RoleActResponse:
+    """
+    One act on the wire, with the line of the plan it came from when it has one.
+
+    The line is resolved rather than stored beside the act: `external_ref`
+    already names it, and a copy of the text would be the copy that goes stale
+    the first time the wording of the task is corrected.
+    """
+    line = (plan_lines or {}).get(act.external_ref or "")
     return RoleActResponse(
+        plan_item_id=line.item_id if line else None,
+        plan_item_text=line.text if line else None,
         id=act.id,
         work_day=act.work_day,
         role_id=act.role_id,
@@ -136,6 +181,50 @@ def _act_dto(act: RoleAct, codes: dict[int, str]) -> RoleActResponse:
         note=act.note,
         is_manual=act.source == SOURCE_MANUAL,
     )
+
+
+async def _measured_apps(db: AsyncSession, work_day: date_type) -> dict[str, str]:
+    """
+    The application behind each automatic row, by the `external_ref` it carries.
+
+    `#135` writes `external_ref` as `"<interval id>:<work day>"`, so the row is
+    traced back to the interval it was measured from and from there to the
+    catalogue. Resolved rather than stored beside the block: a display name a
+    person renames must not leave two answers behind.
+    """
+    intervals = await activity_crud.day_intervals(db, work_day)
+    names = await activity_crud.app_names(db)
+    return {
+        f"{interval.id}:{work_day.isoformat()}": names[interval.app_id]
+        for interval in intervals
+        if interval.app_id is not None and interval.app_id in names
+    }
+
+
+@dataclass(frozen=True)
+class PlanLine:
+    """One line of the plan an act can be opened up to."""
+
+    item_id: uuid.UUID
+    text: str
+
+
+async def _plan_lines(db: AsyncSession, work_day: date_type) -> dict[str, PlanLine]:
+    """
+    Every line of the day's plan by the `external_ref` an act would name it with.
+
+    Keyed by the string form because that is what the column holds: an act
+    written by `#140` carries `str(plan_item.id)` and nothing else has to be
+    parsed to find its line.
+    """
+    plan = await plan_crud.get_plan(db, work_day)
+    if plan is None:
+        return {}
+    return {
+        str(item.id): PlanLine(item_id=item.id, text=item.text_plain)
+        for section in plan.sections
+        for item in section.items
+    }
 
 
 async def _role_codes(db: AsyncSession) -> dict[int, str]:
@@ -322,7 +411,7 @@ async def dry_run_rule(
     role = await _role_or_422(db, body.role_code)
     date_to = today_local()
     date_from = date_to - timedelta(days=body.days_back - 1)
-    outcome = await classify.dry_run(
+    outcome = await rules_editor.dry_run(
         db,
         role_id=role.id,
         source=body.source,
@@ -373,7 +462,7 @@ async def reclassify_period(
             detail="date_to is earlier than date_from",
         )
     async with _written(db):
-        outcome = await classify.reclassify(
+        outcome = await rules_editor.reclassify(
             db, date_from=body.date_from, date_to=body.date_to
         )
     return RoleReclassifyResponse(
@@ -575,6 +664,11 @@ async def _day(db: AsyncSession, work_day: date_type) -> RoleDayResponse:
     codes = {role.id: role.code for role in roles}
     blocks = await role_crud.day_time_blocks(db, work_day)
     acts = await role_crud.day_acts(db, work_day)
+    plan_lines = await _plan_lines(db, work_day)
+    rules = {
+        rule.id: rule for rule in await role_crud.list_rules(db, active_only=False)
+    }
+    apps = await _measured_apps(db, work_day)
 
     minutes: dict[int, int] = {role.id: 0 for role in roles}
     for block in blocks:
@@ -601,8 +695,8 @@ async def _day(db: AsyncSession, work_day: date_type) -> RoleDayResponse:
             )
             for role in roles
         ],
-        blocks=[_block_dto(block, codes) for block in blocks],
-        acts=[_act_dto(act, codes) for act in acts],
+        blocks=[_block_dto(block, codes, rules, apps) for block in blocks],
+        acts=[_act_dto(act, codes, plan_lines) for act in acts],
     )
 
 
@@ -701,3 +795,43 @@ async def get_day(
 ) -> RoleDayResponse:
     """Распределение минут и акты конкретного дня."""
     return await _day(db, work_day)
+
+
+@router.post("/roles/classify", response_model=RoleClassifyResponse)
+async def post_classify(
+    body: RoleClassifyIn, db: AsyncSession = Depends(get_db)
+) -> RoleClassifyResponse:
+    """
+    Разметить активность за диапазон дат заново.
+
+    Ручной прогон нужен ровно для одного случая — правило поправили, и неделю
+    надо пересчитать. Обычный путь другой: разметка идёт сама на приёме пачки
+    интервалов (`POST /agent/activity`), чтобы экран ролей не ждал кнопки.
+
+    Прогон **переписывает** день, а не дополняет его: строки идемпотентны по
+    `(source, external_ref)`, а то, что человек подтвердил, разметка не трогает
+    вовсе — и это видно числом `kept_confirmed` в ответе.
+    """
+    if body.date_to < body.date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_to раньше date_from",
+        )
+    results = await classify.classify_range(db, body.date_from, body.date_to)
+    await db.commit()
+    return RoleClassifyResponse(
+        days=[
+            RoleClassifyDay(
+                work_day=result.work_day,
+                mode=result.mode,
+                intervals=result.intervals,
+                blocks_written=result.blocks_written,
+                kept_confirmed=result.kept_confirmed,
+                minutes=result.minutes,
+                unassigned_minutes=result.unassigned_minutes,
+                skipped_off_mode=result.skipped_off_mode,
+                skipped_short=result.skipped_short,
+            )
+            for result in results
+        ]
+    )

@@ -34,6 +34,8 @@ function item(overrides: Partial<PlanItem> = {}): PlanItem {
     extra: {},
     quarter_goal_id: null,
     unlinked_reason: null,
+    role_id: null,
+    act_kind: null,
     carried_from_item_id: null,
     carry_count: 0,
     children: [],
@@ -42,7 +44,15 @@ function item(overrides: Partial<PlanItem> = {}): PlanItem {
 }
 
 function section(overrides: Partial<PlanSection> = {}): PlanSection {
-  return { id: 's1', ord: 0, title: null, kind: 'work', items: [], ...overrides };
+  return {
+    id: 's1',
+    ord: 0,
+    title: null,
+    kind: 'work',
+    role_id: null,
+    items: [],
+    ...overrides,
+  };
 }
 
 function plan(sections: PlanSection[]): Plan {

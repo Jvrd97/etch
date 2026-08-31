@@ -3,6 +3,7 @@
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
 
 import Link from 'next/link';
+import OvertimeDebtBlock from '@/components/week/OvertimeDebt';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
@@ -83,6 +84,9 @@ export default function WeekScreen({ iso, compact = false, today = new Date() }:
           <dd className="text-text-primary">{week.computed_at.slice(0, 16).replace('T', ' ')}</dd>
         </div>
       </dl>
+
+      {/* Долг за переработку (#179): неделя не выиграна, пока он не вернулся. */}
+      <OvertimeDebtBlock week={week} compact={compact} />
 
       <section aria-label="Дни недели" className="grid grid-cols-7 gap-2">
         {WEEKDAY_SHORT.map((name, index) => {

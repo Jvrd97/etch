@@ -17,6 +17,7 @@ const DAY: DayDetail = {
     opened_at: null,
     last_touched_at: null,
   },
+  profile: null,
   rule: {
     id: 2,
     valid_from: '2026-08-17',
@@ -149,6 +150,7 @@ const PLAN: Plan = {
       ord: 0,
       title: 'Воскресный блок',
       kind: 'personal',
+      role_id: null,
       items: [
         {
           id: 'i1',
@@ -169,6 +171,8 @@ const PLAN: Plan = {
           extra: {},
           quarter_goal_id: null,
           unlinked_reason: null,
+          role_id: null,
+          act_kind: null,
           carried_from_item_id: null,
           carry_count: 0,
           children: [],

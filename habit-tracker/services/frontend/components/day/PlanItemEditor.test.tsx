@@ -46,7 +46,14 @@ function item(overrides: Partial<PlanItem> = {}): PlanItem {
 }
 
 function section(items: PlanItem[]): PlanSection {
-  return { id: 'section-1', ord: 0, title: 'Работа', kind: 'work', items };
+  return {
+    id: 'section-1',
+    ord: 0,
+    title: 'Работа',
+    kind: 'work',
+    role_id: null,
+    items,
+  };
 }
 
 function editorFor(line: PlanItem, props: Record<string, unknown> = {}) {

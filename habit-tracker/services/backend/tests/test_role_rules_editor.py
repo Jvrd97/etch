@@ -35,7 +35,7 @@ from app.models.role import (
     RoleAct,
     RoleTimeBlock,
 )
-from app.roles import classify
+from app.roles import rules_editor
 
 RULES_URL = "/api/v1/role-rules"
 DRY_RUN_URL = f"{RULES_URL}/dry-run"
@@ -528,7 +528,7 @@ class TestTheServiceLayer:
         await add_block(db_session, TODAY, ROLE_CODE_UNASSIGNED, "feat(api): ручка")
         before = await row_counts(db_session)
 
-        await classify.dry_run(
+        await rules_editor.dry_run(
             db_session,
             role_id=await role_id(db_session, ROLE_CODE_TECHLEAD),
             source=SOURCE_GIT,

@@ -13,6 +13,7 @@ const DAY: DayDetail = {
     opened_at: null,
     last_touched_at: null,
   },
+  profile: null,
   rule: {
     id: 2,
     valid_from: '2026-08-17',
@@ -131,6 +132,43 @@ let openDay: ReturnType<typeof mock>;
 // the first time anything links against it and shares that registry across the
 // run, so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // Профили потолка и долг за переработку (#179): экран дня читает предложение,
+  // экран недели — гроссбух. Заглушка стоит в каждом моке api, потому что bun
+  // фиксирует имена экспортов модуля при первой линковке.
+  profilesAPI: {
+    proposal: () => Promise.resolve(null),
+    activate: () => Promise.resolve(null),
+    decline: () => Promise.resolve(null),
+    debt: () => Promise.resolve({ open_minutes: 0, debts: [] }),
+  },
+  // Активность агента (#158, #160): экран дня читает её ради блока «где прошёл
+  // день», а bun фиксирует имена экспортов модуля при первой линковке — мок,
+  // забывший экспорт, удаляет его для всех, кто линкуется следом.
+  agentAPI: {
+    day: () => Promise.resolve(null),
+    patchInterval: () => Promise.resolve(null),
+    addManualInterval: () => Promise.resolve(null),
+    titleRules: () => Promise.resolve([]),
+    addTitleRule: () => Promise.resolve([]),
+    patchTitleRule: () => Promise.resolve([]),
+    deleteTitleRule: () => Promise.resolve([]),
+    reorderTitleRules: () => Promise.resolve([]),
+    settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+  },
+  // Справочник ролей (#140): экран дня читает его ради двух необязательных
+  // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
+  // что и остальная поверхность: bun фиксирует имена экспортов модуля при
+  // первой линковке, и мок, забывший экспорт, удаляет его для всех, кто
+  // линкуется следом.
+  rolesAPI: {
+    listRoles: () => Promise.resolve([]),
+    day: () => Promise.resolve(null),
+    addTimeBlock: () => Promise.resolve(null),
+    deleteTimeBlock: () => Promise.resolve({}),
+    addAct: () => Promise.resolve(null),
+    deleteAct: () => Promise.resolve({}),
+  },
   // Правила дня (#152). Есть в каждом моке api по той же причине, что и
   // остальная поверхность: bun фиксирует имена экспортов модуля при первой
   // линковке, и мок, забывший экспорт, удаляет его для всех, кто линкуется следом.

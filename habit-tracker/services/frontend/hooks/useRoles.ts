@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/134
-// summary: role-screen state for both shells — one read of the day (distribution of minutes plus its acts), and two writes that re-read it, because a new record changes every share on the screen and not only its own row
+// [review:need-review] PHASE-03/134, PHASE-03/135
+// summary: role-screen state for both shells — one read of the day (distribution of minutes plus its acts), and two writes that re-read it, because a new record changes every share on the screen and not only its own row; #135 adds the confirm of an automatic record, which is a write like any other and re-reads the day the same way
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -25,6 +25,8 @@ export interface UseRolesResult {
   addTimeBlock: (draft: RoleTimeBlockDraft) => Promise<void>;
   addAct: (draft: RoleActDraft) => Promise<void>;
   deleteTimeBlock: (id: number) => Promise<void>;
+  /** Подтвердить автоматическую запись: разметка её больше не трогает. */
+  confirmTimeBlock: (id: number) => Promise<void>;
 }
 
 /**
@@ -107,5 +109,20 @@ export function useRoles(): UseRolesResult {
     [write]
   );
 
-  return { day, roles, loading, saving, error, addTimeBlock, addAct, deleteTimeBlock };
+  const confirmTimeBlock = useCallback(
+    (id: number) => write(() => rolesAPI.confirmTimeBlock(id)),
+    [write]
+  );
+
+  return {
+    day,
+    roles,
+    loading,
+    saving,
+    error,
+    addTimeBlock,
+    addAct,
+    deleteTimeBlock,
+    confirmTimeBlock,
+  };
 }

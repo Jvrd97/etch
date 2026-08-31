@@ -1517,3 +1517,91 @@ Feedback loops (frontend): `bun test` — **1089 pass, 0 fail** (97 файлов
   `components/mobile/MobileDayScreen.tsx`, `lib/api.ts` — **mod**.
 
 Feedback loops (frontend): `bun test` **1094 passed / 0 failed**, `bunx tsc --noEmit` clean.
+
+---
+
+## 2026-08-31 — PHASE-03/140, роль и вид акта в плане
+
+**new**: `lib/plan-roles.ts` (чистые подписи и два словаря для селектов),
+`hooks/useRoleDirectory.ts` (одно чтение справочника без своего экрана загрузки),
+`components/day/PlanItemRole.test.tsx` (12).
+**mod**: `lib/api.ts` (`PlanItem.role_id`/`act_kind`, `PlanSection.role_id`,
+`RoleAct.plan_item_id`/`plan_item_text`), `components/day/PlanItemEditor.tsx`,
+`components/day/PlanSections.tsx`, `components/DayScreen.tsx`,
+`components/roles/RolesScreen.tsx`.
+
+Механически тронуты 29 тест-файлов: bun фиксирует набор экспортов `@/lib/api` при первой
+линковке, и мок без `rolesAPI` удалял его у сьюты, что загрузилась позже. Заглушка
+`rolesAPI` теперь стоит в каждой подмене модуля.
+
+Feedback loops (frontend): `bun test` **1078 pass, 0 fail** (96 файлов),
+`bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/135, автоматическая запись объясняет себя
+
+**new**: `components/roles/RoleMarkup.test.tsx` (9).
+**mod**: `lib/api.ts` (`RoleTimeBlock.is_automatic`/`rule_summary`/`app_name`,
+`rolesAPI.confirmTimeBlock`, `rolesAPI.classify`), `lib/role-format.ts`
+(`markupSource`, `unassignedLine`, четыре подписи), `hooks/useRoles.ts`
+(`confirmTimeBlock`), `components/roles/RolesScreen.tsx`.
+
+Автоматическая запись помечена, называет приложение и правило прямо на строке (не в
+подсказке при наведении) и даёт кнопку «подтвердить»; доля «не отнесено» печатается числом
+в шапке.
+
+Feedback loops (frontend): `bun test` **1087 pass, 0 fail** (97 файлов),
+`bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/158, веб-экран правил заголовков
+
+**new**: `app/agent/title-rules/page.tsx`, `components/agent/TitleRuleList.tsx`,
+`components/agent/TitleRuleList.test.tsx` (10), `hooks/useTitleRules.ts`,
+`lib/title-rules.ts`.
+**mod**: `lib/api.ts` (`agentAPI`, `TitleRule`, `AgentSettings`).
+
+Порядок правил рисуется первым и переставляется стрелками — выигрывает первое совпавшее,
+поэтому порядок это смысл, а не оформление; перестановка едет целым списком id, чтобы
+политика не побывала в промежуточном состоянии с `keep` над `drop`. Предупреждение
+рубильника («уже уехавшее не удаляется») стоит на самом рубильнике, а не рядом.
+
+Feedback loops (frontend): `bun test` **1097 pass, 0 fail** (98 файлов),
+`bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/160, блок «где прошёл день»
+
+**new**: `components/agent/DayIntervals.tsx`, `components/agent/IntervalEditor.tsx`,
+`components/agent/DayIntervals.test.tsx` (7), `lib/interval-rollup.ts` +
+`lib/interval-rollup.test.ts` (11), `hooks/useDayActivity.ts`.
+**mod**: `lib/api.ts` (типы активности и три ручки в `agentAPI`),
+`components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`.
+
+Три среза одного дня: лента, приложения, задачи. Число по задаче берётся у сервера целиком —
+это объединение диапазонов, и сложение нарисованных строк в браузере дало бы второе, большее
+число рядом с тем же списком. Скрытый заголовок подписан «заголовок скрыт правилом» со
+ссылкой на экран правил (`#158`), а не пустой ячейкой.
+
+Механически тронуты 29 тест-файлов: заглушка `agentAPI` дописана в каждую подмену
+`mock.module('@/lib/api')`.
+
+Feedback loops (frontend): `bun test` **1115 pass, 0 fail** (100 файлов),
+`bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/179, карточка предложения и блок долга
+
+**new**: `components/day/ProfileProposal.tsx`, `components/week/OvertimeDebt.tsx`,
+`components/day/ProfileProposal.test.tsx` (10), `hooks/useProfileProposal.ts`,
+`lib/day-profiles.ts`.
+**mod**: `lib/api.ts` (`ProfileInForce`, `ProfileProposal`, `DebtLedger`, `profilesAPI`,
+`DayDetail.profile`, `Week.debt_minutes`/`is_won`), `components/DayScreen.tsx`,
+`components/mobile/MobileDayScreen.tsx`, `components/week/WeekScreen.tsx`.
+
+Цена подъёма напечатана на самой карточке, а не за ней: человек, соглашающийся согнуть
+правило, обязан прочесть цену в том же взгляде. Строка профиля на дне появляется только
+когда подъём действует — подпись «обычный потолок» каждый день никто бы не читал, и
+однажды не заметил бы другую. Долг старше недели рисуется как проваленное правило.
+
+Механически тронуты 29 тест-файлов: заглушка `profilesAPI` дописана в каждую подмену
+`mock.module('@/lib/api')`.
+
+Feedback loops (frontend): `bun test` **1125 pass, 0 fail** (101 файл),
+`bunx tsc --noEmit` clean.

@@ -1212,6 +1212,9 @@ export interface PlanItem {
   extra: Record<string, unknown>;
   quarter_goal_id: number | null;
   unlinked_reason: string | null;
+  /** Роль и вид акта, который закрывает галочка «сделано» на этом пункте (#140). */
+  role_id: number | null;
+  act_kind: string | null;
   carried_from_item_id: string | null;
   carry_count: number;
   children: PlanItem[];
@@ -1237,6 +1240,8 @@ export interface PlanItemPatch {
   plan_md?: string | null;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
 }
 
 /** A new line for a section. Position is not sent: it lands at the end. */
@@ -1251,6 +1256,8 @@ export interface PlanItemDraft {
   done_criterion?: string | null;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
 }
 
 /** Where a line goes: which section, under which parent, in which place. */
@@ -1293,6 +1300,8 @@ export interface PlanSection {
   ord: number;
   title: string | null;
   kind: string;
+  /** Роль, которой засчитываются минуты окон этой секции (#140). */
+  role_id: number | null;
   items: PlanItem[];
 }
 
@@ -1421,12 +1430,15 @@ export interface PlanItemDraft {
   extra?: Record<string, unknown>;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
   children?: PlanItemDraft[];
 }
 
 export interface PlanSectionDraft {
   title?: string | null;
   kind?: string;
+  role_id?: number | null;
   items?: PlanItemDraft[];
 }
 
@@ -1577,9 +1589,69 @@ export interface DayCloseDraft {
 }
 
 /** One day, the rule it is judged by, and its plan when there is one. */
+/** Профиль потолка, которым судится день, и дата, после которой подъём кончится. */
+export interface ProfileInForce {
+  code: string;
+  title: string;
+  work_cap_min: number;
+  /** null у обычного дня: базовый профиль — это не «до какого-то числа». */
+  valid_to: string | null;
+  reason: string;
+}
+
+/** Предложение поднять потолок. Всегда с причиной или его нет вовсе. */
+export interface ProfileProposal {
+  profile_code: string;
+  title: string;
+  work_cap_min: number;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  source_signal_id: string;
+}
+
+/** Подтверждение человеком — единственное, что двигает потолок. */
+export interface ActivationDraft {
+  profile_code: string;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  source_signal_id?: string | null;
+}
+
+export interface Activation {
+  id: number;
+  profile_code: string;
+  valid_from: string;
+  valid_to: string;
+  reason: string;
+  confirmed_at: string | null;
+  declined_at: string | null;
+  source_signal_id: string | null;
+  is_in_force: boolean;
+}
+
+/** Долг за переработку одного дня. */
+export interface OvertimeDebt {
+  incurred_on: string;
+  minutes_over: number;
+  repaid_on: string | null;
+  repaid_by_day: string | null;
+  is_open: boolean;
+  /** Больше семи — проваленное правило, а не справка. */
+  days_open: number;
+}
+
+export interface DebtLedger {
+  open_minutes: number;
+  debts: OvertimeDebt[];
+}
+
 export interface DayDetail {
   day: Day;
   rule: DayRuleSet;
+  /** Профиль потолка этого дня; null на базе, где профили не заведены (#179). */
+  profile: ProfileInForce | null;
   /** The map of the day drawn by the same rule row. */
   day_map: DayMap;
   plan: Plan | null;
@@ -1813,6 +1885,12 @@ export interface RoleTimeBlock {
   rule_id: number | null;
   note: string | null;
   is_manual: boolean;
+  /** Запись, посчитанная разметкой активности (#135). */
+  is_automatic: boolean;
+  /** Правило, создавшее запись, одной строкой: «bundle_id = com.microsoft.VSCode». */
+  rule_summary: string | null;
+  /** Приложение, из которого запись посчитана. */
+  app_name: string | null;
 }
 
 /** One act: the role happened, and this is what it was. */
@@ -1829,6 +1907,9 @@ export interface RoleAct {
   occurred_at: string | null;
   note: string | null;
   is_manual: boolean;
+  /** Пункт плана, галочка на котором закрыла акт; только у source='plan' (#140). */
+  plan_item_id: string | null;
+  plan_item_text: string | null;
 }
 
 /** Where a day went and which roles happened on it, in one answer. */
@@ -1971,9 +2052,43 @@ export interface RoleActDraft {
  * from 04:00 and only `app/core/daytime.py` answers that question, so the
  * browser never dates a screen from its own calendar.
  */
+/** Что разметка сделала с одним днём. */
+export interface RoleClassifyDay {
+  work_day: string;
+  mode: string;
+  intervals: number;
+  blocks_written: number;
+  kept_confirmed: number;
+  minutes: number;
+  unassigned_minutes: number;
+  skipped_off_mode: number;
+  skipped_short: number;
+}
+
 export const rolesAPI = {
   day: async (date?: string) => {
     return fetcher<RoleDay>(date ? `/roles/day/${date}` : '/roles/day');
+  },
+
+  /**
+   * Подтвердить автоматическую запись: с этого момента разметка её не трогает.
+   *
+   * Единственный способ сказать «посчитано верно» — и он же единственный, после
+   * которого повторный прогон не переписывает строку.
+   */
+  confirmTimeBlock: async (id: number) => {
+    return fetcher<RoleTimeBlock>(`/role-time-blocks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ confidence: 'confirmed' }),
+    });
+  },
+
+  /** Переразметить диапазон дат — «поправил правило, пересчитай неделю». */
+  classify: async (date_from: string, date_to: string) => {
+    return fetcher<{ days: RoleClassifyDay[] }>('/roles/classify', {
+      method: 'POST',
+      body: JSON.stringify({ date_from, date_to }),
+    });
   },
 
   listRoles: async () => {
@@ -2052,6 +2167,207 @@ export const rolesAPI = {
     return fetcher<RoleReclassified>('/roles/reclassify', {
       method: 'POST',
       body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+    });
+  },
+};
+
+/** One line of the window-title privacy policy, with what it actually did. */
+export interface TitleRule {
+  id: number;
+  ord: number;
+  match_kind: 'bundle_id' | 'bundle_prefix' | 'title_regex';
+  pattern: string;
+  action: 'keep' | 'mask' | 'drop';
+  note: string | null;
+  is_active: boolean;
+  /** Сколько интервалов за 7 дней правило затрагивает; 0 — обычно опечатка. */
+  hits_7d: number;
+}
+
+/** A new line of the policy. Without `ord` it lands at the end — the weakest. */
+export interface TitleRuleDraft {
+  match_kind: TitleRule['match_kind'];
+  pattern: string;
+  action: TitleRule['action'];
+  note?: string | null;
+  is_active?: boolean;
+}
+
+/** Один интервал активности, как его отдаёт сервер. */
+export interface ActivityInterval {
+  id: number;
+  source: 'agent' | 'manual';
+  app_id: number | null;
+  bundle_id: string | null;
+  app_name: string | null;
+  plan_task_id: number | null;
+  clickup_task_id: string | null;
+  corrected_at: string | null;
+  started_at: string;
+  ended_at: string;
+  /** Считает Postgres от границ: разъехаться с ними не может. */
+  duration_seconds: number;
+  local_date: string;
+  title_source: 'full' | 'masked' | 'dropped';
+  idle_seconds: number;
+  switch_count: number;
+  is_corrected: boolean;
+  note: string | null;
+}
+
+/** Время по одному приложению за день. */
+export interface ActivityAppSlice {
+  app_id: number | null;
+  bundle_id: string | null;
+  app_name: string;
+  minutes: number;
+}
+
+/**
+ * Время по одной задаче — длина ОБЪЕДИНЕНИЯ диапазонов, а не сумма длительностей.
+ *
+ * Единственное число, которое можно называть «время по задаче»: пересечения
+ * ручной и автоматической записи разрешены сознательно, и сумма их удвоила бы.
+ */
+export interface ActivityTaskSlice {
+  plan_task_id: number | null;
+  clickup_task_id: string | null;
+  minutes: number;
+}
+
+/** Где прошёл день: лента, свёртка по приложениям, свёртка по задачам. */
+export interface ActivityDay {
+  work_day: string;
+  mode: string;
+  total_minutes: number;
+  apps: ActivityAppSlice[];
+  tasks: ActivityTaskSlice[];
+  untasked_minutes: number;
+  intervals: ActivityInterval[];
+}
+
+/** Правка одного интервала: едет только то, что человек поменял. */
+export interface ActivityIntervalPatch {
+  started_at?: string;
+  ended_at?: string;
+  plan_task_id?: number | null;
+  clickup_task_id?: string | null;
+  note?: string | null;
+}
+
+/** Запись руками. Приложения у неё нет и быть не может. */
+export interface ManualIntervalDraft {
+  started_at: string;
+  ended_at: string;
+  local_date: string;
+  plan_task_id?: number | null;
+  note?: string | null;
+}
+
+/** Рубильники агента: собирать ли заголовки и как часто опрашивать фокус. */
+export interface AgentSettings {
+  titles_enabled: boolean;
+  sampling_seconds: number;
+}
+
+/**
+ * Правила приватности заголовков и рубильник.
+ *
+ * Порядок правил — семантика, а не оформление: первое совпавшее выигрывает,
+ * поэтому перестановка едет целым списком id, а не по одному шагу.
+ */
+/**
+ * Профили потолка работы и долг за переработку.
+ *
+ * `proposal()` только показывает. Потолок двигает `activate()` — решение
+ * человека 2026-08-30: система предлагает, человек подтверждает.
+ */
+export const profilesAPI = {
+  proposal: async () => {
+    return fetcher<ProfileProposal | null>('/day/rules/proposal');
+  },
+
+  activate: async (draft: ActivationDraft) => {
+    return fetcher<Activation>('/day/rules/activations', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  decline: async (id: number) => {
+    return fetcher<Activation>(`/day/rules/activations/${id}`, { method: 'DELETE' });
+  },
+
+  debt: async () => {
+    return fetcher<DebtLedger>('/day/debt');
+  },
+};
+
+export const agentAPI = {
+  /** Где прошёл день — тремя срезами сразу, потому что порознь они врут. */
+  day: async (date: string) => {
+    return fetcher<ActivityDay>(`/agent/activity/${date}`);
+  },
+
+  /**
+   * Поправить интервал постфактум.
+   *
+   * `source` не отправляется и отправлен быть не может: интервал остаётся тем,
+   * что измерил агент, а факт правки ставит сервер в `is_corrected`.
+   */
+  patchInterval: async (id: number, patch: ActivityIntervalPatch) => {
+    return fetcher<ActivityInterval>(`/agent/activity/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Записать интервал руками. Ключ отличает повтор от второй записи. */
+  addManualInterval: async (draft: ManualIntervalDraft, idempotencyKey: string) => {
+    return fetcher<ActivityInterval>('/agent/activity/manual', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(draft),
+    });
+  },
+
+  titleRules: async () => {
+    return fetcher<TitleRule[]>('/agent/title-rules');
+  },
+
+  addTitleRule: async (draft: TitleRuleDraft) => {
+    return fetcher<TitleRule[]>('/agent/title-rules', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patchTitleRule: async (id: number, patch: Partial<TitleRuleDraft>) => {
+    return fetcher<TitleRule[]>(`/agent/title-rules/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  deleteTitleRule: async (id: number) => {
+    return fetcher<TitleRule[]>(`/agent/title-rules/${id}`, { method: 'DELETE' });
+  },
+
+  reorderTitleRules: async (order: number[]) => {
+    return fetcher<TitleRule[]>('/agent/title-rules/order', {
+      method: 'PUT',
+      body: JSON.stringify({ order }),
+    });
+  },
+
+  settings: async () => {
+    return fetcher<AgentSettings>('/agent/settings');
+  },
+
+  saveSettings: async (patch: Partial<AgentSettings>) => {
+    return fetcher<AgentSettings>('/agent/settings', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
     });
   },
 };
@@ -2499,6 +2815,10 @@ export interface Week {
   total_days: number;
   /** null when no day of the week was closed — not the same as a streak of 0. */
   streak_end: number | null;
+  /** Минуты переработки этой недели, которые ещё не вернулись (#179). */
+  debt_minutes: number;
+  /** Все дни выиграны, дни есть и долга нет. Гибкость покупается возвратом. */
+  is_won: boolean;
   retro_md: string;
   blockers_md: string;
   mgmt_retro_md: string;

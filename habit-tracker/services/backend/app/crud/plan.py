@@ -362,6 +362,7 @@ async def replace_plan(
             ord=section_index,
             title=section_in.title,
             kind=section_in.kind,
+            role_id=section_in.role_id,
         )
         db.add(section)
         for row in flat:
@@ -411,6 +412,8 @@ def _to_model(row: _PreparedItem, section_id: uuid.UUID) -> PlanItem:
         quarter_goal_id=source.quarter_goal_id,
         unlinked_reason=source.unlinked_reason,
         quick_mark_id=source.quick_mark_id,
+        role_id=source.role_id,
+        act_kind=source.act_kind,
         carried_from_item_id=source.carried_from_item_id,
         carry_count=source.carry_count,
         legacy_key=source.legacy_key,
@@ -492,6 +495,8 @@ def _item_response(item: PlanItem) -> PlanItemResponse:
         quarter_goal_id=item.quarter_goal_id,
         unlinked_reason=item.unlinked_reason,
         quick_mark_id=item.quick_mark_id,
+        role_id=item.role_id,
+        act_kind=item.act_kind,
         carried_from_item_id=item.carried_from_item_id,
         carry_count=item.carry_count,
         children=[],
@@ -531,6 +536,7 @@ async def to_response(db: AsyncSession, plan: DayPlan) -> PlanResponse:
             ord=section.ord,
             title=section.title,
             kind=section.kind,
+            role_id=section.role_id,
             items=_nest(list(section.items)),
         )
         for section in sorted(plan.sections, key=lambda row: row.ord)
@@ -625,6 +631,8 @@ PATCH_COLUMNS: tuple[str, ...] = (
     "quarter_goal_id",
     "unlinked_reason",
     "quick_mark_id",
+    "role_id",
+    "act_kind",
 )
 
 
@@ -884,6 +892,8 @@ async def add_item(
         quarter_goal_id=payload.quarter_goal_id,
         unlinked_reason=payload.unlinked_reason,
         quick_mark_id=payload.quick_mark_id,
+        role_id=payload.role_id,
+        act_kind=payload.act_kind,
         carry_count=0,
         edited_by=editor,
         updated_at=datetime.now(timezone.utc),
