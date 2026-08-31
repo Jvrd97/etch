@@ -7,7 +7,13 @@ import { MessagesSquare, SendHorizonal } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
-import { chatAPI, type ChatMessage } from '@/lib/api';
+import ChatPlanCard from '@/components/ChatPlanCard';
+import {
+  chatAPI,
+  type ChatMessage,
+  type ChatPlan,
+  type ChatPlanSelection,
+} from '@/lib/api';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { entryInputClass } from '@/lib/ui-constants';
 
@@ -64,6 +70,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [turn, setTurn] = useState<Turn>({ phase: 'idle' });
   const [draft, setDraft] = useState('');
+  // Планы лентой, по `plan_id` сообщения. Держатся отдельно от сообщений,
+  // потому что применение меняет план, а не реплику, под которой он висит.
+  const [plans, setPlans] = useState<Record<number, ChatPlan>>({});
   const bottom = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -78,6 +87,7 @@ export default function ChatPage() {
         if (cancelled) return;
         setMessages(detail.messages);
         setScreen({ status: 'ready', conversationId: conversation.id });
+        await loadPlans(detail.messages, cancelled);
       } catch (error) {
         if (!cancelled) setScreen({ status: 'failed', message: errorText(error) });
       }
@@ -90,6 +100,44 @@ export default function ChatPage() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, turn]);
+
+  /**
+   * Подтянуть планы ленты.
+   *
+   * План читается отдельным запросом, а не приезжает вместе с сообщением:
+   * `chat_plans` — это то, чем можно доказать, что применено ровно показанное, и
+   * читать его надо из его собственной строки.
+   */
+  const loadPlans = useCallback(async (feed: ChatMessage[], cancelled = false) => {
+    const ids = feed
+      .map((message) => message.plan_id)
+      .filter((id): id is number => id != null);
+    if (ids.length === 0) return;
+    const loaded = await Promise.all(ids.map((id) => chatAPI.getPlan(id)));
+    if (cancelled) return;
+    setPlans((current) => {
+      const next = { ...current };
+      for (const plan of loaded) next[plan.id] = plan;
+      return next;
+    });
+  }, []);
+
+  const applyPlan = useCallback(
+    async (planId: number, selection: ChatPlanSelection) => {
+      // Ключ идемпотентности рождается на клиенте и один на попытку: второй тап
+      // по той же плашке обязан быть повтором, а не вторым применением.
+      const key = `chat-plan-${planId}`;
+      const result = await chatAPI.applyPlan(planId, selection, key);
+      setPlans((current) => ({ ...current, [result.plan.id]: result.plan }));
+    },
+    [],
+  );
+
+  const dismissPlan = useCallback(async (planId: number) => {
+    await chatAPI.dismissPlan(planId);
+    const refreshed = await chatAPI.getPlan(planId);
+    setPlans((current) => ({ ...current, [refreshed.id]: refreshed }));
+  }, []);
 
   const send = useCallback(
     async (conversationId: number, question: string) => {
@@ -130,9 +178,12 @@ export default function ChatPage() {
       // и именно они переживут перезагрузку.
       const detail = await chatAPI.get(conversationId);
       setMessages(detail.messages);
+      // Ответ мог принести предложение: без этого плашка появилась бы только
+      // после перезагрузки страницы.
+      await loadPlans(detail.messages);
       setTurn({ phase: 'idle' });
     },
-    []
+    [loadPlans]
   );
 
   if (screen.status === 'loading') return <LoadingSpinner size="lg" />;
@@ -175,6 +226,13 @@ export default function ChatPage() {
               <span className="whitespace-pre-wrap">{message.content}</span>
             ) : (
               <Markdown content={message.content} />
+            )}
+            {message.plan_id != null && plans[message.plan_id] && (
+              <ChatPlanCard
+                plan={plans[message.plan_id]}
+                onApply={applyPlan}
+                onDismiss={dismissPlan}
+              />
             )}
           </Bubble>
         ))}

@@ -1290,6 +1290,79 @@ export interface ChatMessage {
   latency_ms: number | null;
   model: string | null;
   created_at: string;
+  /** The plan proposed in this message, if it proposed one. */
+  plan_id?: number | null;
+}
+
+/**
+ * What the chat may propose to write — and, more to the point, what it may not.
+ *
+ * There is no operation for unticking, deleting or renaming anything: the class
+ * of destructive writes is closed by the type, not by the prompt. A model that
+ * answers past its instructions still cannot say a word the shape does not have.
+ */
+export interface ChatPlanMetricOp {
+  op: 'log_metric';
+  category_id: number;
+  field_id: number;
+  value: number;
+  source_text: string;
+  uncertain?: boolean;
+  suspicious?: boolean;
+}
+
+/** A box to tick. There is deliberately no field able to carry a `false`. */
+export interface ChatPlanCheckOp {
+  op: 'check';
+  category_id: number;
+  field_id: number;
+  source_text: string;
+  uncertain?: boolean;
+}
+
+/** The day's text. `replace` is not among the modes the chat can name. */
+export interface ChatPlanJournalOp {
+  op: 'write_journal';
+  content: string;
+  title?: string | null;
+  mood?: string | null;
+  tags?: string | null;
+  mode: 'append' | 'create';
+}
+
+export interface ChatPlanBody {
+  entry_date: string;
+  metrics: ChatPlanMetricOp[];
+  checklist: ChatPlanCheckOp[];
+  journal: ChatPlanJournalOp | null;
+}
+
+export type ChatPlanStatus = 'proposed' | 'applied' | 'dismissed' | 'stale';
+
+export interface ChatPlan {
+  id: number;
+  message_id: number;
+  entry_date: string;
+  status: ChatPlanStatus;
+  plan: ChatPlanBody;
+  operation_count: number;
+  applied_summary_id: number | null;
+  applied_at: string | null;
+  created_at: string;
+}
+
+/** What the person left ticked when they pressed «применить». */
+export interface ChatPlanSelection {
+  metrics?: ChatPlanMetricOp[];
+  checklist?: ChatPlanCheckOp[];
+  journal?: ChatPlanJournalOp | null;
+}
+
+export interface ChatPlanApplyResult {
+  plan: ChatPlan;
+  entry_ids: number[];
+  journal_entry_id: number | null;
+  applied_operations: number;
 }
 
 /** A conversation read back with its messages — what a reload of `/chat` draws. */
@@ -1311,6 +1384,34 @@ export const chatAPI = {
 
   get: async (id: number) => {
     return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /** One plan, however many turns ago it was shown. */
+  getPlan: async (planId: number) => {
+    return fetcher<ChatPlan>(`/chat/plans/${planId}`);
+  },
+
+  /**
+   * Apply what is still ticked.
+   *
+   * The server narrows the selection to the plan it stored, so a row the card
+   * never showed cannot be smuggled in here. `Idempotency-Key` makes the second
+   * tap a 200 that writes nothing, exactly as on the day-review screen.
+   */
+  applyPlan: async (
+    planId: number,
+    selection: ChatPlanSelection,
+    idempotencyKey: string,
+  ) => {
+    return fetcher<ChatPlanApplyResult>(`/chat/plans/${planId}/apply`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(selection),
+    });
+  },
+
+  dismissPlan: async (planId: number) => {
+    return fetcher<void>(`/chat/plans/${planId}/dismiss`, { method: 'POST' });
   },
 
   /**
