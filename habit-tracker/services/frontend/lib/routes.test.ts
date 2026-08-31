@@ -132,8 +132,9 @@ describe('MOBILE_TABS', () => {
     expect(MOBILE_TABS.find((tab) => tab.name === 'Today')?.nested).toBe(false);
   });
 
-  it('points the Dashboard tab at the bare /m mobile twin, not the desktop root', () => {
-    expect(MOBILE_TABS.find((tab) => tab.name === 'Dashboard')?.href).toBe('/m');
+  it('points the Dashboard tab at its own mobile address, not at the bare /m', () => {
+    // `/m` — редирект на мобильный Today (#123); дашборд у себя на /m/dashboard.
+    expect(MOBILE_TABS.find((tab) => tab.name === 'Dashboard')?.href).toBe('/m/dashboard');
   });
 
   it('ends on the More screen', () => {
