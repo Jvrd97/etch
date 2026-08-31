@@ -4,12 +4,15 @@
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 // summary: PHASE-03/120 gives the wide screen the same live turn as the phone — the model's thought collapsed above the answer, a sign of life before the first word, a caret while it arrives, and a copy button on every message
+// summary: PHASE-03/111 puts the history of conversations beside the feed — the one named in `?conversation` is the one that opens, «Новый разговор» starts one and goes there, and the list is re-read after every turn because the title is written from the first question
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { MessagesSquare, RefreshCw, RotateCcw, SendHorizonal } from 'lucide-react';
 import ChatBubble from '@/components/chat/ChatBubble';
 import ChatContextDisclosure from '@/components/chat/ChatContextDisclosure';
 import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
+import ChatHistory from '@/components/chat/ChatHistory';
 import ThinkingBlock from '@/components/chat/ThinkingBlock';
 import { StreamingCaret, WaitingDots } from '@/components/chat/TurnLive';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -23,11 +26,23 @@ import {
   type ChatPlanSelection,
   type ChatUsage,
 } from '@/lib/api';
+import { CHAT_PATH, chatHrefFor, conversationIdFrom } from '@/lib/chat-nav';
 import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
+import { todayISO } from '@/lib/date';
+import { useChatHistory } from '@/hooks/useChatHistory';
 import { applyProgress, NO_PROGRESS, type TurnProgress } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { formatTokens, turnCost } from '@/lib/chat-usage';
 import { entryInputClass } from '@/lib/ui-constants';
+
+/**
+ * Две колонки на широком экране и одна на узком.
+ *
+ * История стоит первой в разметке, а не после ленты: порядок чтения с
+ * клавиатуры — тот же список, что и глазами, а на узком экране разговор
+ * начинается с ответа на вопрос «какой разговор открыт».
+ */
+const SHELL_CLASS = 'grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)] items-start';
 
 /** Расход разговора, у которого ещё не было ни одного хода. */
 const EMPTY_USAGE: ChatUsage = {
@@ -82,7 +97,19 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
 }
 
-export default function ChatPage() {
+/**
+ * Экран разговора вместе с историей всех остальных.
+ *
+ * Разговор назван адресом (`?conversation=<id>`), а не выбран состоянием: так
+ * на него можно дать ссылку, так работает «назад», и так «спросить про день»
+ * открывает именно тот разговор, который завело.
+ */
+function ChatScreen() {
+  const router = useRouter();
+  const pathname = usePathname();
+  // Разговор из ссылки. `null` — «свежий, а нет его — заведи».
+  const wanted = conversationIdFrom(useSearchParams());
+  const history = useChatHistory();
   const [screen, setScreen] = useState<Screen>({ status: 'loading' });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [usage, setUsage] = useState<ChatUsage>(EMPTY_USAGE);
@@ -94,6 +121,18 @@ export default function ChatPage() {
   // потому что применение меняет план, а не реплику, под которой он висит.
   const [plans, setPlans] = useState<Record<number, ChatPlan>>({});
   const bottom = useRef<HTMLDivElement | null>(null);
+  // Разговор, под который выставлено состояние экрана. Сравнение прямо в
+  // рендере — тот самый сброс состояния на смену входа, который React
+  // предлагает вместо эффекта: иначе переход на другой разговор оставил бы на
+  // экране ленту предыдущего до самого ответа сервера.
+  const [shown, setShown] = useState<number | null>(wanted);
+  if (shown !== wanted) {
+    setShown(wanted);
+    setScreen({ status: 'loading' });
+    setMessages([]);
+    setUsage(EMPTY_USAGE);
+    setTurn({ phase: 'idle' });
+  }
 
   /**
    * Подтянуть планы ленты.
@@ -120,17 +159,17 @@ export default function ChatPage() {
     let cancelled = false;
     (async () => {
       try {
-        // Одна лента на экран: берётся свежий разговор, а если его нет —
-        // заводится. Список разговоров — отдельный срез, не этот.
-        const feed = await chatAPI.list(1);
-        const conversation = feed[0] ?? (await chatAPI.create());
-        const detail = await chatAPI.get(conversation.id);
+        // Разговор, названный ссылкой, — если она его называет. Иначе
+        // свежий, а нет ни одного — заводится новый.
+        const id =
+          wanted ?? ((await chatAPI.list(1))[0] ?? (await chatAPI.create())).id;
+        const detail = await chatAPI.get(id);
         if (cancelled) return;
         setMessages(detail.messages);
         setUsage(detail.usage);
         setScreen({
           status: 'ready',
-          conversationId: conversation.id,
+          conversationId: id,
           resumeReady: detail.resume_ready,
         });
         await loadPlans(detail.messages, cancelled);
@@ -141,7 +180,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloads, loadPlans]);
+  }, [wanted, reloads, loadPlans]);
 
   const remove = useCallback(async (conversationId: number) => {
     setRemoval('deleting');
@@ -154,14 +193,23 @@ export default function ChatPage() {
     }
     // Экран не остаётся на разговоре, которого больше нет: тот же путь, что и
     // при первом заходе, — свежий разговор или новый, если ни одного не
-    // осталось.
+    // осталось. Адрес тоже перестаёт называть удалённый разговор, иначе
+    // «обновить страницу» открывало бы 404.
     setMessages([]);
     setUsage(EMPTY_USAGE);
     setTurn({ phase: 'idle' });
     setRemoval('idle');
     setScreen({ status: 'loading' });
     setReloads((count) => count + 1);
-  }, []);
+    history.reload();
+    router.replace(CHAT_PATH);
+  }, [history, router]);
+
+  /** Завести разговор и уйти в него: список без перехода — половина действия. */
+  const startConversation = useCallback(async () => {
+    const started = await history.start();
+    if (started !== null) router.push(chatHrefFor(pathname, started));
+  }, [history, pathname, router]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
@@ -239,26 +287,54 @@ export default function ChatPage() {
       // после перезагрузки страницы.
       await loadPlans(detail.messages);
       setTurn({ phase: 'idle' });
+      // Заголовок разговору пишет сервер по первой реплике человека, а время
+      // последней меняется каждым ходом: список без перечитывания врёт ровно
+      // про тот разговор, который сейчас ведут.
+      history.reload();
     },
-    [loadPlans]
+    [history, loadPlans]
   );
 
-  if (screen.status === 'loading') return <LoadingSpinner size="lg" />;
-  if (screen.status === 'failed') {
+  const busy = turn.phase === 'streaming';
+  const cached = lastCacheRead(messages);
+  // История стоит рядом всегда, в том числе пока лента читается: блок,
+  // исчезающий на время запроса, читается как перезагрузка страницы.
+  const aside = (
+    <ChatHistory
+      conversations={history.conversations}
+      activeId={screen.status === 'ready' ? screen.conversationId : null}
+      today={todayISO()}
+      hrefFor={(id) => chatHrefFor(pathname, id)}
+      onStart={() => void startConversation()}
+      starting={history.starting}
+      error={history.error}
+    />
+  );
+
+  if (screen.status !== 'ready') {
     return (
-      <ErrorAlert
-        message={screen.message}
-        onDismiss={() => setScreen({ status: 'loading' })}
-      />
+      <div className={SHELL_CLASS}>
+        {aside}
+        <div className="min-w-0">
+          {screen.status === 'loading' ? (
+            <LoadingSpinner size="lg" />
+          ) : (
+            <ErrorAlert
+              message={screen.message}
+              onDismiss={() => setScreen({ status: 'loading' })}
+            />
+          )}
+        </div>
+      </div>
     );
   }
 
-  const busy = turn.phase === 'streaming';
   const mode = resumeMode(screen.resumeReady);
-  const cached = lastCacheRead(messages);
 
   return (
-    <div className="space-y-6 animate-fade-rise">
+    <div className={SHELL_CLASS}>
+      {aside}
+      <div className="space-y-6 min-w-0 animate-fade-rise">
       <ChatHeader
         usage={usage}
         state={removal}
@@ -388,7 +464,18 @@ export default function ChatPage() {
         >
           <SendHorizonal className="w-4 h-4" strokeWidth={2} />
         </button>
-      </form>
+        </form>
+      </div>
     </div>
+  );
+}
+
+export default function ChatPage() {
+  // `useSearchParams` требует границы Suspense: без неё Next валит сборку всей
+  // страницы, а не только куска, который читает адрес.
+  return (
+    <Suspense fallback={<LoadingSpinner size="lg" />}>
+      <ChatScreen />
+    </Suspense>
   );
 }
