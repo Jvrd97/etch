@@ -127,6 +127,10 @@ let getCategories: ReturnType<typeof mock>;
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
 mock.module('@/lib/api', () => ({
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+  },
   // The chat client (#118). Present in every api mock for the same reason the
   // rest of the surface is: bun fixes a module's export names on first link, so
   // a mock that omits it deletes it for whoever runs next.

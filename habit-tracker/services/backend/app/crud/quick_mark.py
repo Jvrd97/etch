@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/121
+# [review:need-review] PHASE-03/121, PHASE-03/130
 # summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write
 """
 What a quick mark means and where its value lands.
@@ -39,10 +39,15 @@ from decimal import Decimal
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import uuid
+
 from app.core.daytime import local_date
 from app.crud import entry as entry_crud
+from app.crud import mark as mark_crud
 from app.crud.values import format_number, parse_number
 from app.models import Category, Entry, EntryValue, FieldType
+from app.models.mark import MARK_DONE
+from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.quick_mark import (
     KIND_CHECK,
     KIND_INCREMENT,
@@ -76,6 +81,10 @@ NUMERIC_FIELD_TYPES: tuple[FieldType, ...] = (FieldType.NUMBER, FieldType.DURATI
 # What one tap is worth when the button has no step and the caller named no
 # value — a cigarette, a glass, one of whatever is being counted.
 IMPLICIT_AMOUNT = 1.0
+
+# Чем помечается отметка плана, поставленная не рукой в плане, а тапом по
+# кнопке. `web` соврал бы: страницу дня никто не открывал.
+SOURCE_PLAN_PROPAGATION = "agent"
 
 
 @dataclass(frozen=True)
@@ -119,9 +128,54 @@ def _ordered() -> Select[tuple[QuickMark]]:
     return select(QuickMark).order_by(QuickMark.order, QuickMark.id)
 
 
+async def planned_marks(db: AsyncSession, on: date) -> dict[int, uuid.UUID]:
+    """
+    Кнопки, названные планом на `on`: id кнопки → id пункта, который её назвал.
+
+    Одним запросом по дню, а не обходом дерева плана: пункт, назвавший кнопку,
+    может лежать на любой глубине любой секции, и `quick_mark_id` — это то, по
+    чему его находят, а не то, что вычисляют из текста.
+
+    Одна кнопка в двух пунктах одного дня — состояние возможное и не запрещённое
+    (утренняя вода и вечерняя). Побеждает первый по `(секция, позиция)`: закрыть
+    оба пункта одной отметкой значило бы сказать про вечер то, чего не было.
+    """
+    result = await db.execute(
+        select(PlanItem.quick_mark_id, PlanItem.id)
+        .join(PlanSection, PlanSection.id == PlanItem.section_id)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on, PlanItem.quick_mark_id.is_not(None))
+        .order_by(PlanSection.ord, PlanItem.ord)
+    )
+    planned: dict[int, uuid.UUID] = {}
+    for quick_mark_id, item_id in result.all():
+        if quick_mark_id is not None and quick_mark_id not in planned:
+            planned[quick_mark_id] = item_id
+    return planned
+
+
+@dataclass
+class ListedMark:
+    """
+    Кнопка в выдаче: она сама, состояние дня и её место в плане на этот день.
+
+    Не кортеж из трёх, потому что третье поле приехало позже двух первых и
+    следующее приедет так же: `#125` добавит поверхность, `#129` — челлендж.
+    """
+
+    mark: QuickMark
+    state: DayState
+    planned_item_id: uuid.UUID | None
+
+    @property
+    def planned(self) -> bool:
+        """Названа ли эта кнопка планом на запрошенный день."""
+        return self.planned_item_id is not None
+
+
 async def list_quick_marks(
     db: AsyncSession, *, on: date, active_only: bool = True
-) -> list[tuple[QuickMark, DayState]]:
+) -> list[ListedMark]:
     """
     The directory with the state of the day `on` attached to every button.
 
@@ -129,13 +183,33 @@ async def list_quick_marks(
     twenty rows by design (`hotkey` is one character), and a hand-written join
     over the EAV would be a second implementation of "what does today say" next
     to `day_state`.
+
+    Плановые кнопки идут первыми (#130). Порядок считает сервер, а не экран:
+    выдача одна на веб, окно агента и iOS, и порядок, посчитанный в браузере,
+    был бы порядком, которого нет у двух остальных. Внутри каждой половины
+    сохраняется порядок справочника — «плановая» поднимает кнопку, а не
+    перетасовывает её с соседками.
+
+    День без плана — пустой словарь и порядок справочника: ни пустого блока, ни
+    сообщения «плана нет» посреди кнопок.
     """
     query = _ordered()
     if active_only:
         query = query.where(QuickMark.is_active.is_(True))
     result = await db.execute(query)
     marks = list(result.scalars().all())
-    return [(mark, await day_state(db, mark, on)) for mark in marks]
+    planned = await planned_marks(db, on)
+    listed = [
+        ListedMark(
+            mark=mark,
+            state=await day_state(db, mark, on),
+            planned_item_id=planned.get(mark.id),
+        )
+        for mark in marks
+    ]
+    # Устойчивая сортировка: внутри «плановых» и «остальных» порядок остаётся
+    # тем, который задал справочник.
+    return sorted(listed, key=lambda one: not one.planned)
 
 
 async def _day_total(db: AsyncSession, mark: QuickMark, on: date) -> float | None:
@@ -405,6 +479,7 @@ async def record_event(
     await db.flush()
 
     state = await day_state(db, mark, on)
+    await _close_planned_item(db, mark, on, state)
     recorded = RecordedEvent(
         event_id=event.id,
         quick_mark_id=mark.id,
@@ -415,6 +490,38 @@ async def record_event(
     )
     await db.commit()
     return recorded
+
+
+async def _close_planned_item(
+    db: AsyncSession, mark: QuickMark, on: date, state: DayState
+) -> None:
+    """
+    Закрыть пункт плана, который назвал эту кнопку, когда цель дня достигнута.
+
+    Иначе человек отмечает дважды — на Today и в плане, — а это ровно тот дубль,
+    от которого система уходит.
+
+    Закрывается только вперёд: снятая галка и обнулённый счётчик пункт не
+    открывают обратно. Отметка пункта — суждение человека о дне, и стирать его
+    потому, что счётчик вернулся к нулю, значит спорить с автором дня.
+    """
+    if not state.done:
+        return
+    planned = await planned_marks(db, on)
+    item_id = planned.get(mark.id)
+    if item_id is None:
+        return
+    existing = await mark_crud.get_mark(db, item_id)
+    if existing is not None and existing.state == MARK_DONE:
+        return
+    await mark_crud.set_mark(
+        db,
+        on,
+        item_id,
+        state=MARK_DONE,
+        note=existing.note if existing is not None else None,
+        source=SOURCE_PLAN_PROPAGATION,
+    )
 
 
 async def replayed_event(

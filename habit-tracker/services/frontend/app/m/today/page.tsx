@@ -6,6 +6,7 @@ import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
+import QuickMarkRow from '@/components/QuickMarkRow';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
@@ -14,6 +15,7 @@ import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { Check, Mic, Sun } from 'lucide-react';
 
@@ -52,6 +54,9 @@ export default function MobileTodayPage() {
     reloadStreak,
     reload,
   } = useToday();
+  // Справочник кнопок отдельным чтением: он живёт дольше дня, и его порядок
+  // (плановые впереди, #130) решает сервер, а не этот экран.
+  const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one sheet can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
@@ -70,6 +75,14 @@ export default function MobileTodayPage() {
       <p className="text-sm text-text-secondary">{date}</p>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      {/* Кнопки справочника (#121) с плановыми впереди (#130). Порядок и
+          пометку «в плане» решает сервер: та же выборка обслуживает окно
+          агента и iOS, и второй порядок здесь был бы вторым ответом. */}
+      {quickMarks.error && (
+        <ErrorAlert message={quickMarks.error} onDismiss={quickMarks.reload} />
+      )}
+      <QuickMarkRow marks={quickMarks.marks} onTap={quickMarks.tap} />
 
       {/* Above the sections rather than beside one of them: dictation fills in
           the whole day — several categories, the checklist and the day's text

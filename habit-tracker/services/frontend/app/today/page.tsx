@@ -1,17 +1,19 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118, PHASE-03/121, PHASE-03/130
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
+import QuickMarkRow from '@/components/QuickMarkRow';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryForm from '@/components/EntryForm';
 import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
+import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { Check, Sun } from 'lucide-react';
 
@@ -31,6 +33,9 @@ export default function TodayPage() {
     reloadStreak,
     reload,
   } = useToday();
+  // Справочник кнопок отдельным чтением: он живёт дольше дня, и его порядок
+  // (плановые впереди, #130) решает сервер, а не этот экран.
+  const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one editor can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
@@ -58,6 +63,14 @@ export default function TodayPage() {
       <AskAboutDayButton date={date} onError={setError} />
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      {/* Кнопки справочника (#121) с плановыми впереди (#130). Порядок и
+          пометку «в плане» решает сервер: та же выборка обслуживает окно
+          агента и iOS, и второй порядок здесь был бы вторым ответом. */}
+      {quickMarks.error && (
+        <ErrorAlert message={quickMarks.error} onDismiss={quickMarks.reload} />
+      )}
+      <QuickMarkRow marks={quickMarks.marks} onTap={quickMarks.tap} showHotkeys />
 
       {nothingToTrack ? (
         <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">

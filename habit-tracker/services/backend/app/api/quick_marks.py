@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/121
+# [review:need-review] PHASE-03/121, PHASE-03/130
 # summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered by hand with every reason it is refused, and the one write path `POST /quick-marks/{id}/events`, whose answer carries the new state so a tap costs one network call
 """
 The whole contract of a quick mark: read the buttons, tap one.
@@ -24,7 +24,6 @@ from app.core.database import get_db
 from app.core.daytime import local_date
 from app.crud import category as category_crud
 from app.crud import quick_mark as quick_mark_crud
-from app.models.quick_mark import QuickMark
 from app.schemas.quick_mark import (
     QuickMarkCreate,
     QuickMarkEventRequest,
@@ -37,14 +36,16 @@ router = APIRouter(prefix="/quick-marks", tags=["quick-marks"])
 
 
 def _to_today_response(
-    mark: QuickMark, state: quick_mark_crud.DayState, on: date
+    listed: quick_mark_crud.ListedMark, on: date
 ) -> QuickMarkTodayResponse:
     """One button plus the day it was read for, as the wire carries it."""
     return QuickMarkTodayResponse(
-        **QuickMarkResponse.model_validate(mark).model_dump(),
+        **QuickMarkResponse.model_validate(listed.mark).model_dump(),
         entry_date=on,
-        today_total=state.today_total,
-        done=state.done,
+        today_total=listed.state.today_total,
+        done=listed.state.done,
+        planned=listed.planned,
+        plan_item_id=listed.planned_item_id,
     )
 
 
@@ -81,10 +82,15 @@ async def list_quick_marks(
 
     `date` по умолчанию — день, которому принадлежит текущий момент по
     `local_date()`. Клиенту не нужно знать ни часовой пояс, ни час начала дня.
+
+    Кнопки, названные планом на запрошенный день, помечены `planned` и стоят
+    первыми (#130). Порядок считает сервер: выдача одна на веб, окно агента и
+    iOS, и порядок, посчитанный в браузере, был бы порядком, которого нет у двух
+    остальных. `date` за прошедший день отдаёт план **того** дня.
     """
     on = date_ if date_ is not None else local_date(datetime.now(timezone.utc))
     marks = await quick_mark_crud.list_quick_marks(db, on=on, active_only=active_only)
-    return [_to_today_response(mark, state, on) for mark, state in marks]
+    return [_to_today_response(listed, on) for listed in marks]
 
 
 @router.post("", response_model=QuickMarkResponse, status_code=status.HTTP_201_CREATED)

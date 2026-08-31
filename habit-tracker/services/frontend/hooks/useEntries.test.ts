@@ -44,6 +44,10 @@ let getAllCategories: ReturnType<typeof mock>;
 // even the parts this file never calls — otherwise whichever file happens to
 // load first decides that `tableAPI` does not exist.
 mock.module('@/lib/api', () => ({
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+  },
   // The chat client (#118). Present in every api mock for the same reason the
   // rest of the surface is: bun fixes a module's export names on first link, so
   // a mock that omits it deletes it for whoever runs next.

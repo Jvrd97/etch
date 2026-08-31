@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-03/121, PHASE-03/122
-// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, and on a shell that has a keyboard the button prints the key that fires it
+// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/130
+// summary: PHASE-03/130 puts a badge on a button the plan of the day names — the order already stands it first, and a badge is what makes that visible to somebody who has never seen the other order; the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, and on a shell that has a keyboard the button prints the key that fires it
 
 import type { QuickMark } from '@/lib/api';
-import { markActionLabel, markCaption } from '@/lib/quick-marks';
+import { PLANNED_BADGE, markActionLabel, markCaption } from '@/lib/quick-marks';
 import { hotkeyAssignment } from '@/lib/quick-mark-hotkeys';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
@@ -79,6 +79,18 @@ export default function QuickMarkRow({ marks, onTap, showHotkeys = false }: Quic
                 </kbd>
               )}
               <span className="text-sm font-medium truncate">{mark.label}</span>
+              {mark.planned && (
+                // Скрыт от скринридера: `aria-label` кнопки уже говорит «в
+                // плане на сегодня», и второе упоминание — шум в объявлении.
+                <span
+                  aria-hidden="true"
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium leading-none ${
+                    mark.done ? 'bg-background/20 text-background' : 'bg-lime/15 text-lime'
+                  }`}
+                >
+                  {PLANNED_BADGE}
+                </span>
+              )}
             </span>
             {caption && (
               // Keyed by the caption so a change remounts the node and replays

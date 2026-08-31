@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/121
+# [review:need-review] PHASE-03/121, PHASE-03/130
 # summary: wire types of the quick mark — the button as it is created and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode
 """
 Wire types of the quick mark.
@@ -23,6 +23,7 @@ writing into yesterday.
 from __future__ import annotations
 
 from datetime import date, datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -111,6 +112,20 @@ class QuickMarkTodayResponse(QuickMarkResponse):
     entry_date: date
     today_total: float | None = None
     done: bool
+    planned: bool = Field(
+        False,
+        description=(
+            "Кнопку называет план на запрошенный день. Плановые стоят первыми "
+            "и помечены на экране"
+        ),
+    )
+    plan_item_id: UUID | None = Field(
+        None,
+        description=(
+            "Пункт плана, который назвал кнопку. Его закрывает отметка, чтобы "
+            "не отмечать дважды — на Today и в плане"
+        ),
+    )
 
 
 class QuickMarkEventRequest(BaseModel):

@@ -28,6 +28,10 @@ let getInsightById: ReturnType<typeof mock>;
 // The whole module is replaced process-wide, so members other suites reach for
 // stay present even though this suite only exercises insightsAPI.
 mock.module('@/lib/api', () => ({
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+  },
   // The chat client (#118). Present in every api mock for the same reason the
   // rest of the surface is: bun fixes a module's export names on first link, so
   // a mock that omits it deletes it for whoever runs next.

@@ -1662,6 +1662,16 @@ export interface QuickMark {
   entry_date: string;
   today_total: number | null;
   done: boolean;
+  /**
+   * The plan of `entry_date` names this button.
+   *
+   * Decided by the server, like the order it buys: the same one selection
+   * serves the web, the agent window and iOS, and a flag computed in the
+   * browser would be a flag the other two do not have.
+   */
+  planned: boolean;
+  /** The plan line that named it; a tap on the button closes that line. */
+  plan_item_id: string | null;
 }
 
 /** The recorded tap and the state it produced — one call per tap, no refetch. */

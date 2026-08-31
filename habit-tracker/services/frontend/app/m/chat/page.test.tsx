@@ -30,6 +30,10 @@ function message(id: number, role: string, content: string) {
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
 mock.module('@/lib/api', () => ({
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+  },
   chatAPI: {
     list: () => Promise.resolve([{ id: CONVERSATION }]),
     create: () => Promise.resolve({ id: CONVERSATION }),

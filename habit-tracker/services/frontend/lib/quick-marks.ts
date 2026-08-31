@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/121
-// summary: pure reading of the quick-mark directory — the caption a button shows, the state the tap's own answer folds back into the list without a refetch, and the categories the directory has taken over from the legacy quick-input card
+// [review:need-review] PHASE-03/121, PHASE-03/130
+// summary: pure reading of the quick-mark directory — the caption a button shows, the state the tap's own answer folds back into the list without a refetch, the categories the directory has taken over from the legacy quick-input card, and the word a planned button says out loud to a reader who cannot see that it is first
 
 import type { QuickMark, QuickMarkEvent } from '@/lib/api';
 
@@ -62,5 +62,25 @@ export function categoriesWithQuickMark(marks: QuickMark[]): Set<number> {
  * button reads the same to a screen reader as it does on screen.
  */
 export function markActionLabel(mark: QuickMark): string {
-  return mark.done ? `${mark.label} — отмечено` : mark.label;
+  const planned = mark.planned ? `${mark.label} — в плане на сегодня` : mark.label;
+  return mark.done ? `${planned} — отмечено` : planned;
+}
+
+/** The badge a planned button carries, so "first" is not the only signal. */
+export const PLANNED_BADGE = 'в плане';
+
+/**
+ * The state a tap leaves the button's plan line in, folded back into the list.
+ *
+ * The server closes the line as part of the tap; the screen only has to stop
+ * promising that it is still open. Nothing here re-derives which line that was
+ * — `plan_item_id` came with the button, and recomputing it in the browser
+ * would be a second answer to a question the server already answered.
+ */
+export function plannedItemIds(marks: QuickMark[]): Set<string> {
+  const ids = new Set<string>();
+  for (const mark of marks) {
+    if (mark.plan_item_id !== null) ids.add(mark.plan_item_id);
+  }
+  return ids;
 }

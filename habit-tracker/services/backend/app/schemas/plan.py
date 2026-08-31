@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/87, PHASE-03/110
+# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130
 # summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database; #110 adds the per-item edit — a patch that tells "not sent" from "set to null", a new line for one section, a move to a place, and the answer that carries the whole plan back with the warnings a human's edit earned
 """
 Wire types of the plan.
@@ -114,6 +114,13 @@ class PlanItemIn(BaseModel):
             "quarter_goal_id задача не сохраняется"
         ),
     )
+    quick_mark_id: int | None = Field(
+        None,
+        description=(
+            "Кнопка справочника, которой этот пункт отмечается. Кнопка встаёт "
+            "на Today первой и помечается плановой; её отметка закрывает пункт"
+        ),
+    )
 
     carried_from_item_id: UUID | None = None
     carry_count: int = 0
@@ -188,6 +195,7 @@ class PlanItemResponse(BaseModel):
     extra: dict[str, Any]
     quarter_goal_id: int | None
     unlinked_reason: str | None
+    quick_mark_id: int | None
     carried_from_item_id: UUID | None
     carry_count: int
     children: list[PlanItemResponse] = Field(default_factory=list)
@@ -309,6 +317,7 @@ class PlanItemPatch(BaseModel):
     extra: dict[str, Any] | None = None
     quarter_goal_id: int | None = None
     unlinked_reason: str | None = None
+    quick_mark_id: int | None = None
 
 
 class PlanItemCreate(BaseModel):
@@ -338,6 +347,7 @@ class PlanItemCreate(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
     quarter_goal_id: int | None = None
     unlinked_reason: str | None = None
+    quick_mark_id: int | None = None
 
 
 class PlanItemMove(BaseModel):

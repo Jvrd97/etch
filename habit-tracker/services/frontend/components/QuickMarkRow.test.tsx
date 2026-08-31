@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/121, PHASE-03/122
-// summary: tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, the key printed on the button only where a keyboard exists, and the empty directory that renders no section at all
+// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/130
+// summary: PHASE-03/130 adds the badge and the spoken name of a button the plan of the day names; tests for the quick-mark row — a button per directory row, the id the tap reports, the total drawn under the label, the done state, the key printed on the button only where a keyboard exists, and the empty directory that renders no section at all
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { QuickMark } from '@/lib/api';
+import { PLANNED_BADGE } from '@/lib/quick-marks';
 
 function mark(overrides: Partial<QuickMark> = {}): QuickMark {
   return {
@@ -23,6 +24,8 @@ function mark(overrides: Partial<QuickMark> = {}): QuickMark {
     entry_date: '2026-08-30',
     today_total: null,
     done: false,
+    planned: false,
+    plan_item_id: null,
     ...overrides,
   };
 }
@@ -110,5 +113,46 @@ describe('QuickMarkRow', () => {
   it('renders no section at all for an empty directory', () => {
     const { container } = render(<QuickMarkRow marks={[]} onTap={(id: number) => onTap(id)} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe('QuickMarkRow: a button the plan names', () => {
+  it('badges the planned button and leaves the others plain', () => {
+    // Порядок кнопку уже поднял, но «первая» — не признак: человек, впервые
+    // открывший экран, не знает, каким список был вчера.
+    render(
+      <QuickMarkRow
+        marks={[mark({ id: 1, planned: true, plan_item_id: 'item-1' }), mark({ id: 2 })]}
+        onTap={(id: number) => onTap(id)}
+      />
+    );
+
+    expect(screen.getAllByText(PLANNED_BADGE)).toHaveLength(1);
+  });
+
+  it('says "в плане на сегодня" to a reader who cannot see the badge', () => {
+    render(
+      <QuickMarkRow
+        marks={[mark({ planned: true, plan_item_id: 'item-1' })]}
+        onTap={(id: number) => onTap(id)}
+      />
+    );
+
+    expect(
+      screen.getByRole('button', { name: '+250 мл — в плане на сегодня' })
+    ).toBeTruthy();
+  });
+
+  it('adds the plan to the done announcement rather than replacing it', () => {
+    render(
+      <QuickMarkRow
+        marks={[mark({ planned: true, plan_item_id: 'item-1', done: true })]}
+        onTap={(id: number) => onTap(id)}
+      />
+    );
+
+    expect(
+      screen.getByRole('button', { name: '+250 мл — в плане на сегодня — отмечено' })
+    ).toBeTruthy();
   });
 });

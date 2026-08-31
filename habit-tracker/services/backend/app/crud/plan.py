@@ -379,6 +379,7 @@ def _to_model(row: _PreparedItem, section_id: uuid.UUID) -> PlanItem:
         extra=source.extra,
         quarter_goal_id=source.quarter_goal_id,
         unlinked_reason=source.unlinked_reason,
+        quick_mark_id=source.quick_mark_id,
         carried_from_item_id=source.carried_from_item_id,
         carry_count=source.carry_count,
         legacy_key=source.legacy_key,
@@ -459,6 +460,7 @@ def _item_response(item: PlanItem) -> PlanItemResponse:
         extra=dict(item.extra),
         quarter_goal_id=item.quarter_goal_id,
         unlinked_reason=item.unlinked_reason,
+        quick_mark_id=item.quick_mark_id,
         carried_from_item_id=item.carried_from_item_id,
         carry_count=item.carry_count,
         children=[],
@@ -589,6 +591,7 @@ PATCH_COLUMNS: tuple[str, ...] = (
     "extra",
     "quarter_goal_id",
     "unlinked_reason",
+    "quick_mark_id",
 )
 
 
@@ -780,6 +783,7 @@ async def add_item(
         extra=dict(payload.extra),
         quarter_goal_id=payload.quarter_goal_id,
         unlinked_reason=payload.unlinked_reason,
+        quick_mark_id=payload.quick_mark_id,
         carry_count=0,
         edited_by=editor,
         updated_at=datetime.now(timezone.utc),

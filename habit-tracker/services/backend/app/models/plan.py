@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110, PHASE-03/130
 # summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key; #110 adds who last touched a line and when, and makes a position unique inside its level so a reorder cannot leave holes or twins
 from __future__ import annotations
 
@@ -272,6 +272,11 @@ class PlanItem(Base):
         Index("ix_plan_item_window", "window", postgresql_using="gist"),
         Index("ix_plan_item_search", "search", postgresql_using="gin"),
         Index("ix_plan_item_carried_from", "carried_from_item_id"),
+        Index(
+            "ix_plan_item_quick_mark_id",
+            "quick_mark_id",
+            postgresql_where=text("quick_mark_id IS NOT NULL"),
+        ),
         # Partial: most items carry no code, and NULLs would otherwise make the
         # constraint vacuous for exactly the rows that need no protection.
         Index(
@@ -345,6 +350,20 @@ class PlanItem(Base):
         nullable=True,
     )
     unlinked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Кнопка справочника, которой этот пункт отмечается (#130). Ссылка идёт
+    # отсюда, а не из `quick_marks`: план — событие одного дня, кнопка живёт
+    # месяцами. `SET NULL`, потому что кнопку удаляют, а прожитый день остаётся,
+    # и пункт без кнопки — это обычный пункт, отмечаемый руками.
+    quick_mark_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "quick_marks.id",
+            ondelete="SET NULL",
+            name="fk_plan_item_quick_mark_id",
+        ),
+        nullable=True,
+    )
 
     carried_from_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
