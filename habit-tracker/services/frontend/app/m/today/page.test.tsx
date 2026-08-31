@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/84-voice-day-input
-// summary: tests for the dictation entry point on the mobile Today screen — the button opens the sheet, cancelling leaves the day untouched, and a written day closes the sheet and reloads what Today shows
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/121
+// summary: tests for the mobile Today screen — the dictation entry point (sheet opens, cancel leaves the day alone, a written day reloads it) and the quick-mark section, which is drawn from the directory and absent entirely when the directory is empty
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Category, Entry } from '@/lib/api';
+import type { Category, Entry, QuickMark } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -53,6 +53,28 @@ const MEAL_PLAN = {
 
 let getCategories: ReturnType<typeof mock>;
 let getEntries: ReturnType<typeof mock>;
+let listQuickMarks: ReturnType<typeof mock>;
+let tapQuickMark: ReturnType<typeof mock>;
+
+/** One button of the directory, over the same category the screen shows. */
+const WATER_MARK: QuickMark = {
+  id: 3,
+  label: '+250 мл',
+  category_id: NUTRITION.id,
+  field_id: 9,
+  kind: 'increment',
+  step: 250,
+  unit_label: 'мл',
+  icon: null,
+  color: null,
+  hotkey: null,
+  order: 0,
+  show_in_agent: true,
+  is_active: true,
+  entry_date: '2026-07-30',
+  today_total: null,
+  done: false,
+};
 let draft: ReturnType<typeof mock>;
 let applyPlan: ReturnType<typeof mock>;
 
@@ -65,6 +87,15 @@ mock.module('@/lib/api', () => ({
   goalsAPI: {
     get: () => Promise.resolve(null),
     patchMilestone: () => Promise.resolve(null),
+  },
+  // The quick-mark directory and its one write path (#121). Present in every
+  // api mock for the reason named above: bun fixes a module's export names on
+  // first link, so a mock that omits an export deletes it for whoever links next.
+  quickMarksAPI: {
+    list: () => listQuickMarks(),
+    tap: (id: number) => tapQuickMark(id),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
   },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
@@ -183,6 +214,18 @@ beforeEach(() => {
   getEntries = mock(() => Promise.resolve([] as Entry[]));
   draft = mock(() => Promise.resolve(MEAL_PLAN));
   applyPlan = mock(() => Promise.resolve({ entry_ids: [1] }));
+  listQuickMarks = mock(() => Promise.resolve([] as QuickMark[]));
+  tapQuickMark = mock(() =>
+    Promise.resolve({
+      event_id: 1,
+      quick_mark_id: WATER_MARK.id,
+      entry_id: 5,
+      entry_date: WATER_MARK.entry_date,
+      occurred_at: TIMESTAMP,
+      today_total: 250,
+      done: true,
+    })
+  );
 });
 
 afterEach(() => {
@@ -232,5 +275,53 @@ describe('dictating a day from /m/today', () => {
 
     expect(screen.queryByRole('dialog', { name: VOICE_SHEET_TITLE })).toBeNull();
     expect(getEntries.mock.calls.length).toBeGreaterThan(loadsBefore);
+  });
+});
+
+
+describe('the quick marks of /m/today', () => {
+  it('opens without a quick-mark section when the directory is empty', async () => {
+    // The directory starts empty and is filled by hand: an empty one has to be
+    // an ordinary screen, not an error and not an instruction.
+    await renderToday();
+
+    expect(screen.queryByText('Быстрые отметки')).toBeNull();
+    expect(screen.queryByRole('button', { name: WATER_MARK.label })).toBeNull();
+  });
+
+  it('draws the buttons the directory returned', async () => {
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    expect(screen.getByText('Быстрые отметки')).toBeDefined();
+    expect(screen.getByRole('button', { name: WATER_MARK.label })).toBeDefined();
+  });
+
+  it('sends the button id on a tap and repaints from the answer', async () => {
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: WATER_MARK.label }));
+    });
+
+    expect(tapQuickMark).toHaveBeenCalledTimes(1);
+    expect(tapQuickMark.mock.calls[0][0]).toBe(WATER_MARK.id);
+    expect(screen.getByText('250 мл')).toBeDefined();
+  });
+
+  it('drops the legacy quick-input card of a category the directory covers', async () => {
+    // Two ways to add to the same field on one screen is one too many; the card
+    // of a category with no button stays exactly where it was.
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    expect(screen.queryByLabelText('Питание: add Калории')).toBeNull();
+  });
+
+  it('keeps the card of a category the directory does not cover', async () => {
+    await renderToday();
+
+    expect(screen.getByLabelText('Питание: add Калории')).toBeDefined();
   });
 });

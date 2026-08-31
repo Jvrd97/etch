@@ -1,6 +1,8 @@
-# [review:need-review] PHASE-03/106, PHASE-03/107
+# [review:need-review] PHASE-03/106, PHASE-03/107, PHASE-03/109, PHASE-03/111
 # summary: ENVIRONMENT + CORS_ORIGINS allowlist; in prod an empty API_KEY or a "*" origin kills the start
 # summary: APP_TIMEZONE + DAY_START_HOUR — the temporary source of the one day boundary, validated at build
+# summary: SESSION_SECRET / SESSION_MAX_AGE_S / SESSION_COOKIE_SECURE — the browser session; an empty secret in prod kills the start the same way an empty API_KEY does
+# summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a chat turn from the host configuration is configuration, not a constant
 """
 Настройки приложения.
 
@@ -30,6 +32,14 @@ from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
 LIST_ENV_SEPARATOR = ","
 WILDCARD_ORIGIN = "*"
+
+# Срок жизни сессионной куки по умолчанию — 30 суток.
+DEFAULT_SESSION_MAX_AGE_S = 30 * 24 * 60 * 60
+
+# Ключ подписи сессий в разработке, когда `SESSION_SECRET` пуст. Значение
+# заведомо публичное: подделать куку с ним может кто угодно, и именно поэтому
+# пустой `SESSION_SECRET` в проде роняет старт (`_enforce_prod_perimeter`).
+DEV_SESSION_SECRET = "dev-insecure-session-secret"
 
 
 class PerimeterError(RuntimeError):
@@ -82,12 +92,38 @@ class Settings(BaseSettings):
     # all, which is the right answer for clients that are not browsers.
     CORS_ORIGINS: list[str] = [WILDCARD_ORIGIN]
 
+    # Browser session (PHASE-03/109). The web client trades the key for a signed
+    # HttpOnly cookie once and never holds the key again; every other client
+    # keeps sending X-API-Key. An empty secret is a development convenience and
+    # is refused when ENVIRONMENT=prod, exactly like an empty API_KEY.
+    SESSION_SECRET: str = ""
+    SESSION_MAX_AGE_S: int = Field(default=DEFAULT_SESSION_MAX_AGE_S, gt=0)
+    # Attach `Secure` to the session cookie. True by default: a cookie without
+    # it travels over plain HTTP. Set it to false only where the frontend is
+    # served over http:// — inside a tailnet, which encrypts the transport
+    # itself (ADR-0003), a Secure cookie would simply never be stored.
+    SESSION_COOKIE_SECURE: bool = True
+
     # AI insights: empty string disables the api backend (endpoint returns 503)
     ANTHROPIC_API_KEY: str = ""
 
     # LLM backend: "cli" (claude CLI binary) or "api" (Anthropic API).
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""
+
+    # Chat (ADR-0017). A chat turn on the CLI backend runs under its own
+    # configuration directory and inside a fixed empty working directory, never
+    # under the host's `~/.claude`: otherwise the process loads the personal
+    # CLAUDE.md, hooks, MCP servers and skills of whoever owns the machine —
+    # measured at 52 555 prefix tokens per turn against 282 with them off. The
+    # working directory doubles as the key of the CLI session file, which is
+    # what `--resume` (#112) is looked up by, so it is a setting and not a
+    # temporary directory picked per call.
+    CHAT_CLAUDE_CONFIG_DIR: str = "/data/claude-chat"
+    CHAT_CLI_CWD: str = "/data/claude-chat/workspace"
+    # Ceiling on the day card #113 will put into the prompt. Declared here
+    # already so that slice is code and not another pass over compose files.
+    CHAT_CONTEXT_MAX_CHARS: int = Field(default=20_000, ge=1_000)
 
     # The one day boundary — see `app/core/daytime.py`. A day runs from
     # DAY_START_HOUR local wall clock to that hour of the next date, so a
@@ -132,6 +168,18 @@ class Settings(BaseSettings):
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     @property
+    def session_signing_secret(self) -> str:
+        """
+        Ключ, которым подписывается сессионная кука.
+
+        В разработке `SESSION_SECRET` обычно пуст, и подписывать всё равно надо
+        — иначе страница входа не работает из коробки. Подставляется заведомо
+        публичный `DEV_SESSION_SECRET`; в проде пустое значение до этой строки
+        не доживает, его отбивает `_enforce_prod_perimeter`.
+        """
+        return self.SESSION_SECRET or DEV_SESSION_SECRET
+
+    @property
     def docs_enabled(self) -> bool:
         """
         Открыты ли `/docs`, `/redoc` и `openapi.json`.
@@ -165,13 +213,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_prod_perimeter(self) -> "Settings":
-        """В проде запрещает пустой ключ и звёздочку в CORS-allowlist."""
+        """В проде запрещает пустой ключ, пустой секрет сессий и звёздочку в CORS."""
         if self.ENVIRONMENT != "prod":
             return self
         if not self.API_KEY:
             raise PerimeterError(
                 "API_KEY is empty while ENVIRONMENT=prod: that would disable "
                 "authentication for every endpoint. Set API_KEY "
+                "(generate one with: openssl rand -hex 32)."
+            )
+        if not self.SESSION_SECRET:
+            raise PerimeterError(
+                "SESSION_SECRET is empty while ENVIRONMENT=prod: browser "
+                "sessions would be signed with a publicly known development "
+                "key, so anyone could forge a session cookie and walk in "
+                "without the API key. Set SESSION_SECRET "
                 "(generate one with: openssl rand -hex 32)."
             )
         if WILDCARD_ORIGIN in self.CORS_ORIGINS:

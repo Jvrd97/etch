@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93
-# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals router in the API-key perimeter
+# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/121, PHASE-03/134
+# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, days, weeks, roles, chat and quick-marks routers in the API-key perimeter
+# summary: the auth router is mounted OUTSIDE that perimeter — logging in is what a client without a key or a cookie has to be able to do
 """
 Сборка FastAPI-приложения.
 
@@ -14,7 +15,9 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
+    auth,
     categories,
+    chat,
     daily_summary,
     day,
     entries,
@@ -23,7 +26,10 @@ from app.api import (
     insights,
     journal,
     onboarding,
+    quick_marks,
+    roles,
     table,
+    week,
 )
 from app.core.auth import require_api_key, warn_if_auth_disabled
 from app.core.config import Settings, settings
@@ -70,6 +76,11 @@ API_ROUTERS = (
     health.router,
     day.router,
     goals.router,
+    roles.router,
+    chat.router,
+    week.days_router,
+    week.weeks_router,
+    quick_marks.router,
 )
 
 
@@ -123,6 +134,11 @@ def create_app(config: Settings) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Sessions live outside the perimeter on purpose: a browser with neither a
+    # key nor a cookie must still be able to log in and to ask whether it is
+    # logged in. The three handlers return a boolean and a lifetime, nothing else.
+    app.include_router(auth.router, prefix=config.API_V1_PREFIX)
 
     api_key_dependencies = [Depends(require_api_key)]
     for router in API_ROUTERS:

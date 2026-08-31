@@ -1,7 +1,14 @@
-// [review:need-review] PHASE-03/86, PHASE-03/90
-// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, and the verdict of the day with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings)
+// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/134, PHASE-03/142
+// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, the map of the day that rule draws (edges, free evening, evening with the family, the formula of the verdict), and the verdict itself with the condition it failed on, what could not be measured and the streak in countable Russian (both shells render the same strings); the three-form arithmetic moved to lib/plural so the role screen does not carry a second copy
 
-import type { Day, DayRuleSet, VerdictReason, MissingData } from '@/lib/api';
+import type {
+  Day,
+  DayMap,
+  DayRuleSet,
+  VerdictReason,
+  MissingData,
+} from '@/lib/api';
+import { countable } from '@/lib/plural';
 
 /** Text shown where a plan would be. A day without one is an answer, not an error. */
 export const NO_PLAN_TEXT = 'Плана нет';
@@ -138,6 +145,7 @@ export function verdictReasonLabel(reason: VerdictReason | ''): string {
 /** What the day could not be judged on — «не измерено», а не «ноль». */
 const MISSING_LABEL: Record<MissingData, string> = {
   work_minutes: 'время не измерено',
+  anchor_kinds: 'состав якорей не измерен',
 };
 
 export function missingDataLabel(code: MissingData): string {
@@ -151,10 +159,62 @@ export function missingDataLabel(code: MissingData): string {
  * which is exactly the case a naive `n % 10` gets wrong.
  */
 export function streakLabel(days: number): string {
-  const lastTwo = days % 100;
-  const last = days % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return `${days} дней`;
-  if (last === 1) return `${days} день`;
-  if (last >= 2 && last <= 4) return `${days} дня`;
-  return `${days} дней`;
+  return countable(days, 'день', 'дня', 'дней');
+}
+
+/** Shown against an edge the canon places but does not clock. */
+export const EDGE_WITHOUT_A_TIME = 'часа в каноне нет';
+
+/** One line of the map of the day: the edge and the hour it stands at. */
+export interface EdgeLine {
+  kind: string;
+  label: string;
+  value: string;
+}
+
+/**
+ * The hard edges of the day, in the order the canon lists them.
+ *
+ * The hours are the server's — `06:00`, `15:40`, `22:30` are columns of the
+ * rule row, and the whole point of `#142` is that they are nowhere in this
+ * file. Спорт has no hour and says so, instead of being given an invented one.
+ */
+export function edgeLines(map: DayMap): EdgeLine[] {
+  return map.edges.map((edge) => ({
+    kind: edge.kind,
+    label: edge.label,
+    value: edge.at === null ? EDGE_WITHOUT_A_TIME : formatClock(edge.at),
+  }));
+}
+
+/** `19:10-21:00` — the block of the evening a plan may not fill. */
+export function intervalText(interval: { start: string; end: string }): string {
+  return `${formatClock(interval.start)}-${formatClock(interval.end)}`;
+}
+
+/**
+ * What the free evening is, said out loud beside its hours.
+ *
+ * «Свободный блок — награда, а не обязанность»: the sentence exists on the
+ * screen because an empty stretch of the plan otherwise reads as a hole
+ * somebody forgot to fill.
+ */
+export const FREE_EVENING_HINT = 'не расписывается — награда, а не обязанность';
+
+/** Whether the evening with the family is required, in plain Russian. */
+export function relationshipEveningText(map: DayMap): string {
+  if (!map.relationship_anchor_required) return 'не требуется этим каноном';
+  return `${intervalText(map.relationship_evening)} — вечер с близкими`;
+}
+
+/**
+ * The formula of the verdict, in the order the server weighs it.
+ *
+ * Reading it on the page is what makes «по какому правилу этот день считается»
+ * answerable without opening the database: the order is a column, and a canon
+ * that stops lowering the day for anchors shows it here.
+ */
+export function verdictFormulaText(map: DayMap): string {
+  if (map.verdict_reasons.length === 0) return 'ничто не снимает день';
+  return map.verdict_reasons.map(verdictReasonLabel).join(' → ');
 }

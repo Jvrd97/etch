@@ -1,11 +1,11 @@
-# [review:need-review] PHASE-01/39-server-idempotency-key-entries
-# summary: Entry model + nullable unique idempotency_key (server-side create dedup)
+# [review:need-review] PHASE-01/39-server-idempotency-key-entries, PHASE-03/121
+# summary: Entry model + nullable unique idempotency_key (server-side create dedup) + ix_entries_category_date, the index every quick mark reads the day's entry through
 from __future__ import annotations
 
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -24,6 +24,10 @@ class Entry(Base):
     """
 
     __tablename__ = "entries"
+    # The direct price of the quick-mark path (`#121`): every tap looks up the
+    # day's entry of a category, and the separate single-column indexes below
+    # make that two scans and a merge instead of one lookup.
+    __table_args__ = (Index("ix_entries_category_date", "category_id", "entry_date"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     category_id: Mapped[int] = mapped_column(

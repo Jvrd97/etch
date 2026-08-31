@@ -1,5 +1,28 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/147 нарушения правил на экране дня
+
+- `lib/api.ts` — **mod**: типы `PlanRuleCode`, `PlanViolation`; `dayAPI.violations`, `dayAPI.buildSkeleton`.
+- `lib/plan-violations.ts` — **new** (+тест): `violationsByItem` (поиск строго по id — текста в нарушении нет и не будет), `planWideViolations` (правила, у которых нарушивший пункт — тот, которого нет), `ruleLabel`, `planAuthorLabel`.
+- `hooks/useDay.ts` — **mod**: нарушения тянутся рядом с днём; их падение не гасит день.
+- `components/day/PlanSections.tsx` — **mod**: пункт с `warn` помечен расшифровкой правила и по-прежнему рисуется и отмечается.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: в шапке плана — кем он собран (по колонке `source`, а не по заголовку); правила, не привязанные к строке, показаны над планом.
+- `components/day/PlanSections.test.tsx`, `hooks/useDay.test.ts`, `components/DayScreen.test.tsx` — **mod**: помеченный пункт, непомеченный пункт, план без нарушений вовсе; моки `useDay` и `dayAPI` получили новые члены.
+
+Проверки: `tsc --noEmit`, `eslint .` (0 problems), `bun test` — 860 passed.
+
+## 2026-08-31 — PHASE-03/124 отмена тапа
+
+- `lib/api.ts` — **mod**: `quickMarksAPI.tap` принимает `Idempotency-Key`; `quickMarksAPI.undo`, `quickMarksAPI.sources`; типы `QuickMarkUndo`, `QuickMarkSourceUsage`.
+- `lib/quick-marks.ts` — **mod**: `applyQuickMarkUndo`, `undoCaption`, `newTapKey`.
+- `hooks/useToday.ts` — **mod**: тап шлёт ключ и повторяет неудавшуюся отправку **тем же** ключом; `lastQuickMarkEvent` и `undoLastQuickMark`; снимок с сервера гасит предложение отмены.
+- `components/QuickMarkRow.tsx` — **mod**: «Отменить «<кнопка>»» в той же строке, появляется только после тапа.
+- `app/today/page.tsx`, `app/m/today/page.tsx` — **mod**: оба шелла передают `lastEvent` и `onUndo`.
+- `hooks/useToday.test.ts`, `components/QuickMarkRow.test.tsx`, `lib/quick-marks.test.ts` — **mod**: повтор под одним ключом, два тапа — два ключа, отмена одним действием, отказ гасит предложение и оставляет сумму, отмены нечего предлагать после неудавшейся отправки.
+- 25 sibling test-файлов — **mod**: в mock `@/lib/api` добавлены `quickMarksAPI.undo` и `.sources` (bun фиксирует набор export-имён при первом линке).
+
+Проверки: `tsc --noEmit`, `eslint .` (0 problems), `bun test` — 845 passed.
+
 ## 2026-07-24 — round 3 review fixes (frontend, тикет PHASE-01/40)
 
 Раунд 3 по замечаниям ревью. Работа отнесена к слайсу `issues/PHASE-01/in-work/40-mobile-shell-toggle-manifest-today.md` — правятся именно его файлы; служебного ticket-id `PHASE-01/round-2-review-fixes` в маркерах больше нет.
@@ -1010,3 +1033,266 @@ Feedback loops: `bun test` **691/691 green** (было 682), `bunx tsc --noEmit`
 0 problems. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль. Бэкенд того же сеанса:
 pytest 585/585, `ruff`, `mypy --strict`, одна голова Alembic `d5a7c9e1f3b6`. `make check` целиком
 не прогонялся: его цель `test` поднимает постгрес в docker, а демон на машине не отвечает.
+---
+
+## 2026-08-30 — PHASE-03/109: вход по ключу, дальше — кука
+
+Тикет: ключ вводится один раз на `/login`, обменивается на `HttpOnly`-куку и в браузере не
+хранится нигде. Затронуто 9 файлов (5 new, 4 mod) плюс `package.json`, `Dockerfile` и `Makefile`.
+
+- `lib/auth.ts` — **new** (+тест): `LOGIN_PATH`, `isSafeReturnPath`, `loginHref`, `afterLoginHref`,
+  `shouldRedirectToLogin`, `loginRedirectTarget`. Возврат после входа отфильтрован от открытого
+  редиректа: `//evil.example` браузер читает как абсолютный URL, поэтому проверки на ведущий слэш
+  мало, и без второго условия человек с только что введённым ключом уезжал бы на чужой сайт.
+- `lib/api.ts` — **mod**: у каждого запроса `credentials: 'include'`; 401 уводит на `/login`
+  жёсткой навигацией (экран не смог загрузить данные — вместе с ним обязано уехать и всё состояние
+  хуков), кроме самого `/login`, где 401 значит «ключ не тот» и обязан остаться сообщением формы.
+  Добавлен `authAPI` (`login`, `status`, `logout`) и тип `SessionState`. Заголовок `X-API-Key`
+  фронтенд не слал и раньше — снимать было нечего.
+- `app/login/page.tsx` — **new**: форма с полем `type="password"`, `autoComplete="off"`. Ключ живёт
+  в состоянии одного компонента до отправки и стирается сразу после — ни в `localStorage`, ни в
+  URL он не попадает. `useSearchParams` обёрнут в `Suspense`, иначе маршрут перестаёт быть
+  статическим.
+- `components/LogoutButton.tsx` — **new**: «Выйти» одной кнопкой для обеих шкур. Куку стирает
+  сервер, поэтому провал `DELETE` не проглатывается: сессия жива, и притвориться вышедшим значит
+  соврать.
+- `components/AppShell.tsx` — **mod**: `/login` рисуется без навигации — меню, ведущее на экраны,
+  которые все отвечают 401, хуже отсутствующего меню.
+- `components/Navigation.tsx`, `components/mobile/MoreSheet.tsx` — **mod**: «Выйти» справа в
+  десктопной навигации и последней строкой мобильного «More».
+- `lib/bundle-scan.ts` — **new** (+тест): обход дерева и два правила — «файл содержит секрет
+  дословно» и «файл читает переменную вида `NEXT_PUBLIC_*KEY/SECRET/TOKEN`». Второе сильнее
+  первого: оно не требует ни сборки, ни знания текущего ключа, поэтому гоняется на каждом
+  `bun test` и держит инвариант против будущих правок.
+- `scripts/check-bundle.ts` — **new** + `package.json` script `check:bundle` + цель `front-check`
+  в `habit-tracker/Makefile`: `bun run build && bun run check:bundle <ключ>` роняется, если ключ
+  найден в `.next`, и роняется так же, если `.next` нет — проверка, молча зеленеющая, когда
+  смотреть не на что, хуже отсутствующей. Само значение ключа в вывод не печатается: он уходит в
+  логи CI.
+- `Dockerfile` — **mod**: комментарий, почему в сборочном слое нет и не будет переменной с ключом.
+
+Feedback loops: `bun test` **704/704 green** (было 682), `bunx tsc --noEmit` clean, `bun run lint`
+0 problems, `make front-check API_KEY=<тестовый>` — сборка и `check-bundle: no key in .next`.
+Проверено обратной пробой: тот же скрипт на строке, которая в бандле действительно есть, находит
+её в 15 файлах и выходит с кодом 1. `any`, `@ts-ignore` и `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/134 экран `/roles`
+
+Экран ролей на обоих шеллах: распределение минут за сегодня, акты дня и две формы ручной записи.
+Дату экран не считает — `rolesAPI.day()` без аргумента спрашивает сервер, потому что сутки идут
+с 04:00 и календарь браузера тут не при чём.
+
+- `lib/plural.ts` — **new**: `countable(count, one, few, many)`. Заведён, чтобы счётного русского
+  не стало двух: `streakLabel` в `lib/day-format.ts` переписан на него (**mod**), а не продублирован.
+- `lib/role-format.ts` — **new** (+`role-format.test.ts`, 12 тестов): словарь видов актов
+  по-русски, `targetShareLine` — целевая доля **никогда** не печатается без слов «гипотеза, не
+  норма» (это строка, а не соседняя подпись: подпись можно отлистать от числа), `actsSummary` —
+  «Системный архитектор — 1 акт» против «Актов роли сегодня нет».
+- `hooks/useRoles.ts` — **new**: чтение дня и справочника, три записи. Каждая запись перечитывает
+  день целиком: девяносто минут на найм — не факт про найм, они двигают долю каждой роли в той же
+  отрисовке.
+- `components/roles/RolesScreen.tsx` — **new** (+`RolesScreen.test.tsx`, 7 тестов): полосы долей,
+  список актов, форма минут и форма акта, пометка «вручную» на записи человека и кнопка «убрать».
+  Минуты форматируются `formatMinutes` из `lib/day-format` — второй реализации нет.
+- `app/roles/page.tsx`, `app/m/roles/page.tsx` — **new**: обе точки входа, один компонент.
+- `lib/routes.ts`, `lib/routes.test.ts`, `components/route-icons.ts` — **mod**: экран в реестре под
+  «More» (минуты и акты пишутся по концу куска работы, а не десять раз в час), глиф `Gauge`.
+- `lib/api.ts` — **mod**: типы ролей и `rolesAPI` — день, справочник, запись и удаление минут и
+  актов.
+
+Feedback loops: `bun test` **721/721 green** (было 704), `bunx tsc --noEmit` clean, `bun run lint`
+0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/91: время работы на экране дня
+
+- `lib/work-intervals.ts` — **new** (+тест): `momentOf` (настенное `HH:MM` дня → момент со
+  смещением машины), `crossesMidnight`, `clockOf`, `spanLabel`, `proposedLabel`, `sourceLabel`,
+  строки блока. Какому дню принадлежит интервал, здесь не решается никогда — это ответ сервера.
+- `hooks/useWorkIntervals.ts` — **new**: интервалы дня, `add`/`edit`/`remove`, множество
+  `saving`. Оптимистичных правок нет намеренно: длину открытого интервала считает сервер
+  (до `now`, но не дальше конца суток), и локальная догадка дала бы на экране одно число, а в
+  вердикте рядом — другое.
+- `components/day/WorkIntervals.tsx` — **new** (+тест, 8 штук): список интервалов с суммой,
+  ручной ввод по настенным часам, кнопка «Остановить» у идущего, «Убрать» у любого.
+  Исправленный интервал показывает и своё значение, и «Агент предлагал: …». День без интервалов
+  говорит «время не измерено», а не «0 ч».
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: блок стоит над
+  «Итогом дня», потому что вердикт стоит на его сумме; после любой правки день перечитывается.
+- `lib/api.ts` — **mod**: типы `WorkInterval`, `WorkDay`, `WorkIntervalDraft`,
+  `WorkIntervalPatch`, `DayDetail.work`; методы `workIntervals`, `addWorkInterval`,
+  `updateWorkInterval`, `deleteWorkInterval`. Поля под заголовок окна в типах нет.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts` — **mod**: фикстура дня получила блок
+  `work` с `work_minutes: null` — честное «не измерено» для дня без интервалов.
+
+Feedback loops: `bun test` **701/701 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 603/603, `ruff`, `mypy --strict`, одна голова `d5a7c9e1f3b6`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-30 — PHASE-03/111: экран `/chat`
+
+- `lib/chat-stream.ts` — **new**: чистый разборщик SSE. Состояние здесь неслучайно — сетевой
+  кусок кончается там, где решил TCP, регулярно посреди кадра. `ChatStreamEvent` —
+  размеченное объединение: `delta`, `usage`, `done`, `error`. Незнакомое имя события и битый
+  JSON пропускаются, а не роняют ход.
+- `lib/chat-stream.test.ts` — **new**, 12 тестов: порядок кусков, кадр, разрезанный пополам,
+  переводы строк внутри ответа, CRLF, `flush` последнего кадра без пустой строки, пропуск
+  незнакомого имени и `done` без id.
+- `lib/api.ts` — **mod**: типы `ChatConversation`, `ChatMessage`, `ChatConversationDetail` и
+  `chatAPI`. `streamMessage` идёт мимо `fetcher`: тот ждёт всё тело, ради отказа от чего ручка
+  и существует. `TextDecoder({stream: true})` — то, что не рвёт русскую букву пополам.
+- `app/chat/page.tsx` — **new**: лента сообщений, поле ввода, ответ по кускам. Состояния экрана
+  и хода — объединения, не булевы флаги. После закрытия хода разговор перечитывается с сервера:
+  строки таблицы и есть разговор.
+- `lib/routes.ts`, `components/route-icons.ts` — **mod**: экран в реестре под «More», глиф
+  `MessagesSquare`. `hasMobile: false` — мобильный близнец это `#118`.
+- `lib/routes.test.ts`, `lib/view-mode.test.ts` — **mod**: список «More» пополнился, а
+  инвариант «мобильный порт полон» переписан на «полон, кроме перечисленных» и называет `chat`
+  поимённо — чтобы следующий экран без близнеца добавляли сюда осознанно, а не мимо теста.
+
+Feedback loops: `bun test` **713/713 green** (было 701), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+Бэкенд того же тикета: pytest 638/638, `ruff`, `mypy --strict`, одна голова `e6b8d0f2a4c7`.
+`make check` целиком не прогонялся — docker-демон на машине не отвечает.
+
+## 2026-08-30 — PHASE-03/117 удаление разговора и расход на экране
+
+- `lib/chat-usage.ts` — **new** (+`chat-usage.test.ts`, 8 тестов): `formatTokens`,
+  `formatLatency`, `usageSummary`, `turnCost`. Разряды разделяются обычным пробелом, а не
+  `toLocaleString`: тот отдаёт неразрывный пробел в одной среде и запятую в другой, и тест на
+  строку начал бы зависеть от локали машины. Ноль печатается наравне с остальными числами —
+  «расход неизвестен» и «расход нулевой» разные факты. У реплики человека счётчиков нет, и
+  строки под ней нет тоже.
+- `components/chat/ChatHeader.tsx` — **new** (+`ChatHeader.test.tsx`, 5 тестов): три счётчика,
+  медиана и удаление. Подтверждение спрашивается на месте, а не браузерным `confirm`: тот
+  непроверяем тестом и не называет, что именно удаление уносит. Вопрос назван целиком —
+  «вместе с сообщениями и файлом сессии». Состояние кнопки — union `idle | confirming |
+  deleting`, а не пара булевых: во время запроса кнопка недоступна, и второй клик не шлёт
+  второй `DELETE`.
+- `app/chat/page.tsx` — **mod**: шапка заменена компонентом, расход разговора приезжает тем же
+  ответом, что и сообщения (считает его база, второй источник во фронте был бы догадкой), под
+  каждым ответом модели — чем обошёлся этот ход. После удаления экран не остаётся на
+  разговоре, которого нет: тот же путь, что и при первом заходе.
+- `lib/api.ts` — **mod**: тип `ChatUsage`, поле `usage` у `ChatConversation`, `chatAPI.remove`.
+  Плюс починка стыка веток: `streamMessage` ходил без `credentials: 'include'` и после `#109`
+  отвечал бы 401 в середине разговора.
+
+Feedback loops: `bun test` **765/765 green** (было 752), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+## 2026-08-30 — PHASE-03/113 (раскрывашка «что чат видит»)
+
+Тронуто 4 файла фронта: 3 новых, 2 изменённых.
+
+- `components/chat/ChatContextDisclosure.tsx` — **new**: раскрывашка. Карточка читается по
+  первому раскрытию (двадцать тысяч знаков в свёрнутом виде никто не читает), повторное
+  раскрытие не перечитывает, текст рисуется моноширинным `<pre>` дословно — пересказ убил бы
+  единственный смысл экрана. Состояние — union `idle | loading | failed | ready`.
+  Чтение приходит пропсом `load`: подмена модуля `@/lib/api` в bun действует на весь процесс,
+  и статический `import { chatAPI }` в компоненте ломал бы соседние наборы тестов.
+- `lib/chat-context.ts` — **new**: `sectionLabel`, `sizeSummary`, `truncationNote`. Слова
+  пометки об обрезке — решение с тестом, а не разметка внутри JSX. Группировку разрядов даёт
+  `formatTokens` из `lib/chat-usage.ts`, второй такой же форматтер разошёлся бы с ним.
+- `components/chat/ChatContextDisclosure.test.tsx` — **new**: 4 теста — до раскрытия ничего не
+  читается, карточка на экране совпадает с полученной посимвольно, пометка называет выпавшие
+  секции по-русски, повторное раскрытие не шлёт второй запрос.
+- `lib/api.ts` — **mod**: тип `ChatContext` и `chatAPI.context(id)`.
+- `app/chat/page.tsx` — **mod**: раскрывашка под шапкой разговора; `ChatHeader` не тронут —
+  он рисует то, что ему дали пропсами, и в сеть не ходит.
+
+Feedback loops: `bun test` **769/769 green** (было 765), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+## 2026-08-30 — PHASE-03/94 (страница `/life` и неделя)
+
+Тикет `94-week-days-endpoint-and-life-page`: `/life` вместо `life.html`, страница недели,
+общая боковая навигация. Тронуто 16 файлов фронтенда.
+
+- `lib/life.ts` — **new** (+тест): чистые помощники таймлайна — `dayStatus` (пять состояний,
+  из них три главных: выигран / проигран / не закрыт), `lifeCounter` (та же арифметика, что
+  считал `life.html`, вплоть до `52.1775` и дефолтов 2000-05-11 / 97 лет), `isoWeekCode`
+  по правилу четверга, `groupByYearAndMonth` для боковой навигации.
+- `lib/date.ts` — **mod**: `fromISODate` — обратная к `toISODate`. Заведена здесь, а не в
+  `lib/life.ts`, чтобы у «строки `YYYY-MM-DD` → Date» остался один ответ на приложение.
+- `components/life/DaySquare.tsx` — **new** (+тест): квадрат дня. Три состояния различаются
+  заливкой, а не оттенком: выигран — залит лаймом, проигран — залит серым, не закрыт —
+  контур с пустой серединой. Сам квадрат — ссылка на `/day/{date}`.
+- `components/life/LifeGrid.tsx` — **new** (+тест): пять видов жизнь → год → месяц → неделя →
+  день над одним диапазоном дней, счётчик оставшихся недель, рамка жизни в localStorage.
+- `components/day/DaySidebar.tsx` — **new** (+тест): боковая навигация год → месяц; раскрыт
+  месяц читаемого дня, а не календарный. Один компонент на `/day` и на `/life` — `side.js`
+  был вторым списком, и они разъехались.
+- `components/week/WeekScreen.tsx` — **new** (+тест): страница недели — выигранные дни, стрик
+  на конец, когда сняты счётчики, семь квадратов, чеклист, ретро. Неделя без ретро
+  открывается и говорит об этом.
+- `hooks/useDays.ts`, `hooks/useWeek.ts` — **new**: один запрос диапазона дней и один — недели.
+- `app/life/page.tsx`, `app/m/life/page.tsx`, `app/week/page.tsx`, `app/week/[iso]/page.tsx`,
+  `app/m/week/page.tsx`, `app/m/week/[iso]/page.tsx` — **new**: `/m`-пары обоих экранов.
+  Голый `/week` — текущая неделя по границе суток сервера, а не по календарю браузера.
+- `lib/api.ts` — **mod**: `daysAPI.range`, `weeksAPI` и типы `DayListItem`, `Week`,
+  `WeekReviewItem`, `WeekDraft`.
+- `lib/routes.ts` + `lib/routes.test.ts`, `components/route-icons.ts` — **mod**: экраны Life и
+  Week в реестре, оба под «More».
+- `components/DayScreen.tsx` + `components/DayScreen.test.tsx` — **mod**: боковая навигация
+  рядом с днём; в тесте замокан `@/hooks/useDays` — `bun` фиксирует имена экспортов при первой
+  линковке, и без этого `daysAPI` пропадал для следующего файла.
+
+Feedback loops: `bun test` **711/711 green** (было 685), `bunx tsc --noEmit` clean,
+`bunx eslint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+Долг, названный вслух: боковая навигация скрыта на узких экранах (`hidden lg:block`) — в
+мобильном шелле её нет вовсе; редактирование ретро недели из UI не сделано, `PUT /weeks/{iso}`
+существует и зовётся только импортом и тестами.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка на обоих шеллах)
+
+Тронуто 8 файлов фронта (плюс 24 тестовых файла — в каждом моке `@/lib/api` добавлен
+`quickMarksAPI`: `bun` фиксирует имена экспортов при первой линковке, и мок без него удаляет
+экспорт для всех следующих файлов).
+
+- `lib/quick-marks.ts` + `lib/quick-marks.test.ts` — **new**: чистое чтение справочника —
+  подпись кнопки, свёртка ответа тапа обратно в список (это и есть «один вызов на тап»),
+  множество категорий, которые справочник уже закрывает.
+- `components/QuickMarkRow.tsx` + `components/QuickMarkRow.test.tsx` — **new**: ряд кнопок.
+  Тап отправляет только id кнопки; что она значит — ответ сервера. Пустой справочник рисует
+  `null`, а не заглушку.
+- `lib/api.ts` — **mod**: `quickMarksAPI` (`list`, `tap`) и типы `QuickMark`, `QuickMarkEvent`,
+  `QuickMarkKind`, `QuickMarkSource`, `QuickMarkTap`. Дата в `list` не шлётся: какой день идёт,
+  решает сервер.
+- `hooks/useToday.ts` + `hooks/useToday.test.ts` — **mod**: справочник в снапшоте Today,
+  `tapQuickMark` перерисовывает из ответа тапа и не перезапрашивает список; `nothingToTrack`
+  учитывает справочник.
+- `app/today/page.tsx` + `app/today/page.test.tsx` (**new**), `app/m/today/page.tsx` +
+  `app/m/today/page.test.tsx` — **mod**: секция «Быстрые отметки» первой; категория, у которой
+  есть кнопка, теряет старую карточку `QuickNumberRow` — двух путей к одному полю на одном
+  экране быть не должно. Категория без кнопки карточку сохраняет, поэтому пустой справочник
+  ничего не ломает.
+
+Feedback loops: `bun test` **743/743 green** (было 718), `bunx tsc --noEmit` clean.
+`any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
+
+Долг, названный вслух: хоткеи (#122) не сделаны — колонка `hotkey` приезжает в типах и в
+справочнике, клавиатуры на странице нет. `QuickNumberRow` не удалён: справочник заводится
+руками и до первой кнопки он пуст.
+
+---
+
+## 2026-08-30 — PHASE-03/142 карта дня на экране дня
+
+Тронуто 7 файлов фронтенда, из них 2 новых.
+
+- `components/day/DayMapCard.tsx` — **new** (+тест): карта дня рядом с планом — жёсткие точки с
+  часами из строки правила, свободный вечер интервалом и подписью «не расписывается», вечер с
+  близкими, потолки генератора и формула вердикта по порядку. Ни одного числа в вёрстке: новый
+  канон двигает карточку без правки фронта.
+- `lib/day-format.ts` — **mod**: `edgeLines`, `intervalText`, `relationshipEveningText`,
+  `verdictFormulaText`, подпись `EDGE_WITHOUT_A_TIME` для края без часа и метка `anchor_kinds`
+  в списке неизмеренного.
+- `lib/api.ts` — **mod**: `DayMap`, `DayEdge`, `DayInterval`, `day_map` в `DayDetail`,
+  пятнадцать новых полей `DayRuleSet` и `anchor_kinds` в `MissingData`.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: карточка над
+  итогом дня, на мобильном — `compact`.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts`, `lib/day-format.test.ts` — **mod**:
+  фикстуры дополнены новыми полями правила и блоком `day_map`.
+
+Feedback loops: `bun test` **687/687 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.

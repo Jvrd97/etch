@@ -1,5 +1,37 @@
 # Session Review Log
 
+## 2026-08-31 — PHASE-03/147 модуль ограничений и скелет плана
+
+Черновик плана проверяется **до** записи, восемью чистыми функциями, отвечающими кодами правил и id пунктов. Проверки `#87` остаются: база отказывает тому, что просочилось, модуль отбраковывает черновик, а его ответ уходит в ремонтный промпт `#148` — `IntegrityError` туда не положишь.
+
+- `app/day/constraints.py` — **new**: `hard_edges_only`, `free_evening_empty`, `work_cap`, `task_cap`, `health_before_work`, `relationship_anchor_required`, `no_overlap`, `target_day_only` и `check_all(draft, rule, severity=)`. Асимметрия строгости — параметр `severity`: машине `block`, человеку `warn`. Ни одного числа в модуле: все времена, потолки и списки якорей читаются со строки `day_rule_set`.
+- `app/day/skeleton.py` — **new**: `skeleton_plan(target, rule, carryovers, signals)`. Края канона, тренировочный слот, упирающийся концом в `work_start`, переносы по приоритету под двумя потолками, свободный блок пуст, якорь `relationship` — в нерабочий вечер. Что не влезло, возвращается в `overflow`, а не теряется.
+- `app/models/plan_violation.py` + `alembic/.../c8f0a2b4d6e7_plan_violation.py` — **new**: `day_date`, `plan_revision_id` (под `#150`), `job_id` (под `#149`), `rule_code`, `severity`, `origin`, `detail` jsonb, индекс (`day_date`, `rule_code`). `down_revision = b7d9f1a3c5e6` — фактическая голова ветки. Downgrade реальный: проверен `upgrade → downgrade → upgrade` на отдельной базе.
+- `app/crud/plan_violation.py` — **new**: запись нарушений с заменой по (день, origin), чтение и конвертер `skeleton_document` — скелет едет в базу через тот же `replace_plan`, что и план человека.
+- `app/crud/plan.py` — **mod**: `draft_of(document, on)` — те же подготовленные строки без текста.
+- `app/api/day.py` — **mod**: `POST /day/{date}/plan/skeleton`, `GET /day/{date}/plan/violations`; приём плана человеком после записи прогоняет `check_all` и пишет `warn` с `origin='human'`, не отклоняя правку.
+- `app/schemas/plan_violation.py` — **new**: `PlanViolationResponse`, `SkeletonRejection`. Поля, в котором мог бы проехать текст пункта, в файле нет.
+- `tests/test_day_constraints.py` — **new**: 32 теста, у каждого правила пропуск и отлов; отдельно — что `detail` не несёт текста и что grep не находит в двух модулях ни `16:00`, ни `22:30`, ни `480`.
+- `tests/test_day_skeleton.py` — **new**: 19 тестов. Скелет чист против `check_all` на действующей строке, на `legacy` и на строке со сдвинутыми краями; снимок соседних дат до и после вызова сравнивается как значение; правка человека в свободный вечер сохраняется и получает `warn`.
+
+Найдено по ходу: словарь кодов правил приходится писать трижды — в `constraints`, в модели и в миграции. Модель не может импортировать `constraints` (цикл через `app.models`), миграция не имеет права зависеть от кода приложения. Три списка держит вместе тест `test_the_model_and_the_module_name_the_same_rules`.
+
+Проверки: `ruff check` / `ruff format --check` / `mypy --strict` (131 файл), `alembic heads` — одна голова `c8f0a2b4d6e7`, `pytest tests/ -q` — 898 passed на базе `habit_tracker_test_fast1`. `# type: ignore` в новом коде — ноль. Docker не поднимается, `make check` целиком не гонялся.
+
+## 2026-08-31 — PHASE-03/124 отмена тапа и источник отметки
+
+Отмена последнего тапа и распределение отметок по клиентам. Схема не менялась — `source`, `idempotency_key` и `undone_at` приехали с миграцией #121.
+
+- `app/crud/quick_mark.py` — **mod**: `undo_event` (три отказа кодами `already_undone` / `not_last` / `edited_by_hand`), `_journal_still_explains_the_day` (сумма дельт журнала против хранимого числа; для галки — состояние против `bool_value` события), `_previous_tick`, `_drop_relapse_entry`, `source_usage`, `get_event`.
+- `app/api/quick_marks.py` — **mod**: `POST /quick-marks/events/{id}/undo` (200 с новым состоянием дня, 404, 409 с причиной) и `GET /quick-marks/events/sources` (распределение тапов по клиентам за период).
+- `app/schemas/quick_mark.py` — **mod**: `QuickMarkUndoResponse`, `QuickMarkSourceUsage`.
+- `tests/test_quick_mark_undo.py` — **new**: 16 тестов — возврат суммы, галка, `set_value`, три отказа с проверкой хранимого значения после каждого, повтор под одним ключом, отмена `relapse` вместе с её записью, источник каждого события, неизвестный `source`, распределение и его период.
+- `tests/conftest.py` — **mod**: фикстуры `water` / `vitamins` / `smoking` переехали сюда из `test_quick_marks.py`: их жмут два тест-модуля, а импорт фикстуры между модулями ловится ruff как F811.
+- `tests/test_quick_marks.py` — **mod**: те же три фикстуры убраны, helpers остались.
+- `tests/test_insights.py` — **mod**: `date.today()` заменён на `today_local()`. Тест падал между полуночью и границей суток: окно контекста строится по `local_date()`, а запись создавалась на календарное «завтра».
+
+Проверки: `ruff check` / `ruff format --check` / `mypy --strict` (126 файлов) — зелёные; `pytest tests/ -q` — 829 passed на отдельной базе `habit_tracker_test_fast1`. Docker в этой среде не поднимается, поэтому `make check` целиком не гонялся.
+
 ## 2026-07-25 — PHASE-01/53 apply-plan batch endpoint
 
 Транзакционный `POST /api/v1/categories/batch`: additive-only план (`create_category` / `add_field`) применяется одной транзакцией, всё-или-ничего. UI онбординга получил чекбоксы и редактирование имени, кнопку «создать» и переход на `/categories`.
@@ -961,3 +993,515 @@ Feedback loops (backend): pytest **585/585 green** (было 575), `ruff check a
 `ruff format --check` clean (126 файлов), `mypy --strict app` clean (91 файл), `alembic heads` —
 одна голова `d5a7c9e1f3b6`. Docker-демон на машине не отвечает, `make check` целиком не
 отрабатывал: тесты шли против постгреса на localhost:5432, база `habit_tracker_test`.
+## 2026-08-30 — PHASE-03/108 один планировщик фоновых задач
+
+Фоновая работа получает один процесс. Контейнер `worker` на образе бэкенда с командой
+`python -m app.worker`, APScheduler в одном asyncio-цикле, один экземпляр. Системного cron с
+прикладной логикой и планирующих `asyncio`-задач внутри gunicorn больше нет ни одного — оба
+запрета проверяются тестом, а не чтением кода. Самих заданий тикет не приносит: опрос
+источников (`#99`), ретенция (`#104`) и ночной скелет плана (`#151`) регистрируются в том же
+реестре своими тикетами.
+
+Тронуто 7 файлов.
+
+- `app/worker.py` — **new**: точка входа `python -m app.worker`. `AsyncIOScheduler`,
+  `coalesce=True`, `misfire_grace_time` час, `max_instances=1`. Ждать конца текущего задания
+  приходится самому: `AsyncIOExecutor.shutdown` у APScheduler отменяет незавершённые задачи
+  независимо от `wait`, поэтому по сигналу планировщик ставится на паузу, `JobRunner`
+  досчитывает запущенное и только потом планировщик гасится. Расписание печатается строками на
+  старте.
+- `app/scheduling/registry.py` — **new**: `ScheduledJob` (имя, интервал, таймаут, функция,
+  `summary`, признак `long_running` под будущий запуск `claude` CLI), `JobRegistry` и
+  `JobRunner`. Один прогон = `pg_try_advisory_lock` по имени (не взял — пропустил, а не
+  поставил в очередь), `asyncio.wait_for` по таймауту, пойманное исключение, записанное
+  **классом без текста**: сообщение ошибки — первое место, куда утекает содержимое записи.
+- `app/scheduling/__init__.py` — **new**: поверхность пакета. Планировщика здесь нет намеренно —
+  пакет, умеющий его поднять, рано или поздно импортируют из веб-воркера.
+- `tests/test_scheduler.py` — **new**: 25 тестов. Отдельный процесс проверяет, что импорт
+  `app.main` не тянет ни `apscheduler`, ни `app.worker`; grep-инвариант по `git ls-files` ловит
+  `crontab`/`cron.d` в коде и планирующую `asyncio`-задачу вне `worker.py`; отдельный тест
+  разбирает crontab-врезку `deploy/README.md` и не пускает туда python и docker. Живой
+  планировщик гоняется двумя заданиями на интервале 50 мс: падающее остаётся на расписании и не
+  мешает соседу. Блокировка проверяется двумя настоящими соединениями (`NullPool`), остановка —
+  и внутренним событием, и настоящим `SIGTERM` через `os.kill`.
+- `pyproject.toml` — **mod**: `apscheduler>=3.10,<4` в основных зависимостях; override mypy на
+  `apscheduler.*` — пакет идёт без `py.typed` и стабов на typeshed не имеет.
+- `habit-tracker/docker-compose.yml`, `deploy/docker-compose.prod.yml` — **mod**: сервис
+  `worker` (тот же образ, та же БД, портов не публикует, `deploy.replicas: 1`, в проде
+  `restart: always`). `container_name` ему не даётся: он конфликтует с `replicas`.
+- `deploy/README.md` — **mod**: раздел «Фоновые задания» — таблица всех заданий системы (сходится
+  с реестром, расхождение роняет тест), как смотреть логи, как перезапустить, как убедиться, что
+  задание идёт, и что пишет второй экземпляр.
+
+Найдено по ходу: тестовая база `habit_tracker_test` общая для параллельных worktree, и таблица
+`work_interval` из чужой ветки роняет `drop_all` в `conftest` («cannot drop table day because
+other objects depend on it»). Прогон уведён в отдельную базу `habit_tracker_test_fast1`.
+
+Feedback loops (backend): pytest **600/600 green** (было 574 в этой ветке), `ruff check` clean,
+`ruff format --check` clean (129 файлов), `mypy --strict app` clean (93 файла), `alembic heads` —
+одна голова `c4f6b8d0e2a5`, миграции тикет не заводит. Docker-демон не поднят, `make check`
+целиком не отрабатывал и `docker compose up` не запускался: compose-файлы проверены
+`docker compose config` (dev и dev+prod), воркер прогнан живьём вне контейнера — расписание
+напечатано, настоящий `SIGTERM` в середине полуторасекундного задания дал выход через 1.13 с,
+`job smoke done in 1.5s`. Фронтенд не тронут; `bun test` (682) и `bunx tsc --noEmit` прогнаны на
+всякий случай, оба зелёные, `frontend/SESSION_REVIEW.md` не менялся.
+
+---
+
+## 2026-08-30 — PHASE-03/109: сессия для веб-клиента
+
+Тикет: браузер меняет `API_KEY` на `HttpOnly`-куку и дальше ключа не видит; `X-API-Key` остаётся
+рабочим для iOS, mac-агента и скиллов. Затронуто 8 файлов бэкенда (3 new, 5 mod) плюс два
+compose-файла и `deploy/README.md`.
+
+- `app/core/session.py` — **new**: подписанный сессионный токен на `itsdangerous.TimestampSigner`
+  (соль `habit-tracker.web-session`, полезная нагрузка — константа `web` и метка времени) плюс
+  установка и стирание куки. `session_token_is_valid` возвращает `False` на любую негодную строку:
+  значение куки приходит от клиента, и испорченная подпись обязана дать 401, а не 500. Часы
+  подписчика фиксируются параметром `issued_at` — ради теста «кука старше срока не пускает»,
+  который иначе спит месяц или патчит `time.time` глобально.
+- `app/api/auth.py` — **new**: `POST/GET/DELETE /api/v1/auth/session`. Роутер подключён **вне**
+  периметра `require_api_key`: войти обязан клиент, у которого ещё нет ни ключа, ни куки. Ключ
+  приходит телом, а не строкой запроса — та попадает в логи прокси и в историю браузера. В теле
+  ответа нет ни ключа, ни токена, только `authenticated` и `expires_in_s`.
+- `app/schemas/auth.py` — **new**: `SessionOpenRequest` (`api_key`, `min_length=1`) и `SessionState`.
+- `app/core/auth.py` — **mod**: `require_api_key` принимает валидный `X-API-Key` **или** валидную
+  куку; текст отказа один на обе схемы (`UNAUTHORIZED_DETAIL`), иначе по сообщению различались бы
+  «ключ не тот» и «кука протухла». Выделены `auth_is_disabled`, `api_key_is_valid`,
+  `session_cookie_is_valid` — ими же пользуется ручка входа.
+- `app/core/config.py` — **mod**: `SESSION_SECRET`, `SESSION_MAX_AGE_S` (30 суток, `gt=0`),
+  `SESSION_COOKIE_SECURE` (по умолчанию `true`). Пустой `SESSION_SECRET` при `ENVIRONMENT=prod`
+  роняет сборку настроек тем же способом и тем же видом сообщения, что пустой `API_KEY` в `#106`.
+  В разработке подставляется заведомо публичный `DEV_SESSION_SECRET` — иначе страница входа не
+  работает из коробки.
+- `app/main.py` — **mod**: роутер `auth` под общим префиксом и вне зависимости `require_api_key`.
+- `tests/test_session_auth.py` — **new**, 25 тестов: обмен ключа на куку, отказ на неверном ключе,
+  атрибуты по сырому `Set-Cookie` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Max-Age`, `Path`),
+  подделанная на один символ подпись, мусор вместо токена, чужой секрет, просроченная кука,
+  повторный вход, `X-API-Key` без куки и поверх дохлой куки, статус, выход и повторный выход,
+  отказ старта в проде. `base_url` у клиента — `https`: кука выпускается с `Secure`, и по http её
+  не отправила бы ни банка httpx, ни браузер. Замена куки идёт через `replace_cookie` (очистка +
+  установка): `cookies.set` кладёт вторую куку рядом с живой, и тест на подделку зеленел бы по
+  неправильной причине.
+- `tests/test_perimeter.py` — **mod**: `prod_settings` несёт `SESSION_SECRET` — иначе продовый
+  периметр `#106` перестал бы собираться.
+- `pyproject.toml` — **mod**: `itsdangerous>=2.2` в основных зависимостях (пакет с `py.typed`).
+- `habit-tracker/docker-compose.yml`, `deploy/docker-compose.prod.yml`, `deploy/README.md` —
+  **mod**: `SESSION_SECRET`, `SESSION_MAX_AGE_S`, `SESSION_COOKIE_SECURE`; раздел «Сессия
+  браузера» — что смена секрета гасит все сессии разом (списка сессий не хранит никто) и почему
+  `Secure` придётся выключить, если фронтенд отдаётся по http внутри tailnet.
+
+Миграции тикет не заводит: сессия подписанная, таблицы под неё нет.
+
+Feedback loops (backend): pytest **625/625 green** (было 600 в этой ветке), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов), `alembic heads` —
+одна голова `c4f6b8d0e2a5`. Docker-демон не поднят, `make check` целиком не отрабатывал; тесты
+шли против локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая
+`habit_tracker_test` держит таблицу `work_interval` из чужой ветки и роняет `drop_all`).
+
+## 2026-08-30 — PHASE-03/134 роли становятся данными
+
+Вертикаль без единой строки автоматики: справочник ролей, правила разметки, минуты и акты. Ручной
+ввод первичен — `POST /api/v1/role-time-blocks` с кодом роли, числом минут и заметкой работает,
+когда больше не работает ничего. Импортёры `#135`/`#136` позовут те же две записи, добавив к ним
+`external_ref`; это единственная разница между ними и человеком.
+
+- `app/models/role.py` — **new**: `role`, `role_rule`, `role_time_block`, `role_act`. Все
+  перечислимые поля — `String`, не enum (проект уже заплатил за `fieldtype`). `CHECK (minutes > 0)`,
+  частичные уникальные `(source, external_ref) WHERE external_ref IS NOT NULL` на обеих фактовых
+  таблицах, `role_id` — `RESTRICT`, `rule_id` — `SET NULL` (потерять правило не значит потерять
+  минуты).
+- `app/roles/catalog.py` — **new**: четыре сида с долями 25/25/50 как гипотезой квартала;
+  `unassigned` без цели — целиться в долю неотнесённой работы значит целиться не туда.
+- `app/roles/matcher.py` — **new**: чистый резолвер. Меньший `priority` выигрывает, равенство
+  доопределено меньшим `id` (иначе один и тот же образец дрейфует между ролями от прогона к
+  прогону). Несовпадение — `None`, не исключение. Сломанный regex и незнакомый `matcher_kind`
+  промахиваются и логируются по id правила; сам заголовок окна в лог не попадает (ADR-0020 B5).
+- `app/crud/role.py` — **new**: идемпотентный `seed_roles` (тесты строят базу `create_all` и сидов
+  миграции не видят), CRUD справочника и правил, `resolve_role` с падением в `unassigned`,
+  `write_time_block`/`write_act` — чтение-затем-запись вместо `ON CONFLICT`: решение «не трогать»
+  зависит от `confidence` **хранимой** строки, а система однопользовательская.
+- `app/schemas/role.py` — **new**: словарь `act_kind` живёт здесь и растёт правкой схемы, а не
+  миграцией. `minutes` намеренно без `gt=0` — ноль отвергает база.
+- `app/api/roles.py` — **new**: `GET/POST/PATCH /roles`, `GET/POST/PATCH /role-rules`,
+  `POST/PATCH/DELETE /role-time-blocks` и `/role-acts`, `GET /roles/day[/{date}]`. Отказ базы
+  превращается в 422 контекстным менеджером, который оборачивает и flush, и commit; в ответ уходит
+  имя constraint, но не сорвавшая его строка — в ней лежит заметка человека.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_role_tables.py` — **new**: одна ревизия на четыре
+  таблицы (порознь бесполезны), `down_revision = c4f6b8d0e2a5`, сид через `ON CONFLICT DO NOTHING`,
+  рабочий `downgrade` (проверено вручную: downgrade снимает все четыре, upgrade возвращает с
+  четырьмя ролями).
+- `app/models/__init__.py`, `app/crud/__init__.py`, `app/main.py` — **mod**: регистрация моделей,
+  crud-модуля и роутера в периметре API-key.
+- `tests/test_role_matcher.py` — **new**, 13 тестов: конфликт двух правил в обоих порядках ввода,
+  равный `priority`, промах, чужой источник, сломанный regex, неизвестный `matcher_kind`, четыре
+  вида матчера.
+- `tests/test_roles.py` — **new**, 24 теста: сид и его идемпотентность, `unassigned` вместо NULL
+  (плюс прямая проверка `role_id IS NULL` в таблице), неудвоение по `(source, external_ref)`,
+  переживание `confirmed` импортёра для минут и для актов, `minutes = 0` и `-30` через
+  `IntegrityError` на flush, и API-слой: 90 минут на найм, акт «написан ADR», 422 на нулевые минуты
+  и на неизвестный код роли, отказ битого regex при заведении правила.
+
+Feedback loops (backend): pytest **662/662 green** (было 625 в этой ветке), `ruff check` clean,
+`ruff format --check` clean, `mypy --strict app` clean (103 файла), `alembic heads` — одна голова
+`d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком не отрабатывал; тесты шли против
+локального постгреса `localhost:5432`, база `habit_tracker_test_fast1` (общая `habit_tracker_test`
+держит таблицу `work_interval` из чужой ветки и роняет `drop_all`). Миграция проверена на отдельной
+базе `habit_migr_fast1`: upgrade → downgrade → upgrade.
+
+## 2026-08-30 — PHASE-03/91: время работы, `work_interval`
+
+Тронуто 12 файлов: 5 новых, 7 изменённых.
+
+- `app/day/work.py` — **new**: чистая арифметика минут. `IntervalSpan`, `span_minutes`,
+  `day_work_minutes`; словарь `mode` (`work`/`off`) и `source` (`manual`/`agent`/`corrected`)
+  живёт здесь, а модель и схема его читают, а не перепечатывают. Пустой день отвечает `None`,
+  а не нулём — то же правило, по которому `fold_daily` возвращает `None` при нулевом счётчике.
+  Открытый интервал считается до `now`, но не дальше конца своих суток, и границу отдаёт
+  `day_bounds()`, а не собственная арифметика.
+- `app/models/work_interval.py` — **new**: таблица. `CHECK (ended_at IS NULL OR ended_at >
+  started_at)`, CHECK на `source` и `mode`, btree по `(day_date, started_at)`, GiST по
+  `tstzrange(started_at, ended_at)`. Колонки под заголовок окна нет и не будет — граница
+  приватности всей модели дня проходит здесь.
+- `app/schemas/work_interval.py` — **new**: `AwareDatetime` отвергает момент без смещения;
+  `corrected` объявить нельзя, в него переводит правка; `extra="forbid"` отвергает присланный
+  заголовок окна, а не глотает его молча.
+- `app/crud/work_interval.py` — **new**: день интервала спрашивается у `local_date(started_at)`
+  и здесь не считается — `grep` по файлу не находит ни `day_start_hour`, ни `timezone`.
+  Первая правка агентского интервала уносит его границы в `auto_*`, ставит `source='corrected'`
+  и штампует `edited_at`; вторая границы двигает, предложение не трогает. Начало, уводящее
+  интервал в чужой день, отвергается `IntervalNotOnDay` → 422.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_work_interval.py` — **new**:
+  `down_revision = c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки. Прогнан
+  upgrade → downgrade → upgrade на отдельной базе; `downgrade` снимает оба индекса и таблицу.
+- `app/api/day.py` — **mod**: `GET/POST/PATCH/DELETE /day/{date}/work-intervals`; ответ дня
+  получил блок `work` с интервалами и суммой.
+- `app/crud/summary.py` — **mod**: `work_minutes` берётся у интервалов. Незакрытый день меряется
+  живьём, `recompute_history` читает суммы всей истории одним запросом и переписывает
+  `day_summary.work_minutes` измерением. День без интервалов сохраняет число, присланное в
+  `POST /close`, — иначе история, закрытая до появления интервалов, потеряла бы свои цифры.
+- `app/core/daytime.py` — **mod**: `now_utc()`. Не второе определение суток, а одно написание
+  `datetime.now(timezone.utc)`: `local_date()` отвергает наивный момент, и у починки этого
+  отказа должно быть одно правописание. `today_local()` теперь зовёт его же.
+- `app/day/evaluate.py`, `app/schemas/day.py`, `app/models/__init__.py` — **mod**: словарь и
+  документация под новый источник `work_minutes`.
+- `tests/test_work_intervals.py` — **new**: 28 тестов. Чистая арифметика без постгреса
+  (пустой день — `None`, пауза — ноль, открытый интервал упирается в конец своих суток,
+  UTC и берлинское написание одного момента дают одну длину) плюс API: интервал руками,
+  23:00-01:00 целиком в дне начала, перевёрнутый интервал отвергают и валидатор, и `CHECK`,
+  исправленный агентский отдаёт оба значения, 4/4 задачи и девять часов дают `lost/overtime`,
+  день без интервалов — `missing_data: ['work_minutes']`, в ответе дня нет ни одного заголовка
+  окна (набор полей интервала сверяется целиком).
+
+Feedback loops (backend): pytest **603/603 green** (было 575), `ruff check` clean,
+`ruff format --check` clean (130 файлов), `mypy --strict app` clean (94 файла), `alembic heads` —
+одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком **не отрабатывал**:
+тесты шли против постгреса на localhost:5432, база `habit_tracker_test`; миграция проверена
+отдельно на `habit_mig_91` тем же постгресом.
+
+## 2026-08-30 — PHASE-03/111: чат отвечает одним ходом и переживает перезапуск
+
+Тронуто 11 файлов бэкенда: 8 new, 3 mod (плюс `app/llm/client.py`, `app/api/deps.py`,
+`app/main.py`, `app/core/config.py`, `app/models/__init__.py`, `app/crud/__init__.py`).
+
+- `app/models/chat.py` — **new**: четыре таблицы темы. `chat_conversations` (день разговора,
+  вид, подсказки `cli_session_id`/`cli_cwd`/`context_version` — заводятся здесь, включает `#112`),
+  `chat_messages` (порядок несёт `seq`, а не `created_at`; `uq_chat_message_seq` делает дубль
+  позиции ошибкой базы), `chat_plans` (`message_id` unique; `applied_summary_id` намеренно без
+  внешнего ключа), `chat_retrievals`. Словари — плоские строки без PG-enum и CHECK, по образцу
+  `display_mode`.
+- `alembic/versions/…-e6b8d0f2a4c7_chat_conversation_tables.py` — **new**: одна ревизия на всю
+  тему, `down_revision = d5a7c9e1f3b6` (фактическая голова ветки). Проверена вживую на отдельной
+  базе `habit_tracker_migr`: upgrade → downgrade → upgrade; после downgrade ни одной из четырёх
+  таблиц нет. `alembic check` на мигрированной базе не показывает расхождений по chat-таблицам —
+  модель и миграция совпадают колонка в колонку.
+- `app/llm/chat/client.py` — **new**: `ChatLLMClient.stream_turn(...) -> AsyncIterator[ChatChunk]`
+  рядом с нетронутым `LLMClient.generate`. `ISOLATION_ARGS` — отдельная константа, потому что
+  проверяется тестом целиком: `--tools ""` и `--setting-sources ""` вместе со значениями, плюс
+  `CLAUDE_CONFIG_DIR` и фиксированный пустой cwd из настроек. stderr процесса — `DEVNULL`:
+  там эхо промпта. Парсер `stream_event/content_block_delta/text_delta` и финального `result`;
+  `input_tokens` = `input + cache_creation`, иначе проверка «первый ход дешевле тысячи» врёт.
+  API-реализация — `messages.stream` через `AnthropicInsightsClient.sdk`.
+- `app/llm/chat/prompt.py` — **new**: системный промпт чата, `CHAT_CONTEXT_VERSION`, `ChatTurn` и
+  `render_transcript` (реплей одним промптом с подписями ролей).
+- `app/crud/chat.py`, `app/schemas/chat.py`, `app/api/chat.py` — **new**: лента, разговор с
+  сообщениями, ход по SSE. Ход не берёт `get_db`: контекст читается своей сессией, сессия
+  отпускается, ответ пишется новой — это же закрывает долг
+  `concern-charts-ai-followups.md`. 503 проверяется **до** записи реплики.
+- `app/llm/client.py` — **mod**: подпись `generate` не тронута. Добавлены свойство `sdk` и
+  ре-экспорт `AnthropicAPIError`, чтобы `app/llm/chat/` стримил без второго `import anthropic`:
+  инвариант «SDK импортируется ровно в одном файле» держится грепом, а не памятью.
+- `app/api/deps.py` — **mod**: `get_chat_llm_client` и `get_session_factory` (фабрика сессий для
+  единственной ручки, которой нельзя держать соединение всю генерацию).
+- `tests/test_chat_stream.py` — **new**, 15 тестов: порядок событий `delta*/usage/done`, ответ с
+  счётчиками токенов, `seq` 1..4 на двух ходах, реплей всего разговора на втором ходу, чтение
+  разговора после «перезапуска», 503 без бэкенда не оставляет строк, сбой бэкенда даёт `failed`
+  с машинным кодом и сохраняет полученный текст, в событии `error` нет ни куска разговора; плюс
+  два несущих: во время генерации не открыто ни одной сессии БД, и закрытый генератор пишет
+  `interrupted` с уже полученным текстом.
+- `tests/test_chat_cli_args.py` — **new**, 20 тестов: набор флагов изоляции целиком (включая
+  дословную сверку состава — замер 282 против 52 555 токенов сделан именно на нём),
+  `CLAUDE_CONFIG_DIR` и cwd доезжают до процесса, разговор уходит stdin, ненулевой код не
+  протекает содержимым, разбор потока и игнор незнакомых строк.
+
+Feedback loops (backend): pytest **638/638 green** (было 603; 35 из них — новые тесты чата),
+`ruff check` clean, `ruff format --check` clean (139 файлов), `mypy --strict app`
+clean (101 файл), `alembic heads` — одна голова `e6b8d0f2a4c7`. Docker-демон не поднят,
+`make check` целиком **не отрабатывал**: тесты шли против постгреса на localhost:5432
+(`habit_tracker_test`), миграция — на `habit_tracker_migr` тем же постгресом.
+
+---
+
+## 2026-08-30 — PHASE-03/117 удаление диалога и видимый расход подписки
+
+Две неправды закрыты одним срезом. Кнопка удаления перестала быть враньём: `DELETE` уносит
+строки всех четырёх таблиц каскадом `#111` **и** файл `.jsonl` сессии CLI. Расход подписки
+перестал быть невидимым до первого 429: суммы токенов и медиана задержки едут и в детальной
+ручке, и в ленте.
+
+Тронуто 5 файлов бэкенда (2 new, 3 mod).
+
+- `app/llm/chat/session_files.py` — **new**: где CLI держит файл сессии и как его снести.
+  Путь считается так же, как его считает сам CLI (`<config>/projects/<cwd с дефисами>/<id>.jsonl`),
+  и вынесен отдельной функцией: `#112` обязан возобновлять ровно тот файл, который удаление
+  сносит. `remove_session_file` не бросает ни разу и возвращает машинный код — `removed`,
+  `absent`, `no_session`, `outside_config_dir`, `remove_failed`. Проверок на выход за пределы
+  две, а не одна: файл обязан лежать и внутри каталога конфигурации, и ровно в каталоге
+  этого разговора — без второй подделанный `../<чужой проект>/<id>` снёс бы сессию соседа,
+  формально оставаясь внутри `CHAT_CLAUDE_CONFIG_DIR`. Модуль лежит в `app/llm/chat/`, а не в
+  `app/crud/` (как называл тикет): это знание об устройстве CLI на диске, и живёт оно рядом с
+  клиентом, который этот `cwd` и задаёт.
+- `app/crud/chat.py` — **mod**: `delete_conversation` (одна транзакция, каскад, файл — после
+  коммита и никогда не поперёк удаления строк), `usage_statement`/`usage_by_conversation`/
+  `usage_of` и `ConversationUsage`. Свёртка — один запрос с `GROUP BY` на всю ленту, а не
+  запрос на строку, и `content` в него не входит: пятьдесят разговоров иначе тянут через сеть
+  весь свой текст ради трёх чисел в шапке. Медиана — `percentile_cont(0.5) WITHIN GROUP`, а не
+  среднее: один длинный ответ сдвигает среднее так, что «сколько обычно ждать» по нему не
+  читается. Единственный `type: ignore` — на `within_group`: упорядоченные агрегаты не покрыты
+  стабами SQLAlchemy, а замена ему — `text()`, который не проверяется ничем.
+- `app/api/chat.py` — **mod**: `DELETE /chat/conversations/{id}` (204, 404 на несуществующий),
+  расход в теле `GET /conversations/{id}` и в каждой строке `GET /chat/conversations`. У
+  созданного разговора расход — `EMPTY_USAGE`, а не запрос в базу за нулями.
+- `app/schemas/chat.py` — **mod**: `ConversationUsage` и поле `usage` у `ConversationResponse`
+  (а значит, и у `ConversationDetail`).
+- `tests/test_chat_delete.py` — **new**: 21 тест. Каскад проверяется счётом строк во всех
+  четырёх таблицах, а не ответом ручки; файловая часть — на настоящем временном каталоге,
+  подставленном в `settings.CHAT_CLAUDE_CONFIG_DIR` (мок `unlink` проверял бы мок).
+  Отдельно: подделанный id наружу (`../../../hostage.jsonl` остаётся на диске), подделанный id
+  в соседний проект, разговор без сессии вовсе, разговор с пропавшим файлом, квитанция
+  `applied_daily_summaries` переживает удаление разговора, соседний разговор не задет, свёртка
+  сходится с `SELECT sum(...)`, медиана двух замеров — среднее между ними, и `content` не
+  встречается в скомпилированном SQL свёртки.
+
+Найдено по ходу и починено здесь же: `chatAPI.streamMessage` во фронте ходил без
+`credentials: 'include'` — ход чата после `#109` уезжал бы в 401. Это стык двух веток, а не
+дефект одной.
+
+Feedback loops (backend): pytest **745/745 green** (было 725), `ruff check` clean,
+`ruff format --check` clean (158 файлов), `mypy --strict app` clean (115 файлов),
+`alembic heads` — одна голова `e6b8d0f2a4c7`, `alembic upgrade head` на чистой базе проходит
+всю цепочку. Docker-демон не поднят, `make check` целиком не отрабатывал: pytest гонялся
+обходом через `localhost:5432` в базе `habit_tracker_test_fast1` (общая `habit_tracker_test`
+занята параллельными worktree). Миграций тикет не заводит.
+
+## 2026-08-30 — PHASE-03/113 (чат видит день)
+
+Тронуто 6 файлов бэкенда: 2 новых, 4 изменённых.
+
+- `app/llm/chat/context.py` — **new**: `build_day_card(db, entry_date)` и реестр секций
+  `DAY_CARD_SECTIONS`. Секция описана `SectionSpec(name, title, priority, build)`, добавление
+  новой стоит строку в кортеже. Строитель возвращает `None` — секции нет вовсе (источник ещё
+  не приехал), пустой список — секция есть и говорит «записей нет». Потолок держится
+  выбыванием строк с хвоста наименее приоритетной секции; срез строки остался последним
+  рубежом на случай потолка ниже, чем сумма подписей. Секции сегодня: план дня с отметками
+  (`crud/plan` + `crud/mark`), дневные свёртки здоровья (тот же `health_crud.daily_values`,
+  которым отвечает `GET /health/metrics`), записи трекера (`crud/table`), дневник
+  (`crud/journal`, блокнот дня — та же строка, второй секции не получает).
+- `app/llm/chat/prompt.py` — **mod**: `compose_system_prompt(day_card)` — единственная склейка
+  «правила + карточка», `CHAT_CONTEXT_VERSION` 1 → 2, текст промпта переписан под карточку
+  (один день, «записей нет» значит именно это, пометка об обрезке — не отсутствие данных).
+- `app/api/chat.py` — **mod**: карточка строится той же сессией, что записывает вопрос;
+  `_TurnContext` вместо кортежа из двух; `GET /chat/conversations/{id}/context` отдаёт текст,
+  размер, потолок, признак обрезки и имена выбывших секций; ход приводит разговор к текущей
+  версии контекста.
+- `app/crud/chat.py` — **mod**: `reset_stale_context` — смена версии стоит `cli_session_id`,
+  а не разговора.
+- `app/schemas/chat.py` — **mod**: `ConversationContext`.
+- `app/core/daytime.py` — **mod**: `local_time(at)` — настенные часы сохранённого момента на
+  той же опубликованной границе, которую читает `local_date`. Понадобилось, чтобы окно пункта
+  плана печаталось как 09:00–10:00, а не как UTC; второй зоны в приложении не завелось.
+- `tests/test_chat_day_card.py` — **new**: 13 тестов. Пустой день (каждая секция говорит
+  «записей нет», в теле карточки нет ни одной цифры), секция без источника отсутствует
+  целиком, дневная свёртка совпадает с `GET /health/metrics` (число вынимается из карточки
+  разбором строки, а не форматтером из того же кода), почасовых слагаемых в карточке нет,
+  день с 50 записями и дневником на 20 000 знаков влезает в `CHAT_CONTEXT_MAX_CHARS`,
+  карточка кончается целой строкой-пометкой, порядок выбывания секций по приоритету,
+  `/context` отдаёт текст, посимвольно лежащий в системном промпте хода, 404 на чужой id,
+  устаревшая версия контекста теряет подсказку сессии и не ломает разговор, план и отметка
+  видны в карточке.
+- `tests/test_chat_stream.py` — **mod**: проверка промпта сравнивает композицию
+  `compose_system_prompt`, а не голую константу; прямой вызов `_turn_events` получил
+  `system_prompt`.
+
+Feedback loops (backend): pytest **757 passed, 1 failed**. Упавший —
+`test_insights.py::TestBuildPeriodContext::test_context_includes_table_and_journal_data`,
+падает и на чистой ветке (проверено `git stash`), к этому тикету отношения не имеет.
+`ruff check` clean, `ruff format --check` clean (160 файлов), `mypy --strict app` clean
+(116 файлов), `alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не поднят, `make check`
+целиком не отрабатывал: pytest гонялся обходом через `localhost:5432`, база
+`habit_tracker_test_fast1` (в общей `habit_tracker_test` лежит таблица `quick_mark_events`
+из соседней ветки, и `drop_all` по метаданным этой ветки на ней падает). Миграций тикет
+не заводит.
+## 2026-08-30 — PHASE-03/94 (неделя и диапазон дней)
+
+Тикет `94-week-days-endpoint-and-life-page`: таблица `week` со снимком счётчиков,
+`GET /api/v1/days?from&to` в форме прежнего `/api/days`, `GET/PUT /api/v1/weeks/{iso}`,
+импорт `weeks/**/*.md`. Тронуто 12 файлов бэкенда.
+
+- `app/day/week.py` — **new**: чистая ISO-арифметика недели (`iso_code`, `week_bounds`,
+  `week_codes`). Часы здесь не читаются: «какое сегодня число» остаётся за
+  `app/core/daytime.py`, а неделя выводится из переданной даты. `date.isocalendar()`, а не
+  ручной `weekday()` + `timedelta`, — иначе 2027-01-01 не попадает в `2026-W53`.
+- `app/models/week.py` — **new**: `week` (снимок с `computed_at`, четыре колонки прозы,
+  генерируемый `search`) и `week_review_item` (воскресный чеклист строками, а не `- [ ]`
+  внутри прозы).
+- `app/crud/week.py` — **new**: `recompute_week` пишет только `won_days`, `total_days`,
+  `streak_end` и `computed_at`; прозу не трогает никогда. `list_days` отвечает диапазоном,
+  считая задачи через `app.crud.mark.task_counts` — второго определения «skipped выходит из
+  знаменателя» в SQL не заводится. `get_week` идёт с `populate_existing`: оба писателя
+  обходят ORM (upsert и bulk delete), и без этого чтение после записи вернуло бы состояние до неё.
+- `app/schemas/week.py` — **new**: `DayListItem` ровно в пяти полях прежнего `/api/days`,
+  `WeekIn` с `extra="forbid"` — счётчики прислать нельзя.
+- `app/api/week.py` — **new**: `days_router` и `weeks_router`. Код, который не называет неделю
+  (`2026-W99`), — 404; неделя без ретро — 200 с пустой прозой. Диапазон шире пяти лет
+  отклоняется 422, а не сканируется.
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_week.py` — **new**: `down_revision`
+  `c4f6b8d0e2a5` по фактическому `alembic heads` этой ветки; `downgrade` сносит обе таблицы
+  и оба индекса.
+- `app/imports/week_md.py` — **new**: файл недели по блокам — «Что мешало» и «Mgmt-ретро» в
+  свои колонки, чеклист в строки, всё остальное в `retro_md`. Счётчики из прозы не берутся:
+  «0 из 7» остаётся предложением, а колонки считает `recompute_week`.
+- `app/imports/personal_os.py` — **mod**: `collect_weeks`, `_import_weeks`, `_recompute_weeks`,
+  счётчики недель в отчёте, `WEEK_LINK_RE` — ссылка в `weeks/` теперь переписывается в
+  `/week/2026-W35`, потому что у недели появился экран.
+- `app/models/import_source.py` — **mod**: вид `week_md`.
+- `app/main.py`, `app/models/__init__.py` — **mod**: роутеры в периметр API-key, модели в реестр.
+- `tests/test_week.py` — **new**: 18 тестов — ISO-арифметика с краями года, неделя без ретро,
+  пересчёт двигает счётчики и `computed_at` и не трогает текст, PUT заменяет чеклист,
+  разбор файла недели.
+- `tests/test_days_range.py` — **new**: 8 тестов — форма прежнего `/api/days` (набор полей
+  сверяется как множество), три состояния вердикта, `done`/`total` по рабочим задачам,
+  пустой и слишком широкий диапазон, ключ API.
+- `tests/test_import_personal_os.py` — **mod**: три теста импорта недели плюс правка теста
+  ссылок — ссылка в `weeks/` больше не остаётся текстом.
+- `tests/fixtures/personal_os/weeks/2026/2026-W35.md` — **new**: фикстура недели.
+
+Feedback loops (backend): pytest **604/604 green** (было 601), `ruff check` clean,
+`ruff format --check` clean (133 файла), `mypy --strict app` clean (96 файлов),
+`alembic heads` — одна голова `d5a7c9e1f3b6`. Docker-демон не поднят, `make check` целиком
+**не отрабатывал**. Тесты шли против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4`, а не `habit_tracker_test`: в общей базе лежали таблицы другой
+ветки (`work_interval`), и `drop_all` фикстуры падал на внешнем ключе. Отдельная база —
+обход коллизии параллельных веток, не свойство тикета.
+
+## 2026-08-30 — PHASE-03/121 (быстрая отметка: справочник + один эндпоинт записи)
+
+Тронуто 9 файлов бэкенда.
+
+- `app/models/quick_mark.py` — **new**: `quick_marks` (кнопка: подпись, `(category_id, field_id)`,
+  `kind`, `step`, `unit_label`, `hotkey`, порядок, флаги) и `quick_mark_events` (журнал: дельта
+  или галка, источник, `idempotency_key`, `undone_at` под #124). Словари `kind`/`source` —
+  константы модуля, из них же собраны CHECK-констрейнты и текст миграции. Уникальность хоткея —
+  именованный частичный индекс `uq_quick_mark_hotkey` (`WHERE hotkey IS NOT NULL`): у постгреса
+  частичного UNIQUE-констрейнта не существует вовсе.
+- `app/schemas/quick_mark.py` — **new**: `QuickMarkCreate`, `QuickMarkResponse`,
+  `QuickMarkTodayResponse` (справочник + состояние дня), `QuickMarkEventRequest`,
+  `QuickMarkEventResponse`. В теле тапа нет ни `category_id`, ни `field_id`, ни `display_mode`.
+- `app/crud/quick_mark.py` — **new**: валидация справочника списком причин (образец —
+  `validate_metric_ops`), накопление инкремента через `entry_crud.checklist_entry_id` и
+  `values.format_number`, срыв отдельной записью, состояние дня и запись события. День берётся
+  вызовом `core.daytime.local_date(at)`; часов этот модуль не читает вообще — момент приходит
+  аргументом, поэтому тест «00:30» проверяем без подмены времени.
+- `app/api/quick_marks.py` — **new**: `GET /quick-marks?date=`, `POST /quick-marks`,
+  `POST /quick-marks/{id}/events` с `Idempotency-Key` (повтор — 200 и то же `event_id`).
+  Клиентский `entry_date` — сверка часов, а не адрес: расхождение с `local_date()` — 409.
+- `app/models/entry.py` — **mod**: `ix_entries_category_date` — прямая цена горячего пути.
+- `alembic/versions/2026_09_01_1600-e6b8d0f2a4c7_quick_marks.py` — **new**: обе таблицы, четыре
+  индекса и индекс на `entries`; `downgrade` снимает всё это и не трогает данные.
+  `down_revision = d5a7c9e1f3b6` — фактическая голова ветки на момент реализации.
+- `app/main.py`, `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: роутер в периметр
+  API-key, модели и DTO в реестры.
+- `tests/test_quick_marks.py` — **new**: 25 тестов — пять тапов в одну строку, сумма в ответе,
+  повтор ключа, срыв записью на тап, четыре отказа справочника (чужое поле, галка на числе,
+  срыв на `build`, инкремент без шага), занятый хоткей, тап в 00:30 против `local_date()`,
+  пустой справочник, состояние дня в справочнике, журнал, offline-SQL миграции в обе стороны,
+  grep-тесты на PII и на отсутствие второй даты.
+
+Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff check` clean,
+`ruff format --check` clean (138 файлов), `mypy --strict app` clean (100 файлов),
+`alembic heads` — одна голова `e6b8d0f2a4c7`. Docker не работает, `make check` целиком
+**не отрабатывал**. Тесты — против постгреса на localhost:5432 в базе
+`habit_tracker_test_fast4` (в общей `habit_tracker_test` по-прежнему лежат таблицы других
+веток, и `drop_all` фикстуры падает на их внешних ключах). Обратимость миграции проверена не
+только offline-SQL: на отдельной базе `habit_migrate_fast4` прогнаны `upgrade head` →
+`downgrade -1` → `upgrade head`, и `alembic check` не видит расхождений между моделью и схемой
+по новым таблицам.
+
+Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
+кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.
+
+---
+
+## 2026-08-30 — PHASE-03/142 канон дня данными: карта дня в `day_rule_set`, формула вердикта строкой
+
+Тронуто 10 файлов бэкенда, из них 2 новых.
+
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_day_rule_set_generator_columns.py` — **new**:
+  пятнадцать колонок к `day_rule_set` — края дня временами (`wake_at` 06:00, `work_start` 07:45,
+  `review_at` 15:40, `bedtime_max` 22:30), свободный вечер 19:10-21:00, вечер с близкими
+  18:30-21:00 и флаг к нему, `overtime_lost_min` 600, `max_study_items` 2, `days_off`,
+  `hard_edge_kinds`, `anchors`, `verdict_rule`. Сид обеих строк — в теле миграции, без импорта
+  из `app/`. Действующая строка получает якорь `relationship`, legacy — нет: вечер с близкими
+  стал требованием канона вместе с этим тикетом, и день до 2026-08-17 им не судится.
+  `downgrade()` снимает ровно эти пятнадцать и оставляет таблицу в виде [#86] — прогнано вживую
+  (upgrade → downgrade → upgrade на базе `habit_migr_fast2`).
+- `app/models/day.py` — **mod**: те же колонки моделью, JSONB для четырёх списков/словаря, у
+  каждой python-side `default` рядом с `server_default` — иначе строка, собранная в памяти
+  тестом, тянула бы ленивую догрузку в async-контексте.
+- `app/day/rules.py` — **mod**: `DayMap`, `DayEdge`, `Interval` и `day_map(rule)` — вся карта
+  дня одним объектом; `RuleSeed` и оба сида дополнены. Спорт — край без часа (`at=None`):
+  канон ставит его до работы, но минуты для него не называет, и выдуманные 06:15 были бы
+  числом, которого никто не решал.
+- `app/day/evaluate.py` — **mod**: `verdict_reasons(rule)` читает порядок условий из
+  `verdict_rule.reason_order`, `evaluate_day` идёт по нему, а не по фиксированной лесенке;
+  состав якорей берётся из `anchors`. `DayFacts.anchor_kinds` — какие виды якорей день закрыл;
+  `None` значит «состав не измерен» (у плана якоря без кодов, справочник приезжает с [#92]) и
+  уходит в `missing_data` кодом `anchor_kinds` — тем же способом, что и неизмеренные минуты.
+  Опечатка в формуле не проглатывается: `UnknownVerdictReason`.
+- `app/day/plan_validate.py` — **mod**: `check_hard_rigidity` берёт разрешённые виды из
+  `rule.hard_edge_kinds`; `HARD_ALLOWED_KINDS` остаётся ответом для строки без колонки.
+- `app/crud/mark.py` — **mod**: `closed_anchor_kinds` — виды якорей, закрытых днём, по кодам
+  пунктов плана; `None`, когда план не назвал ни одного (пустое множество означало бы «ни
+  одного якоря не закрыто» и снимало бы день).
+- `app/crud/summary.py`, `app/crud/day.py`, `app/schemas/day.py`, `app/api/day.py` — **mod**:
+  факты дня получают состав якорей, сид переносит новые поля, `GET /day/{date}` отдаёт блок
+  `day_map`.
+- `tests/test_day_rules_generator_columns.py` — **new**: 18 тестов — карта дня числами строки,
+  край без часа, снятие флага вечера с близкими, вердикт по составу якорей, тот же прожитый
+  день под двумя строками, неизмеренный состав, формула порядком строки, опечатка в формуле,
+  `hard_edge_kinds` из строки, оба сида, `day_map` по HTTP, 404 на дату вне периодов и полный
+  прогон «новая строка не двигает вчерашний вердикт» через закрытие и пересчёт истории.
+- `tests/test_day_close.py` — **mod**: два ожидания `missing_data` — у планов этих дней якоря
+  без кодов, поэтому состав не измерен и день говорит об этом вслух.
+- `tests/test_plan_constraints.py` — **mod**: утка `_Rule` получила `hard_edge_kinds`.
+
+Решение, которое стоит назвать вслух: `hard_edge_kinds` — это **виды пунктов**
+(`anchor`, `hard_point`), а не пять якорей из иллюстрации ADR-0015. Те пять уже лежат в
+`required_anchors`, а решение человека от 2026-08-30 разрешает жёсткость всему `hard_point`.
+
+Feedback loops (backend): pytest **593/593 green**, `ruff check app tests` clean,
+`ruff format --check` clean, `mypy --strict app` clean (90 файлов), `alembic heads` — одна
+голова `d5a7c9e1f3b6`. `make check` целиком не отрабатывал: docker-демон не отвечает. Тесты шли
+против постгреса на localhost:5432 в отдельной базе `habit_tracker_test_fast2` — в общей
+`habit_tracker_test` лежит `work_interval` из параллельной ветки, и `drop_all` спотыкается о
+её внешний ключ на `day`.

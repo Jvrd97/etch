@@ -1,9 +1,16 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
-// summary: tests for useToday — silent visibility refetch, and the optimistic number increment with per-tap rollback
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124
+// summary: tests for useToday — silent visibility refetch, the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry, Field } from '@/lib/api';
+import type {
+  Category,
+  Entry,
+  Field,
+  QuickMark,
+  QuickMarkEvent,
+  QuickMarkUndo,
+} from '@/lib/api';
 import { numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
@@ -71,6 +78,54 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
+let listQuickMarks: ReturnType<typeof mock>;
+let tapQuickMarkApi: ReturnType<typeof mock>;
+let undoQuickMarkApi: ReturnType<typeof mock>;
+
+/** The «+250 мл» button, as the directory returns it. */
+const WATER_MARK: QuickMark = {
+  id: 3,
+  label: '+250 мл',
+  category_id: CATEGORY.id,
+  field_id: GLASSES_FIELD.id,
+  kind: 'increment',
+  step: 250,
+  unit_label: 'мл',
+  icon: null,
+  color: null,
+  hotkey: null,
+  order: 0,
+  show_in_agent: true,
+  is_active: true,
+  entry_date: TODAY,
+  today_total: null,
+  done: false,
+};
+
+/** What the one POST of a tap answers with. */
+function tapAnswer(total: number): QuickMarkEvent {
+  return {
+    event_id: 1,
+    quick_mark_id: WATER_MARK.id,
+    entry_id: 42,
+    entry_date: TODAY,
+    occurred_at: TIMESTAMP,
+    today_total: total,
+    done: true,
+  };
+}
+
+/** What the one POST of an undo answers with. */
+function undoAnswer(total: number): QuickMarkUndo {
+  return {
+    event_id: 1,
+    quick_mark_id: WATER_MARK.id,
+    entry_date: TODAY,
+    undone_at: TIMESTAMP,
+    today_total: total,
+    done: total > 0,
+  };
+}
 
 // The whole module is replaced process-wide, so the members other suites reach
 // for have to stay present even though this one never calls them.
@@ -81,6 +136,15 @@ mock.module('@/lib/api', () => ({
   goalsAPI: {
     get: () => Promise.resolve(null),
     patchMilestone: () => Promise.resolve(null),
+  },
+  // The quick-mark directory and its one write path (#121). Present in every
+  // api mock for the reason named above: bun fixes a module's export names on
+  // first link, so a mock that omits an export deletes it for whoever links next.
+  quickMarksAPI: {
+    list: () => listQuickMarks(),
+    tap: (id: number, tap: unknown, key?: string) => tapQuickMarkApi(id, tap, key),
+    undo: (eventId: number) => undoQuickMarkApi(eventId),
+    sources: () => Promise.resolve([]),
   },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
@@ -130,6 +194,9 @@ beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
+  listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+  tapQuickMarkApi = mock(() => Promise.resolve(tapAnswer(250)));
+  undoQuickMarkApi = mock(() => Promise.resolve(undoAnswer(0)));
 });
 
 afterEach(() => {
@@ -281,5 +348,161 @@ describe('useToday.addNumber', () => {
     });
 
     await waitFor(() => expect(totalOf(result.current.entries)).toBe(3));
+  });
+});
+
+
+describe('useToday.tapQuickMark', () => {
+  it('repaints from the tap\'s own answer, without asking the directory again', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.quickMarks[0].today_total).toBeNull();
+
+    const listCallsBefore = listQuickMarks.mock.calls.length;
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(tapQuickMarkApi).toHaveBeenCalledTimes(1);
+    expect(tapQuickMarkApi.mock.calls[0][0]).toBe(WATER_MARK.id);
+    // One call per tap: the directory is not fetched again.
+    expect(listQuickMarks.mock.calls.length).toBe(listCallsBefore);
+    expect(result.current.quickMarks[0].today_total).toBe(250);
+    expect(result.current.quickMarks[0].done).toBe(true);
+  });
+
+  it('shows the failure instead of a total that was never written', async () => {
+    tapQuickMarkApi = mock(() => Promise.reject(new Error('server exploded')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(result.current.error).toBe('server exploded');
+    expect(result.current.quickMarks[0].today_total).toBeNull();
+    // Two attempts, then the failure is shown: the retry is one, not a loop.
+    expect(tapQuickMarkApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('has nothing to track when both the directory and the categories are empty', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    listQuickMarks = mock(() => Promise.resolve([]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.quickMarks).toEqual([]);
+    expect(result.current.nothingToTrack).toBe(true);
+  });
+
+  it('has something to track when only the directory has rows', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.nothingToTrack).toBe(false);
+  });
+});
+
+describe('useToday quick-mark undo and retry', () => {
+  it('sends the retry under the key of the first attempt, so the sum is not doubled', async () => {
+    // The dropped send: the first attempt rejects the way a lost connection
+    // does, the second succeeds. Both carry one key, which is what makes the
+    // server treat them as one tap instead of two.
+    let attempts = 0;
+    tapQuickMarkApi = mock(() => {
+      attempts += 1;
+      return attempts === 1
+        ? Promise.reject(new Error('network dropped'))
+        : Promise.resolve(tapAnswer(250));
+    });
+
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(tapQuickMarkApi).toHaveBeenCalledTimes(2);
+    const firstKey = tapQuickMarkApi.mock.calls[0][2];
+    expect(typeof firstKey).toBe('string');
+    expect(tapQuickMarkApi.mock.calls[1][2]).toBe(firstKey);
+    // One tap's worth of water, not two, and no error left on the screen.
+    expect(result.current.quickMarks[0].today_total).toBe(250);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('gives two taps two keys, so a second tap is a second tap', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(tapQuickMarkApi.mock.calls[0][2]).not.toBe(tapQuickMarkApi.mock.calls[1][2]);
+  });
+
+  it('offers the undo only after a tap, and takes the day back with one action', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.lastQuickMarkEvent).toBeNull();
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+    expect(result.current.lastQuickMarkEvent?.event_id).toBe(1);
+
+    await act(async () => {
+      await result.current.undoLastQuickMark();
+    });
+
+    expect(undoQuickMarkApi).toHaveBeenCalledTimes(1);
+    expect(undoQuickMarkApi.mock.calls[0][0]).toBe(1);
+    expect(result.current.quickMarks[0].today_total).toBe(0);
+    expect(result.current.quickMarks[0].done).toBe(false);
+    // The offer is spent: the tap it pointed at has been taken back.
+    expect(result.current.lastQuickMarkEvent).toBeNull();
+  });
+
+  it('retires the offer and shows the reason when the server refuses the undo', async () => {
+    undoQuickMarkApi = mock(() =>
+      Promise.reject(new Error('the value was changed outside the journal'))
+    );
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+    await act(async () => {
+      await result.current.undoLastQuickMark();
+    });
+
+    expect(result.current.error).toBe('the value was changed outside the journal');
+    expect(result.current.lastQuickMarkEvent).toBeNull();
+    // Refused means untouched: the total the tap produced is still on screen.
+    expect(result.current.quickMarks[0].today_total).toBe(250);
+  });
+
+  it('has nothing to undo when the request that failed wrote nothing', async () => {
+    tapQuickMarkApi = mock(() => Promise.reject(new Error('server exploded')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+    await act(async () => {
+      await result.current.undoLastQuickMark();
+    });
+
+    expect(result.current.lastQuickMarkEvent).toBeNull();
+    expect(undoQuickMarkApi).not.toHaveBeenCalled();
   });
 });

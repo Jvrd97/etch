@@ -1,8 +1,12 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/93
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134, PHASE-03/147
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
+// summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
+
+import { loginRedirectTarget } from './auth';
+import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
@@ -16,6 +20,21 @@ class APIError extends Error {
   }
 }
 
+/**
+ * Send an unauthenticated reader to the login screen.
+ *
+ * A hard navigation rather than the router: the app is on a screen whose data
+ * it could not load, and every hook holding stale state has to go with it.
+ * No-op on the server and on the login screen itself, where a 401 is the
+ * message "wrong key" and a redirect would be a reload loop.
+ */
+function redirectToLoginIfNeeded(status: number): void {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  const target = loginRedirectTarget(status, pathname, search);
+  if (target !== null) window.location.assign(target);
+}
+
 async function fetcher<T>(
   endpoint: string,
   options?: RequestInit
@@ -24,6 +43,10 @@ async function fetcher<T>(
 
   const response = await fetch(url, {
     ...options,
+    // The browser authenticates with an HttpOnly session cookie and holds no
+    // key of its own; without this the cookie is left at home on a cross-origin
+    // deployment and every screen answers 401.
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -31,6 +54,7 @@ async function fetcher<T>(
   });
 
   if (!response.ok) {
+    redirectToLoginIfNeeded(response.status);
     const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
     throw new APIError(response.status, error.detail || 'An error occurred');
   }
@@ -42,6 +66,36 @@ async function fetcher<T>(
 
   return response.json();
 }
+
+/** What the server says about the current browser session. Never carries the key. */
+export interface SessionState {
+  authenticated: boolean;
+  expires_in_s: number | null;
+}
+
+/**
+ * The session endpoints — the only place the key touches the browser.
+ *
+ * `login` sends it once and forgets it: the answer is a cookie the page cannot
+ * read, so nothing here writes to localStorage, and nothing here returns the
+ * key to its caller.
+ */
+export const authAPI = {
+  login: async (apiKey: string) => {
+    return fetcher<SessionState>('/auth/session', {
+      method: 'POST',
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  },
+
+  status: async () => {
+    return fetcher<SessionState>('/auth/session');
+  },
+
+  logout: async () => {
+    return fetcher<SessionState>('/auth/session', { method: 'DELETE' });
+  },
+};
 
 // Categories API
 export const categoriesAPI = {
@@ -342,6 +396,73 @@ export const dayAPI = {
       method: 'PUT',
       body: JSON.stringify(draft),
     });
+  },
+
+  /**
+   * The intervals of measured work of a day, and their sum.
+   *
+   * `work_minutes: null` is «не измерено», not zero: the day then skips the
+   * overtime check instead of reading as comfortably short.
+   */
+  workIntervals: async (date: string) => {
+    return fetcher<WorkDay>(`/day/${date}/work-intervals`);
+  },
+
+  /**
+   * Add one interval. Manual entry is the first-class path, not the fallback:
+   * `source` defaults to `manual` and an interval typed by hand is no lesser a
+   * measurement than one the agent proposed.
+   */
+  addWorkInterval: async (date: string, draft: WorkIntervalDraft) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Edit one interval; the server keeps what the agent proposed beside it.
+   *
+   * Only the keys present move, so an edit of the note cannot reopen an
+   * interval that finished hours ago.
+   */
+  updateWorkInterval: async (
+    date: string,
+    intervalId: string,
+    patch: WorkIntervalPatch
+  ) => {
+    return fetcher<WorkInterval>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Remove one interval; deleting the last returns the day to «не измерено». */
+  deleteWorkInterval: async (date: string, intervalId: string) => {
+    return fetcher<void>(`/day/${date}/work-intervals/${intervalId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * The rules this day's plan broke.
+   *
+   * `warn` is a person's own edit, stored and annotated rather than refused;
+   * `block` is a draft that never reached the database and lies here as the
+   * explanation of why the day has no plan.
+   */
+  violations: async (date: string) => {
+    return fetcher<PlanViolation[]>(`/day/${date}/plan/violations`);
+  },
+
+  /**
+   * Build the day out of the canon, without a model.
+   *
+   * The insurance of `#147`: the day is never left without a plan, whatever the
+   * model does. Writes only on `date` — the neighbours are not touched.
+   */
+  buildSkeleton: async (date: string) => {
+    return fetcher<Plan>(`/day/${date}/plan/skeleton`, { method: 'POST' });
   },
 
   /** Replace the day's notebook text; it stays one entry per date. */
@@ -723,10 +844,67 @@ export interface DayRuleSet {
   tasks_required_ratio: string;
   overtime_disqualifies: boolean;
   /** ISO weekday numbers, 1 = Monday. */
+  overtime_lost_min: number;
+  max_study_items: number;
+  /** `HH:MM:SS` hard edges of the day, as the canon writes them. */
+  wake_at: string;
+  work_start: string;
+  review_at: string;
+  bedtime_max: string;
+  free_evening_start: string;
+  free_evening_end: string;
+  relationship_anchor_required: boolean;
+  relationship_evening_start: string;
+  relationship_evening_end: string;
   workdays: number[];
+  /** Days off — not the complement of `workdays`, a list of its own. */
+  days_off: number[];
   nocode_days: number[];
   required_anchors: string[];
+  hard_edge_kinds: string[];
+  anchors: string[];
+  verdict_rule: Record<string, unknown>;
   note_md: string;
+}
+
+/** One hard edge of the day; `at` is null for an edge the canon does not clock. */
+export interface DayEdge {
+  kind: string;
+  label: string;
+  at: string | null;
+}
+
+/** A stretch of the evening, named by its two wall-clock ends. */
+export interface DayInterval {
+  start: string;
+  end: string;
+}
+
+/**
+ * The map of the day: where the hard points stand, which evening stays free.
+ *
+ * Every number is a column of the rule row, so a change of canon changes the
+ * screen without a line of this app being touched.
+ */
+export interface DayMap {
+  rule_set_id: number;
+  edges: DayEdge[];
+  free_evening: DayInterval;
+  relationship_evening: DayInterval;
+  relationship_anchor_required: boolean;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  overtime_lost_min: number;
+  work_stop_at: string;
+  max_work_tasks: number;
+  max_study_items: number;
+  anchors: string[];
+  hard_edge_kinds: string[];
+  workdays: number[];
+  days_off: number[];
+  nocode_days: number[];
+  /** Conditions that lower a day, in the order they are weighed. */
+  verdict_reasons: VerdictReason[];
 }
 
 export interface Day {
@@ -830,6 +1008,35 @@ export interface Plan {
   overlaps: ScheduleOverlap[];
 }
 
+/** Which rule of the canon a draft plan broke. Mirrors `app/day/constraints.py`. */
+export type PlanRuleCode =
+  | 'hard_edges_only'
+  | 'free_evening_empty'
+  | 'work_cap'
+  | 'task_cap'
+  | 'health_before_work'
+  | 'relationship_anchor_required'
+  | 'no_overlap'
+  | 'target_day_only';
+
+/**
+ * One broken rule, recorded beside the day.
+ *
+ * `detail` carries item ids and numbers and never the text of a line: the row
+ * outlives the plan that produced it, and a task can be named after a
+ * diagnosis. The screen therefore looks a line up by id rather than reading a
+ * quote out of the violation.
+ */
+export interface PlanViolation {
+  id: number;
+  day_date: string;
+  rule_code: PlanRuleCode;
+  severity: 'block' | 'warn';
+  origin: 'ai' | 'fallback' | 'human';
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
 /**
  * A plan on its way to the server.
  *
@@ -890,7 +1097,7 @@ export type Verdict = 'won' | 'lost';
 export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
 
 /** What the day could not be judged on. `work_minutes` is "не измерено". */
-export type MissingData = 'work_minutes';
+export type MissingData = 'work_minutes' | 'anchor_kinds';
 
 /**
  * The итог of a day: the verdict, what it stands on, and the prose beside it.
@@ -949,6 +1156,8 @@ export interface DayCloseDraft {
 export interface DayDetail {
   day: Day;
   rule: DayRuleSet;
+  /** The map of the day drawn by the same rule row. */
+  day_map: DayMap;
   plan: Plan | null;
   has_plan: boolean;
   /** One entry per item that has a mark; an item missing here is `pending`. */
@@ -958,6 +1167,77 @@ export interface DayDetail {
   notebook: string | null;
   /** Always present — a live recount while the day is not closed. */
   summary: DaySummary;
+  /** The intervals the day's measured time is made of, and their sum. */
+  work: WorkDay;
+}
+
+/** Who put an interval there; `corrected` is a state, not a writer. */
+export type WorkIntervalSource = 'manual' | 'agent' | 'corrected';
+
+/** What the interval says the person was doing; only `work` adds up. */
+export type WorkMode = 'work' | 'off';
+
+/**
+ * One recorded stretch of work or pause.
+ *
+ * `auto_started_at`/`auto_ended_at` hold what the agent proposed before a
+ * person moved it, so a corrected interval can show both values at once —
+ * «исправил руками» and «агент так и посчитал» have to stay tellable apart.
+ *
+ * There is no field for a window title, and there is no column behind one: the
+ * privacy line of the day model runs through this table. Screenshots do not
+ * exist anywhere in this system.
+ */
+export interface WorkInterval {
+  id: string;
+  day_date: string;
+  started_at: string;
+  /** null means the interval is running right now. */
+  ended_at: string | null;
+  running: boolean;
+  /** Length as the server counts it; an open interval is measured to now. */
+  minutes: number;
+  source: WorkIntervalSource;
+  mode: WorkMode;
+  auto_started_at: string | null;
+  auto_ended_at: string | null;
+  app_bundle_id: string | null;
+  note: string | null;
+  /** When a person intervened; null means nobody has. */
+  edited_at: string | null;
+}
+
+/** The work of one day: its intervals and what they add up to. */
+export interface WorkDay {
+  day_date: string;
+  intervals: WorkInterval[];
+  /** null means «не измерено» — no intervals at all — and never zero. */
+  work_minutes: number | null;
+  running: boolean;
+}
+
+/** A new interval. `corrected` cannot be declared: it is reached by editing. */
+export interface WorkIntervalDraft {
+  started_at: string;
+  ended_at?: string | null;
+  source?: 'manual' | 'agent';
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
+}
+
+/**
+ * An edit of an interval; only the keys present are touched.
+ *
+ * `ended_at: null` reopens a closed interval, an absent `ended_at` leaves it
+ * alone — which is why this is a partial object rather than the whole row.
+ */
+export interface WorkIntervalPatch {
+  started_at?: string;
+  ended_at?: string | null;
+  mode?: WorkMode;
+  app_bundle_id?: string | null;
+  note?: string | null;
 }
 
 /** What a mark can say. Absence of a mark is the fourth answer, and it is not a value. */
@@ -1060,5 +1340,511 @@ export const goalsAPI = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Roles (PHASE-03/134)
+// ---------------------------------------------------------------------------
+
+/** One role of the directory. `target_share_pct` is a hypothesis, never a norm. */
+export interface Role {
+  id: number;
+  code: string;
+  title: string;
+  description: string | null;
+  target_share_pct: number | null;
+  is_work: boolean;
+  ord: number;
+  is_active: boolean;
+}
+
+/** One role's share of one day: minutes, the share they make, and the acts. */
+export interface RoleDaySlice {
+  role_id: number;
+  role_code: string;
+  title: string;
+  minutes: number;
+  share_pct: number;
+  target_share_pct: number | null;
+  act_count: number;
+}
+
+/** Minutes charged to a role. `is_manual` is what the screen marks. */
+export interface RoleTimeBlock {
+  id: number;
+  work_day: string;
+  role_id: number;
+  role_code: string;
+  source: string;
+  started_at: string | null;
+  ended_at: string | null;
+  minutes: number;
+  confidence: string;
+  external_ref: string | null;
+  rule_id: number | null;
+  note: string | null;
+  is_manual: boolean;
+}
+
+/** One act: the role happened, and this is what it was. */
+export interface RoleAct {
+  id: number;
+  work_day: string;
+  role_id: number;
+  role_code: string;
+  act_kind: string;
+  title: string;
+  source: string;
+  external_ref: string | null;
+  confidence: string;
+  occurred_at: string | null;
+  note: string | null;
+  is_manual: boolean;
+}
+
+/** Where a day went and which roles happened on it, in one answer. */
+export interface RoleDay {
+  work_day: string;
+  total_minutes: number;
+  roles: RoleDaySlice[];
+  blocks: RoleTimeBlock[];
+  acts: RoleAct[];
+}
+
+/** «Полтора часа на найм» as it is sent. The day is the server's when omitted. */
+export interface RoleTimeBlockDraft {
+  role_code: string;
+  minutes: number;
+  work_day?: string;
+  note?: string | null;
+}
+
+/** «Написал ADR» as it is sent. */
+export interface RoleActDraft {
+  role_code: string;
+  act_kind: string;
+  title: string;
+  work_day?: string;
+  note?: string | null;
+}
+
+/**
+ * The roles endpoints.
+ *
+ * `day()` without a date asks the server which day it is — the boundary runs
+ * from 04:00 and only `app/core/daytime.py` answers that question, so the
+ * browser never dates a screen from its own calendar.
+ */
+export const rolesAPI = {
+  day: async (date?: string) => {
+    return fetcher<RoleDay>(date ? `/roles/day/${date}` : '/roles/day');
+  },
+
+  listRoles: async () => {
+    return fetcher<Role[]>('/roles');
+  },
+
+  addTimeBlock: async (draft: RoleTimeBlockDraft) => {
+    return fetcher<RoleTimeBlock>('/role-time-blocks', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  deleteTimeBlock: async (id: number) => {
+    return fetcher<Record<string, never>>(`/role-time-blocks/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  addAct: async (draft: RoleActDraft) => {
+    return fetcher<RoleAct>('/role-acts', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  deleteAct: async (id: number) => {
+    return fetcher<Record<string, never>>(`/role-acts/${id}`, { method: 'DELETE' });
+  },
+};
+
+// ============ Chat ============
+
+/** Why a conversation was started. Mirrors `CONVERSATION_KINDS` on the server. */
+export type ConversationKind = 'general' | 'day_open' | 'day_close';
+
+/** Who said it. `system_note` is the server speaking, not the model. */
+export type ChatRole = 'user' | 'assistant' | 'system_note';
+
+/**
+ * State of one message.
+ *
+ * `interrupted` and `failed` are different facts: the first has the text that
+ * arrived before the connection died, the second has no text and a machine code.
+ */
+export type ChatMessageStatus = 'streaming' | 'complete' | 'interrupted' | 'failed';
+
+/**
+ * What one conversation has cost the subscription so far.
+ *
+ * Three counters rather than one total: a token read from the cache is not
+ * priced like a fresh input token, and the sum would hide the very effect the
+ * number is shown for — the second turn being cheaper than the first.
+ */
+export interface ChatUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  message_count: number;
+  latency_ms_median: number | null;
+}
+
+export interface ChatConversation {
+  id: number;
+  title: string | null;
+  started_on: string;
+  kind: ConversationKind;
+  llm_backend: string | null;
+  context_version: number;
+  last_message_at: string | null;
+  archived: boolean;
+  created_at: string;
+  usage: ChatUsage;
+}
+
+export interface ChatMessage {
+  id: number;
+  seq: number;
+  role: ChatRole;
+  content: string;
+  status: ChatMessageStatus;
+  error_code: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  latency_ms: number | null;
+  model: string | null;
+  created_at: string;
+}
+
+/** A conversation read back with its messages — what a reload of `/chat` draws. */
+export interface ChatConversationDetail extends ChatConversation {
+  messages: ChatMessage[];
+}
+
+/**
+ * Что чат видит: карточка дня тем же текстом, каким она ушла в системный промпт.
+ *
+ * `text` не пересказ — раскрывашка «что чат видит» существует ровно затем, чтобы
+ * фразу из ответа модели можно было найти здесь глазами. `dropped_sections`
+ * называет секции, у которых потолок съел строки.
+ */
+export interface ChatContext {
+  conversation_id: number;
+  entry_date: string;
+  text: string;
+  chars: number;
+  max_chars: number;
+  truncated: boolean;
+  dropped_sections: string[];
+}
+
+export const chatAPI = {
+  list: async (limit = 50) => {
+    return fetcher<ChatConversation[]>(`/chat/conversations?limit=${limit}`);
+  },
+
+  create: async (kind: ConversationKind = 'general') => {
+    return fetcher<ChatConversation>('/chat/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ kind }),
+    });
+  },
+
+  get: async (id: number) => {
+    return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /** Карточка дня разговора — то, что модель увидела перед ответом. */
+  context: async (id: number) => {
+    return fetcher<ChatContext>(`/chat/conversations/${id}/context`);
+  },
+
+  /**
+   * Delete one conversation — rows and the CLI session file both.
+   *
+   * 204 carries no body, and `fetcher` is fine with that; what the server does
+   * to the `.jsonl` on disk is a machine code in its log, not a status here.
+   */
+  remove: async (id: number) => {
+    return fetcher<Record<string, never>>(`/chat/conversations/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * Send one turn and read the answer as it is produced.
+   *
+   * Not `fetcher`: that one waits for the whole body, which is exactly what
+   * this endpoint exists to avoid. `signal` lets the screen abandon a turn;
+   * the server still stores what it had, with status `interrupted`.
+   */
+  streamMessage: async (
+    id: number,
+    content: string,
+    onEvent: (event: ChatStreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    const response = await fetch(`${API_BASE_URL}/chat/conversations/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+      // Same as every `fetcher` call: the browser authenticates by the session
+      // cookie of #109, and a turn sent without it is a 401 in mid-conversation.
+      credentials: 'include',
+      signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
+      throw new APIError(response.status, error.detail || 'An error occurred');
+    }
+    if (!response.body) {
+      throw new APIError(response.status, 'Поток ответа недоступен в этом браузере');
+    }
+
+    const reader = response.body.getReader();
+    // `stream: true` on the decoder is what keeps a multi-byte character whole
+    // when a chunk ends in the middle of it — Russian text splits routinely.
+    const decoder = new TextDecoder();
+    const parser = new ChatStreamParser();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const event of parser.push(decoder.decode(value, { stream: true }))) {
+          onEvent(event);
+        }
+      }
+      for (const event of parser.flush()) onEvent(event);
+    } finally {
+      reader.releaseLock();
+    }
+  },
+};
+
+// -- Days range and weeks ---------------------------------------------------
+
+/**
+ * One day of a range, in the shape the old `/api/days` answered with.
+ *
+ * `verdict` carries three states, not two: `won`, `lost` and `null` — «день не
+ * закрыт». The square of the timeline is painted from this field alone, which
+ * is what `life.py` could not do while it was reading prose with a regexp.
+ */
+export interface DayListItem {
+  date: string;
+  /** Title of the day's plan; empty when there is no plan or it had none. */
+  title: string;
+  verdict: Verdict | null;
+  /** Work tasks closed, and work tasks planned. */
+  done: number;
+  total: number;
+}
+
+/** One line of «На разбор в воскресенье», with its own tick. */
+export interface WeekReviewItem {
+  id: string;
+  ord: number;
+  text_md: string;
+  done: boolean;
+}
+
+/**
+ * One week as a fixed snapshot: counters taken at `computed_at`, prose beside
+ * them. Reopening a day moves the counters and leaves the prose alone.
+ */
+export interface Week {
+  iso_code: string;
+  starts_on: string;
+  ends_on: string;
+  won_days: number;
+  total_days: number;
+  /** null when no day of the week was closed — not the same as a streak of 0. */
+  streak_end: number | null;
+  retro_md: string;
+  blockers_md: string;
+  mgmt_retro_md: string;
+  weekly_number_md: string;
+  review_items: WeekReviewItem[];
+  computed_at: string;
+}
+
+/** What a week write says. The counters are the server's and cannot be sent. */
+export interface WeekDraft {
+  retro_md?: string;
+  blockers_md?: string;
+  mgmt_retro_md?: string;
+  weekly_number_md?: string;
+  review_items?: { text_md: string; done: boolean }[];
+}
+
+export const daysAPI = {
+  /**
+   * The days of `[from, to]`, oldest first.
+   *
+   * One request for a whole range rather than one per square: the timeline
+   * draws a year at a time and the sidebar the whole history.
+   */
+  range: async (from: string, to: string) => {
+    return fetcher<DayListItem[]>(`/days?from=${from}&to=${to}`);
+  },
+};
+
+export const weeksAPI = {
+  /** One week by its ISO code. A week nobody wrote about answers too. */
+  get: async (iso: string) => {
+    return fetcher<Week>(`/weeks/${iso}`);
+  },
+
+  /** The week the server's day boundary says is running. */
+  getCurrent: async () => {
+    return fetcher<Week>('/weeks');
+  },
+
+  /** Replace the retro of a week; the counters stay the server's. */
+  put: async (iso: string, draft: WeekDraft) => {
+    return fetcher<Week>(`/weeks/${iso}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+};
+
+/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
+export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
+
+/** Which client a tap came from; the backend records it on every event. */
+export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
+
+/**
+ * One button of the directory, already carrying the state of the day it was
+ * read for.
+ *
+ * `today_total` is null for a tick — a box is not a quantity — and `done` is
+ * the field both kinds answer. The client never sees `category_id` as a thing
+ * to act on: what the button means is the server's business, and the only id a
+ * tap sends is `id`.
+ */
+export interface QuickMark {
+  id: number;
+  label: string;
+  category_id: number;
+  field_id: number;
+  kind: QuickMarkKind;
+  step: number | null;
+  unit_label: string | null;
+  icon: string | null;
+  color: string | null;
+  hotkey: string | null;
+  order: number;
+  show_in_agent: boolean;
+  is_active: boolean;
+  entry_date: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** The recorded tap and the state it produced — one call per tap, no refetch. */
+export interface QuickMarkEvent {
+  event_id: number;
+  quick_mark_id: number;
+  entry_id: number | null;
+  entry_date: string;
+  occurred_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** What a tap says beyond the button's own id. */
+export interface QuickMarkTap {
+  /** Overrides the button's step; for a tick, 0 unticks. */
+  value?: number;
+  source?: QuickMarkSource;
+  utc_offset_minutes?: number;
+}
+
+/** A tap taken back, and the state the day is left in. */
+export interface QuickMarkUndo {
+  event_id: number;
+  quick_mark_id: number;
+  entry_date: string;
+  undone_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** How many taps one client contributed over the period, and how many were undone. */
+export interface QuickMarkSourceUsage {
+  source: QuickMarkSource;
+  events: number;
+  undone: number;
+}
+
+export const quickMarksAPI = {
+  /**
+   * The directory with today's state on it.
+   *
+   * No date is sent: which day is running is the server's answer
+   * (`local_date()`), and a browser that computed its own would disagree with
+   * it between midnight and the boundary hour.
+   */
+  list: async () => {
+    return fetcher<QuickMark[]>('/quick-marks');
+  },
+
+  /**
+   * Tap one button.
+   *
+   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
+   * and never decides the day it lands in.
+   */
+  tap: async (id: number, tap: QuickMarkTap = {}, idempotencyKey?: string) => {
+    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
+      method: 'POST',
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+      body: JSON.stringify({
+        source: 'web',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+        ...tap,
+      }),
+    });
+  },
+
+  /**
+   * Take the last tap back.
+   *
+   * One call, and its answer carries the state the day is left in, exactly as a
+   * tap does — the row repaints from it rather than refetching the directory.
+   * A 409 is not a failure of the request but the server's answer that this tap
+   * is no longer the one that can be undone; the caller shows the reason.
+   */
+  undo: async (eventId: number) => {
+    return fetcher<QuickMarkUndo>(`/quick-marks/events/${eventId}/undo`, {
+      method: 'POST',
+    });
+  },
+
+  /** How the taps of a period split between the clients that made them. */
+  sources: async (params: { from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const suffix = query.toString();
+    return fetcher<QuickMarkSourceUsage[]>(
+      `/quick-marks/events/sources${suffix ? `?${suffix}` : ''}`
+    );
   },
 };

@@ -33,6 +33,15 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       API_KEY: ${API_KEY:-}
+      # Browser session (PHASE-03/109): the web client trades API_KEY for an
+      # HttpOnly cookie signed with this secret. Empty is fine in development —
+      # the app falls back to a publicly known dev secret; prod refuses to start
+      # on an empty value. Changing it logs every browser out at once.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Attach `Secure` to that cookie. `http://localhost` is a secure context
+      # in every current browser, so the default works for the laptop; set it to
+      # false to reach the dev server from a phone over plain http on the LAN.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       # cli | api | empty (auto). cli shells out to the `claude` binary
       # baked into the image and uses the mounted host login below.
       LLM_BACKEND: ${LLM_BACKEND:-cli}
@@ -50,6 +59,39 @@ services:
       - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
       - ${HOME}/.claude.json:/root/.claude.json
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # The one background scheduler (PHASE-03/108). Same image as the backend, same
+  # database, different command; it publishes no port and answers no request, so
+  # `docker compose logs -f worker` is the only window into what it does.
+  # No container_name on purpose: it would collide with `deploy.replicas`, and
+  # exactly one instance is the whole point of this service.
+  worker:
+    build: ./services/backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://habit_user:habit_pass@postgres:5432/habit_tracker
+      POSTGRES_USER: habit_user
+      POSTGRES_PASSWORD: habit_pass
+      POSTGRES_DB: habit_tracker
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # Logs are this container's only output, and python buffers stdout when it
+      # is a pipe: a buffered scheduler is indistinguishable from a dead one.
+      PYTHONUNBUFFERED: "1"
+      # The jobs arriving with #99/#151 shell out to the same claude CLI as the
+      # backend, from the same image.
+      LLM_BACKEND: ${LLM_BACKEND:-cli}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - ./services/backend:/app
+      - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
+    deploy:
+      replicas: 1
+    command: python -m app.worker
 
   frontend:
     build: ./services/frontend

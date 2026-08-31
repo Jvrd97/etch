@@ -1,12 +1,17 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93
-// summary: route id -> lucide icon map (+ the Day summary, Day and Goals glyphs) — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
+
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/134
+// summary: route id -> lucide icon map (+ the Day summary, Day, Goals, Roles, Chat, Life and Week glyphs) — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
 
 import {
   BookOpen,
   CalendarCheck,
   CalendarDays,
+  CalendarRange,
   FolderKanban,
+  Gauge,
+  Grid3x3,
   Home,
+  MessagesSquare,
   MoreHorizontal,
   NotebookPen,
   Sparkles,
@@ -27,7 +32,11 @@ const ROUTE_ICONS: Record<string, LucideIcon> = {
   dashboard: Home,
   today: Sun,
   day: CalendarCheck,
+  life: Grid3x3,
+  week: CalendarRange,
   goals: Target,
+  roles: Gauge,
+  chat: MessagesSquare,
   'daily-summary': NotebookPen,
   table: Table2,
   categories: FolderKanban,

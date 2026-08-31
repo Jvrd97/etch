@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today
-// summary: desktop nav — Mobile view toggle added as the rightmost item
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-03/109
+// summary: desktop nav — Mobile view toggle added as the rightmost item, with "Выйти" after it
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ViewToggle from '@/components/ViewToggle';
+import LogoutButton from '@/components/LogoutButton';
 import { APP_ROUTES } from '@/lib/routes';
 import { routeIcon } from '@/components/route-icons';
 
@@ -50,6 +51,7 @@ export default function Navigation() {
             })}
             <span aria-hidden="true" className="w-px h-6 bg-white/10 mx-1" />
             <ViewToggle />
+            <LogoutButton />
           </div>
         </div>
       </div>

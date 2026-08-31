@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94
 // summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { DayDetail, Plan } from '@/lib/api';
+import type { DayDetail, Plan, PlanViolation } from '@/lib/api';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
 import { DAY_NEVER_OPENED } from '@/lib/marks';
@@ -31,7 +31,48 @@ const DAY: DayDetail = {
     workdays: [1, 2, 3, 4, 5],
     nocode_days: [2, 4],
     required_anchors: ['подъём'],
+    overtime_lost_min: 600,
+    max_study_items: 2,
+    wake_at: '06:00:00',
+    work_start: '07:45:00',
+    review_at: '15:40:00',
+    bedtime_max: '22:30:00',
+    free_evening_start: '19:10:00',
+    free_evening_end: '21:00:00',
+    relationship_anchor_required: true,
+    relationship_evening_start: '18:30:00',
+    relationship_evening_end: '21:00:00',
+    days_off: [6, 7],
+    hard_edge_kinds: ['anchor', 'hard_point'],
+    anchors: ['подъём', 'relationship'],
+    verdict_rule: { reason_order: ['overtime', 'anchors', 'tasks'] },
     note_md: '',
+  },
+  day_map: {
+    rule_set_id: 2,
+    edges: [
+      { kind: 'wake', label: 'подъём', at: '06:00:00' },
+      { kind: 'sport', label: 'спорт', at: null },
+      { kind: 'work_start', label: 'старт работы', at: '07:45:00' },
+      { kind: 'work_stop', label: 'стоп работы', at: '16:00:00' },
+      { kind: 'review', label: 'ревью', at: '15:40:00' },
+      { kind: 'bedtime', label: 'отбой', at: '22:30:00' },
+    ],
+    free_evening: { start: '19:10:00', end: '21:00:00' },
+    relationship_evening: { start: '18:30:00', end: '21:00:00' },
+    relationship_anchor_required: true,
+    work_cap_min: 480,
+    work_hard_cap_min: 540,
+    overtime_lost_min: 600,
+    work_stop_at: '16:00:00',
+    max_work_tasks: 4,
+    max_study_items: 2,
+    anchors: ['подъём', 'relationship'],
+    hard_edge_kinds: ['anchor', 'hard_point'],
+    workdays: [1, 2, 3, 4, 5],
+    days_off: [6, 7],
+    nocode_days: [2, 4],
+    verdict_reasons: ['overtime', 'anchors', 'tasks'],
   },
   plan: null,
   has_plan: false,
@@ -59,6 +100,13 @@ const DAY: DayDetail = {
     missing_data: ['work_minutes'],
     missing_anchors: [],
     source: 'close',
+  },
+  work: {
+    day_date: '2026-08-30',
+    intervals: [],
+    // «Не измерено», not zero: the day has no intervals at all.
+    work_minutes: null,
+    running: false,
   },
 };
 
@@ -132,6 +180,7 @@ let state: {
   detail: DayDetail | null;
   loading: boolean;
   error: string | null;
+  violations: PlanViolation[];
   reload: () => void;
 };
 
@@ -141,10 +190,17 @@ mock.module('@/hooks/useDay', () => ({
   useDay: () => state,
 }));
 
+// The screen carries the shared day navigation since `#94`; it fetches a range
+// of its own, and this test is about the day rather than about the list beside it.
+mock.module('@/hooks/useDays', () => ({
+  useDays: () => ({ days: [], loading: false, error: null, reload: () => {} }),
+  LOAD_DAYS_ERROR: 'Не удалось загрузить дни',
+}));
+
 const { default: DayScreen } = await import('./DayScreen');
 
 beforeEach(() => {
-  state = { detail: DAY, loading: false, error: null, reload: () => {} };
+  state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
 });
 
 afterEach(() => {
@@ -226,7 +282,7 @@ describe('DayScreen', () => {
   });
 
   it('shows the failure instead of an empty day', () => {
-    state = { detail: null, loading: false, error: 'нет правила', reload: () => {} };
+    state = { detail: null, loading: false, error: 'нет правила', violations: [], reload: () => {} };
     render(<DayScreen date="1999-01-01" />);
 
     expect(screen.getByText('нет правила')).toBeDefined();

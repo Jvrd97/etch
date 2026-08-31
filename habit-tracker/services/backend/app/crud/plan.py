@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93
+# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93, PHASE-03/147
 # summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), overlapping windows found by a self-join on `&&` rather than on render, and every goal of the quarter the document names looked up in one query so a link to a goal that does not exist is a 422 naming the task rather than a 500 naming a foreign key
 """
 Database access for the plan of a day.
@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.daytime import DayBoundary, current_boundary
+from app.day.constraints import DraftItem, PlanDraft
 from app.crud import goal as goal_crud
 from app.crud import mark as mark_crud
 from app.day.plan_validate import (
@@ -518,9 +519,52 @@ __all__ = [
     "PlanRejected",
     "build_schedule",
     "delete_plan",
+    "draft_of",
     "find_overlaps",
     "get_plan",
     "prepare_plan",
     "replace_plan",
     "to_response",
 ]
+
+
+def draft_of(
+    document: PlanDocument,
+    on: date,
+    boundary: DayBoundary | None = None,
+) -> PlanDraft:
+    """
+    The document as the draft `app.day.constraints` judges.
+
+    A second reading of the same rows rather than a second source of truth:
+    `prepare_plan` already resolved every window across midnight, and the draft
+    is those resolved rows with the text dropped. Dropping it is the point — a
+    violation outlives the plan, and nothing downstream may be able to quote a
+    line.
+
+    Section kinds travel with the items so `task_cap` can count what is study
+    and what is work without asking which section a row came from twice.
+    """
+    resolved_boundary = boundary if boundary is not None else current_boundary()
+    _, flat = prepare_plan(document, on, resolved_boundary)
+    section_kinds = [section.kind for section in document.sections]
+    return PlanDraft(
+        target=on,
+        items=tuple(
+            DraftItem(
+                item_id=row.id,
+                kind=row.source.kind,
+                rigidity=row.source.rigidity,
+                code=row.source.code,
+                section_kind=(
+                    section_kinds[row.section_index]
+                    if row.section_index < len(section_kinds)
+                    else ""
+                ),
+                day_date=on,
+                starts_at=row.starts_at,
+                ends_at=row.ends_at,
+            )
+            for row in flat
+        ),
+    )

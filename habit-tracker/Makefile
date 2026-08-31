@@ -23,7 +23,8 @@ FRONTEND_PORT ?= 3000
 
 .DEFAULT_GOAL := help
 .PHONY: help up down stop restart logs ps build migrate deploy backup enable-boot \
-        dev dev-back dev-front dev-deps dev-createdb dev-migrate dev-stop dev-db dev-docker
+        dev dev-back dev-front dev-deps dev-createdb dev-migrate dev-stop dev-db dev-docker \
+        front-check
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -102,6 +103,10 @@ dev-migrate: dev-createdb ## Apply migrations against the postgres at PG_HOST:PG
 dev-stop: ## Stop the host dev processes
 	@pkill -f "uvicorn app.main:app" 2>/dev/null && echo "backend stopped" || echo "backend not running"
 	@pkill -f "next dev" 2>/dev/null && echo "frontend stopped" || echo "frontend not running"
+
+front-check: ## Build the frontend and prove the API key is not in the bundle (needs API_KEY)
+	@test -n "$(API_KEY)" || (echo "front-check needs API_KEY=<the deployed key>"; exit 1)
+	cd $(FRONTEND_DIR) && bun run build && bun run check:bundle $(API_KEY)
 
 dev-db: ## Optional: start postgres in docker (publishes host port 5433)
 	$(DEV_COMPOSE) up -d postgres

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90
-# summary: persistence of the day's итог — the facts gathered from rows that already exist, the upsert that closes a day, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
+# [review:need-review] PHASE-03/90, PHASE-03/91
+# summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at close only where nothing measured it), the upsert that closes a day, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
 """
 Database access for the итог of a day.
 
@@ -19,6 +19,13 @@ re-judges rows written here (`source='close'`) and only ever writes the derived
 verdict recomputed from marks that were never made would be zeros pretending to
 be history.
 
+**Минуты работы берутся у интервалов, а не у того, кто закрывал день.**
+`work_interval` (`#91`) is a measurement; the `work_minutes` of `POST /close` is
+somebody's estimate typed into a field. Where both exist the measurement wins,
+and where there are no intervals at all the estimate is used as it always was —
+so an imported day and a day closed before the agent existed keep their number.
+A day with neither says `None`, which is «не измерено» and not zero.
+
 **Стрик считается в одном месте.** `close_day` writes the row and then folds
 `app.day.streak.step_streak` over every day in date order. A running number kept
 per row and patched on write would drift the first time a past day is closed
@@ -36,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import work_interval as work_crud
 from app.day.evaluate import VERDICT_WON, DayFacts, Verdict, evaluate_day
 from app.day.rules import resolve_rule
 from app.day.streak import step_streak
@@ -89,13 +97,21 @@ def facts_of(
 
     Anchors are counted from `plan_item.kind='anchor'` rather than from a
     catalogue: `anchor_kind`/`day_anchor` arrive with `#92`, and until then the
-    lines of the plan are the only place an anchor exists.
+    lines of the plan are the only place an anchor exists. Their *kinds* — which
+    anchors of the canon this day closed — are read off the codes those lines
+    carry and are `None` when the plan names none, so an unnamed composition
+    falls back to the counter instead of losing the day (`#142`).
+
+    `work_minutes` is passed in rather than read here, because the two callers
+    resolve it differently: a live preview measures the intervals as they stand,
+    a recompute takes the sum it already read for the whole history at once.
     """
     return DayFacts(
         closed=closed,
         tasks=mark_crud.task_counts(plan, marks),
         anchors=mark_crud.anchor_counts(plan, marks),
         work_minutes=work_minutes,
+        anchor_kinds=mark_crud.closed_anchor_kinds(plan, marks),
     )
 
 
@@ -186,7 +202,11 @@ async def summary_for(
     stored = await get_summary(db, on)
     if stored is not None:
         return _to_response(stored, missing_anchors=missing)
-    facts = facts_of(plan, marks, work_minutes=None, closed=False)
+    # The intervals of the day are the measurement; an unclosed day has no other
+    # source for the number, and reading them here is what lets the screen show
+    # «уже 7 ч 40 мин» before anybody presses «закрыть день».
+    measured = await work_crud.minutes_for_day(db, on)
+    facts = facts_of(plan, marks, work_minutes=measured, closed=False)
     return _preview(on, evaluate_day(rule, facts), missing_anchors=missing)
 
 
@@ -287,6 +307,12 @@ async def recompute_history(db: AsyncSession) -> None:
     whose marks were never entered; recomputing it would replace history with
     zeros. Only `streak_after` — derived by definition — is written onto it.
 
+    **Интервалы сильнее числа, введённого при закрытии.** A day whose
+    `work_interval` rows add up gets their sum written onto its row; a day with
+    no intervals keeps whatever `POST /close` said, including `None`. That is
+    what makes the intervals the source of `work_minutes` without breaking a
+    history closed before they existed.
+
     **Переопределение — пятое правило вердикта, и оно одностороннее.**
     `evaluate_day` decides four conditions over values; the line below adds the
     fifth, which no pure function can hold — a person saying «день был выигран,
@@ -297,6 +323,9 @@ async def recompute_history(db: AsyncSession) -> None:
     stored row, not of the day's facts.
     """
     rules = await day_crud.list_rules(db)
+    # Every day that has intervals, in one read: this walks the whole history,
+    # and a query per row would turn a recompute into a query per day.
+    measured = await work_crud.minutes_by_day(db)
     result = await db.execute(select(DaySummary).order_by(DaySummary.day_date))
     streak = 0
 
@@ -304,6 +333,10 @@ async def recompute_history(db: AsyncSession) -> None:
         if row.source == SOURCE_CLOSE:
             plan = await plan_crud.get_plan(db, row.day_date)
             marks = await mark_crud.list_marks(db, row.day_date)
+            # Measurement over estimate, and the row is rewritten to what the
+            # verdict was reached from — otherwise the screen would show one
+            # number and the judgement stand on another.
+            row.work_minutes = measured.get(row.day_date, row.work_minutes)
             facts = facts_of(plan, marks, work_minutes=row.work_minutes, closed=True)
             verdict = evaluate_day(resolve_rule(rules, row.day_date), facts)
             row.verdict = VERDICT_WON if row.verdict_override else verdict.verdict

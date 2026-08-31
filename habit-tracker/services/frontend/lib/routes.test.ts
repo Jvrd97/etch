@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93
+
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/134
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
 
 import { describe, expect, it } from 'bun:test';
@@ -54,7 +55,11 @@ describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
       'day',
+      'life',
+      'week',
       'goals',
+      'roles',
+      'chat',
       'daily-summary',
       'table',
       'journal',

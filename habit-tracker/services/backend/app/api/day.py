@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90
-# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/142, PHASE-03/147
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 from datetime import date
 from uuid import UUID
 
@@ -11,12 +11,23 @@ from app.core.daytime import today_local
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import plan_violation as violation_crud
 from app.crud import summary as summary_crud
+from app.crud import work_interval as work_crud
+from app.crud.work_interval import IntervalNotOnDay
+from app.day import constraints, skeleton
 from app.day.plan_validate import PlanRejected
-from app.day.rules import NoRuleForDate, is_openable
+from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
-from app.schemas.day import DayDetailResponse, DayResponse, DayRuleSetResponse
+from app.schemas.day import (
+    DayDetailResponse,
+    DayEdgeResponse,
+    DayMapResponse,
+    DayResponse,
+    DayRuleSetResponse,
+    IntervalResponse,
+)
 from app.schemas.mark import (
     MarkIn,
     MarkResponse,
@@ -24,7 +35,14 @@ from app.schemas.mark import (
     NotebookResponse,
 )
 from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
+from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DaySummaryResponse
+from app.schemas.work_interval import (
+    WorkDayResponse,
+    WorkIntervalIn,
+    WorkIntervalPatch,
+    WorkIntervalResponse,
+)
 
 router = APIRouter(prefix="/day", tags=["day"])
 
@@ -50,6 +68,43 @@ def _person_is_here(on: date) -> bool:
     из любопытства was enough to erase the difference `verdict = null` stands on.
     """
     return is_openable(on, today_local())
+
+
+def _map(canon: DayMap) -> DayMapResponse:
+    """
+    The map of the day as the wire carries it.
+
+    Built from `app.day.rules.day_map` rather than from the row field by field:
+    the map is one answer, and a DTO assembled here out of fifteen reads would
+    be the second place «где стоят края дня» could be got wrong.
+    """
+    return DayMapResponse(
+        rule_set_id=canon.rule_set_id,
+        edges=[
+            DayEdgeResponse(kind=edge.kind, label=edge.label, at=edge.at)
+            for edge in canon.edges
+        ],
+        free_evening=IntervalResponse(
+            start=canon.free_evening.start, end=canon.free_evening.end
+        ),
+        relationship_evening=IntervalResponse(
+            start=canon.relationship_evening.start,
+            end=canon.relationship_evening.end,
+        ),
+        relationship_anchor_required=canon.relationship_anchor_required,
+        work_cap_min=canon.work_cap_min,
+        work_hard_cap_min=canon.work_hard_cap_min,
+        overtime_lost_min=canon.overtime_lost_min,
+        work_stop_at=canon.work_stop_at,
+        max_work_tasks=canon.max_work_tasks,
+        max_study_items=canon.max_study_items,
+        anchors=list(canon.anchors),
+        hard_edge_kinds=list(canon.hard_edge_kinds),
+        workdays=list(canon.workdays),
+        days_off=list(canon.days_off),
+        nocode_days=list(canon.nocode_days),
+        verdict_reasons=list(canon.verdict_reasons),
+    )
 
 
 def _day(day: Day) -> DayResponse:
@@ -80,12 +135,14 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
     return DayDetailResponse(
         day=_day(day),
         rule=DayRuleSetResponse.model_validate(rule),
+        day_map=_map(day_map(rule)),
         plan=plan,
         has_plan=plan is not None,
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
         summary=await summary_crud.summary_for(db, day.day_date, rule, stored, marks),
+        work=await work_crud.day_response(db, day.day_date),
     )
 
 
@@ -137,7 +194,9 @@ async def get_day(
     """
     День по дате `YYYY-MM-DD`.
 
-    Отдаёт сам день, правило, по которому он считается, план — секциями,
+    Отдаёт сам день, правило, по которому он считается, карту дня из той же
+    строки правила — жёсткие точки, свободный вечер, потолки, состав якорей, —
+    план — секциями,
     пунктами, расписанием и наложениями, — отметки пунктов, счётчик задач и
     блокнот. Плана нет — `plan: null` и `has_plan: false`, а не 404: пустой день
     это ответ, а не ошибка.
@@ -184,7 +243,23 @@ async def post_plan(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=rejected.as_detail(),
         ) from rejected
+    # The asymmetry of `#147`: a person's edit is stored and then annotated, a
+    # machine's draft is refused. The write has already happened here, so a
+    # broken rule becomes a `warn` row beside the plan rather than a 422 — a
+    # system that refuses a person the right to edit their own day gets
+    # abandoned in a week.
+    await violation_crud.record_violations(
+        db,
+        day.day_date,
+        constraints.check_all(
+            plan_crud.draft_of(document, day.day_date),
+            rule,
+            severity=constraints.SEVERITY_WARN,
+        ),
+        origin=constraints.ORIGIN_HUMAN,
+    )
     await day_crud.touch_day(db, day, opened=False)
+    await db.commit()
     return await plan_crud.to_response(db, stored)
 
 
@@ -279,9 +354,10 @@ async def post_close(
     `anchors`, `overtime`, — а не «день не выигран»: читателю нужно знать,
     что именно чинить.
 
-    `work_minutes` допускает `null` — «не измерено», а не ноль: интервалы работы
-    приезжают с `#91`, и до тех пор проверка переработки пропускается, а факт
-    уходит в `missing_data`.
+    `work_minutes` в теле — оценка на случай дня без интервалов; измерение
+    сильнее её, и день, у которого есть `work_interval`, считается по их сумме.
+    `null` при обоих пустых — «не измерено», а не ноль: проверка переработки
+    пропускается, а факт уходит в `missing_data`.
 
     Переопределение вердикта требует записки. 422 без неё — от схемы, и то же
     самое отвергает `CHECK` в базе: валидатор это сообщение, а правило — база.
@@ -302,3 +378,214 @@ async def post_close(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(refused)
         ) from refused
+
+
+@router.get("/{on}/work-intervals", response_model=WorkDayResponse)
+async def get_work_intervals(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> WorkDayResponse:
+    """
+    Интервалы работы за день и их сумма.
+
+    `work_minutes: null` — интервалов нет вообще, то есть «не измерено», а не
+    ноль: правило переработки в такой день не проверяется, а факт уходит в
+    `missing_data` итога. День, где записаны только паузы (`mode: off`),
+    измерен — и отвечает нулём.
+
+    Заголовков окон в ответе нет и быть не может: под них нет колонки. Граница
+    приватности проходит по этой таблице — интервал, режим и, самое большее,
+    идентификатор приложения. Скриншотов не существует нигде в системе.
+    """
+    await _resolve(db, on)
+    return await work_crud.day_response(db, on)
+
+
+@router.post(
+    "/{on}/work-intervals",
+    response_model=WorkIntervalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_work_interval(
+    on: date, body: WorkIntervalIn, db: AsyncSession = Depends(get_db)
+) -> WorkIntervalResponse:
+    """
+    Завести интервал работы или паузы.
+
+    Ручной ввод — основной путь, а не запасной: `source` по умолчанию `manual`,
+    и запись руками ничем не хуже посчитанной агентом. Объявить `corrected`
+    нельзя — в него переводит правка агентского интервала, и это факт, который
+    видел сервер, а не слово, которое может напечатать любой клиент.
+
+    Конец можно не присылать: интервал тогда идёт прямо сейчас и считается до
+    текущего момента, но не дальше конца своих суток.
+
+    День интервала считается по его началу — интервал 23:00-01:00 принадлежит
+    дню начала целиком и пополам не режется. Начало, принадлежащее другому дню,
+    отвергается 422, а не подшивается молча к чужой дате.
+    """
+    await _resolve(db, on)
+    try:
+        row = await work_crud.create(db, on, body)
+    except IntervalNotOnDay as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return work_crud.to_response(row)
+
+
+@router.patch("/{on}/work-intervals/{interval_id}", response_model=WorkIntervalResponse)
+async def patch_work_interval(
+    on: date,
+    interval_id: UUID,
+    body: WorkIntervalPatch,
+    db: AsyncSession = Depends(get_db),
+) -> WorkIntervalResponse:
+    """
+    Поправить интервал.
+
+    Правка агентского интервала не затирает предложение: границы, которые
+    посчитал агент, уезжают в `auto_started_at`/`auto_ended_at`, `source`
+    становится `corrected`, а `edited_at` помечает вмешательство. Экран потому
+    и может показать разом исправленное значение и то, что предлагал агент.
+
+    Двигаются только названные в теле поля. `ended_at: null` открывает интервал
+    заново, отсутствие `ended_at` не трогает его вовсе — иначе правка заметки
+    молча воскрешала бы закрытый час назад интервал.
+
+    404 — интервала с таким id в этом дне нет. Id из другого дня сюда не
+    подходит намеренно: интервал адресуется как «этот интервал этого дня».
+    """
+    await _resolve(db, on)
+    row = await work_crud.get(db, on, interval_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В дне {on.isoformat()} нет интервала {interval_id}.",
+        )
+    try:
+        updated = await work_crud.update(db, on, row, body)
+    except IntervalNotOnDay as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return work_crud.to_response(updated)
+
+
+@router.delete(
+    "/{on}/work-intervals/{interval_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_work_interval(
+    on: date, interval_id: UUID, db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Убрать интервал.
+
+    Сумма дня пересчитывается по тому, что осталось; удаление последнего
+    интервала возвращает день в «не измерено», а не в ноль.
+    """
+    await _resolve(db, on)
+    row = await work_crud.get(db, on, interval_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В дне {on.isoformat()} нет интервала {interval_id}.",
+        )
+    await work_crud.delete(db, row)
+
+
+@router.get("/{on}/plan/violations", response_model=list[PlanViolationResponse])
+async def get_plan_violations(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> list[PlanViolationResponse]:
+    """
+    Правила, которые план этого дня нарушил.
+
+    `severity='warn'` — правка человека, которая прошла: свой день человек
+    правит свободно, а нарушение записывается строкой рядом. `block` — черновик
+    машины, который до базы не доехал; он лежит здесь как объяснение, почему
+    плана нет.
+
+    В `detail` только id пунктов и числа. Текста пункта там нет и быть не может:
+    строки живут дольше плана, который их породил, а задача бывает названа
+    диагнозом.
+    """
+    await _resolve(db, on)
+    rows = await violation_crud.list_violations(db, on)
+    return [PlanViolationResponse.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{on}/plan/skeleton",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={422: {"model": SkeletonRejection}},
+)
+async def post_plan_skeleton(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> PlanResponse:
+    """
+    Собрать план дня из канона, без модели.
+
+    Страховка, отгруженная раньше того, что она страхует: после этой ручки день
+    не остаётся без плана ни при каком поведении модели — нет ответа, таймаут,
+    сломанный JSON, кончившаяся подписка.
+
+    Скелет проходит восемь ограничений **по построению**, потому что собран из
+    той же строки правила, против которой они проверяются: края дня — края
+    канона, потолок работы — потолок канона, свободный вечер пуст, потому что в
+    него ничего не кладётся, а якорь `relationship` появляется ровно тогда,
+    когда `relationship_anchor_required` требует его в нерабочий вечер.
+
+    Соседние даты не трогаются: все строки написаны на `on`, и правило
+    `target_day_only` это подтверждает. «Сегодня сорвалось — неделю не трогаем»
+    здесь машинная проверка, а не договорённость.
+
+    - **201** — план собран и записан
+    - **404** — дата вне всех интервалов канона
+    - **422** — скелет сам нарушил правило; в `detail` коды правил и id пунктов
+    """
+    day, rule = await _resolve(db, on)
+
+    built = skeleton.skeleton_plan(day.day_date, rule)
+    blocking = constraints.check_all(built.draft, rule)
+    if blocking:
+        # The skeleton breaking its own rules is a bug in the generator, not a
+        # complaint about the day. It is answered rather than swallowed, and the
+        # rows are recorded so the failure survives the response.
+        await violation_crud.record_violations(
+            db, day.day_date, blocking, origin=constraints.ORIGIN_FALLBACK
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "skeleton_violates_canon",
+                "violations": [
+                    {
+                        "rule_code": violation.rule_code,
+                        "severity": violation.severity,
+                        "detail": violation.detail,
+                        "message": violation.message,
+                    }
+                    for violation in blocking
+                ],
+            },
+        )
+
+    document = violation_crud.skeleton_document(built, rule)
+    try:
+        stored = await plan_crud.replace_plan(db, day.day_date, rule, document)
+    except PlanRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=rejected.as_detail(),
+        ) from rejected
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_FALLBACK
+    )
+    await violation_crud.clear_violations(
+        db, day.day_date, origin=constraints.ORIGIN_HUMAN
+    )
+    await day_crud.touch_day(db, day, opened=False)
+    await db.commit()
+    return await plan_crud.to_response(db, stored)

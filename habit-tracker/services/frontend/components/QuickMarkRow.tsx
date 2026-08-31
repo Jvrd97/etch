@@ -1,0 +1,96 @@
+'use client';
+// [review:need-review] PHASE-03/121, PHASE-03/124
+// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, and the last tap can be taken back from the same row it was made in
+
+import type { QuickMark, QuickMarkEvent } from '@/lib/api';
+import { markActionLabel, markCaption, undoCaption } from '@/lib/quick-marks';
+import { TAP_TARGET_PX } from '@/lib/ui-constants';
+
+interface QuickMarkRowProps {
+  /** The directory as the server returned it, already ordered. */
+  marks: QuickMark[];
+  /**
+   * Record one tap of `id`. The row does not know what the button means —
+   * that is the server's answer — so it sends nothing but the id.
+   */
+  onTap: (id: number) => void;
+  /** The tap that can still be taken back, or null when none can. */
+  lastEvent?: QuickMarkEvent | null;
+  /** Take that tap back. Absent when the screen offers no undo. */
+  onUndo?: () => void;
+}
+
+/**
+ * The quick-mark buttons of Today.
+ *
+ * Renders nothing at all for an empty directory: buttons are entered by hand,
+ * and a screen that says "заведи кнопку" would be a permanent instruction on a
+ * page whose whole purpose is to be tapped and left.
+ *
+ * A button carries three things: the label the user gave it, the day's total
+ * under it, and whether the day already counts it as done. What it writes,
+ * which field it writes to and whether it accumulates are deliberately absent —
+ * that knowledge lives on the server, which is what keeps the floating window
+ * of the agent from having to reimplement it.
+ */
+export default function QuickMarkRow({
+  marks,
+  onTap,
+  lastEvent = null,
+  onUndo,
+}: QuickMarkRowProps) {
+  if (marks.length === 0) return null;
+
+  const undoLabel = onUndo ? undoCaption(marks, lastEvent) : null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      {marks.map((mark) => {
+        const caption = markCaption(mark);
+        return (
+          <button
+            key={mark.id}
+            type="button"
+            onClick={() => onTap(mark.id)}
+            aria-label={markActionLabel(mark)}
+            aria-pressed={mark.done}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className={`inline-flex flex-col items-start justify-center gap-0.5 px-5 py-3 rounded-3xl border text-left transition-all duration-200 ${
+              mark.done
+                ? 'bg-lime text-background border-lime shadow-[0_0_18px_rgba(184,255,54,0.25)]'
+                : 'bg-card text-text-secondary border-white/10 hover:text-text-primary hover:bg-white/5'
+            }`}
+          >
+            <span className="text-sm font-medium truncate">{mark.label}</span>
+            {caption && (
+              // Keyed by the caption so a change remounts the node and replays
+              // the animation: on rapid taps a restyled node keeps the finished
+              // animation and later increments land silently.
+              <span
+                key={caption}
+                className="text-xs tabular-nums opacity-80 animate-total-bump"
+              >
+                {caption}
+              </span>
+            )}
+          </button>
+        );
+      })}
+      {undoLabel && onUndo && (
+        // Sits in the same row as the buttons and appears only after a tap: an
+        // undo that is always on screen is a permanent instruction, and the
+        // whole point of the affordance is that a wrong tap costs one action to
+        // repair rather than a trip to the entry editor.
+        <button
+          type="button"
+          onClick={onUndo}
+          aria-label={undoLabel}
+          style={{ minHeight: TAP_TARGET_PX }}
+          className="inline-flex items-center px-4 py-3 rounded-3xl border border-dashed border-white/20 text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-all duration-200"
+        >
+          {undoLabel}
+        </button>
+      )}
+    </div>
+  );
+}

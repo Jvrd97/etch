@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/90
+// [review:need-review] PHASE-03/86, PHASE-03/147, PHASE-03/88, PHASE-03/90
 // summary: tests for useDay — a null date asks the server for today instead of reading the browser calendar, a named date is passed through, a failure clears the stale day, reload re-fetches, and only an explicit flag claims a person opened the day (whether the server honours it is the server's call since #90)
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -28,7 +28,48 @@ const DAY: DayDetail = {
     workdays: [1, 2, 3, 4, 5],
     nocode_days: [2, 4],
     required_anchors: ['подъём'],
+    overtime_lost_min: 600,
+    max_study_items: 2,
+    wake_at: '06:00:00',
+    work_start: '07:45:00',
+    review_at: '15:40:00',
+    bedtime_max: '22:30:00',
+    free_evening_start: '19:10:00',
+    free_evening_end: '21:00:00',
+    relationship_anchor_required: true,
+    relationship_evening_start: '18:30:00',
+    relationship_evening_end: '21:00:00',
+    days_off: [6, 7],
+    hard_edge_kinds: ['anchor', 'hard_point'],
+    anchors: ['подъём', 'relationship'],
+    verdict_rule: { reason_order: ['overtime', 'anchors', 'tasks'] },
     note_md: '',
+  },
+  day_map: {
+    rule_set_id: 2,
+    edges: [
+      { kind: 'wake', label: 'подъём', at: '06:00:00' },
+      { kind: 'sport', label: 'спорт', at: null },
+      { kind: 'work_start', label: 'старт работы', at: '07:45:00' },
+      { kind: 'work_stop', label: 'стоп работы', at: '16:00:00' },
+      { kind: 'review', label: 'ревью', at: '15:40:00' },
+      { kind: 'bedtime', label: 'отбой', at: '22:30:00' },
+    ],
+    free_evening: { start: '19:10:00', end: '21:00:00' },
+    relationship_evening: { start: '18:30:00', end: '21:00:00' },
+    relationship_anchor_required: true,
+    work_cap_min: 480,
+    work_hard_cap_min: 540,
+    overtime_lost_min: 600,
+    work_stop_at: '16:00:00',
+    max_work_tasks: 4,
+    max_study_items: 2,
+    anchors: ['подъём', 'relationship'],
+    hard_edge_kinds: ['anchor', 'hard_point'],
+    workdays: [1, 2, 3, 4, 5],
+    days_off: [6, 7],
+    nocode_days: [2, 4],
+    verdict_reasons: ['overtime', 'anchors', 'tasks'],
   },
   plan: null,
   has_plan: false,
@@ -57,9 +98,17 @@ const DAY: DayDetail = {
     missing_anchors: [],
     source: 'close',
   },
+  work: {
+    day_date: '2026-08-30',
+    intervals: [],
+    // «Не измерено», not zero: the day has no intervals at all.
+    work_minutes: null,
+    running: false,
+  },
 };
 
 let getToday: ReturnType<typeof mock>;
+let listViolations: ReturnType<typeof mock>;
 let getDay: ReturnType<typeof mock>;
 let openToday: ReturnType<typeof mock>;
 let openDay: ReturnType<typeof mock>;
@@ -74,6 +123,15 @@ mock.module('@/lib/api', () => ({
   goalsAPI: {
     get: () => Promise.resolve(null),
     patchMilestone: () => Promise.resolve(null),
+  },
+  // The quick-mark directory and its one write path (#121). Present in every
+  // api mock for the reason named above: bun fixes a module's export names on
+  // first link, so a mock that omits an export deletes it for whoever links next.
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
   },
   dailySummaryAPI: {
     draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
@@ -111,12 +169,15 @@ mock.module('@/lib/api', () => ({
     get: (date: string) => getDay(date),
     openToday: () => openToday(),
     open: (date: string) => openDay(date),
+    violations: () => listViolations(),
+    buildSkeleton: () => Promise.resolve(null),
   },
 }));
 
 const { useDay } = await import('./useDay');
 
 beforeEach(() => {
+  listViolations = mock(() => Promise.resolve([]));
   getToday = mock(() => Promise.resolve(DAY));
   getDay = mock(() => Promise.resolve(DAY));
   openToday = mock(() => Promise.resolve(DAY));

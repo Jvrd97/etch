@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/93
-# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, summaries carried into `day_summary` with their verdicts read as prose and never recomputed, the calendar filled so no day is a hole, `goal.md` read into the goal tables by `app.imports.goal_md`, and everything unread named in the report
+# [review:need-review] PHASE-03/89, PHASE-03/90, PHASE-03/93, PHASE-03/94
+# summary: the idempotent CLI that moves the history of personal-os into the day tables — files hashed into `import_source`, plans written through `replace_plan`, marks matched by what a line says, summaries carried into `day_summary` with their verdicts read as prose and never recomputed, the calendar filled so no day is a hole, `goal.md` read into the goal tables by `app.imports.goal_md`, `weeks/**/*.md` read into the week snapshots by `app.imports.week_md` with the counters recomputed rather than parsed, and everything unread named in the report
 """
 The history of `personal-os` moved into the database, once and repeatably.
 
@@ -66,11 +66,14 @@ from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import summary as summary_crud
+from app.crud import week as week_crud
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
 from app.day.plan_validate import PlanRejected, resolve_window
+from app.day.week import iso_code
 from app.exports.personal_os import SECTION_TITLE_BY_KIND
 from app.imports import goal_md
 from app.imports import plan_state as state_reader
+from app.imports import week_md
 from app.imports.md_parser import (
     FORM_LIST_ITEM,
     FORM_TABLE_ROW,
@@ -88,6 +91,7 @@ from app.models.import_source import (
     KIND_PLAN_MD,
     KIND_PLAN_REPORT_MD,
     KIND_SUMMARY_MD,
+    KIND_WEEK_MD,
     ImportSource,
 )
 from app.models.plan import DayPlan, PlanItem, PlanSection
@@ -101,6 +105,7 @@ __all__ = [
     "ImportWarning",
     "collect_days",
     "collect_summaries",
+    "collect_weeks",
     "import_day",
     "import_root",
     "import_summary",
@@ -115,6 +120,9 @@ PLAN_GLOB = "plans/*/*/????-??-??.md"
 
 # `summaries/2026/08/2026-08-28.md` — the итог of a day, written by hand.
 SUMMARY_GLOB = "summaries/*/*/????-??-??.md"
+
+# `weeks/2026/2026-W35.md` — the ретро of one ISO week, written on Sunday.
+WEEK_GLOB = "weeks/*/????-W??.md"
 
 # `goal.md` — the levels, the milestones and the goals of the quarter. One file,
 # at the root, and not a day: read once per run rather than per `--date`.
@@ -154,6 +162,8 @@ POSITION_KEY_PREFIX = "md"
 # Everything else relative (`../../../weeks/…`, `goal.md`) has no screen to point
 # at yet and is named in the report instead of being rewritten into a dead url.
 PLAN_LINK_RE = re.compile(r"\]\((?:\./)?(\d{4}-\d{2}-\d{2})\.md\)")
+# `[ретро](../../weeks/2026/2026-W35.md)` — a week now has a screen (`#94`).
+WEEK_LINK_RE = re.compile(r"\]\([./]*weeks/\d{4}/(\d{4}-W\d{2})\.md\)")
 RELATIVE_LINK_RE = re.compile(r"\]\((?!https?://|/|#)([^)]+)\)")
 
 
@@ -223,6 +233,14 @@ class ImportReport:
     # yes/no: it was read, it was already current, or the repository has none.
     goals_written: bool = False
     goals_unchanged: bool = False
+    # Weeks are counted apart from days for the reason summaries are: a week
+    # exists (and is recomputed) whether or not anybody wrote a ретро for it.
+    weeks_written: int = 0
+    weeks_unchanged: int = 0
+    weeks_recomputed: int = 0
+    # Week codes the run read a file for; the recompute adds the weeks of every
+    # imported day to these before it takes the counters.
+    touched_weeks: set[str] = field(default_factory=set)
 
     def _count(self, action: str) -> int:
         return sum(1 for one in self.days if one.action == action)
@@ -261,6 +279,9 @@ class ImportReport:
             f"итогов записано: {self.summaries_written}",
             f"итогов без изменений: {self.summaries_unchanged}",
             f"goal.md: {_goal_state(self)}",
+            f"недель записано: {self.weeks_written}",
+            f"недель без изменений: {self.weeks_unchanged}",
+            f"недель пересчитано: {self.weeks_recomputed}",
             f"дней без плана заведено: {len(self.gaps_filled)}",
             f"предупреждений: {len(self.warnings)}",
         ]
@@ -309,6 +330,22 @@ def collect_summaries(root: Path) -> list[tuple[date, Path]]:
             found.append((date.fromisoformat(path.stem), path))
         except ValueError:
             continue
+    return found
+
+
+def collect_weeks(root: Path) -> list[tuple[str, Path]]:
+    """
+    Every `weeks/**/*.md` whose name is an ISO week code, oldest first.
+
+    A file whose name is not a week code is left alone rather than guessed at:
+    the week is keyed by that code, and a wrong guess would put a ретро on a
+    week it does not describe.
+    """
+    found: list[tuple[str, Path]] = []
+    for path in sorted(root.glob(WEEK_GLOB)):
+        iso = week_md.iso_from_name(path.stem)
+        if iso is not None:
+            found.append((iso, path))
     return found
 
 
@@ -379,13 +416,14 @@ def _rewrite_links(text: str, warnings: list[ImportWarning], where: str) -> str:
     """
     Relative links of `personal-os` as links of the application.
 
-    `[завтра](2026-08-31.md)` is a day and becomes `/day/2026-08-31`. A link into
-    `weeks/`, `summaries/` or `goal.md` has no screen to point at until `#94`,
-    `#90` and `#93` build one, so it stays the text it was and says so in the
-    report — a rewritten link to a page that does not exist would be worse than
-    an unrewritten one.
+    `[завтра](2026-08-31.md)` is a day and becomes `/day/2026-08-31`; a link into
+    `weeks/` is a week and becomes `/week/2026-W35`. A link into `summaries/`,
+    `docs/` or `goal.md` has no screen of its own, so it stays the text it was
+    and says so in the report — a rewritten link to a page that does not exist
+    would be worse than an unrewritten one.
     """
-    rewritten = PLAN_LINK_RE.sub(r"](/day/\1)", text)
+    rewritten = WEEK_LINK_RE.sub(r"](/week/\1)", text)
+    rewritten = PLAN_LINK_RE.sub(r"](/day/\1)", rewritten)
     for match in RELATIVE_LINK_RE.finditer(rewritten):
         warnings.append(
             ImportWarning(
@@ -1065,11 +1103,70 @@ async def import_root(
     report.gaps_filled = await _fill_calendar(db, [one.day_date for one in days])
     await _import_summaries(db, root, report, force=force, only=only)
     await _import_goals(db, root, report, force=force)
+    await _import_weeks(db, root, report, force=force, only=only)
     # Fills `streak_after` on every итог, imported ones included: the streak is
     # derived by definition, so it is the one number a recompute may write onto
     # a verdict that arrived as prose.
     await summary_crud.recompute_history(db)
+    # And only then the weeks: `streak_end` is `streak_after` of the last closed
+    # day of the week, so a week counted before the fold would carry the streak
+    # of the previous run.
+    await _recompute_weeks(db, report)
     return report
+
+
+async def _import_weeks(
+    db: AsyncSession,
+    root: Path,
+    report: ImportReport,
+    *,
+    force: bool,
+    only: date | None,
+) -> None:
+    """
+    Read every `weeks/**/*.md`, skipping the files that have not changed.
+
+    `--date` narrows this to the week that date falls in: a week is not a day,
+    but it is the week of a day, and re-reading every ретро in the repository to
+    import one Tuesday would be surprising.
+    """
+    wanted = None if only is None else iso_code(only)
+    for iso, path in collect_weeks(root):
+        if wanted is not None and iso != wanted:
+            continue
+        report.files_read += 1
+        where = str(path.relative_to(root))
+        text = path.read_text(encoding="utf-8")
+        digest = _digest(text)
+        stored = await _stored_digests(db, [where])
+        if not force and stored.get(where) == digest:
+            report.weeks_unchanged += 1
+            report.touched_weeks.add(iso)
+            continue
+        parsed = week_md.parse_week(iso, _rewrite_links(text, report.warnings, where))
+        await week_crud.replace_week_text(db, iso, parsed.as_body())
+        await _remember_file(
+            db, kind=KIND_WEEK_MD, path=where, text=text, digest=digest
+        )
+        report.weeks_written += 1
+        report.touched_weeks.add(iso)
+
+
+async def _recompute_weeks(db: AsyncSession, report: ImportReport) -> None:
+    """
+    Take the counters of every week the run touched, days included.
+
+    A week whose ретро nobody wrote still gets a row here: the days of it exist
+    and were won or lost, and `/life` has to be able to open that week. This is
+    also where «неделя без ретро существует» stops being a claim and becomes a
+    row.
+    """
+    weeks = set(report.touched_weeks)
+    weeks.update(iso_code(one.day_date) for one in report.days)
+    weeks.update(iso_code(one) for one in report.gaps_filled)
+    for iso in sorted(weeks):
+        await week_crud.recompute_week(db, iso)
+    report.weeks_recomputed = len(weeks)
 
 
 async def _import_summaries(
