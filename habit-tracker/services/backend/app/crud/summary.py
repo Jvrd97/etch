@@ -332,6 +332,7 @@ def _to_response(
         missing_anchors=missing_anchors,
         source=row.source,
         verdict_origin=verdict_origin(row.source, row.verdict),
+        clauses=[_clause_dto(one) for one in clauses],
     )
 
 

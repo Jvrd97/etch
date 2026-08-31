@@ -140,6 +140,23 @@ def clause_of(verdict: Any, code: str) -> Any:
     return next((one for one in verdict.clauses if one.code == code), None)
 
 
+def _assert_clauses_without_role(clauses: list[dict[str, Any]]) -> None:
+    """
+    День, который клауз роли не судит: три условия канона есть, роли нет.
+
+    Требует именно три кода, а не «`role_act` отсутствует»: второе истинно и на
+    пустом списке, то есть зелено и тогда, когда клаузы до ответа не доехали
+    вовсе.
+    """
+    assert [one["code"] for one in clauses] == [
+        REASON_OVERTIME,
+        REASON_ANCHORS,
+        REASON_TASKS,
+    ]
+    assert all(one["passed"] for one in clauses)
+    assert all(one["detail"] for one in clauses)
+
+
 class TestTheClauseItself:
     """Восемь часов тимлида плюс один акт архитектора — и без него."""
 
@@ -306,7 +323,13 @@ class TestOverTheWire:
     async def test_a_workday_without_an_act_is_closed_as_lost(
         self, client: AsyncClient, db_session: AsyncSession, seeded_goal: int
     ) -> None:
-        """Приёмка целиком: тот же день без акта закрывается проигранным."""
+        """
+        Приёмка целиком: тот же день без акта закрывается проигранным.
+
+        И объясняет, чем именно: `verdict_reason` — код первого непройденного
+        клауза, и разбор, из которого он выведен, ответ несёт рядом. Без него
+        экран говорит «проигран / role_act» и молчит о том, что не сошлось.
+        """
         await day_crud.seed_rules(db_session)
         await role_crud.seed_roles(db_session)
         await db_session.commit()
@@ -317,8 +340,21 @@ class TestOverTheWire:
         )
 
         assert closed.status_code == 200, closed.text
-        assert closed.json()["verdict"] == VERDICT_LOST
-        assert closed.json()["verdict_reason"] == REASON_ROLE_ACT
+        body = closed.json()
+        assert body["verdict"] == VERDICT_LOST
+        assert body["verdict_reason"] == REASON_ROLE_ACT
+
+        clauses = body["clauses"]
+        assert [one["code"] for one in clauses] == [
+            REASON_OVERTIME,
+            REASON_ANCHORS,
+            REASON_TASKS,
+            REASON_ROLE_ACT,
+        ]
+        assert [one["code"] for one in clauses if not one["passed"]] == [
+            REASON_ROLE_ACT
+        ]
+        assert all(one["detail"] for one in clauses)
 
     async def test_the_same_day_with_an_act_is_closed_as_won(
         self, client: AsyncClient, db_session: AsyncSession, seeded_goal: int
@@ -338,7 +374,14 @@ class TestOverTheWire:
     async def test_a_day_off_closes_without_the_clause(
         self, client: AsyncClient, db_session: AsyncSession, seeded_goal: int
     ) -> None:
-        """Приёмка: выходной закрывается без клауза — его нет в списке."""
+        """
+        Приёмка: выходной закрывается без клауза — его нет в списке.
+
+        «Нет в списке» проверяется списком, который есть: три условия канона
+        закрытый день несёт всегда, и отсутствие роли среди них — факт, а не
+        следствие пустоты. Проверка «`role_act` не в пустом списке» истинна
+        сама по себе и три дня держала дефект `_to_response` зелёным.
+        """
         await day_crud.seed_rules(db_session)
         await role_crud.seed_roles(db_session)
         await db_session.commit()
@@ -349,7 +392,7 @@ class TestOverTheWire:
 
         assert closed.status_code == 200, closed.text
         assert closed.json()["verdict"] == VERDICT_WON
-        assert REASON_ROLE_ACT not in [one["code"] for one in closed.json()["clauses"]]
+        _assert_clauses_without_role(closed.json()["clauses"])
 
     async def test_a_nocode_day_closes_without_the_clause(
         self, client: AsyncClient, db_session: AsyncSession, seeded_goal: int
@@ -365,7 +408,7 @@ class TestOverTheWire:
 
         assert closed.status_code == 200, closed.text
         assert closed.json()["verdict"] == VERDICT_WON
-        assert REASON_ROLE_ACT not in [one["code"] for one in closed.json()["clauses"]]
+        _assert_clauses_without_role(closed.json()["clauses"])
 
 
 @pytest.mark.asyncio
