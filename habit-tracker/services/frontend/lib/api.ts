@@ -1171,6 +1171,9 @@ export interface PlanItem {
   extra: Record<string, unknown>;
   quarter_goal_id: number | null;
   unlinked_reason: string | null;
+  /** Роль и вид акта, который закрывает галочка «сделано» на этом пункте (#140). */
+  role_id: number | null;
+  act_kind: string | null;
   carried_from_item_id: string | null;
   carry_count: number;
   children: PlanItem[];
@@ -1196,6 +1199,8 @@ export interface PlanItemPatch {
   plan_md?: string | null;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
 }
 
 /** A new line for a section. Position is not sent: it lands at the end. */
@@ -1210,6 +1215,8 @@ export interface PlanItemDraft {
   done_criterion?: string | null;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
 }
 
 /** Where a line goes: which section, under which parent, in which place. */
@@ -1252,6 +1259,8 @@ export interface PlanSection {
   ord: number;
   title: string | null;
   kind: string;
+  /** Роль, которой засчитываются минуты окон этой секции (#140). */
+  role_id: number | null;
   items: PlanItem[];
 }
 
@@ -1351,12 +1360,15 @@ export interface PlanItemDraft {
   extra?: Record<string, unknown>;
   quarter_goal_id?: number | null;
   unlinked_reason?: string | null;
+  role_id?: number | null;
+  act_kind?: string | null;
   children?: PlanItemDraft[];
 }
 
 export interface PlanSectionDraft {
   title?: string | null;
   kind?: string;
+  role_id?: number | null;
   items?: PlanItemDraft[];
 }
 
@@ -1728,6 +1740,9 @@ export interface RoleAct {
   occurred_at: string | null;
   note: string | null;
   is_manual: boolean;
+  /** Пункт плана, галочка на котором закрыла акт; только у source='plan' (#140). */
+  plan_item_id: string | null;
+  plan_item_text: string | null;
 }
 
 /** Where a day went and which roles happened on it, in one answer. */

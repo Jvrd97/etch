@@ -53,6 +53,8 @@ const ADR_ACT: RoleAct = {
   title: 'ADR-0020',
   source: 'manual',
   external_ref: null,
+  plan_item_id: null,
+  plan_item_text: null,
   confidence: 'auto',
   occurred_at: null,
   note: null,

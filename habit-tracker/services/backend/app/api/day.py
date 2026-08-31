@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/140
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); #110 adds the per-item editor — PATCH/POST/DELETE of one line and POST .../move for its place, where a human's edit passes everything the database passes and comes back with the document rules it broke as warnings; all three plan writes claim `opened_at` only inside the open window
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close/review is the 15:40 touch and /close/final the evening one that writes the verdict (the bare /close stays as a synonym of `final`), both idempotent by `Idempotency-Key` and both refusing a day whose итог arrived as prose, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
+# summary: PHASE-03/140 — план стал источником ролей: отметка «сделано» у пункта с видом акта закрывает `role_act` из плана, запись плана размечает минуты секций и вытесняет за те же часы всё, что слабее плана
 from datetime import date
 from typing import Any
 from uuid import UUID
@@ -26,6 +27,7 @@ from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
+from app.roles import plan_source
 from app.schemas.anchor import (
     DayAnchorResponse,
     DayAnchorsIn,
@@ -329,6 +331,10 @@ async def post_plan(
     # Point each anchor of the day at the line it is written on. Only the link:
     # a plan rewritten at 14:00 must not tick or untick anything.
     await anchor_crud.sync_from_plan(db, day.day_date)
+    # Секции, назвавшие роль, размечают минуты дня, и план вытесняет за те же
+    # часы всё, что слабее его (`#140`). Считается по сохранённому плану, а не
+    # по документу: считать надо ровно то, что в базе.
+    await plan_source.sync_plan_roles(db, day.day_date)
     await day_crud.touch_day(db, day, opened=False)
     await db.commit()
     return await plan_crud.to_response(db, stored)
@@ -372,6 +378,10 @@ async def put_mark(
         note=body.note,
         source=body.source,
     )
+    # Галочка «сделано» на пункте, назвавшем вид акта и роль, закрывает акт
+    # роли — без захода на `/roles` (`#140`). «Не сделал» и снятие отметки акт
+    # не создают и забирают назад; акт, подтверждённый человеком, остаётся.
+    await plan_source.sync_act_for_item(db, day.day_date, item, body.state)
     # A mark written from the browser is a person on the page; one written by
     # the agent or an import is not, and only the first may claim the day was
     # opened — and only while the day is still inside the open window.
@@ -813,6 +823,10 @@ async def _edited(
             detail=f"На {day.day_date.isoformat()} плана нет.",
         )
     await day_crud.touch_day(db, day, opened=_person_is_here(day.day_date))
+    # Правка одной строки меняет окна секции ровно так же, как замена плана
+    # целиком: разметка ролей пересчитывается здесь одним местом на все четыре
+    # правящих эндпоинта (`#140`).
+    await plan_source.sync_plan_roles(db, day.day_date)
     response = await plan_crud.to_response(db, plan)
     item = None
     if item_id is not None:

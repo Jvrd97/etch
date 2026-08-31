@@ -1463,3 +1463,20 @@ Feedback loops (frontend): `bun test` **704/704 green**, `bunx tsc --noEmit` cle
 
 Feedback loops (frontend): `bun test` **761/761 green**, `bunx tsc --noEmit` clean,
 `bun run lint` 0 errors (6 warnings — в чужом `components/day/DayAnchors.test.tsx`).
+
+## 2026-08-31 — PHASE-03/140, роль и вид акта в плане
+
+**new**: `lib/plan-roles.ts` (чистые подписи и два словаря для селектов),
+`hooks/useRoleDirectory.ts` (одно чтение справочника без своего экрана загрузки),
+`components/day/PlanItemRole.test.tsx` (12).
+**mod**: `lib/api.ts` (`PlanItem.role_id`/`act_kind`, `PlanSection.role_id`,
+`RoleAct.plan_item_id`/`plan_item_text`), `components/day/PlanItemEditor.tsx`,
+`components/day/PlanSections.tsx`, `components/DayScreen.tsx`,
+`components/roles/RolesScreen.tsx`.
+
+Механически тронуты 29 тест-файлов: bun фиксирует набор экспортов `@/lib/api` при первой
+линковке, и мок без `rolesAPI` удалял его у сьюты, что загрузилась позже. Заглушка
+`rolesAPI` теперь стоит в каждой подмене модуля.
+
+Feedback loops (frontend): `bun test` **1078 pass, 0 fail** (96 файлов),
+`bunx tsc --noEmit` clean.

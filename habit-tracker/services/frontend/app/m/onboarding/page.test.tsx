@@ -32,6 +32,19 @@ let push: ReturnType<typeof mock>;
 // so a partial mock here would delete the other APIs for whichever file loads
 // later.
 mock.module('@/lib/api', () => ({
+  // Справочник ролей (#140): экран дня читает его ради двух необязательных
+  // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
+  // что и остальная поверхность: bun фиксирует имена экспортов модуля при
+  // первой линковке, и мок, забывший экспорт, удаляет его для всех, кто
+  // линкуется следом.
+  rolesAPI: {
+    listRoles: () => Promise.resolve([]),
+    day: () => Promise.resolve(null),
+    addTimeBlock: () => Promise.resolve(null),
+    deleteTimeBlock: () => Promise.resolve({}),
+    addAct: () => Promise.resolve(null),
+    deleteAct: () => Promise.resolve({}),
+  },
   // Правила дня (#152). Есть в каждом моке api по той же причине, что и
   // остальная поверхность: bun фиксирует имена экспортов модуля при первой
   // линковке, и мок, забывший экспорт, удаляет его для всех, кто линкуется следом.

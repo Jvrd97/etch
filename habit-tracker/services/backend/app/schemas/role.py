@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/134
-# summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day
+# [review:need-review] PHASE-03/134, PHASE-03/140
+# summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day; #140 lets an act from the plan name the line of the plan it came from
 """
 Wire types of the roles.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
@@ -278,6 +279,17 @@ class RoleActResponse(BaseModel):
     occurred_at: datetime | None
     note: str | None
     is_manual: bool
+    plan_item_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Пункт плана, галочка на котором закрыла этот акт. Есть только у "
+            "актов с source='plan'"
+        ),
+    )
+    plan_item_text: str | None = Field(
+        default=None,
+        description="Текст того пункта, чтобы акт раскрывался на экране до строки плана",
+    )
 
 
 class RoleActIn(BaseModel):

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130
-# summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database; #110 adds the per-item edit — a patch that tells "not sent" from "set to null", a new line for one section, a move to a place, and the answer that carries the whole plan back with the warnings a human's edit earned
+# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130, PHASE-03/140
+# summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database; #110 adds the per-item edit — a patch that tells "not sent" from "set to null", a new line for one section, a move to a place, and the answer that carries the whole plan back with the warnings a human's edit earned; #140 lets a section name the role its windows charge minutes to and an item name the role act its tick closes
 """
 Wire types of the plan.
 
@@ -32,7 +32,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.plan import (
     ITEM_KINDS,
@@ -41,10 +41,35 @@ from app.models.plan import (
     RIGIDITY_VALUES,
     SECTION_KINDS,
 )
+from app.schemas.role import ACT_KINDS
 
 # Mirrors `plan_item.code`; a longer handle is a 422 on the field rather than a
 # truncation nobody notices until the error message points at the wrong line.
 MAX_CODE_LENGTH = 64
+
+# Подпись роли и вида акта, одна на все четыре формы пункта: «сегодня в 11:00
+# архитектурное решение по модели данных». Роль называется id, а не кодом, —
+# как `quick_mark_id` и `quarter_goal_id` рядом: план ссылается на строки
+# числами, и второй способ ссылаться в том же документе читался бы хуже.
+ROLE_ID_HINT = (
+    "Роль, которой засчитывается акт этого пункта. Вместе с act_kind; "
+    "по отдельности не работают"
+)
+ACT_KIND_HINT = (
+    "Вид акта роли, который закрывает отметка «сделано» у этого пункта. "
+    f"Одно из: {', '.join(ACT_KINDS)}"
+)
+SECTION_ROLE_HINT = (
+    "Роль, которой засчитываются минуты окон этой секции. «Работа» и «Учёба» — "
+    "разные роли; секция без роли минут не размечает"
+)
+
+
+def _known_act_kind(value: str | None) -> str | None:
+    """Вид акта из словаря `app.schemas.role`, иначе 422 на поле."""
+    if value is not None and value not in ACT_KINDS:
+        raise ValueError(f"act_kind must be one of: {', '.join(ACT_KINDS)}")
+    return value
 
 
 class PlanItemIn(BaseModel):
@@ -121,6 +146,8 @@ class PlanItemIn(BaseModel):
             "на Today первой и помечается плановой; её отметка закрывает пункт"
         ),
     )
+    role_id: int | None = Field(None, description=ROLE_ID_HINT)
+    act_kind: str | None = Field(None, description=ACT_KIND_HINT)
 
     carried_from_item_id: UUID | None = None
     carry_count: int = 0
@@ -131,6 +158,11 @@ class PlanItemIn(BaseModel):
         description="Вложенные пункты — шаги, «Минимум» отдельной галкой",
     )
 
+    @field_validator("act_kind")
+    @classmethod
+    def _check_act_kind(cls, value: str | None) -> str | None:
+        return _known_act_kind(value)
+
 
 class PlanSectionIn(BaseModel):
     """One section of an incoming plan; `ord` is its position in the list."""
@@ -139,6 +171,7 @@ class PlanSectionIn(BaseModel):
 
     title: str | None = None
     kind: str = Field("other", description=f"Одно из: {', '.join(SECTION_KINDS)}")
+    role_id: int | None = Field(None, description=SECTION_ROLE_HINT)
     items: list[PlanItemIn] = Field(default_factory=list)
 
 
@@ -196,6 +229,8 @@ class PlanItemResponse(BaseModel):
     quarter_goal_id: int | None
     unlinked_reason: str | None
     quick_mark_id: int | None
+    role_id: int | None
+    act_kind: str | None
     carried_from_item_id: UUID | None
     carry_count: int
     children: list[PlanItemResponse] = Field(default_factory=list)
@@ -210,6 +245,7 @@ class PlanSectionResponse(BaseModel):
     ord: int
     title: str | None
     kind: str
+    role_id: int | None
     items: list[PlanItemResponse] = Field(default_factory=list)
 
 
@@ -318,6 +354,13 @@ class PlanItemPatch(BaseModel):
     quarter_goal_id: int | None = None
     unlinked_reason: str | None = None
     quick_mark_id: int | None = None
+    role_id: int | None = Field(None, description=ROLE_ID_HINT)
+    act_kind: str | None = Field(None, description=ACT_KIND_HINT)
+
+    @field_validator("act_kind")
+    @classmethod
+    def _check_act_kind(cls, value: str | None) -> str | None:
+        return _known_act_kind(value)
 
 
 class PlanItemCreate(BaseModel):
@@ -348,6 +391,13 @@ class PlanItemCreate(BaseModel):
     quarter_goal_id: int | None = None
     unlinked_reason: str | None = None
     quick_mark_id: int | None = None
+    role_id: int | None = Field(None, description=ROLE_ID_HINT)
+    act_kind: str | None = Field(None, description=ACT_KIND_HINT)
+
+    @field_validator("act_kind")
+    @classmethod
+    def _check_act_kind(cls, value: str | None) -> str | None:
+        return _known_act_kind(value)
 
 
 class PlanItemMove(BaseModel):

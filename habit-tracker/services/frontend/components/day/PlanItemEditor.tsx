@@ -1,10 +1,21 @@
 'use client';
-// [review:need-review] PHASE-03/110
-// summary: one plan line edited where it is drawn — text, window and criterion in three fields, save and delete beside them, the arrows that move the line inside its level, and the warning of the canon printed on the line rather than in a modal nobody reads
+// [review:need-review] PHASE-03/110, PHASE-03/140
+// summary: one plan line edited where it is drawn — text, window and criterion in three fields, save and delete beside them, the arrows that move the line inside its level, and the warning of the canon printed on the line rather than in a modal nobody reads; #140 adds the two optional pickers that turn a line into an intent to act — роль и вид акта, right where the day is already being edited
 
 import { useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Check, Trash2, X } from 'lucide-react';
-import type { PlanItem, PlanItemPatch } from '@/lib/api';
+import type { PlanItem, PlanItemPatch, Role } from '@/lib/api';
+import {
+  ACT_KIND_FIELD_LABEL,
+  NO_ACT_KIND_LABEL,
+  NO_ROLE_LABEL,
+  NO_VALUE,
+  ROLE_FIELD_LABEL,
+  selectValue,
+  selectedId,
+  selectedKind,
+} from '@/lib/plan-roles';
+import { ACT_KIND_OPTIONS } from '@/lib/role-format';
 
 /** What the button says before a person is sure. Two taps, not a modal. */
 export const DELETE_LABEL = 'Удалить';
@@ -26,6 +37,13 @@ export interface PlanItemEditorProps {
   /** No place above / below inside this level; the arrow goes flat. */
   atTop: boolean;
   atBottom: boolean;
+  /**
+   * Справочник ролей для двух необязательных полей (#140).
+   *
+   * Пустой список — не ошибка, а «справочник не приехал»: полей тогда просто
+   * нет, и редактор остаётся ровно тем, чем был до этого тикета.
+   */
+  roles?: Role[];
 }
 
 /**
@@ -58,9 +76,21 @@ function clock(moment: string): string {
  */
 export function changedFields(
   item: PlanItem,
-  draft: { text: string; window: string; criterion: string }
+  draft: {
+    text: string;
+    window: string;
+    criterion: string;
+    roleId?: number | null;
+    actKind?: string | null;
+  }
 ): PlanItemPatch {
   const patch: PlanItemPatch = {};
+  if (draft.roleId !== undefined && draft.roleId !== item.role_id) {
+    patch.role_id = draft.roleId;
+  }
+  if (draft.actKind !== undefined && draft.actKind !== item.act_kind) {
+    patch.act_kind = draft.actKind;
+  }
   if (draft.text !== item.text_md) patch.text_md = draft.text;
   const currentWindow = windowField(item);
   if (draft.window !== currentWindow) {
@@ -91,10 +121,13 @@ export default function PlanItemEditor({
   onCancel,
   atTop,
   atBottom,
+  roles,
 }: PlanItemEditorProps) {
   const [text, setText] = useState(item.text_md);
   const [window, setWindow] = useState(() => windowField(item));
   const [criterion, setCriterion] = useState(item.done_criterion ?? '');
+  const [roleId, setRoleId] = useState<number | null>(item.role_id);
+  const [actKind, setActKind] = useState<string | null>(item.act_kind);
   const [confirming, setConfirming] = useState(false);
 
   // Правка соседа переставляет строки, и сервер возвращает уже другой пункт под
@@ -104,6 +137,8 @@ export default function PlanItemEditor({
     setText(item.text_md);
     setWindow(windowField(item));
     setCriterion(item.done_criterion ?? '');
+    setRoleId(item.role_id);
+    setActKind(item.act_kind);
     setConfirming(false);
   }, [item]);
 
@@ -148,11 +183,52 @@ export default function PlanItemEditor({
         </label>
       </div>
 
+      {roles && roles.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          <label className="flex-1 min-w-[8rem]">
+            <span className="text-xs text-text-disabled">{ROLE_FIELD_LABEL}</span>
+            <select
+              className={field}
+              value={selectValue(roleId)}
+              disabled={saving}
+              onChange={(event) => setRoleId(selectedId(event.target.value))}
+              aria-label={ROLE_FIELD_LABEL}
+            >
+              <option value={NO_VALUE}>{NO_ROLE_LABEL}</option>
+              {roles.map((role) => (
+                <option key={role.id} value={role.id}>
+                  {role.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex-1 min-w-[8rem]">
+            <span className="text-xs text-text-disabled">{ACT_KIND_FIELD_LABEL}</span>
+            <select
+              className={field}
+              value={actKind ?? NO_VALUE}
+              disabled={saving}
+              onChange={(event) => setActKind(selectedKind(event.target.value))}
+              aria-label={ACT_KIND_FIELD_LABEL}
+            >
+              <option value={NO_VALUE}>{NO_ACT_KIND_LABEL}</option>
+              {ACT_KIND_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={saving}
-          onClick={() => onSave(changedFields(item, { text, window, criterion }))}
+          onClick={() =>
+            onSave(changedFields(item, { text, window, criterion, roleId, actKind }))
+          }
           className="inline-flex items-center gap-1 rounded-2xl bg-lime px-3 py-1.5 text-sm text-black disabled:opacity-50"
         >
           <Check className="w-4 h-4" strokeWidth={2} />

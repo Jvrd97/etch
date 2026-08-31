@@ -1745,3 +1745,31 @@ Feedback loops (backend): pytest **652/652 green**, `ruff check app tests` clean
 поднимается. Тесты шли против постгреса на localhost:5432 в отдельной базе `habit_test_92` —
 общая `habit_tracker_test` содержит `work_interval` из параллельной ветки, и `drop_all` падает
 на её внешнем ключе к `day`.
+
+## 2026-08-31 — PHASE-03/140, план как источник ролей
+
+**Схема (new)**: `alembic/versions/2026_09_02_1200-d0c2e4a6b8f1_plan_item_role_act.py` —
+`plan_item.act_kind`, `plan_item.role_id`, `plan_section.role_id`, обе ссылки на `role`
+с `ON DELETE SET NULL` и частичными индексами. `down_revision = f7c9e1a3b5d8` — фактическая
+голова ветки на момент реализации. Проверено на живой базе `habit_mig_f4`:
+upgrade → downgrade (три колонки и обе ссылки исчезают) → upgrade.
+
+**Сервис (new)**: `app/roles/precedence.py` — чистая арифметика отрезков (`merge`,
+`subtract`, `minutes_of`) и ранг источника, выведенный из `ROLE_TIME_SOURCES`;
+`app/roles/plan_source.py` — акт из отметки, минуты из секций, вытеснение слабых
+источников. **mod**: `app/models/plan.py`, `app/schemas/plan.py`, `app/schemas/role.py`,
+`app/crud/plan.py`, `app/api/day.py`, `app/api/roles.py`.
+
+**Тесты (new)**: `tests/test_plan_role_acts.py` (19), `tests/test_role_precedence.py` (19).
+
+Что стоит назвать вслух: разметка минут пересчитывается на записи плана, а не на отметке.
+Секция говорит, как день был разложен, — а это она сделала независимо от того, каждая ли
+строка получила галочку; галочку меряют акт и вердикт `#90`. Второе: `apply_precedence`
+спрашивает окна плановой записи у самого плана, а не у её `started_at`/`ended_at` — это
+края секции, и секция с двухчасовой дырой посреди иначе вытеснила бы час агента,
+которого никто не планировал.
+
+Feedback loops (backend): pytest **1228 passed, 2 skipped**, `ruff check app tests` clean,
+`ruff format --check app tests` clean, `mypy --strict app` clean (156 файлов),
+`alembic heads` — одна голова `d0c2e4a6b8f1`. `make check` целиком не отрабатывал: docker
+не поднимается; тесты шли против постгреса на localhost:5432, база `habit_test_f4`.

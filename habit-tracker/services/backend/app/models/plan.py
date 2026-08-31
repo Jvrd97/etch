@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110, PHASE-03/130
-# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key; #110 adds who last touched a line and when, and makes a position unique inside its level so a reorder cannot leave holes or twins
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110, PHASE-03/130, PHASE-03/140
+# summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key; #110 adds who last touched a line and when, and makes a position unique inside its level so a reorder cannot leave holes or twins; #140 lets a section name a role and an item name the role act its tick closes
 from __future__ import annotations
 
 import uuid
@@ -187,11 +187,21 @@ class PlanSection(Base):
     never by the client: the acceptance case is "the order matches the one
     sent", and a client-supplied number is one typo away from two sections
     claiming the same place.
+
+    `role_id` (`#140`) is what turns a section into a source of role minutes:
+    «Работа» and «Учёба» are different roles, and the windows written under a
+    section charge their minutes to the role the section names. Optional, like
+    every other markup here — a section without a role is a section.
     """
 
     __tablename__ = "plan_section"
     __table_args__ = (
         UniqueConstraint("plan_id", "ord", name="uq_plan_section_plan_ord"),
+        Index(
+            "ix_plan_section_role_id",
+            "role_id",
+            postgresql_where=text("role_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -204,6 +214,15 @@ class PlanSection(Base):
     ord: Mapped[int] = mapped_column(SmallInteger)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     kind: Mapped[str] = mapped_column(String(16))
+
+    # `SET NULL`, unlike the `RESTRICT` on `role_rule.role_id`: a role removed
+    # from the directory must not make a plan written three months ago
+    # unreadable, and a section that lost its role charges nobody's minutes.
+    role_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("role.id", ondelete="SET NULL", name="fk_plan_section_role_id"),
+        nullable=True,
+    )
 
     plan: Mapped[DayPlan] = relationship(back_populates="sections")
     items: Mapped[list[PlanItem]] = relationship(
@@ -276,6 +295,11 @@ class PlanItem(Base):
             "ix_plan_item_quick_mark_id",
             "quick_mark_id",
             postgresql_where=text("quick_mark_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_plan_item_role_id",
+            "role_id",
+            postgresql_where=text("role_id IS NOT NULL"),
         ),
         # Partial: most items carry no code, and NULLs would otherwise make the
         # constraint vacuous for exactly the rows that need no protection.
@@ -362,6 +386,21 @@ class PlanItem(Base):
             ondelete="SET NULL",
             name="fk_plan_item_quick_mark_id",
         ),
+        nullable=True,
+    )
+
+    # Намерение на акт роли (`#140`): «сегодня в 11:00 архитектурное решение по
+    # модели данных». Пара, а не одно поле: вид акта без роли некому зачесть, а
+    # роль без вида акта — это разметка минут, которую несёт секция. Отметка
+    # пункта выполненным закрывает `role_act` с `source='plan'`; пункт без пары
+    # остаётся обычным пунктом.
+    #
+    # Словарь `act_kind` — обычная строка без CHECK, как и в `role_act`: он
+    # живёт в `app.schemas.role` и растёт правкой схемы, а не миграцией.
+    act_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    role_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("role.id", ondelete="SET NULL", name="fk_plan_item_role_id"),
         nullable=True,
     )
 

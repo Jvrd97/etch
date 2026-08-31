@@ -1,9 +1,17 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/147
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/140, PHASE-03/147
 // summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, and the mark of each line when the screen passes one in
 // summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
 
-import { Clock, CornerDownRight, Link2, Pencil, Plus, TriangleAlert } from 'lucide-react';
+import {
+  BadgeCheck,
+  Clock,
+  CornerDownRight,
+  Link2,
+  Pencil,
+  Plus,
+  TriangleAlert,
+} from 'lucide-react';
 import PlanItemEditor from '@/components/day/PlanItemEditor';
 import PlanItemMark from '@/components/day/PlanItemMark';
 import type {
@@ -13,7 +21,9 @@ import type {
   PlanItemPatch,
   PlanSection,
   PlanViolation,
+  Role,
 } from '@/lib/api';
+import { actIntentLine } from '@/lib/plan-roles';
 import { ruleLabel } from '@/lib/plan-violations';
 import {
   EMPTY_PLAN_TEXT,
@@ -93,6 +103,14 @@ export interface PlanSectionsProps {
    * the canon it stepped over.
    */
   violations?: Map<string, PlanViolation[]>;
+  /**
+   * Справочник ролей (#140): подпись «архитектор · решение по модели данных» на
+   * пункте, который несёт намерение на акт, и два поля в его редакторе.
+   *
+   * Пустой по умолчанию — план, который только читают, выглядит ровно как до
+   * этого тикета.
+   */
+  roles?: Role[];
 }
 
 /**
@@ -117,6 +135,7 @@ export default function PlanSections({
   editing,
   compact = false,
   violations,
+  roles = [],
 }: PlanSectionsProps) {
   if (sections.length === 0) {
     return (
@@ -150,6 +169,7 @@ export default function PlanSections({
                 editing={editing}
                 compact={compact}
                 violations={violations}
+                roles={roles}
               />
             ))}
           </ul>
@@ -183,6 +203,7 @@ interface PlanLineProps {
   editing?: PlanEditing;
   compact: boolean;
   violations?: Map<string, PlanViolation[]>;
+  roles: Role[];
 }
 
 /**
@@ -203,8 +224,10 @@ function PlanLine({
   editing,
   compact,
   violations,
+  roles,
 }: PlanLineProps) {
   const broken = violations?.get(item.id) ?? [];
+  const intent = actIntentLine(item, roles);
   const indent = Math.min(level, MAX_INDENT_LEVEL) * INDENT_PER_LEVEL;
   const kind = itemKindLabel(item.kind);
   const rigidity = rigidityLabel(item.rigidity);
@@ -286,6 +309,15 @@ function PlanLine({
             </p>
           )}
 
+          {intent !== null && (
+            // Подпись, а не значок: «что закроет эта галочка» — предложение, и
+            // читается оно на месте, без наведения мышью.
+            <p className="mt-1 inline-flex items-center gap-2 text-sm text-lime">
+              <BadgeCheck className="w-4 h-4 shrink-0" strokeWidth={2} />
+              {intent}
+            </p>
+          )}
+
           {item.unlinked_reason && (
             <p className="mt-1 inline-flex items-start gap-2 text-sm text-text-secondary">
               <Link2 className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={2} />
@@ -315,6 +347,7 @@ function PlanLine({
                 editing.onMove(item.id, sectionId, index + 1, item.parent_id)
               }
               onCancel={() => editing.onOpen(null)}
+              roles={roles}
             />
           )}
 
@@ -361,6 +394,7 @@ function PlanLine({
               editing={editing}
               compact={compact}
               violations={violations}
+              roles={roles}
             />
           ))}
         </ul>

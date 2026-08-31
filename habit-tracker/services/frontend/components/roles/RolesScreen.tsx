@@ -1,12 +1,13 @@
 'use client';
-// [review:need-review] PHASE-03/134
-// summary: the role screen both shells draw — where today's minutes went (share bar per role, the target share always labelled a hypothesis), the acts of the day, and the two manual forms; a record typed by a person is marked as such and can be removed
+// [review:need-review] PHASE-03/134, PHASE-03/140
+// summary: the role screen both shells draw — where today's minutes went (share bar per role, the target share always labelled a hypothesis), the acts of the day, and the two manual forms; a record typed by a person is marked as such and can be removed; #140 opens an act that came from the plan up to the line of the plan it came from
 
 import { useState } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { useRoles } from '@/hooks/useRoles';
 import { formatMinutes } from '@/lib/day-format';
+import { fromPlanLine } from '@/lib/plan-roles';
 import {
   ACT_KIND_OPTIONS,
   MANUAL_MARK,
@@ -141,14 +142,20 @@ export default function RolesScreen({ compact = false }: RolesScreenProps) {
           <p className="text-sm text-text-secondary">{NO_ACTS_TEXT}</p>
         ) : (
           <ul className="space-y-2">
-            {day.acts.map((act) => (
-              <li key={act.id} className="text-sm text-text-primary">
-                {actLine(act)}
-                {act.is_manual && (
-                  <span className="text-xs text-text-secondary"> · {MANUAL_MARK}</span>
-                )}
-              </li>
-            ))}
+            {day.acts.map((act) => {
+              const source = fromPlanLine(act);
+              return (
+                <li key={act.id} className="text-sm text-text-primary">
+                  {actLine(act)}
+                  {act.is_manual && (
+                    <span className="text-xs text-text-secondary"> · {MANUAL_MARK}</span>
+                  )}
+                  {source && (
+                    <p className="text-xs text-text-secondary">{source}</p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
