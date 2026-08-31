@@ -2023,3 +2023,26 @@ Feedback loops (backend): pytest **1278 passed, 2 skipped**, `ruff check app tes
 Feedback loops (backend): pytest **1315 passed, 2 skipped**, `ruff check app tests`,
 `ruff format --check app tests`, `mypy --strict app` (167 файлов), `alembic heads` — одна
 голова `b4d6f8a0c2e5`. `make check` целиком не отрабатывал: docker.
+
+## 2026-08-31 — приёмка PHASE-03, находки 5.6-5.8 (ложный assert, дубль «N ч M мин», мусор)
+
+Три находки приёмки, backend-часть.
+
+`tests/test_chat_retrieval.py` — `assert shown[0]["chars"] >= 0` не мог упасть: колонка
+объявлена `Mapped[int]`. Приёмка #114 требует непустой выборки, стало `> 0`.
+
+`«N ч M мин»` было написано дважды — в клаузе переработки и в пятничном отчёте, во втором
+с зашитой `60` вместо константы. Обе зовут `app/core/humanize.hours_and_minutes`. Поведение
+не менялось: ноль минут по-прежнему печатается («8 ч 0 мин»), потому что на этой строке
+стоят тексты вердикта и отчёта.
+
+`app/{models,schemas,api,core,crud}/` — каталог от незаработавшего brace expansion, в git не
+попадал, удалён `rmdir`.
+
+Файлов тронуто: 5 (2 new, 3 mod) + удалён пустой каталог.
+
+- `app/core/humanize.py` — new, `hours_and_minutes()` и `MINUTES_PER_HOUR`.
+- `tests/test_humanize.py` — new, 3 теста на строку продолжительности.
+- `app/day/evaluate.py` — mod, `_hours` и локальная `MINUTES_PER_HOUR` удалены.
+- `app/roles/report.py` — mod, `_hours` удалена.
+- `tests/test_chat_retrieval.py` — mod, ложный assert.

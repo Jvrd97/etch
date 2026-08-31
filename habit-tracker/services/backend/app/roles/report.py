@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+from app.core.humanize import hours_and_minutes
 from app.crud.role import UNASSIGNED_LAG_PCT, RolePeriodSlice, RoleSummary
 from app.models.role import ROLE_CODE_FALLBACK
 
@@ -57,11 +58,6 @@ LAG_LINE = (
 )
 
 
-def _hours(minutes: int) -> str:
-    """Минуты часами и минутами — так их читает человек."""
-    return f"{minutes // 60} ч {minutes % 60} мин"
-
-
 def _delta(slice_: RolePeriodSlice) -> str:
     """Отклонение от целевой доли со знаком, либо прочерк — цели нет."""
     if slice_.delta_pct is None:
@@ -79,7 +75,7 @@ def _target(slice_: RolePeriodSlice) -> str:
 def _role_line(slice_: RolePeriodSlice) -> str:
     """Одна строка таблицы ролей."""
     return (
-        f"| {slice_.title} | {_hours(slice_.minutes)} | {slice_.share_pct}% "
+        f"| {slice_.title} | {hours_and_minutes(slice_.minutes)} | {slice_.share_pct}% "
         f"| {_target(slice_)} | {_delta(slice_)} |"
     )
 
@@ -124,7 +120,7 @@ def render_summary_md(summary: RoleSummary) -> str:
 
     blocks = [
         head,
-        f"Всего за период: {_hours(summary.total_minutes)}.",
+        f"Всего за период: {hours_and_minutes(summary.total_minutes)}.",
         "\n".join(table),
         TARGET_NOTE,
         ACTS_TITLE,

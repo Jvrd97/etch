@@ -562,7 +562,9 @@ class TestTurnWithRetrievals:
         assert len(shown) == 1
         assert shown[0]["query_name"] == QUERY_STREAK
         assert shown[0]["params"] == {"category_id": 1}
-        assert shown[0]["chars"] >= 0
+        # `>= 0` здесь пройдёт всегда: колонка `chars` объявлена `Mapped[int]`
+        # и отрицательной не бывает. Приёмка #114 требует непустой выборки.
+        assert shown[0]["chars"] > 0
 
     async def test_a_name_outside_the_list_ends_the_turn_with_an_answer(
         self, client: AsyncClient, install_chat: Any, db_session: AsyncSession

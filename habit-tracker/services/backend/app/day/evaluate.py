@@ -88,6 +88,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from app.core.humanize import hours_and_minutes
 from app.day.marks import TaskCounts
 from app.models.day import DayRuleSet, role_clause_roles
 
@@ -146,10 +147,6 @@ DEFAULT_REASON_ORDER: tuple[str, ...] = (REASON_OVERTIME, REASON_ANCHORS, REASON
 
 # Key of `verdict_rule` the order is written under.
 REASON_ORDER_KEY = "reason_order"
-
-# Сколько минут в часе. Названо, потому что расшифровка клауза переработки
-# читается человеком в часах, а не в минутах.
-MINUTES_PER_HOUR = 60
 
 # Что означает `kind` рабочего дня. Продублировано из `app.day.rules` намеренно:
 # импорт оттуда сюда закольцевал бы модули — `rules` уже импортирует `evaluate`.
@@ -394,11 +391,6 @@ def _role_clause(rule: DayRuleSet, facts: DayFacts) -> Clause:
     return Clause(code=REASON_ROLE_ACT, passed=True, detail="; ".join(parts))
 
 
-def _hours(minutes: int) -> str:
-    """Минуты часами и минутами — так их читает человек, а не «500 мин»."""
-    return f"{minutes // MINUTES_PER_HOUR} ч {minutes % MINUTES_PER_HOUR} мин"
-
-
 def _overtime_clause(
     rule: DayRuleSet, facts: DayFacts, work_cap_min: int | None = None
 ) -> Clause:
@@ -415,13 +407,15 @@ def _overtime_clause(
         return Clause(REASON_OVERTIME, True, "работа не измерена")
     if not rule.overtime_disqualifies:
         return Clause(
-            REASON_OVERTIME, True, f"{_hours(facts.work_minutes)}, потолок не судит"
+            REASON_OVERTIME,
+            True,
+            f"{hours_and_minutes(facts.work_minutes)}, потолок не судит",
         )
     cap = work_cap_min if work_cap_min is not None else rule.work_cap_min
     return Clause(
         code=REASON_OVERTIME,
         passed=facts.work_minutes <= cap,
-        detail=f"{_hours(facts.work_minutes)} при потолке {_hours(cap)}",
+        detail=f"{hours_and_minutes(facts.work_minutes)} при потолке {hours_and_minutes(cap)}",
     )
 
 
