@@ -77,12 +77,16 @@ BACKEND_API = "api"
 CHUNK_DELTA = "delta"
 CHUNK_USAGE = "usage"
 
-# Флаги потока. `--include-partial-messages` работает только вместе с
-# `--output-format stream-json`, поэтому они и стоят рядом.
+# Флаги потока. Все три обязательны вместе: `--include-partial-messages` требует
+# `--output-format stream-json`, а тот под `--print` требует `--verbose` —
+# без него CLI отвечает "When using --print, --output-format=stream-json requires
+# --verbose" и уходит, а чат отдаёт 502. Проверено на живом бинаре 2026-08-31:
+# до этого дня чат не работал ни разу, потому что в тестах CLI подменён моком.
 STREAM_ARGS: tuple[str, ...] = (
     "--output-format",
     "stream-json",
     "--include-partial-messages",
+    "--verbose",
 )
 
 # Коды отказа. Машинные: в `chat_messages.error_code` пишется одно из них, а не
