@@ -256,6 +256,10 @@ class ScheduleEntry(BaseModel):
     Duration comes from the server rather than from a subtraction in the
     browser. `23:30-00:30` is sixty minutes only if whoever subtracts knows the
     day boundary, and the browser does not.
+
+    `ends_at` and `minutes` are both null for a *point* — подъём в 06:00, «20:00
+    — Конец». A moment has a place on the clock and no length; zero minutes
+    would be a claim about duration that it does not make.
     """
 
     item_id: UUID
@@ -265,8 +269,8 @@ class ScheduleEntry(BaseModel):
     kind: str
     rigidity: str
     starts_at: datetime
-    ends_at: datetime
-    minutes: int
+    ends_at: datetime | None
+    minutes: int | None
     window_comment: str | None
 
 

@@ -467,15 +467,10 @@ def test_a_window_before_the_boundary_hour_belongs_to_the_same_day() -> None:
     )
 
 
-def test_a_zero_length_window_is_pushed_a_full_day_rather_than_refused() -> None:
-    """
-    The same `+24h` `parse_window` in `plan_html.py` has always applied.
-
-    Not a good window, but the `ends_at > starts_at` CHECK passes and the
-    twenty-four-hour bar on the schedule is as visible as it deserves to be.
-    """
-    window = resolve_window(PLAN_DAY, time(10, 0), time(10, 0), BOUNDARY)
-    assert window.minutes == 24 * MINUTES_IN_HOUR
+# Раньше здесь стоял `test_a_zero_length_window_is_pushed_a_full_day_rather_than_refused`:
+# он фиксировал унаследованное от `plan_html.py` правило «конец равен началу —
+# добавь сутки». Правило отменено вместе с ним, потому что цену за него платил
+# не тест, а экран дня: см. `test_a_moment_is_a_point_rather_than_a_full_day`.
 
 
 # --------------------------------------------------------------------------
@@ -493,3 +488,38 @@ def test_plain_text_keeps_the_text_of_a_link_and_drops_the_url() -> None:
 
 def test_plain_text_collapses_the_line_breaks_of_a_wrapped_paragraph() -> None:
     assert to_plain("первая\n  вторая") == "первая вторая"
+
+
+def test_a_moment_is_a_point_rather_than_a_full_day() -> None:
+    """
+    `06:00-06:00` — это момент, а не сутки.
+
+    Так модель записывает точечный якорь: подъём в шесть, старт работы в 07:45.
+    Пока конец такого окна толкался на сутки вперёд, каждая такая строка
+    становилась суточным отрезком и пересекалась со всем остальным планом:
+    экран дня показывал «31 наложение · 66 ч 15 мин» на дне, где не пересекалось
+    ничего. Точка — это начало без конца, и длительности у неё нет.
+    """
+    start, end = parse_window("06:00-06:00")
+    window = resolve_window(PLAN_DAY, start, end, BOUNDARY)
+
+    assert window.ends_at is None
+    assert window.minutes is None
+    assert window.starts_at.astimezone(timezone.utc).date() == PLAN_DAY
+
+
+def test_a_backwards_window_is_refused_rather_than_guessed() -> None:
+    """
+    `10:00-09:00` внутри одного дня — ошибка, а не «до завтра».
+
+    Перенос через полночь уже сделан пиннингом к границе суток, поэтому конец
+    раньше начала здесь означает опечатку. Молчаливое +24 часа превращало её в
+    двадцатитрёхчасовой блок, который никто не заказывал.
+    """
+    start, end = parse_window("10:00-09:00")
+
+    with pytest.raises(PlanRejected) as error:
+        resolve_window(PLAN_DAY, start, end, BOUNDARY)
+
+    assert error.value.error == "bad_window"
+    assert "раньше начала" in error.value.message

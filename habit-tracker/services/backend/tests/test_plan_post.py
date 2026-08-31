@@ -294,6 +294,80 @@ async def test_two_tasks_whose_windows_collide_are_reported_as_an_overlap(
     assert overlaps[0]["right_item_id"] == schedule["W2"]
 
 
+async def test_a_point_stands_on_the_schedule_without_a_length(
+    client: AsyncClient,
+) -> None:
+    """
+    Точечный якорь — строка расписания без длительности.
+
+    Так модель пишет подъём и старт работы: «06:00-06:00». Пока конец такого
+    окна толкался на сутки вперёд, строка становилась суточным блоком; строки
+    без конца расписание вообще не показывало. Момент обязан быть виден и обязан
+    быть без минут — ровно как «20:00 — Конец» в шаблоне плана.
+    """
+    body = document(
+        sections=[
+            {
+                "kind": "anchors",
+                "items": [
+                    {
+                        "kind": "anchor",
+                        "code": "подъём",
+                        "text_md": "Подъём",
+                        "window": "06:00-06:00",
+                    }
+                ],
+            }
+        ]
+    )
+
+    response = await client.post(PLAN_URL, json=body)
+
+    assert response.status_code == 201
+    schedule = response.json()["schedule"]
+    assert len(schedule) == 1
+    assert schedule[0]["code"] == "подъём"
+    assert schedule[0]["minutes"] is None
+    assert schedule[0]["ends_at"] is None
+
+
+async def test_a_point_overlaps_nothing(client: AsyncClient) -> None:
+    """
+    Момент не занимает времени, поэтому пересекаться ему нечем.
+
+    Приёмка того самого дня: «31 наложение · 66 ч 15 мин» на плане, где не
+    накладывалось ничего. Два точечных якоря стали суточными отрезками и
+    перекрыли весь день и друг друга.
+    """
+    body = document(
+        sections=[
+            {
+                "kind": "anchors",
+                "items": [
+                    {
+                        "kind": "anchor",
+                        "code": "подъём",
+                        "text_md": "Подъём",
+                        "window": "06:00-06:00",
+                    },
+                    {
+                        "kind": "anchor",
+                        "code": "старт_работы",
+                        "text_md": "Старт работы",
+                        "window": "07:45-07:45",
+                    },
+                ],
+            },
+            {"kind": "work", "items": [task("W1", "09:00-11:00")]},
+        ]
+    )
+
+    response = await client.post(PLAN_URL, json=body)
+
+    assert response.status_code == 201
+    assert response.json()["overlaps"] == []
+
+
 async def test_windows_that_only_touch_do_not_count_as_an_overlap(
     client: AsyncClient,
 ) -> None:

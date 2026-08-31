@@ -2096,3 +2096,47 @@ Feedback loops (backend): pytest **1492 passed, 2 skipped** (на своей б�
 `ruff check app tests`, `ruff format --check app tests`, `mypy --strict app` (186 файлов),
 `alembic heads` — одна голова `b4d6f8a0c2e5`. Фронт: `bun test` 1249 pass, `tsc --noEmit` чисто,
 `bun run lint` 0 errors (фронт этой веткой не трогался).
+
+## 2026-08-31 — точка вместо суток: конец окна больше не толкается на +24 часа
+
+Приёмка нашла план, где экран показывал «31 наложение · 66 ч 15 мин» на дне, в котором не
+пересекалось ничего. Причина не в отображении: `resolve_window` при равных концах окна
+добавляла к концу сутки — правило, унаследованное от `plan_html.py`. Модель написала
+точечные якоря как «06:00-06:00» и «07:45-07:45», сервер сделал из каждого суточный
+отрезок, и они перекрыли весь день и друг друга.
+
+Точка теперь первого класса: момент с местом на часах и без длительности.
+
+- `app/day/plan_validate.py` — mod. `Window.ends_at: datetime | None`, `minutes` возвращает
+  `None` для точки (не ноль: ноль — это длительность). Равные концы дают точку; конец
+  раньше начала после пиннинга к границе суток — `PlanRejected("bad_window")` с текстом,
+  а не молчаливые +24 часа: переход через полночь разрешается пиннингом выше, и сюда
+  законный случай не доходит.
+- `app/crud/plan.py` — mod. `OVERLAP_SQL` берёт только строки с обоими концами:
+  `tstzrange(starts_at, NULL)` — диапазон до бесконечности, и один подъём накладывался на
+  весь остаток дня. `build_schedule` больше не выбрасывает строки без конца — точка стоит
+  в расписании с `minutes = None`, сортируется по `ends_at or starts_at`, поэтому подъём
+  в 06:00 стоит перед тренировкой 06:00-07:00.
+- `app/schemas/plan.py` — mod. `ScheduleEntry.ends_at` и `.minutes` стали nullable.
+- `tests/test_plan_constraints.py` — mod. Два новых теста (точка, отказ на обратном окне);
+  удалён `test_a_zero_length_window_is_pushed_a_full_day_rather_than_refused` — он
+  фиксировал ровно то правило, которое отменено, и на его месте стоит комментарий об этом.
+- `tests/test_plan_post.py` — mod. Два теста через HTTP: точка видна в расписании без
+  минут; точка не даёт наложений рядом с настоящим блоком.
+
+Фронт (`habit-tracker/services/frontend`):
+
+- `lib/api.ts` — mod, `ScheduleEntry.ends_at`/`minutes` nullable.
+- `lib/plan.ts` — mod, `formatWindow` печатает точку одним временем, `scheduleDuration`
+  ставит прочерк вместо длительности (`POINT_DURATION`), как «20:00 — Конец» в шаблоне.
+- `components/day/DaySchedule.tsx`, `components/day/DaySchedule.test.tsx` — mod, строка
+  точки и тест на неё.
+
+Проверено обратным ходом: возврат `+24h` в `resolve_window` краснит четыре теста; снятие
+условия `ends_at IS NOT NULL` в `OVERLAP_SQL` — один (точка снова накладывается на блок).
+
+Feedback loops (backend): pytest **1520 passed, 2 skipped**, `ruff check app tests`,
+`mypy --strict app` (186 файлов). Фронт: `bun test` **1328 pass**, `tsc --noEmit` чисто.
+
+Не сделано: планы, уже лежащие в базе, остались с растянутыми окнами — расчёт применяется
+при записи плана, а не при чтении. Кривой день чинится пересборкой плана на эту дату.

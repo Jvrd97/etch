@@ -1,10 +1,10 @@
 // [review:need-review] PHASE-03/87
-// summary: component tests for the day's schedule — a window across midnight reads as an hour, colliding windows are marked on both lines, back-to-back windows are not, and a plan with no windows says so instead of rendering an empty list
+// summary: component tests for the day's schedule — a window across midnight reads as an hour, colliding windows are marked on both lines, back-to-back windows are not, a point stands on the clock without a length, and a plan with no windows says so instead of rendering an empty list
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { ScheduleEntry, ScheduleOverlap } from '@/lib/api';
-import { EMPTY_SCHEDULE_TEXT, OVERLAP_BADGE } from '@/lib/plan';
+import { EMPTY_SCHEDULE_TEXT, OVERLAP_BADGE, POINT_DURATION } from '@/lib/plan';
 import DaySchedule from './DaySchedule';
 
 function entry(overrides: Partial<ScheduleEntry> = {}): ScheduleEntry {
@@ -48,6 +48,31 @@ describe('DaySchedule', () => {
     );
 
     expect(screen.getByText('1 ч')).toBeDefined();
+  });
+
+  it('shows a point as a moment rather than a stretch', () => {
+    // Подъём в 06:00 — момент: время на часах есть, длительности нет. Пока
+    // сервер толковал «06:00-06:00» как сутки, строка говорила «24 ч» и
+    // помечалась наложением со всем остальным днём.
+    render(
+      <DaySchedule
+        schedule={[
+          entry({
+            code: 'подъём',
+            text_plain: 'Подъём',
+            kind: 'anchor',
+            starts_at: '2026-08-31T04:00:00Z',
+            ends_at: null,
+            minutes: null,
+          }),
+        ]}
+        overlaps={[]}
+      />
+    );
+
+    expect(screen.getByText('Подъём')).toBeDefined();
+    expect(screen.getByText(POINT_DURATION)).toBeDefined();
+    expect(screen.queryByText(/24 ч/)).toBeNull();
   });
 
   it('marks both lines of a collision', () => {

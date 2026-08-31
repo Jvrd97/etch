@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/87
-// summary: the day's clock — every line that claimed a window, in order, with the duration the server measured and collisions highlighted from the server's own self-join rather than from a comparison here
+// summary: the day's clock — every line that claimed a window, in order, with the duration the server measured, a point shown as one time with a dash for its length, and collisions highlighted from the server's own self-join rather than from a comparison here
 
 import { AlertTriangle, Clock } from 'lucide-react';
 import type { ScheduleEntry, ScheduleOverlap } from '@/lib/api';
@@ -9,6 +9,7 @@ import {
   OVERLAP_BADGE,
   formatWindow,
   overlappingItemIds,
+  scheduleDuration,
   totalOverlapMinutes,
 } from '@/lib/plan';
 
@@ -87,7 +88,7 @@ export default function DaySchedule({
                 </span>
                 <span className="inline-flex items-center gap-1.5 shrink-0 text-sm text-text-secondary">
                   <Clock className="w-4 h-4" strokeWidth={2} />
-                  {formatMinutes(entry.minutes)}
+                  {scheduleDuration(entry.minutes)}
                 </span>
                 {collides && (
                   <span className="shrink-0 text-xs text-warning">{OVERLAP_BADGE}</span>
