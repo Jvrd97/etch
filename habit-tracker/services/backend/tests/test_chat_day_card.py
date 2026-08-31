@@ -486,3 +486,49 @@ class TestPlanSection:
         assert "09:00–10:00" in card.text
         assert "отметка: done" in card.text
         assert "успел до обеда" in card.text
+
+    async def test_the_card_names_every_line_by_its_code(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        seeded_rules: None,
+    ) -> None:
+        """
+        Код строки — то, чем чат сохраняет прожитый день при перезаписи (`#187`).
+
+        Отметка переносится на строку, чей id вернулся в новом плане, а id
+        считается из кода. Не видя кодов, модель может только стереть день, и
+        проверять это надо на карточке, а не на промпте: промпт просит беречь
+        коды, которых в карточке может не оказаться.
+        """
+        day = CARD_DAY.isoformat()
+        plan = await client.post(
+            f"/api/v1/day/{day}/plan",
+            json={
+                "title": f"План {day}",
+                "sections": [
+                    {
+                        "kind": "work",
+                        "title": "Работа",
+                        "items": [
+                            {
+                                "kind": "task",
+                                "code": "W1",
+                                "rigidity": "soft",
+                                "text_md": "Починить conn_to_coll",
+                                "window": "09:00-10:00",
+                                "done_criterion": "тест зелёный",
+                                "quarter_goal_id": 1,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        assert plan.status_code == 201, plan.text
+
+        card = await build_day_card(db_session, CARD_DAY)
+
+        assert "код W1" in card.text
+        assert "[task/soft]" in card.text
+        assert "тест зелёный" in card.text

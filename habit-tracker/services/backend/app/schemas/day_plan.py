@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/148
+# [review:need-review] PHASE-03/148, PHASE-03/187
 # summary: the JSON a model is allowed to answer with — sections, lines, windows, kind and rigidity, each line carrying the short code the repair prompt names it by — plus its two conversions: into the draft the eight constraints judge, and into the document the one writing path accepts
+# summary: PHASE-03/187 lets `to_document` carry the ids of a day that already has a plan, matched by line code, so a rewrite keeps the marks of the lines it kept
 """
 План дня, каким его возвращает модель.
 
@@ -19,6 +20,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -155,13 +157,24 @@ def to_draft(plan: GeneratedDayPlan, target: date, rule: DayRuleSet) -> PlanDraf
     return PlanDraft(target=target, items=tuple(items))
 
 
-def to_document(plan: GeneratedDayPlan, source: str) -> PlanDocument:
+def to_document(
+    plan: GeneratedDayPlan,
+    source: str,
+    known_ids: Mapping[str, uuid.UUID] | None = None,
+) -> PlanDocument:
     """
     Ответ модели как документ, который принимает `POST /day/{date}/plan`.
 
     Один путь записи, а не два: сгенерированный план проходит ту же проверку,
     ту же выдачу идентификаторов и тот же перенос отметок, что и план,
     присланный человеком.
+
+    `known_ids` — `{код строки: её id в уже записанном плане этого дня}`. Строка,
+    чей код нашёлся, приезжает под своим прежним id, то есть остаётся той же
+    строкой: `replace_plan` поднимает над удалением её отметку и ставит обратно.
+    Без словаря каждая строка новая и без отметки — это и есть разница между
+    «переписать день» и «стереть прожитое». Пустой словарь и `None` значат
+    одно и то же: дню, у которого плана нет, переносить нечего.
     """
     sections: list[PlanSectionIn] = []
     for section in plan.sections:
@@ -171,6 +184,7 @@ def to_document(plan: GeneratedDayPlan, source: str) -> PlanDocument:
                 kind=section.kind,
                 items=[
                     PlanItemIn(
+                        id=None if known_ids is None else known_ids.get(item.code),
                         kind=item.kind,
                         rigidity=item.rigidity,
                         text_md=item.text,

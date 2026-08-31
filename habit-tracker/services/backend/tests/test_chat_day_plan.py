@@ -1,24 +1,30 @@
-# [review:need-review] PHASE-03/115
-# summary: the day plan a chat may propose — applied to an empty day it becomes the day's plan through the same `replace_plan` everything else uses; offered for a day that already has one it never reaches the card and answers 409 if it got there anyway; breaking one of the eight rules it is refused by rule code and writes not a single row
+# [review:need-review] PHASE-03/187
+# summary: the day plan a chat may propose — for an empty day it is a draft, for a day that already has one it is a rewrite the server names itself, both written through the same `replace_plan` everything else uses; a line whose code the rewrite keeps keeps its mark; breaking one of the eight rules it is refused by rule code and writes not a single row
 """
-Чат предлагает план дня — и не умеет переписать существующий.
+Чат предлагает план дня — и умеет переписать существующий.
 
-Проверяются три обещания среза.
+Проверяются четыре обещания среза.
 
 **Пустой день чат собрать может.** Предложение доезжает до плашки, применение
 кладёт его тем же `replace_plan`, которым пишут скилл и ручка генерации.
 
-**Занятый день — нет.** Операция применима только ко дню без плана, и это
-проверяется дважды: предложение на занятый день не становится плашкой вовсе, а
-предложение, доехавшее до применения (план на дне появился, пока плашка висела),
-отвечает 409 и оставляет существующий план нетронутым.
+**Занятый день — тоже.** Разница между «собрать» и «переписать» — это факт базы,
+и называет её сервер: имя операции в сохранённом предложении приводится к
+состоянию дня, чем бы её ни назвала модель. Плашка потом показывает человеку
+именно то, что произойдёт.
+
+**Перезапись не стирает прожитый день.** Строка, чей код в новом плане тот же,
+сохраняет свою отметку: `replace_plan` переносит отметки по id, а id считается
+из кода. Строка с новым кодом — новая строка без отметки, и это тоже правда,
+которую видно.
 
 **Нарушивший канон план не сохраняется молча.** Восемь правил `#147` судят его на
 уровне `block`: до плашки он не доезжает, а на применении отвечает 422 с кодом
 правила. Ни одной строки в базе при этом не появляется.
 
-Того, чего в схеме нет, здесь нет и в тестах: невыразимость замены проверяет
-`test_chat_plan_schema.py` — на JSON Schema, а не на прогоне промпта.
+Чего в схеме по-прежнему нет — снятия отметки, удаления, переименования, — здесь
+нет и в тестах: границу класса W2 проверяет `test_chat_plan_schema.py`, на JSON
+Schema, а не на прогоне промпта.
 """
 
 from __future__ import annotations
@@ -216,11 +222,16 @@ async def make_existing_plan(client: AsyncClient) -> str:
     return str(response.json()["id"])
 
 
-async def read_plan(client: AsyncClient) -> dict[str, Any]:
-    """План дня так, как его читает экран: полем карточки дня, а не своей ручкой."""
+async def read_day(client: AsyncClient) -> dict[str, Any]:
+    """Весь день так, как его читает экран: план и отметки одним ответом."""
     response = await client.get(f"{DAY_URL}/{WORKDAY.isoformat()}")
     assert response.status_code == 200, response.text
-    plan = response.json()["plan"]
+    return dict(response.json())
+
+
+async def read_plan(client: AsyncClient) -> dict[str, Any]:
+    """План дня так, как его читает экран: полем карточки дня, а не своей ручкой."""
+    plan = (await read_day(client))["plan"]
     assert plan is not None, "на дне нет плана"
     return dict(plan)
 
@@ -242,19 +253,38 @@ class TestProposing:
         assert row is not None
         assert row.plan["day_plan"]["op"] == "draft_day_plan"
 
-    async def test_a_day_that_already_has_a_plan_gets_no_card(
+    async def test_a_day_that_already_has_a_plan_gets_a_rewrite_card(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """
-        Плашка, которая на нажатии отвечает 409, — это не предложение.
+        Занятый день — тоже предложение, только другое.
 
         Есть ли у дня план — факт базы, а не часть пересказа, и решает его
-        сервер: модель могла ответить мимо инструкции, и это ничего не меняет.
+        сервер: модель назвала операцию черновиком, а плашка обязана сказать
+        человеку, что нажатие перепишет существующий день.
         """
         await make_existing_plan(client)
 
         row = await attach(client, db_session, answer_with(proposal(legal_day_plan())))
-        assert row is None
+        assert row is not None
+        assert row.plan["day_plan"]["op"] == "rewrite_day_plan"
+
+    async def test_an_empty_day_gets_a_draft_card_whatever_the_model_called_it(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        Имя операции приводится к состоянию дня в обе стороны.
+
+        Модель, назвавшая перезаписью то, что ничего не переписывает, не должна
+        оставить на экране предупреждение о потере — терять на пустом дне
+        нечего.
+        """
+        plan = legal_day_plan()
+        plan["op"] = "rewrite_day_plan"
+
+        row = await attach(client, db_session, answer_with(proposal(plan)))
+        assert row is not None
+        assert row.plan["day_plan"]["op"] == "draft_day_plan"
 
     async def test_a_day_plan_breaking_a_rule_gets_no_card(
         self, client: AsyncClient, db_session: AsyncSession
@@ -283,10 +313,9 @@ class TestProposing:
         """
         Снимается операция, а не всё предложение.
 
-        Число из той же реплики применимо независимо от того, занят ли день
-        планом, и терять его было бы платой за чужую ошибку.
+        Число из той же реплики применимо независимо от того, прошёл ли план
+        дня канон, и терять его было бы платой за чужую ошибку.
         """
-        await make_existing_plan(client)
         metrics = [
             {
                 "op": "log_metric",
@@ -300,7 +329,7 @@ class TestProposing:
         row = await attach(
             client,
             db_session,
-            answer_with(proposal(legal_day_plan(), metrics=metrics)),
+            answer_with(proposal(day_plan_in_the_free_evening(), metrics=metrics)),
         )
         assert row is not None
         assert row.plan.get("day_plan") is None
@@ -351,16 +380,15 @@ class TestApplying:
         )
         assert list(authors.scalars().all()) == [AUTHOR_AI]
 
-    async def test_a_day_that_already_has_a_plan_answers_409_and_keeps_it(
+    async def test_a_day_that_already_has_a_plan_is_rewritten(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """
-        Вторая половина защиты: план появился, пока плашка висела.
+        Перезапись — то, ради чего операция и открыта: день собран заново.
 
         Предложение сохранено в обход проверок рождения — так выглядит вчерашняя
-        плашка. Молча переписать день ей нечем, и отказ обязан быть отказом, а не
-        перезаписью: сгенерированный документ чеканит новые id строк, то есть
-        вместе с планом исчезли бы все отметки дня.
+        плашка. Канон судится ещё раз прямо перед записью, а не на момент показа,
+        поэтому переписать день можно только тем, что канону не противоречит.
         """
         plan_id = await store_proposal(client, db_session, proposal(legal_day_plan()))
         before = await make_existing_plan(client)
@@ -368,11 +396,85 @@ class TestApplying:
         response = await client.post(
             f"{CHAT_URL}/plans/{plan_id}/apply", json={"day_plan": True}
         )
-        assert response.status_code == 409, response.text
+        assert response.status_code == 201, response.text
 
         stored = await read_plan(client)
-        assert str(stored["id"]) == before
-        assert stored["source"] != "llm"
+        assert str(stored["id"]) != before
+        assert stored["source"] == "llm"
+        codes = [
+            item["code"] for section in stored["sections"] for item in section["items"]
+        ]
+        assert codes == ["подъём", "спорт", "W1"]
+
+    async def test_a_line_whose_code_survives_the_rewrite_keeps_its_mark(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        Прожитый день не стирается перезаписью — он переносится по кодам.
+
+        `replace_plan` поднимает отметки строк, чьи id вернулись в документе, а
+        id строки — это `uuid5` от её кода. Значит, «оставь код» и «сохрани
+        отметку» — одно и то же действие, и именно поэтому коды видны в карточке
+        дня.
+        """
+        first = await store_proposal(client, db_session, proposal(legal_day_plan()))
+        applied = await client.post(
+            f"{CHAT_URL}/plans/{first}/apply", json={"day_plan": True}
+        )
+        assert applied.status_code == 201, applied.text
+
+        stored = await read_plan(client)
+        by_code = {
+            item["code"]: item["id"]
+            for section in stored["sections"]
+            for item in section["items"]
+        }
+        marked = await client.put(
+            f"{DAY_URL}/{WORKDAY.isoformat()}/marks/{by_code['подъём']}",
+            json={"state": "done"},
+        )
+        assert marked.status_code == 200, marked.text
+
+        rewrite = legal_day_plan()
+        rewrite["sections"][1]["items"] = [work_item("W9", "08:00-10:00")]
+        second = await store_proposal(client, db_session, proposal(rewrite))
+        response = await client.post(
+            f"{CHAT_URL}/plans/{second}/apply", json={"day_plan": True}
+        )
+        assert response.status_code == 201, response.text
+
+        after = await read_day(client)
+        states = {mark["item_id"]: mark["state"] for mark in after["marks"]}
+        rewritten = {
+            item["code"]: item["id"]
+            for section in after["plan"]["sections"]
+            for item in section["items"]
+        }
+        assert states.get(rewritten["подъём"]) == "done"
+        assert rewritten["W9"] not in states
+
+    async def test_a_settled_card_does_not_rewrite_the_day_a_second_time(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        Одна плашка переписывает день один раз.
+
+        Кнопка на экране после применения гаснет, но запрос мимо экрана обязан
+        упереться в тот же предел: второе нажатие резало бы ревизию заново и
+        подменяло бы автора уже принятого дня.
+        """
+        plan_id = await store_proposal(client, db_session, proposal(legal_day_plan()))
+        first = await client.post(
+            f"{CHAT_URL}/plans/{plan_id}/apply", json={"day_plan": True}
+        )
+        assert first.status_code == 201, first.text
+        written = first.json()["day_plan_id"]
+
+        second = await client.post(
+            f"{CHAT_URL}/plans/{plan_id}/apply", json={"day_plan": True}
+        )
+        assert second.status_code == 409, second.text
+        assert str((await read_plan(client))["id"]) == written
 
     async def test_a_plan_breaking_a_rule_is_refused_by_its_rule_code(
         self, client: AsyncClient, db_session: AsyncSession

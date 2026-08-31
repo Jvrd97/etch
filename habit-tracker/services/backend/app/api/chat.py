@@ -1,9 +1,10 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/114, PHASE-03/115, PHASE-03/116, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/114, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/187
 # summary: the chat router — conversations created, listed and read back with their messages, the plans proposed in them and whether the next turn continues a CLI session, one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context, and the apply that goes through the existing transactional `apply_daily_summary` rather than writing anything of its own
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
 # summary: PHASE-03/114 turns one turn into a loop of passes — an answer that carries a `need` block buys the named retrievals, writes one `chat_retrievals` row per call (refusals included), hands them back inside the same CLI session and lets the model finish in words, under a ceiling of passes and the turn's own remaining budget
 # summary: PHASE-03/115 lets a proposal carry a whole day plan — checked against the eight rules of `#147` twice (when the card is born and again just before the write) and refused with 409 on a day that already has one, so the chat can fill an empty day but can never overwrite a full one
+# summary: PHASE-03/187 lets that day plan land on a day that already has one — the server names the operation a draft or a rewrite by the state of the day, the canon is still judged twice, and one card rewrites the day exactly once
 # summary: PHASE-03/116 opens the answer row as `streaming` before generation (it is also the lock that makes a second POST a 409), closes it from `finally` on every exit, refuses with 502 when the backend dies before the first frame, and unsticks a dialogue by a reset handle when the worker died with it
 """
 Ручки разговора.
@@ -597,7 +598,6 @@ async def _close_turn(
 # Почему предложенный план дня до плашки не доехал. Коды, а не предложения: их
 # читает лог, и ни один из них не несёт ни строки плана, ни слова человека.
 DAY_PLAN_NO_RULE = "no_rule_for_date"
-DAY_PLAN_DAY_TAKEN = "day_already_has_a_plan"
 DAY_PLAN_BREAKS_CANON = "breaks_canon"
 # Схема пропустила, а документ не собрался: окно «утром» вместо «07:00-08:00»
 # — строка, а не время, и `min_length=1` про неё ничего не знает.
@@ -639,14 +639,18 @@ async def _day_plan_refusal(db: AsyncSession, plan: SchemaChatPlan) -> str | Non
     """
     Почему предложенный план дня применить нельзя, или `None` — можно.
 
-    Три причины, и все три — факты базы, а не части пересказа: даты нет в каноне,
-    у дня уже есть план, план нарушает правила дня. Спрашивать о них модель
-    значило бы дать ей право ошибиться в ответе, поэтому решает сервер.
+    Две причины, и обе — факты базы, а не части пересказа: даты нет в каноне,
+    план нарушает правила дня. Спрашивать о них модель значило бы дать ей право
+    ошибиться в ответе, поэтому решает сервер.
+
+    Занятый день причиной больше не является (`#187`): день переписывается
+    целиком, и стоит на этом пути не отказ, а имя операции — `_named_day_plan`
+    приводит его к состоянию дня, чтобы плашка сказала человеку, что именно
+    произойдёт по нажатию.
 
     Функция одна на оба конца — рождение предложения и его применение. Второй
     её экземпляр разошёлся бы с первым молча, а между плашкой и нажатием
-    проходят часы: строка `day_rule_set` за это время меняется, и план дня
-    успевает появиться из другого места.
+    проходят часы, за которые строка `day_rule_set` успевает смениться.
     """
     op = plan.day_plan
     if op is None:  # pragma: no cover - вызывается только при наличии операции
@@ -654,8 +658,6 @@ async def _day_plan_refusal(db: AsyncSession, plan: SchemaChatPlan) -> str | Non
     rule = await _day_rule(db, plan.entry_date)
     if rule is None:
         return DAY_PLAN_NO_RULE
-    if await plan_crud.get_plan(db, plan.entry_date) is not None:
-        return DAY_PLAN_DAY_TAKEN
     try:
         broken = _day_plan_violations(op, plan.entry_date, rule)
     except PlanRejected:
@@ -664,6 +666,25 @@ async def _day_plan_refusal(db: AsyncSession, plan: SchemaChatPlan) -> str | Non
         # присланную строку, и в лог оно не идёт.
         return DAY_PLAN_UNREADABLE
     return DAY_PLAN_BREAKS_CANON if broken else None
+
+
+async def _named_day_plan(db: AsyncSession, plan: SchemaChatPlan) -> SchemaChatPlan:
+    """
+    То же предложение, но операция плана дня названа по состоянию дня.
+
+    Модель отвечает, глядя в карточку, а карточка собрана до её хода: план на
+    дне мог появиться и исчезнуть, пока она печатала. Имя операции — то, что
+    прочитает человек на плашке («соберу день» против «перепишу день»), и
+    ошибаться в нём модели нельзя, поэтому его ставит сервер.
+    """
+    op = plan.day_plan
+    if op is None:  # pragma: no cover - вызывается только при наличии операции
+        return plan
+    taken = await plan_crud.get_plan(db, plan.entry_date) is not None
+    named = op.named_by(day_taken=taken)
+    if named is op:
+        return plan
+    return plan.model_copy(update={"day_plan": named})
 
 
 async def _attach_plan(
@@ -681,11 +702,16 @@ async def _attach_plan(
     половины ответа, — это предложение, которого модель не договорила.
 
     План дня, который применить нельзя, снимается **здесь**, а не оставляется
-    плашке: иначе экран нарисовал бы кнопку, которая на нажатии отвечает 409 или
-    422. Снимается ровно эта операция, а не всё предложение: отметка и число из
-    той же реплики применимы независимо от того, занят ли день планом, и терять
+    плашке: иначе экран нарисовал бы кнопку, которая на нажатии отвечает 422.
+    Снимается ровно эта операция, а не всё предложение: отметка и число из той
+    же реплики применимы независимо от того, прошёл ли план дня канон, и терять
     их было бы платой за чужую ошибку. Не осталось ни одной операции — плашки
     нет вовсе, то есть ход остаётся обычным сообщением.
+
+    Уцелевший план дня получает здесь же своё имя: `draft_day_plan` на пустом
+    дне, `rewrite_day_plan` на занятом. Плашка рисуется по сохранённому
+    предложению, и предупреждение о перезаписи обязано браться из него, а не
+    считаться экраном заново.
     """
     if not complete:
         return
@@ -699,6 +725,8 @@ async def _attach_plan(
             plan = plan.model_copy(update={"day_plan": None})
             if plan.operation_count() == 0:
                 return
+        else:
+            plan = await _named_day_plan(db, plan)
     await chat_crud.save_plan(
         db,
         message_id=message_id,
@@ -1122,9 +1150,10 @@ DAY_PLAN_NOT_PROPOSED = (
     "плана дня в показанном предложении не было: применить можно только то, "
     "что было показано"
 )
-DAY_PLAN_DAY_TAKEN_DETAIL = (
-    "на {on} план уже есть: предложение чата собирает день, у которого плана "
-    "нет, и переписать существующий не может. Пересобрать день — на экране дня"
+DAY_PLAN_ALREADY_WRITTEN = (
+    "это предложение уже применено: план дня им записан один раз, и второе "
+    "нажатие резало бы ревизию заново. Нужна ещё правка — попроси в разговоре "
+    "новый план"
 )
 NOTHING_SELECTED = (
     "не выбрано ни одной операции: применение, которое ничего не пишет, — это "
@@ -1136,30 +1165,28 @@ async def _write_day_plan(
     db: AsyncSession, entry_date: date, op: ChatDayPlanOp
 ) -> UUID:
     """
-    Записать предложенный план на день, у которого плана нет.
+    Записать предложенный план на день — пустой или уже занятый.
 
-    Проверок здесь две, и обе обязательны, хотя обе уже проходили при рождении
-    предложения. Между плашкой и нажатием проходят часы: план дня успевает
-    появиться из другого места, а строка `day_rule_set` — смениться (канон в
-    этом проекте менялся дважды за месяц). Полагаться при этом на путь записи
-    нельзя: `replace_plan` судит только документные правила `#87`, а восемь
-    правил `#147` не проверяет вовсе.
+    Проверка канона здесь обязательна, хотя она уже проходила при рождении
+    предложения. Между плашкой и нажатием проходят часы, и строка `day_rule_set`
+    за это время меняется (канон в этом проекте менялся дважды за месяц).
+    Полагаться при этом на путь записи нельзя: `replace_plan` судит только
+    документные правила `#87`, а восемь правил `#147` не проверяет вовсе.
+
+    Занятый день отказом больше не является (`#187`). Прожитый день при этом не
+    стирается: `replace_plan` переносит отметки строк, чьи id вернулись в
+    документе, а id строки считается из её кода — значит, строка, чей код модель
+    оставила прежним, остаётся собой вместе со своей отметкой.
 
     Пишет `replace_plan` — тот же единственный путь, которым ложится план от
     скилла и от ручки генерации. Автор ревизии `ai`, источник `llm`: план
-    написала модель, а человек его принял, и первая ревизия дня обязана это
-    помнить.
+    написала модель, а человек его принял, и ревизия дня обязана это помнить.
     """
     rule = await _day_rule(db, entry_date)
     if rule is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{entry_date.isoformat()} лежит вне всех интервалов канона",
-        )
-    if await plan_crud.get_plan(db, entry_date) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=DAY_PLAN_DAY_TAKEN_DETAIL.format(on=entry_date.isoformat()),
         )
 
     try:
@@ -1189,7 +1216,14 @@ async def _write_day_plan(
         )
 
     day = await day_crud.ensure_day(db, entry_date)
-    document = to_document(op.as_generated(), AUTHOR_LLM)
+    # Словарь кодов читается до записи и только здесь: он про день, а не про
+    # предложение, и предложение, пролежавшее ночь, обязано переносить отметки
+    # того плана, который стоит сейчас, а не того, что стоял при показе.
+    document = to_document(
+        op.as_generated(),
+        AUTHOR_LLM,
+        await plan_crud.item_ids_by_code(db, entry_date),
+    )
     try:
         written = await plan_crud.replace_plan(
             db, entry_date, rule, document, author=AUTHOR_AI
@@ -1213,8 +1247,8 @@ async def _write_day_plan(
         404: {"description": "Плана нет, либо его дата лежит вне канона"},
         409: {
             "description": (
-                "План уже применён, погашен как `stale`, Idempotency-Key занят "
-                "другой записью, или у дня уже есть план"
+                "План погашен как `stale`, Idempotency-Key занят другой записью, "
+                "или план дня этой плашкой уже переписан"
             )
         },
         422: {
@@ -1244,10 +1278,11 @@ async def apply_plan(
     показанного и ничего сверх него. Дата берётся оттуда же — из плана, а не из
     тела.
 
-    План дня применяется целиком или никак и только ко дню, у которого плана
-    нет: у дня, план которого уже есть, ответ 409, и существующий план остаётся
-    нетронутым. Правила дня проверяются здесь ещё раз, прямо перед записью, —
-    нарушение отвечает 422 с кодами правил.
+    План дня применяется целиком или никак и пишется одной плашкой один раз:
+    занятый день он переписывает (`#187`), а повторное нажатие по уже
+    применённой плашке отвечает 409 — второй проход резал бы ревизию заново.
+    Правила дня проверяются здесь ещё раз, прямо перед записью, — нарушение
+    отвечает 422 с кодами правил.
     """
     row = await _require_plan(db, plan_id)
     if row.status not in (PLAN_STATUS_PROPOSED, PLAN_STATUS_APPLIED):
@@ -1255,12 +1290,22 @@ async def apply_plan(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"chat plan {plan_id} is {row.status} and cannot be applied",
         )
+    # Статус `applied` разрешён выше только ради повтора с тем же ключом
+    # идемпотентности — тот возвращается ниже, ничего не записав. Плана дня этот
+    # повтор не касается: день уже переписан, и второй заход по нему был бы
+    # новой ревизией с тем же содержимым.
+    already_applied = row.status == PLAN_STATUS_APPLIED
 
     stored = SchemaChatPlan.model_validate(row.plan)
     if payload.day_plan and stored.day_plan is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=DAY_PLAN_NOT_PROPOSED,
+        )
+    if payload.day_plan and already_applied:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=DAY_PLAN_ALREADY_WRITTEN,
         )
 
     # Дневниковая половина применения собирается только тогда, когда в ней
@@ -1293,7 +1338,7 @@ async def apply_plan(
             if replayed is not None:
                 # Настоящий повтор: первый вызов уже всё записал, включая план
                 # дня, если он был отмечен. Второго прохода по нему нет — и не
-                # нужно: день, у которого план появился, отвечает 409.
+                # нужно: применённая плашка плана дня больше не пишет.
                 response.status_code = status.HTTP_200_OK
                 await db.commit()
                 return ChatPlanApplyResponse(

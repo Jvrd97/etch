@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/113
+# [review:need-review] PHASE-03/113, PHASE-03/187
 # summary: build_day_card — the bounded day card that goes into the chat system prompt: a registry of sections with priorities, an explicit "записей нет" instead of a silent gap, and a ceiling held by eating the tail of the least important section rather than by slicing the string
+# summary: PHASE-03/187 prints the code, the rigidity and the done criterion of every plan line, without which a rewrite of the day cannot keep a single mark
 """
 Карточка дня: всё, что чат знает о дне, и ничего сверх того.
 
@@ -107,7 +108,18 @@ class DayCard:
 
 
 async def _plan_section(db: AsyncSession, on: date) -> list[str] | None:
-    """План дня строками, каждая со своей отметкой и запиской «как прошло»."""
+    """
+    План дня строками, каждая со своей отметкой и запиской «как прошло».
+
+    Код строки печатается рядом с её видом, и это не украшение: перезапись дня
+    сохраняет отметку той строки, чей код вернулся в новом плане (`#187`). Не
+    видя кодов, модель может только стереть прожитый день — предложить
+    сохранение того, чего она не знает, нечем.
+
+    Жёсткость и критерий готовности стоят там же и по той же причине: план,
+    переписанный без них, теряет то, что канон с него спросит, и падает на
+    проверке правил вместо того, чтобы доехать до человека.
+    """
     plan = await plan_crud.get_plan(db, on)
     if plan is None:
         return []
@@ -119,12 +131,16 @@ async def _plan_section(db: AsyncSession, on: date) -> list[str] | None:
     for section in plan.sections:
         lines.append(f"— {section.title or section.kind} ({section.kind}):")
         for item in section.items:
-            parts = [f"  · [{item.kind}]"]
+            parts = [f"  · [{item.kind}/{item.rigidity}]"]
+            if item.code:
+                parts.append(f"код {item.code}")
             if item.starts_at is not None and item.ends_at is not None:
                 start = local_time(item.starts_at).strftime("%H:%M")
                 end = local_time(item.ends_at).strftime("%H:%M")
                 parts.append(f"{start}–{end}")
             parts.append(item.text_plain)
+            if item.done_criterion:
+                parts.append(f"(сделано: {item.done_criterion})")
             mark = marks.get(item.id)
             parts.append(f"— отметка: {mark.state}" if mark else "— отметки нет")
             if mark is not None and mark.note:

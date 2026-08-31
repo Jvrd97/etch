@@ -1,10 +1,16 @@
 """
-Класс W2 закрыт типами, а не инструкцией.
+Класс W2 закрыт типами, а не инструкцией, — кроме одной названной операции.
 
 Права чата разведены на три класса: R — сервер читает сам; W1 — добавление без
 потерь (метрика, отметка, текст дня); W2 — снять отметку, переписать, удалить,
 переименовать. Этот файл проверяет, что W2 **невыразим**: в JSON Schema
 `ChatPlan` нет ни слова, которым его можно было бы сказать.
+
+Одно исключение внесено решением, а не недосмотром (`#187`): перезапись плана
+дня целиком, `rewrite_day_plan`. Она стоит в списке разрешённых операций явной
+строкой — тест падает, если её оттуда убрать, и падает, если рядом появится
+вторая. Всё остальное из W2 — снятие отметки, удаление строки, переименование —
+по-прежнему сказать нечем.
 
 Проверяется схема, а не промпт. Промпт — это просьба, и модель вправе ответить
 мимо неё; схема — это граница, и мимо неё ответить нельзя. Тест устроен так,
@@ -12,8 +18,8 @@
 полный набор операций, а не ищет конкретные запрещённые слова.
 """
 
-# [review:need-review] PHASE-03/115
-# summary: the JSON Schema of ChatPlan is asserted to expose exactly three operations — log_metric, check, write_journal — with no untick, delete or rename anywhere in it, and no field on `check` able to carry a false
+# [review:need-review] PHASE-03/115, PHASE-03/187
+# summary: the JSON Schema of ChatPlan is asserted to expose exactly four operations — log_metric, check, write_journal, and the day plan as a draft or a rewrite — with no untick, delete or rename anywhere in it, and no field on `check` able to carry a false
 
 from typing import Any
 
@@ -23,10 +29,17 @@ from app.schemas.chat import ChatPlan
 # операции, и на пропавшей — вторая означала бы, что плашка тихо перестала
 # что-то уметь.
 #
-# `draft_day_plan` расширяет список руками, и это растяжной провод, а не
+# Обе операции плана дня расширяют список руками, и это растяжной провод, а не
 # формальность: новая операция не появляется в правах чата, пока человек не
-# вписал её сюда.
-ALLOWED_OPERATIONS = {"log_metric", "check", "write_journal", "draft_day_plan"}
+# вписал её сюда. `rewrite_day_plan` — единственный представитель класса W2 в
+# этом списке, и вписан он ровно один раз.
+ALLOWED_OPERATIONS = {
+    "log_metric",
+    "check",
+    "write_journal",
+    "draft_day_plan",
+    "rewrite_day_plan",
+}
 
 # Слова, которыми класс W2 мог бы себя выдать, если бы кто-то добавил операцию
 # не через `op`. Второй рубеж после проверки полного набора операций.
@@ -36,6 +49,10 @@ ALLOWED_OPERATIONS = {"log_metric", "check", "write_journal", "draft_day_plan"}
 # слово «untick» в нём стоит ровно затем, чтобы следующий читатель не завёл
 # такую операцию заново. Падать на объяснении запрета значило бы требовать, чтобы
 # запрет было запрещено объяснять.
+# Перезаписи плана дня в этом списке нет намеренно: она названа значением `op`,
+# то есть уже посчитана первым тестом, и запрещать её как слово значило бы
+# заводить два разных ответа на один вопрос. Слова остались те, которыми
+# операция могла бы просочиться **мимо** `op` — полем, флагом, режимом.
 FORBIDDEN_WORDS = (
     "uncheck",
     "untick",
@@ -74,12 +91,13 @@ def collect_operation_literals(schema: dict[str, Any]) -> set[str]:
     return found
 
 
-def test_the_plan_offers_exactly_three_operations() -> None:
+def test_the_plan_offers_exactly_the_operations_it_was_given() -> None:
     """
     Ни снятия отметки, ни удаления, ни переименования в объединении нет.
 
     Этот тест — и есть заявленная защита. Добавь кто-нибудь `uncheck_op` в
-    `ChatPlan`, и он упадёт здесь, а не на ревью и не в проде.
+    `ChatPlan`, и он упадёт здесь, а не на ревью и не в проде. Перезапись плана
+    дня прошла ровно этой дорогой: сначала строка в списке, потом операция.
     """
     schema = ChatPlan.model_json_schema()
     assert collect_operation_literals(schema) == ALLOWED_OPERATIONS

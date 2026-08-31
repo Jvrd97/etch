@@ -2502,11 +2502,45 @@ export interface ChatPlanJournalOp {
   mode: 'append' | 'create';
 }
 
+/** One line of a proposed day plan, in the shape the model answers with. */
+export interface ChatPlanDayPlanItem {
+  /** The short handle of the line. A line that comes back under the same code
+   * is the same line, and keeps its mark through a rewrite. */
+  code: string;
+  kind: string;
+  rigidity: string;
+  text: string;
+  window: string | null;
+  done_criterion: string | null;
+  unlinked_reason: string | null;
+}
+
+export interface ChatPlanDayPlanSection {
+  title: string;
+  kind: string;
+  items: ChatPlanDayPlanItem[];
+}
+
+/**
+ * A whole day plan the chat proposes.
+ *
+ * `op` is named by the server from the state of the day, not by the model:
+ * `draft_day_plan` fills an empty day, `rewrite_day_plan` replaces the plan that
+ * is already there. The card branches on it to say which of the two the tap
+ * does — the day is replaced whole, never line by line.
+ */
+export interface ChatPlanDayPlanOp {
+  op: 'draft_day_plan' | 'rewrite_day_plan';
+  title: string | null;
+  sections: ChatPlanDayPlanSection[];
+}
+
 export interface ChatPlanBody {
   entry_date: string;
   metrics: ChatPlanMetricOp[];
   checklist: ChatPlanCheckOp[];
   journal: ChatPlanJournalOp | null;
+  day_plan: ChatPlanDayPlanOp | null;
 }
 
 export type ChatPlanStatus = 'proposed' | 'applied' | 'dismissed' | 'stale';
@@ -2528,12 +2562,17 @@ export interface ChatPlanSelection {
   metrics?: ChatPlanMetricOp[];
   checklist?: ChatPlanCheckOp[];
   journal?: ChatPlanJournalOp | null;
+  /** Take the proposed day plan. A flag rather than a subset of sections: the
+   * plan is written whole or not at all. */
+  day_plan?: boolean;
 }
 
 export interface ChatPlanApplyResult {
   plan: ChatPlan;
   entry_ids: number[];
   journal_entry_id: number | null;
+  /** The plan that was written, when the day plan was among what was taken. */
+  day_plan_id: string | null;
   applied_operations: number;
 }
 

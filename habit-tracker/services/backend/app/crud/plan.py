@@ -274,6 +274,35 @@ async def _stored_item_ids(db: AsyncSession, on: date) -> frozenset[uuid.UUID]:
     return frozenset(result.scalars().all())
 
 
+async def item_ids_by_code(db: AsyncSession, on: date) -> dict[str, uuid.UUID]:
+    """
+    `{код строки: её id}` по плану, который на дне уже стоит.
+
+    Этим словарём переписывающий день документ сохраняет прожитое: строка,
+    приехавшая под прежним id, для `replace_plan` — та же строка, и её отметка
+    переносится через удаление. Совпадение ищется по коду, а не по тексту:
+    текст правится ровно тогда, когда день пересобирают, а код — ручка строки и
+    держится за неё.
+
+    Читается сырым запросом, как и `_stored_item_ids`, и по той же причине:
+    словарь берут перед удалением, а сущность ORM осталась бы в identity map,
+    когда строку вставляют обратно под тем же ключом. Код, встреченный дважды,
+    остаётся за первой строкой — двух строк с одним кодом в плане быть не
+    должно, и вторая всё равно получит новый id.
+    """
+    result = await db.execute(
+        select(PlanItem.code, PlanItem.id)
+        .join(PlanSection, PlanSection.id == PlanItem.section_id)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on, PlanItem.code.is_not(None))
+        .order_by(PlanItem.ord)
+    )
+    known: dict[str, uuid.UUID] = {}
+    for code, item_id in result.all():
+        known.setdefault(str(code), item_id)
+    return known
+
+
 async def get_plan(db: AsyncSession, on: date) -> DayPlan | None:
     """The stored plan of `on`, with sections and items loaded, or None."""
     result = await db.execute(
@@ -1106,6 +1135,7 @@ __all__ = [
     "find_overlaps",
     "get_plan",
     "human_warnings",
+    "item_ids_by_code",
     "move_item",
     "prepare_plan",
     "remove_item",

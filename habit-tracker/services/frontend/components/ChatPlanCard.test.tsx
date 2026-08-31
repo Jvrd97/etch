@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/115
-// summary: tests for the plan card — two proposed operations become two checkboxes, unticking one narrows what is sent, an applied plan shows what was written and offers no second tap, and a dismissed or stale plan offers no buttons at all
+// [review:need-review] PHASE-03/115, PHASE-03/187
+// summary: tests for the plan card — two proposed operations become two checkboxes, unticking one narrows what is sent, an applied plan shows what was written and offers no second tap, and a dismissed or stale plan offers no buttons at all; a proposed day plan is its own row that counts as one operation, says whether it fills or replaces the day, and names the lines whose marks a replacement keeps
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ChatPlan, ChatPlanSelection } from '@/lib/api';
+import type { ChatPlan, ChatPlanDayPlanOp, ChatPlanSelection } from '@/lib/api';
 
 const PROPOSED: ChatPlan = {
   id: 12,
@@ -30,12 +30,66 @@ const PROPOSED: ChatPlan = {
       },
     ],
     journal: null,
+    day_plan: null,
   },
   operation_count: 2,
   applied_summary_id: null,
   applied_at: null,
   created_at: '2026-08-31T09:00:00Z',
 };
+
+/**
+ * The same proposal plus a whole day plan under the given name.
+ *
+ * Two lines, one of which keeps the code of a line the day already has: that is
+ * the only thing standing between a rewrite and a wiped-out day, and the card is
+ * where a person gets to see it before tapping.
+ */
+function withDayPlan(op: ChatPlanDayPlanOp['op']): ChatPlan {
+  return {
+    ...PROPOSED,
+    plan: {
+      ...PROPOSED.plan,
+      day_plan: {
+        op,
+        title: 'среда',
+        sections: [
+          {
+            title: 'Якоря',
+            kind: 'anchors',
+            items: [
+              {
+                code: 'подъём',
+                kind: 'anchor',
+                rigidity: 'hard',
+                text: 'подъём',
+                window: '06:00-06:15',
+                done_criterion: null,
+                unlinked_reason: null,
+              },
+            ],
+          },
+          {
+            title: 'Работа',
+            kind: 'work',
+            items: [
+              {
+                code: 'W1',
+                kind: 'task',
+                rigidity: 'soft',
+                text: 'ревью ветки',
+                window: '08:00-10:00',
+                done_criterion: 'ветка смержена',
+                unlinked_reason: 'нет цели квартала',
+              },
+            ],
+          },
+        ],
+      },
+    },
+    operation_count: 3,
+  };
+}
 
 const { default: ChatPlanCard } = await import('./ChatPlanCard');
 
@@ -132,5 +186,70 @@ describe('ChatPlanCard', () => {
     for (const box of screen.getAllByRole('checkbox')) fireEvent.click(box);
     const button = screen.getByText('Применить (0)') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+  });
+
+  it('offers a proposed day plan as one row of its own', () => {
+    render(
+      <ChatPlanCard
+        plan={withDayPlan('draft_day_plan')}
+        onApply={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(boxes).toHaveLength(3);
+    expect(screen.getByText(/план дня: 2 строки/)).toBeTruthy();
+    expect(screen.getByText('Применить (3)')).toBeTruthy();
+  });
+
+  it('says a rewrite replaces the day and names what keeps its mark', () => {
+    render(
+      <ChatPlanCard
+        plan={withDayPlan('rewrite_day_plan')}
+        onApply={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+    expect(screen.getByText(/Заменит план дня целиком/)).toBeTruthy();
+    expect(screen.getByText(/подъём/)).toBeTruthy();
+  });
+
+  it('sends the day plan as a flag, not as a subset of its lines', async () => {
+    const seen: { selection?: ChatPlanSelection } = {};
+    const applied = mock(async (_planId: number, selection: ChatPlanSelection) => {
+      seen.selection = selection;
+    });
+    render(
+      <ChatPlanCard
+        plan={withDayPlan('rewrite_day_plan')}
+        onApply={applied}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Применить (3)'));
+
+    await waitFor(() => expect(applied).toHaveBeenCalledTimes(1));
+    expect(seen.selection?.day_plan).toBe(true);
+  });
+
+  it('does not send a day plan whose box the person unticked', async () => {
+    const seen: { selection?: ChatPlanSelection } = {};
+    const applied = mock(async (_planId: number, selection: ChatPlanSelection) => {
+      seen.selection = selection;
+    });
+    render(
+      <ChatPlanCard
+        plan={withDayPlan('rewrite_day_plan')}
+        onApply={applied}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText(/план дня/));
+    fireEvent.click(screen.getByText('Применить (2)'));
+
+    await waitFor(() => expect(applied).toHaveBeenCalledTimes(1));
+    expect(seen.selection?.day_plan).toBe(false);
   });
 });

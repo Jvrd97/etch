@@ -1,8 +1,9 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/116, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/187
 # summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, the body of a turn, the one flag that says whether the next turn continues a CLI session or rebuilds the dialogue, and `ChatPlan`, whose whole point is which operations it cannot express; the SSE events are described here as constants so the frontend parser and the server cannot drift
 # summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
 # summary: PHASE-03/113 adds ConversationContext — the day card as it went into the prompt, its size, and which sections the ceiling ate
 # summary: PHASE-03/115 grows a fourth operation — ChatDayPlanOp, a whole day plan the chat may propose for a day that has none, reusing the sections and items of `#148` and carrying no field with which an existing plan could be named, let alone replaced
+# summary: PHASE-03/187 opens that fourth operation to a day that already has a plan — `op` now names either a draft or a rewrite, the server decides which by the state of the day, and marks survive a rewrite through the codes the lines come back with
 """
 Типы провода для чата.
 
@@ -223,36 +224,75 @@ class ChatJournalOp(JournalOp):
     mode: Literal["append", "create"] = "append"
 
 
+# Как называется операция плана дня в каждом из двух состояний дня. Имена
+# разные, потому что человек нажимает на разное: черновик заполняет пустой день,
+# перезапись стирает то, что там стояло, и плашка обязана сказать какое именно.
+DayPlanOpName = Literal["draft_day_plan", "rewrite_day_plan"]
+DAY_PLAN_OP_DRAFT: DayPlanOpName = "draft_day_plan"
+DAY_PLAN_OP_REWRITE: DayPlanOpName = "rewrite_day_plan"
+
+
 class ChatDayPlanOp(BaseModel):
     """
-    План дня, каким его вправе предложить чат: собрать пустой день, не переписать.
+    План дня, каким его вправе предложить чат: собрать пустой день или переписать
+    занятый.
 
     **Словарь строк переиспользован, а не написан рядом.** `GeneratedSection` и
     `GeneratedItem` — та же форма, которой отвечает модель ручке
     `POST /day/{on}/plan/generate`, и те же две конверсии (`to_draft` для восьми
     ограничений, `to_document` для единственного пути записи). Второй словарь
-    строк означал бы второе место, где можно случайно завести W2.
+    строк означал бы второе место, где можно случайно завести операцию, которой
+    здесь быть не должно.
 
-    **Поля режима здесь нет вовсе.** Не `mode`, вычеркнувший `replace`, как у
-    `ChatJournalOp`, а отсутствие самого поля: перечисление — это место, куда
-    следующий читатель допишет значение. Замены плана дня нельзя сказать не
-    потому, что слово запрещено, а потому, что в операции нет ничего, чем можно
-    было бы указать на существующий план — ни его ревизии, ни его id, ни флага.
+    **Перезапись — единственная операция класса W2 в правах чата.** Открыта она
+    нарочно и с названными последствиями: план дня целиком заменяем и с экрана
+    дня, а разговор был единственным местом, откуда день нельзя было пересобрать
+    словами. Всё остальное из W2 — снять отметку, удалить строку, переименовать
+    категорию — по-прежнему невыразимо: в схеме нет ни поля, ни значения, которым
+    это можно сказать.
 
-    **Столкновение решает сервер, а не модель.** Есть ли на дне план — это факт
-    базы, а не часть пересказа, и спрашивать о нём модель значило бы дать ей
-    право ошибиться в ответе. Операция применима только ко дню без плана, и это
-    проверяется дважды: когда предложение рождается и когда его применяют.
+    **Плана дня целиком — да, его куска — нет.** Полей, которыми можно указать на
+    одну строку существующего плана, здесь нет: ни её id, ни её кода отдельно от
+    нового состава. Правка по строке — действие экрана дня, где она пишет журнал
+    и не режет ревизию; из разговора день переписывается целиком или никак.
 
-    Замена существующего плана осталась действием экрана дня
-    (`POST /day/{on}/plan/generate`), где человек видит, что исчезнет.
+    **Имя операции ставит сервер, а не модель.** Есть ли на дне план — это факт
+    базы, а не часть пересказа, и модель вправе в нём ошибиться. Ответ приходит
+    с любым из двух имён, а в `chat_plans` ложится то, которое соответствует
+    состоянию дня на момент рождения предложения; перед записью день проверяется
+    ещё раз.
+
+    **Отметки переживают перезапись по кодам.** `replace_plan` поднимает отметки
+    строк, чьи id вернулись в документе, а id строки — это `uuid5` от её кода
+    (`app.schemas.day_plan.ITEM_NAMESPACE`). Строка, чей код в новом плане тот же,
+    остаётся той же строкой; строка с новым кодом — новая и без отметки. Поэтому
+    коды существующего плана и попадают в карточку дня: без них модель не может
+    сохранить прожитый день, даже если хочет.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    op: Literal["draft_day_plan"] = "draft_day_plan"
+    op: DayPlanOpName = DAY_PLAN_OP_DRAFT
     title: str | None = None
     sections: list[GeneratedSection] = Field(default_factory=list)
+
+    @property
+    def rewrites(self) -> bool:
+        """Сотрёт ли применение то, что на дне уже стоит."""
+        return self.op == DAY_PLAN_OP_REWRITE
+
+    def named_by(self, *, day_taken: bool) -> "ChatDayPlanOp":
+        """
+        Та же операция под именем, которое соответствует состоянию дня.
+
+        Копия, а не правка на месте: предложение уходит в `chat_plans` целиком, и
+        менять его после сохранения было бы вторым источником правды о том, на
+        что человек нажимал.
+        """
+        wanted: DayPlanOpName = DAY_PLAN_OP_REWRITE if day_taken else DAY_PLAN_OP_DRAFT
+        if self.op == wanted:
+            return self
+        return self.model_copy(update={"op": wanted})
 
     def as_generated(self) -> GeneratedDayPlan:
         """Предложение в той форме, которую уже умеют обе конверсии `#148`."""
@@ -285,9 +325,16 @@ class ChatPlan(BaseModel):
 
     Четвёртая операция — план дня (`day_plan`). Она про другой объект и пишется
     другим путём (`replace_plan`, а не `apply_daily_summary`), поэтому и стоит
-    отдельным полем, а не втискивается в `metrics`. Класс у неё тот же W1:
-    собрать день, у которого плана ещё нет. Почему замены в ней выговорить
-    нельзя — в `ChatDayPlanOp`.
+    отдельным полем, а не втискивается в `metrics`.
+
+    **Из W2 в объединении есть ровно одна операция — перезапись плана дня.**
+    Открыта она названным решением, а не по недосмотру: план дня и так заменяем
+    целиком с экрана дня, а разговор был единственным местом, откуда день нельзя
+    было пересобрать словами. Стоит она на трёх ограничителях: заменяется весь
+    план и никогда его кусок, применяет её человек тапом по плашке, а отметки
+    переносятся по кодам строк. Остальной W2 — снятие отметки, удаление строки,
+    переименование категории — по-прежнему невыразим, и тест схемы падает на
+    любом имени, которым это можно было бы сказать.
     """
 
     model_config = ConfigDict(extra="forbid")
