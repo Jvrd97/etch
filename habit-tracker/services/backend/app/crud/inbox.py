@@ -63,6 +63,11 @@ SEED_SOURCES: tuple[tuple[str, str, str, str | None], ...] = (
 
 CLICKUP_API = "https://api.clickup.com/api/v2"
 
+# Переменная окружения с числовым id личного воркспейса. Отдельно от токена:
+# один и тот же токен видит несколько воркспейсов, и какой из них «личный» —
+# решение человека, а не свойство ключа.
+CLICKUP_TEAM_ENV = "CLICKUP_PERSONAL_TEAM_ID"
+
 # Сколько ждём ClickUp. Прогон запускает человек нажатием и ждёт ответа, поэтому
 # минуты здесь нет: лучше отказ через двадцать секунд, чем висящая кнопка.
 POLL_TIMEOUT_SECONDS = 20.0
@@ -211,6 +216,17 @@ async def _read_clickup(
             "В базе токен не хранится — только имя переменной.",
         )
 
+    # ClickUp адресует воркспейс числовым id, а не именем аккаунта: `account`
+    # в справочнике — это «личный» против «рабочего», человеческое различение,
+    # и подставлять его в путь значит гарантированный 404 на первом же прогоне.
+    team = os.environ.get(CLICKUP_TEAM_ENV, "")
+    if not team:
+        raise PollRefused(
+            "no_workspace",
+            f"Не назван воркспейс: переменная окружения {CLICKUP_TEAM_ENV} пуста. "
+            "ClickUp адресует воркспейс числовым id, и взять его неоткуда.",
+        )
+
     params: dict[str, str] = {"subtasks": "true", "include_closed": "false"}
     since = source.cursor.get(CURSOR_UPDATED_MS)
     if since is not None:
@@ -221,7 +237,7 @@ async def _read_clickup(
     ) as client:
         try:
             response = await client.get(
-                f"{CLICKUP_API}/team/{source.account}/task",
+                f"{CLICKUP_API}/team/{team}/task",
                 params=params,
                 headers={"Authorization": token},
             )

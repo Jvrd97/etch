@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     # не поломка, а состояние «источник не подключён»: контур отвечает на poll
     # машинным кодом `no_credentials` и в сеть не идёт.
     CLICKUP_PERSONAL_TOKEN: str = ""
+    # Числовой id личного воркспейса ClickUp. Отдельно от токена: один ключ
+    # видит несколько воркспейсов, и какой из них личный — решение человека.
+    CLICKUP_PERSONAL_TEAM_ID: str = ""
 
     # LLM backend: "cli" (claude CLI binary) or "api" (Anthropic API).
     # Empty = auto: cli when no API key and the binary is found, else api.
