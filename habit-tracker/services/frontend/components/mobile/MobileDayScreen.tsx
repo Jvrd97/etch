@@ -1,10 +1,10 @@
 'use client';
 // [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148
-// summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and its two closing touches, the notebook, the rule as a plain list, no text below text-sm
+// summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the same button that builds a plan when there is none, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and its two closing touches, the notebook, the rule as a plain list, no text below text-sm
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day beside it, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
 
 import { useMemo } from 'react';
-import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import { CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
@@ -19,6 +19,7 @@ import DayVerdict from '@/components/day/DayVerdict';
 import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import PlanBuilder from '@/components/day/PlanBuilder';
 import PlanSections from '@/components/day/PlanSections';
 import {
   NEEDS_REVIEW_BADGE,
@@ -43,13 +44,7 @@ import {
   type Mark,
   type WorkDay,
 } from '@/lib/api';
-import {
-  NO_PLAN_HINT,
-  NO_PLAN_TEXT,
-  dayKindLabel,
-  ruleLines,
-  ruleValidity,
-} from '@/lib/day-format';
+import { dayKindLabel, ruleLines, ruleValidity } from '@/lib/day-format';
 import { DAY_NEVER_OPENED, taskCountsLine } from '@/lib/marks';
 import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
 
@@ -160,13 +155,9 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
       </div>
 
       {plan === null ? (
-        <div className="bg-card border border-white/5 rounded-3xl text-center py-10 px-5">
-          <div className="inline-flex p-3 rounded-3xl bg-surface mb-3">
-            <CalendarCheck className="w-7 h-7 text-text-disabled" strokeWidth={2} />
-          </div>
-          <p className="text-text-primary font-medium">{NO_PLAN_TEXT}</p>
-          <p className="mt-2 text-sm text-text-secondary">{NO_PLAN_HINT}</p>
-        </div>
+        // Тот же выход, что на большом экране, и тем же компонентом: две копии
+        // карточки разошлись бы на первой же правке.
+        <PlanBuilder date={day.date} onBuilt={reload} compact />
       ) : (
         <>
           {plan.lede && (
@@ -174,7 +165,9 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           )}
           <p className="text-xs text-text-secondary">{planAuthorLabel(plan)}</p>
           {planFallbackLabel(plan) !== null && (
-            <p className="text-xs text-text-secondary">{planFallbackLabel(plan)}</p>
+            // Тем же цветом, что на большом экране: скелет вместо плана модели —
+            // урезанный день, и это видно, а не сноской внизу.
+            <p className="text-xs text-warning">{planFallbackLabel(plan)}</p>
           )}
           {plan.needs_review && (
             <p className="inline-block px-3 py-1 rounded-2xl bg-warning/10 text-xs text-warning">

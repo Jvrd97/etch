@@ -1,201 +1,20 @@
 // [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94
-// summary: tests for the day screen — a day with no plan says so instead of rendering an empty page or an error, the rule it is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
+// summary: tests for the day screen — a day with no plan says so and offers the button that builds one instead of rendering a dead end, the button is gone the moment there is a plan, a plan the skeleton assembled says so and says why, the rules a plan broke are visible beside it, the rule the day is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { DayDetail, Plan, PlanViolation } from '@/lib/api';
+import type { DayDetail, PlanViolation } from '@/lib/api';
+import { DAY, PLAN } from '@/test-fixtures/day';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
 import { DAY_NEVER_OPENED } from '@/lib/marks';
-import { NEEDS_REVIEW_BADGE } from '@/lib/plan-violations';
-
-const DAY: DayDetail = {
-  day: {
-    date: '2026-08-30',
-    kind: 'off',
-    is_nocode: false,
-    opened_at: null,
-    last_touched_at: null,
-  },
-  profile: null,
-  rule: {
-    id: 2,
-    valid_from: '2026-08-17',
-    valid_to: null,
-    timezone: 'Europe/Berlin',
-    day_start_hour: 4,
-    work_cap_min: 480,
-    work_hard_cap_min: 540,
-    work_stop_at: '16:00:00',
-    max_work_tasks: 4,
-    tasks_required_ratio: '1.00',
-    overtime_disqualifies: true,
-    workdays: [1, 2, 3, 4, 5],
-    nocode_days: [2, 4],
-    required_anchors: ['подъём'],
-    overtime_lost_min: 600,
-    max_study_items: 2,
-    wake_at: '06:00:00',
-    work_start: '07:45:00',
-    review_at: '15:40:00',
-    bedtime_max: '22:30:00',
-    free_evening_start: '19:10:00',
-    free_evening_end: '21:00:00',
-    relationship_anchor_required: true,
-    relationship_evening_start: '18:30:00',
-    relationship_evening_end: '21:00:00',
-    days_off: [6, 7],
-    hard_edge_kinds: ['anchor', 'hard_point'],
-    anchors: ['подъём', 'relationship'],
-    verdict_rule: { reason_order: ['overtime', 'anchors', 'tasks'] },
-    role_clause_enabled: true,
-    role_clause_roles: 'cto,architect',
-    note_md: '',
-  },
-  day_map: {
-    rule_set_id: 2,
-    edges: [
-      { kind: 'wake', label: 'подъём', at: '06:00:00' },
-      { kind: 'sport', label: 'спорт', at: null },
-      { kind: 'work_start', label: 'старт работы', at: '07:45:00' },
-      { kind: 'work_stop', label: 'стоп работы', at: '16:00:00' },
-      { kind: 'review', label: 'ревью', at: '15:40:00' },
-      { kind: 'bedtime', label: 'отбой', at: '22:30:00' },
-    ],
-    free_evening: { start: '19:10:00', end: '21:00:00' },
-    relationship_evening: { start: '18:30:00', end: '21:00:00' },
-    relationship_anchor_required: true,
-    work_cap_min: 480,
-    work_hard_cap_min: 540,
-    overtime_lost_min: 600,
-    work_stop_at: '16:00:00',
-    max_work_tasks: 4,
-    max_study_items: 2,
-    anchors: ['подъём', 'relationship'],
-    hard_edge_kinds: ['anchor', 'hard_point'],
-    workdays: [1, 2, 3, 4, 5],
-    days_off: [6, 7],
-    nocode_days: [2, 4],
-    verdict_reasons: ['overtime', 'anchors', 'tasks'],
-  },
-  plan: null,
-  has_plan: false,
-  marks: [],
-  task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
-  notebook: null,
-  anchors: {
-    day_date: '2026-08-30',
-    anchors: [],
-    done: 0,
-    total: 0,
-    missing: [],
-  },
-  training: null,
-  summary: {
-    day_date: '2026-08-30',
-    closed: false,
-    stage: 'open' as const,
-    reviewed_at: null,
-    review_skipped: false,
-    rule_set_id: 2,
-    verdict: null,
-    verdict_reason: 'not_closed',
-    verdict_override: false,
-    verdict_override_note: null,
-    anchors_done: 0,
-    anchors_total: 0,
-    tasks_done: 0,
-    tasks_total: 0,
-    work_minutes: null,
-    streak_after: null,
-    wrote_from_scratch: null,
-    education_debt: null,
-    reviewed_today: null,
-    body_md: '',
-    missing_data: ['work_minutes'],
-    missing_anchors: [],
-    source: 'close',
-    verdict_origin: 'none' as const,
-  },
-  work: {
-    day_date: '2026-08-30',
-    intervals: [],
-    // «Не измерено», not zero: the day has no intervals at all.
-    work_minutes: null,
-    running: false,
-  },
-};
-
-// A plan as the server answers with one: sections in order, a schedule the
-// server measured, and no collisions.
-const PLAN: Plan = {
-  id: 'p1',
-  day_date: '2026-08-30',
-  title: 'План 2026-08-30 (вс)',
-  title_marker: null,
-  lede: 'Выходной по канону',
-  purpose_md: null,
-  quarter_goal_id: null,
-  counters: [],
-  condition_tomorrow: null,
-  status: 'active',
-  source: 'day-open',
-  needs_review: false,
-  fallback_reason: null,
-  created_at: '2026-08-30T06:00:00Z',
-  updated_at: '2026-08-30T06:00:00Z',
-  sections: [
-    {
-      id: 's1',
-      ord: 0,
-      title: 'Воскресный блок',
-      kind: 'personal',
-      role_id: null,
-      items: [
-        {
-          id: 'i1',
-          parent_id: null,
-          ord: 0,
-          kind: 'bullet',
-          rigidity: 'soft',
-          text_md: 'Недельное ретро W35',
-          text_plain: 'Недельное ретро W35',
-          starts_at: '2026-08-30T09:00:00Z',
-          ends_at: '2026-08-30T09:40:00Z',
-          window_comment: null,
-          code: null,
-          done_criterion: null,
-          why_md: null,
-          plan_md: null,
-          external_ref: null,
-          extra: {},
-          quarter_goal_id: null,
-          unlinked_reason: null,
-          role_id: null,
-          act_kind: null,
-          carried_from_item_id: null,
-          carry_count: 0,
-          children: [],
-        },
-      ],
-    },
-  ],
-  schedule: [
-    {
-      item_id: 'i1',
-      section_id: 's1',
-      code: null,
-      text_plain: 'Недельное ретро W35',
-      kind: 'bullet',
-      rigidity: 'soft',
-      starts_at: '2026-08-30T09:00:00Z',
-      ends_at: '2026-08-30T09:40:00Z',
-      minutes: 40,
-      window_comment: null,
-    },
-  ],
-  overlaps: [],
-};
+import { BUILD_PLAN_LABEL } from '@/components/day/PlanBuilder';
+import {
+  FALLBACK_REASON_LABELS,
+  NEEDS_REVIEW_BADGE,
+  planAuthorLabel,
+  ruleLabel,
+} from '@/lib/plan-violations';
 
 let state: {
   detail: DayDetail | null;
@@ -330,5 +149,77 @@ describe('DayScreen and the plan built overnight', () => {
     render(<DayScreen date="2026-08-30" />);
 
     expect(screen.queryByText(NEEDS_REVIEW_BADGE)).toBeNull();
+  });
+});
+
+describe('DayScreen и день без плана', () => {
+  it('предлагает собрать план, а не оставляет тупик', () => {
+    // Ради чего слайс: обе ручки сборки лежали на сервере неделями, а экран
+    // говорил «плана нет» и не давал ничего сделать.
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText(BUILD_PLAN_LABEL)).toBeDefined();
+  });
+
+  it('убирает кнопку, как только план есть', () => {
+    // Кнопка на дне с планом означала бы «собрать заново поверх» — а это
+    // перезапись того, что человек уже правил и отмечал.
+    state = { ...state, detail: { ...DAY, plan: PLAN, has_plan: true } };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.queryByText(BUILD_PLAN_LABEL)).toBeNull();
+  });
+
+  it('после сборки план на экране, а кнопки нет', () => {
+    // Сборка перечитывает день, и это единственное, что меняется на экране:
+    // ответ сервера — новая истина, склеивать его руками нечем.
+    const { rerender } = render(<DayScreen date="2026-08-30" />);
+    expect(screen.getByText(BUILD_PLAN_LABEL)).toBeDefined();
+
+    state = { ...state, detail: { ...DAY, plan: PLAN, has_plan: true } };
+    rerender(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText('Воскресный блок')).toBeDefined();
+    expect(screen.queryByText(BUILD_PLAN_LABEL)).toBeNull();
+  });
+
+  it('называет скелет скелетом и говорит, почему не модель', () => {
+    // «Собрался скелет» — это состояние дня, а не примечание: план без задач
+    // модели человек обязан узнать с экрана, а не по пустому расписанию.
+    const skeleton = {
+      ...PLAN,
+      source: 'fallback' as const,
+      fallback_reason: 'llm_not_configured' as const,
+    };
+    state = { ...state, detail: { ...DAY, plan: skeleton, has_plan: true } };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText(planAuthorLabel(skeleton))).toBeDefined();
+    expect(
+      screen.getByText(`Почему: ${FALLBACK_REASON_LABELS.llm_not_configured}`)
+    ).toBeDefined();
+  });
+
+  it('показывает правила, которые нарушил собранный план', () => {
+    // Нарушения приезжают тем же перечитыванием дня, что и сам план: у
+    // собранного плана они обязаны появиться, а не остаться от прошлого.
+    state = {
+      ...state,
+      detail: { ...DAY, plan: PLAN, has_plan: true },
+      violations: [
+        {
+          id: 1,
+          day_date: '2026-08-30',
+          rule_code: 'free_evening_empty' as const,
+          severity: 'warn' as const,
+          origin: 'ai' as const,
+          detail: {},
+          created_at: '2026-08-30T06:00:00Z',
+        },
+      ],
+    };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText(ruleLabel('free_evening_empty'))).toBeDefined();
   });
 });

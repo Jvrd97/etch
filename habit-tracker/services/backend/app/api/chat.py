@@ -3,6 +3,7 @@
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
 # summary: PHASE-03/114 turns one turn into a loop of passes — an answer that carries a `need` block buys the named retrievals, writes one `chat_retrievals` row per call (refusals included), hands them back inside the same CLI session and lets the model finish in words, under a ceiling of passes and the turn's own remaining budget
+# summary: PHASE-03/115 lets a proposal carry a whole day plan — checked against the eight rules of `#147` twice (when the card is born and again just before the write) and refused with 409 on a day that already has one, so the chat can fill an empty day but can never overwrite a full one
 # summary: PHASE-03/116 opens the answer row as `streaming` before generation (it is also the lock that makes a second POST a 409), closes it from `finally` on every exit, refuses with 502 when the backend dies before the first frame, and unsticks a dialogue by a reset handle when the worker died with it
 """
 Ручки разговора.
@@ -60,9 +61,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
+from datetime import date
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -83,8 +87,17 @@ from app.core.daytime import now_utc, today_local
 from app.crud import category as category_crud
 from app.crud import chat as chat_crud
 from app.crud import daily_summary as daily_summary_crud
+from app.crud import day as day_crud
+from app.crud import plan as plan_crud
 from app.crud.chat import PlanSelectionRejected, narrow_to_plan
 from app.crud.daily_summary import DailySummaryApplyError
+from app.day import constraints
+from app.day.generate import AUTHOR_LLM
+from app.day.plan_validate import PlanRejected
+from app.day.rules import NoRuleForDate
+from app.models.day import DayRuleSet
+from app.models.plan_revision import AUTHOR_AI
+from app.schemas.day_plan import to_document
 from app.llm.chat.client import (
     CHUNK_ACTING,
     CHUNK_DELTA,
@@ -136,6 +149,7 @@ from app.models.chat import (
     ChatConversation,
 )
 from app.models.chat import ChatPlan as ChatPlanRow
+from app.schemas.chat import ChatDayPlanOp
 from app.schemas.chat import ChatPlan as SchemaChatPlan
 from app.schemas.chat import (
     FEED_MAX_LIMIT,
@@ -157,6 +171,8 @@ from app.schemas.chat import (
     MessageCreate,
     MessageResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -578,6 +594,78 @@ async def _close_turn(
         await db.commit()
 
 
+# Почему предложенный план дня до плашки не доехал. Коды, а не предложения: их
+# читает лог, и ни один из них не несёт ни строки плана, ни слова человека.
+DAY_PLAN_NO_RULE = "no_rule_for_date"
+DAY_PLAN_DAY_TAKEN = "day_already_has_a_plan"
+DAY_PLAN_BREAKS_CANON = "breaks_canon"
+# Схема пропустила, а документ не собрался: окно «утром» вместо «07:00-08:00»
+# — строка, а не время, и `min_length=1` про неё ничего не знает.
+DAY_PLAN_UNREADABLE = "does_not_become_a_document"
+
+
+async def _day_rule(db: AsyncSession, on: date) -> DayRuleSet | None:
+    """Строка канона, по которой судят этот день, или `None` — дата вне канона."""
+    try:
+        return await day_crud.rule_for_date(db, on)
+    except NoRuleForDate:
+        return None
+
+
+def _day_plan_violations(
+    op: ChatDayPlanOp, on: date, rule: DayRuleSet
+) -> list[constraints.Violation]:
+    """
+    Правила дня, которые предложенный план нарушает.
+
+    Судится он на уровне `block`, а не `warn`: асимметрия строгости `#147`
+    пропускает правку **человека** и записывает предупреждение рядом, но здесь
+    строку писала машина, и черновик машины блокируется. Иначе модель поставила
+    бы пятую рабочую задачу и расписала свободный вечер, а день получил бы
+    жёлтую подпись вместо отказа.
+
+    Проверка идёт по документу, а не по ответу модели напрямую: `draft_of`
+    разворачивает окна через полночь ровно так, как это сделает запись, и
+    судить надо то, что ляжет в базу.
+    """
+    return constraints.check_all(
+        plan_crud.draft_of(to_document(op.as_generated(), AUTHOR_LLM), on),
+        rule,
+        severity=constraints.SEVERITY_BLOCK,
+    )
+
+
+async def _day_plan_refusal(db: AsyncSession, plan: SchemaChatPlan) -> str | None:
+    """
+    Почему предложенный план дня применить нельзя, или `None` — можно.
+
+    Три причины, и все три — факты базы, а не части пересказа: даты нет в каноне,
+    у дня уже есть план, план нарушает правила дня. Спрашивать о них модель
+    значило бы дать ей право ошибиться в ответе, поэтому решает сервер.
+
+    Функция одна на оба конца — рождение предложения и его применение. Второй
+    её экземпляр разошёлся бы с первым молча, а между плашкой и нажатием
+    проходят часы: строка `day_rule_set` за это время меняется, и план дня
+    успевает появиться из другого места.
+    """
+    op = plan.day_plan
+    if op is None:  # pragma: no cover - вызывается только при наличии операции
+        return None
+    rule = await _day_rule(db, plan.entry_date)
+    if rule is None:
+        return DAY_PLAN_NO_RULE
+    if await plan_crud.get_plan(db, plan.entry_date) is not None:
+        return DAY_PLAN_DAY_TAKEN
+    try:
+        broken = _day_plan_violations(op, plan.entry_date, rule)
+    except PlanRejected:
+        # Документ не собрался вовсе — нечитаемое окно, повторённый id. Здесь
+        # это такой же отказ, как нарушение канона: сообщение исключения несёт
+        # присланную строку, и в лог оно не идёт.
+        return DAY_PLAN_UNREADABLE
+    return DAY_PLAN_BREAKS_CANON if broken else None
+
+
 async def _attach_plan(
     db: AsyncSession, *, message_id: int, text: str, complete: bool
 ) -> None:
@@ -591,12 +679,26 @@ async def _attach_plan(
 
     Оборванный и провалившийся ход план не получает: предложение, снятое с
     половины ответа, — это предложение, которого модель не договорила.
+
+    План дня, который применить нельзя, снимается **здесь**, а не оставляется
+    плашке: иначе экран нарисовал бы кнопку, которая на нажатии отвечает 409 или
+    422. Снимается ровно эта операция, а не всё предложение: отметка и число из
+    той же реплики применимы независимо от того, занят ли день планом, и терять
+    их было бы платой за чужую ошибку. Не осталось ни одной операции — плашки
+    нет вовсе, то есть ход остаётся обычным сообщением.
     """
     if not complete:
         return
     plan = await plan_from_answer(text)
     if plan is None:
         return
+    if plan.day_plan is not None:
+        refusal = await _day_plan_refusal(db, plan)
+        if refusal is not None:
+            logger.info("chat day plan not offered, reason %s", refusal)
+            plan = plan.model_copy(update={"day_plan": None})
+            if plan.operation_count() == 0:
+                return
     await chat_crud.save_plan(
         db,
         message_id=message_id,
@@ -1014,6 +1116,93 @@ async def get_plan(
     return _plan_response(await _require_plan(db, plan_id))
 
 
+# Отказы применения плана дня. Текст строки в них не попадает никогда: отказ
+# называет правило и id пункта, а задача бывает названа диагнозом.
+DAY_PLAN_NOT_PROPOSED = (
+    "плана дня в показанном предложении не было: применить можно только то, "
+    "что было показано"
+)
+DAY_PLAN_DAY_TAKEN_DETAIL = (
+    "на {on} план уже есть: предложение чата собирает день, у которого плана "
+    "нет, и переписать существующий не может. Пересобрать день — на экране дня"
+)
+NOTHING_SELECTED = (
+    "не выбрано ни одной операции: применение, которое ничего не пишет, — это "
+    "мёртвая кнопка на экране, а не пустой ход"
+)
+
+
+async def _write_day_plan(
+    db: AsyncSession, entry_date: date, op: ChatDayPlanOp
+) -> UUID:
+    """
+    Записать предложенный план на день, у которого плана нет.
+
+    Проверок здесь две, и обе обязательны, хотя обе уже проходили при рождении
+    предложения. Между плашкой и нажатием проходят часы: план дня успевает
+    появиться из другого места, а строка `day_rule_set` — смениться (канон в
+    этом проекте менялся дважды за месяц). Полагаться при этом на путь записи
+    нельзя: `replace_plan` судит только документные правила `#87`, а восемь
+    правил `#147` не проверяет вовсе.
+
+    Пишет `replace_plan` — тот же единственный путь, которым ложится план от
+    скилла и от ручки генерации. Автор ревизии `ai`, источник `llm`: план
+    написала модель, а человек его принял, и первая ревизия дня обязана это
+    помнить.
+    """
+    rule = await _day_rule(db, entry_date)
+    if rule is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{entry_date.isoformat()} лежит вне всех интервалов канона",
+        )
+    if await plan_crud.get_plan(db, entry_date) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=DAY_PLAN_DAY_TAKEN_DETAIL.format(on=entry_date.isoformat()),
+        )
+
+    try:
+        broken = _day_plan_violations(op, entry_date, rule)
+    except PlanRejected as rejected:
+        # Документ не собрался: нечитаемое окно, повторённый id. Тот же 422 и
+        # то же тело, каким отвечает запись плана человеку.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=rejected.as_detail(),
+        ) from rejected
+    if broken:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "day_plan_violates_canon",
+                "violations": [
+                    {
+                        "rule_code": one.rule_code,
+                        "severity": one.severity,
+                        "detail": one.detail,
+                        "message": one.message,
+                    }
+                    for one in broken
+                ],
+            },
+        )
+
+    day = await day_crud.ensure_day(db, entry_date)
+    document = to_document(op.as_generated(), AUTHOR_LLM)
+    try:
+        written = await plan_crud.replace_plan(
+            db, entry_date, rule, document, author=AUTHOR_AI
+        )
+    except PlanRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=rejected.as_detail(),
+        ) from rejected
+    await day_crud.touch_day(db, day, opened=False)
+    return written.id
+
+
 @router.post(
     "/plans/{plan_id}/apply",
     response_model=ChatPlanApplyResponse,
@@ -1021,13 +1210,19 @@ async def get_plan(
     responses={
         200: {"description": "Повтор с тем же Idempotency-Key: ничего не записано"},
         400: {"description": "План указывает на категорию или поле, которых нет"},
+        404: {"description": "Плана нет, либо его дата лежит вне канона"},
         409: {
             "description": (
-                "План уже применён, погашен как `stale`, или Idempotency-Key "
-                "занят другой записью"
+                "План уже применён, погашен как `stale`, Idempotency-Key занят "
+                "другой записью, или у дня уже есть план"
             )
         },
-        422: {"description": "Отметка в нечеклистовой категории или чужом поле"},
+        422: {
+            "description": (
+                "Отметка в нечеклистовой категории или чужом поле; план дня "
+                "нарушает правила дня — в `detail` коды правил и id пунктов"
+            )
+        },
     },
 )
 async def apply_plan(
@@ -1040,14 +1235,19 @@ async def apply_plan(
     """
     Записать то, что человек оставил отмеченным.
 
-    Пишет не модель и не эта ручка: пишет `apply_daily_summary` — тот самый
-    транзакционный путь, которым записывает экран разбора дня, с тем же
-    `Idempotency-Key` и теми же кодами отказа. Второго способа положить данные в
-    базу из разговора не заводится, поэтому и разбираться потом придётся с одним.
+    Пишет не модель и не эта ручка: числа, отметки и текст дня кладёт
+    `apply_daily_summary`, план дня — `replace_plan`. Оба пути существовали
+    раньше чата, у обоих те же коды отказа, и третьего способа положить данные в
+    базу из разговора не заводится.
 
     Присланное сверяется с сохранённым планом: применить можно подмножество
     показанного и ничего сверх него. Дата берётся оттуда же — из плана, а не из
     тела.
+
+    План дня применяется целиком или никак и только ко дню, у которого плана
+    нет: у дня, план которого уже есть, ответ 409, и существующий план остаётся
+    нетронутым. Правила дня проверяются здесь ещё раз, прямо перед записью, —
+    нарушение отвечает 422 с кодами правил.
     """
     row = await _require_plan(db, plan_id)
     if row.status not in (PLAN_STATUS_PROPOSED, PLAN_STATUS_APPLIED):
@@ -1057,34 +1257,64 @@ async def apply_plan(
         )
 
     stored = SchemaChatPlan.model_validate(row.plan)
-    try:
-        request = narrow_to_plan(stored, payload)
-    except PlanSelectionRejected as rejected:
+    if payload.day_plan and stored.day_plan is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=rejected.message
-        ) from rejected
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=DAY_PLAN_NOT_PROPOSED,
+        )
 
+    # Дневниковая половина применения собирается только тогда, когда в ней
+    # что-то отмечено: `DailySummaryApplyRequest` отвергает пустой запрос, и
+    # применение одного плана дня иначе упиралось бы в чужую проверку.
+    summary = bool(payload.metrics or payload.checklist or payload.journal)
+    if not summary and not payload.day_plan:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=NOTHING_SELECTED
+        )
+
+    request: DailySummaryApplyRequest | None = None
+    if summary:
+        try:
+            request = narrow_to_plan(stored, payload)
+        except PlanSelectionRejected as rejected:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=rejected.message,
+            ) from rejected
+
+    entry_ids: list[int] = []
+    journal_entry_id: int | None = None
+    day_plan_id: UUID | None = None
     try:
-        if idempotency_key is not None:
+        if request is not None and idempotency_key is not None:
             replayed = await daily_summary_crud.find_applied_summary(
                 db, request, idempotency_key
             )
             if replayed is not None:
+                # Настоящий повтор: первый вызов уже всё записал, включая план
+                # дня, если он был отмечен. Второго прохода по нему нет — и не
+                # нужно: день, у которого план появился, отвечает 409.
                 response.status_code = status.HTTP_200_OK
                 await db.commit()
                 return ChatPlanApplyResponse(
                     plan=_plan_response(row),
                     entry_ids=replayed.entry_ids,
                     journal_entry_id=replayed.journal_entry_id,
-                    applied_operations=_applied_operations(request),
+                    applied_operations=_applied_operations(request, payload),
                 )
 
-        categories = await category_crud.get_categories(
-            db, limit=None, active_only=True
-        )
-        written = await daily_summary_crud.apply_daily_summary(
-            db, request, categories, idempotency_key
-        )
+        if payload.day_plan and stored.day_plan is not None:
+            day_plan_id = await _write_day_plan(db, stored.entry_date, stored.day_plan)
+
+        if request is not None:
+            categories = await category_crud.get_categories(
+                db, limit=None, active_only=True
+            )
+            written = await daily_summary_crud.apply_daily_summary(
+                db, request, categories, idempotency_key
+            )
+            entry_ids = written.entry_ids
+            journal_entry_id = written.journal_entry_id
     except DailySummaryApplyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -1104,15 +1334,33 @@ async def apply_plan(
 
     return ChatPlanApplyResponse(
         plan=_plan_response(row),
-        entry_ids=written.entry_ids,
-        journal_entry_id=written.journal_entry_id,
-        applied_operations=_applied_operations(request),
+        entry_ids=entry_ids,
+        journal_entry_id=journal_entry_id,
+        day_plan_id=day_plan_id,
+        applied_operations=_applied_operations(request, payload),
     )
 
 
-def _applied_operations(request: DailySummaryApplyRequest) -> int:
-    """Сколько операций закрыло это применение — число под применённой плашкой."""
-    return len(request.metrics) + len(request.checklist) + (1 if request.journal else 0)
+def _applied_operations(
+    request: DailySummaryApplyRequest | None, payload: ChatPlanApply
+) -> int:
+    """
+    Сколько операций закрыло это применение — число под применённой плашкой.
+
+    План дня считается одной операцией, как и в `ChatPlan.operation_count`:
+    применяется он целиком, и разложить его на строки значило бы обещать
+    построчный выбор, которого нет.
+    """
+    written = (
+        0
+        if request is None
+        else (
+            len(request.metrics)
+            + len(request.checklist)
+            + (1 if request.journal else 0)
+        )
+    )
+    return written + (1 if payload.day_plan else 0)
 
 
 # `response_model=None` — не украшение: в этом модуле включён

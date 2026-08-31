@@ -2,6 +2,7 @@
 # summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, the body of a turn, the one flag that says whether the next turn continues a CLI session or rebuilds the dialogue, and `ChatPlan`, whose whole point is which operations it cannot express; the SSE events are described here as constants so the frontend parser and the server cannot drift
 # summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
 # summary: PHASE-03/113 adds ConversationContext — the day card as it went into the prompt, its size, and which sections the ceiling ate
+# summary: PHASE-03/115 grows a fourth operation — ChatDayPlanOp, a whole day plan the chat may propose for a day that has none, reusing the sections and items of `#148` and carrying no field with which an existing plan could be named, let alone replaced
 """
 Типы провода для чата.
 
@@ -25,6 +26,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -32,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.chat import CONVERSATION_KIND_GENERAL
 from app.schemas.daily_summary import CheckOp, JournalOp, LogMetricOp
+from app.schemas.day_plan import GeneratedDayPlan, GeneratedSection
 
 # Имена событий SSE. Порядок в норме: сколько угодно `delta`, затем `usage`,
 # затем ровно один `done`; `error` заменяет два последних.
@@ -220,6 +223,46 @@ class ChatJournalOp(JournalOp):
     mode: Literal["append", "create"] = "append"
 
 
+class ChatDayPlanOp(BaseModel):
+    """
+    План дня, каким его вправе предложить чат: собрать пустой день, не переписать.
+
+    **Словарь строк переиспользован, а не написан рядом.** `GeneratedSection` и
+    `GeneratedItem` — та же форма, которой отвечает модель ручке
+    `POST /day/{on}/plan/generate`, и те же две конверсии (`to_draft` для восьми
+    ограничений, `to_document` для единственного пути записи). Второй словарь
+    строк означал бы второе место, где можно случайно завести W2.
+
+    **Поля режима здесь нет вовсе.** Не `mode`, вычеркнувший `replace`, как у
+    `ChatJournalOp`, а отсутствие самого поля: перечисление — это место, куда
+    следующий читатель допишет значение. Замены плана дня нельзя сказать не
+    потому, что слово запрещено, а потому, что в операции нет ничего, чем можно
+    было бы указать на существующий план — ни его ревизии, ни его id, ни флага.
+
+    **Столкновение решает сервер, а не модель.** Есть ли на дне план — это факт
+    базы, а не часть пересказа, и спрашивать о нём модель значило бы дать ей
+    право ошибиться в ответе. Операция применима только ко дню без плана, и это
+    проверяется дважды: когда предложение рождается и когда его применяют.
+
+    Замена существующего плана осталась действием экрана дня
+    (`POST /day/{on}/plan/generate`), где человек видит, что исчезнет.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["draft_day_plan"] = "draft_day_plan"
+    title: str | None = None
+    sections: list[GeneratedSection] = Field(default_factory=list)
+
+    def as_generated(self) -> GeneratedDayPlan:
+        """Предложение в той форме, которую уже умеют обе конверсии `#148`."""
+        return GeneratedDayPlan(title=self.title, sections=list(self.sections))
+
+    def item_count(self) -> int:
+        """Сколько строк несёт предложенный день."""
+        return sum(len(section.items) for section in self.sections)
+
+
 class ChatPlan(BaseModel):
     """
     Что чат предлагает записать — и ничего сверх этого.
@@ -239,6 +282,12 @@ class ChatPlan(BaseModel):
     Операции взяты у экрана разбора дня целиком (`app.schemas.daily_summary`), а
     не переписаны рядом. Второй словарь операций означал бы второе место, где
     можно случайно добавить W2.
+
+    Четвёртая операция — план дня (`day_plan`). Она про другой объект и пишется
+    другим путём (`replace_plan`, а не `apply_daily_summary`), поэтому и стоит
+    отдельным полем, а не втискивается в `metrics`. Класс у неё тот же W1:
+    собрать день, у которого плана ещё нет. Почему замены в ней выговорить
+    нельзя — в `ChatDayPlanOp`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -247,6 +296,7 @@ class ChatPlan(BaseModel):
     metrics: list[LogMetricOp] = Field(default_factory=list)
     checklist: list[CheckOp] = Field(default_factory=list)
     journal: ChatJournalOp | None = None
+    day_plan: ChatDayPlanOp | None = None
 
     @model_validator(mode="after")
     def _must_propose_something(self) -> ChatPlan:
@@ -257,13 +307,29 @@ class ChatPlan(BaseModel):
         «применить», которая ничего не применяет. Такой ответ модели — просто
         сообщение без плашки, и отказ здесь и есть способ им стать.
         """
-        if not self.metrics and not self.checklist and self.journal is None:
+        if (
+            not self.metrics
+            and not self.checklist
+            and self.journal is None
+            and self.day_plan is None
+        ):
             raise ValueError(EMPTY_PLAN)
         return self
 
     def operation_count(self) -> int:
-        """Сколько операций план предлагает — число под плашкой."""
-        return len(self.metrics) + len(self.checklist) + (1 if self.journal else 0)
+        """
+        Сколько операций план предлагает — число под плашкой.
+
+        План дня считается одной операцией, а не двадцатью строками: он и
+        применяется целиком. Половина плана нарушает канон почти всегда, и
+        «применено 14 из 20» было бы обещанием, которого выполнить нельзя.
+        """
+        return (
+            len(self.metrics)
+            + len(self.checklist)
+            + (1 if self.journal else 0)
+            + (1 if self.day_plan else 0)
+        )
 
 
 class ChatPlanApply(BaseModel):
@@ -285,6 +351,13 @@ class ChatPlanApply(BaseModel):
     metrics: list[LogMetricOp] = Field(default_factory=list)
     checklist: list[CheckOp] = Field(default_factory=list)
     journal: ChatJournalOp | None = None
+    day_plan: bool = Field(
+        default=False,
+        description=(
+            "Брать ли предложенный план дня. Флаг, а не подмножество секций: "
+            "план применяется целиком или никак"
+        ),
+    )
 
 
 class ChatPlanResponse(BaseModel):
@@ -309,11 +382,18 @@ class ChatPlanResponse(BaseModel):
 
 
 class ChatPlanApplyResponse(BaseModel):
-    """Что записало применение — и сколько операций оно закрыло."""
+    """
+    Что записало применение — и сколько операций оно закрыло.
+
+    `day_plan_id` пуст у применения, которое плана дня не касалось. Идентификатор,
+    а не «да/нет»: по нему открывается записанный план и его первая ревизия, и без
+    него ответ не отличает «план записан» от «план был и его не тронули».
+    """
 
     plan: ChatPlanResponse
     entry_ids: list[int]
     journal_entry_id: int | None = None
+    day_plan_id: uuid.UUID | None = None
     applied_operations: int
 
 
