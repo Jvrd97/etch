@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134
+# [review:need-review] PHASE-03/134, PHASE-03/138
 # summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day
 """
 Wire types of the roles.
@@ -369,8 +369,75 @@ class RoleDayResponse(BaseModel):
     acts: list[RoleActResponse]
 
 
+class RoleSummarySlice(BaseModel):
+    """
+    Одна роль за период: минуты, доля, целевая и расхождение с ней.
+
+    `delta_pct` отдаётся сервером, а не вычитается на экране: то же число нужно
+    в тексте пятничного отчёта, и второе вычитание разошлось бы с первым на
+    первом же округлении.
+    """
+
+    role_id: int
+    role_code: str
+    title: str
+    minutes: int
+    share_pct: int = Field(description="Доля минут периода, целые проценты")
+    target_share_pct: int | None = Field(
+        default=None, description="Гипотеза квартала, не норма периода"
+    )
+    delta_pct: int | None = Field(
+        default=None,
+        description="Доля минус целевая, в пунктах; null — целевой нет",
+    )
+    act_counts: dict[str, int] = Field(
+        default_factory=dict, description="Акты по видам за период"
+    )
+    act_total: int
+
+
+class RoleSummaryResponse(BaseModel):
+    """
+    Свёртка периода — то, из чего собирается пятничный отчёт.
+
+    `unassigned_share_pct` стоит рядом с ролями, а не в «прочем»: доля
+    неотнесённой работы — единственный признак того, что правила разметки
+    отстали, и спрятанная она перестаёт быть сигналом.
+
+    `rules_lag` считается по скользящему окну, а не по этому периоду: неделя
+    отпуска даёт сто процентов `unassigned` и ничего не говорит о правилах.
+    """
+
+    date_from: date
+    date_to: date
+    total_minutes: int
+    roles: list[RoleSummarySlice]
+    unassigned_minutes: int
+    unassigned_share_pct: int
+    window_from: date
+    window_minutes: int
+    window_unassigned_share_pct: int
+    lag_threshold_pct: int = Field(
+        description="Порог доли `unassigned`, выше которого автоматика не работает"
+    )
+    rules_lag: bool = Field(
+        description=(
+            "Правила разметки отстали: доля `unassigned` за окно выше порога. "
+            "По ADR-0020 это сигнал выключить автоматику в пользу ручного ввода"
+        )
+    )
+    markdown: str = Field(
+        description=(
+            "Готовый блок пятничного отчёта. Тот же текст, что отдаёт "
+            "`format=md`, — рендер один и живёт на сервере"
+        )
+    )
+
+
 __all__ = [
     "ACT_KINDS",
+    "RoleSummaryResponse",
+    "RoleSummarySlice",
     "RoleActIn",
     "RoleActPatch",
     "RoleActResponse",

@@ -1759,6 +1759,45 @@ export interface RoleAct {
 }
 
 /** Where a day went and which roles happened on it, in one answer. */
+/** One role over a period: minutes, share, the target and the gap from it. */
+export interface RoleSummarySlice {
+  role_id: number;
+  role_code: string;
+  title: string;
+  minutes: number;
+  share_pct: number;
+  /** Гипотеза квартала, не норма периода. */
+  target_share_pct: number | null;
+  /** Доля минус целевая, в пунктах; null — целевой нет. */
+  delta_pct: number | null;
+  /** Акты по видам за период. */
+  act_counts: Record<string, number>;
+  act_total: number;
+}
+
+/**
+ * The fold of a period — what the Friday report is assembled from.
+ *
+ * `markdown` is the finished block, rendered on the server. The screen shows
+ * that very text rather than building its own: a second formatter would drift
+ * from the first on the first edit of the target shares, and silently.
+ */
+export interface RoleSummary {
+  date_from: string;
+  date_to: string;
+  total_minutes: number;
+  roles: RoleSummarySlice[];
+  unassigned_minutes: number;
+  unassigned_share_pct: number;
+  window_from: string;
+  window_minutes: number;
+  window_unassigned_share_pct: number;
+  lag_threshold_pct: number;
+  /** Правила разметки отстали: доля `unassigned` за окно выше порога. */
+  rules_lag: boolean;
+  markdown: string;
+}
+
 export interface RoleDay {
   work_day: string;
   total_minutes: number;
@@ -1798,6 +1837,18 @@ export const rolesAPI = {
 
   listRoles: async () => {
     return fetcher<Role[]>('/roles');
+  },
+
+  /**
+   * Свёртка ролей за произвольный период — неделя, месяц, что угодно.
+   *
+   * Готовый текст пятничного отчёта приезжает полем `markdown` того же ответа,
+   * поэтому второго запроса за ним нет и второго форматирования — тоже.
+   */
+  summary: async (dateFrom: string, dateTo: string) => {
+    return fetcher<RoleSummary>(
+      `/roles/summary?date_from=${dateFrom}&date_to=${dateTo}`
+    );
   },
 
   addTimeBlock: async (draft: RoleTimeBlockDraft) => {

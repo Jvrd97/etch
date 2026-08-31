@@ -1,11 +1,14 @@
 'use client';
-// [review:need-review] PHASE-03/134
+// [review:need-review] PHASE-03/134, PHASE-03/138
 // summary: the role screen both shells draw — where today's minutes went (share bar per role, the target share always labelled a hypothesis), the acts of the day, and the two manual forms; a record typed by a person is marked as such and can be removed
 
 import { useState } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
+import RoleWeekSummary from '@/components/RoleWeekSummary';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import { useRoleSummary } from '@/hooks/useRoleSummary';
 import { useRoles } from '@/hooks/useRoles';
+import { periodBack, PERIOD_OPTIONS, type PeriodChoice } from '@/lib/role-share';
 import { formatMinutes } from '@/lib/day-format';
 import {
   ACT_KIND_OPTIONS,
@@ -44,6 +47,12 @@ const DEFAULT_MINUTES = '90';
 export default function RolesScreen({ compact = false }: RolesScreenProps) {
   const { day, roles, loading, saving, error, addTimeBlock, addAct, deleteTimeBlock } =
     useRoles();
+
+  // Период сводки выбирается человеком: тот же расчёт отвечает и за неделю, и
+  // за месяц, поэтому выбор здесь — это выбор границ, а не другой запрос.
+  const [period, setPeriod] = useState<PeriodChoice>('week');
+  const range = day === null ? null : periodBack(day.work_day, period);
+  const { summary } = useRoleSummary(range?.from ?? null, range?.to ?? null);
 
   const [minutesRole, setMinutesRole] = useState('');
   const [minutes, setMinutes] = useState(DEFAULT_MINUTES);
@@ -94,6 +103,28 @@ export default function RolesScreen({ compact = false }: RolesScreenProps) {
   return (
     <div className={compact ? 'space-y-4' : 'space-y-6'}>
       {error && <ErrorAlert message={error} />}
+
+      {summary !== null && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            {PERIOD_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setPeriod(option.id)}
+                className={`rounded-2xl px-3 py-1 text-sm ${
+                  period === option.id
+                    ? 'bg-lime text-background'
+                    : 'bg-surface text-text-secondary'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <RoleWeekSummary summary={summary} />
+        </div>
+      )}
 
       <section className={card}>
         <div className="flex items-baseline justify-between gap-3">

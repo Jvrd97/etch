@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/137
+# [review:need-review] PHASE-03/134, PHASE-03/137, PHASE-03/138
 # summary: persistence of the roles — the idempotent seed of the four-role directory, CRUD of the directory and the rules, the resolver's database half (rules in, role out, `unassigned` when nothing matched), and the write of minutes and acts that neither doubles a re-imported `(source, external_ref)` nor overwrites what a person confirmed
 """
 Database access for the roles.
@@ -31,10 +31,10 @@ exist here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Generic, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.role import (
@@ -438,6 +438,182 @@ async def day_acts(db: AsyncSession, work_day: date) -> list[RoleAct]:
     )
 
 
+# Сколько дней назад смотрит скользящее окно сигнала «правила разметки отстают».
+# Месяц, а не неделя: доля `unassigned` за одну неделю прыгает от одного
+# нерабочего дня, и сигнал по ней срабатывал бы на шуме.
+UNASSIGNED_WINDOW_DAYS = 30
+
+# Порог доли `unassigned`, выше которого автоматика разметки не работает.
+# Названо числом, а не «примерно треть»: сигнал к пересмотру объявлен заранее и
+# в ADR-0020, и на экране, и сравнивать его надо с одним и тем же значением.
+UNASSIGNED_LAG_PCT = 30
+
+# Знаменатель доли в целых процентах.
+FULL_SHARE_PCT = 100
+
+
+@dataclass(frozen=True)
+class RolePeriodSlice:
+    """
+    Одна роль за период: минуты, доля и то, насколько она разошлась с целевой.
+
+    `delta_pct` пуст у роли без целевой доли — у `unassigned` её нет и быть не
+    может: целиться в долю неотнесённой работы значит целиться не в то. Число,
+    которое двигают, здесь одно и вниз, и двигают его правилом разметки.
+
+    Акты считаются по видам, а не одним числом: счётчик по видам — вторая
+    половина картины, он ловит вырождение актов в ритуал. Если клауз дня
+    закрывается каждый день одним и тем же видом, это видно здесь и больше
+    нигде.
+    """
+
+    role_id: int
+    role_code: str
+    title: str
+    minutes: int
+    share_pct: int
+    target_share_pct: int | None
+    delta_pct: int | None
+    act_counts: dict[str, int]
+    act_total: int
+
+
+@dataclass(frozen=True)
+class RoleSummary:
+    """
+    Свёртка периода: куда ушли минуты, какие роли случились, что отстало.
+
+    `unassigned_share_pct` стоит наравне с ролями, а не в «прочем»: это
+    единственный признак того, что правила разметки устарели, — неверное
+    правило разложит месяц неправильно и само сигнала не подаст.
+
+    `rules_lag` считается не по этому периоду, а по скользящему окну в тридцать
+    дней: неделя отпуска даёт сто процентов `unassigned` и ничего не говорит о
+    правилах. Сравнение идёт отношением, а не округлёнными процентами, — иначе
+    доля 30,4% показывалась бы как «30» и молча не поднимала бы флаг.
+    """
+
+    date_from: date
+    date_to: date
+    total_minutes: int
+    roles: list[RolePeriodSlice]
+    unassigned_minutes: int
+    unassigned_share_pct: int
+    window_from: date
+    window_minutes: int
+    window_unassigned_minutes: int
+    window_unassigned_share_pct: int
+    rules_lag: bool
+
+
+def _share_pct(part: int, whole: int) -> int:
+    """Доля в целых процентах; пустой знаменатель — ноль, а не деление на ноль."""
+    return round(part * FULL_SHARE_PCT / whole) if whole else 0
+
+
+async def minutes_by_role(
+    db: AsyncSession, date_from: date, date_to: date
+) -> dict[int, int]:
+    """
+    Минуты по ролям за период — одной свёрткой в базе, а не циклом по строкам.
+
+    Период включает обе границы: «неделя с понедельника по воскресенье» — это
+    семь дней, а не шесть.
+    """
+    result = await db.execute(
+        select(RoleTimeBlock.role_id, func.sum(RoleTimeBlock.minutes))
+        .where(
+            RoleTimeBlock.work_day >= date_from,
+            RoleTimeBlock.work_day <= date_to,
+        )
+        .group_by(RoleTimeBlock.role_id)
+    )
+    return {role_id: int(total) for role_id, total in result.all()}
+
+
+async def acts_by_role_and_kind(
+    db: AsyncSession, date_from: date, date_to: date
+) -> dict[tuple[int, str], int]:
+    """Счётчик актов по паре «роль, вид» за период."""
+    result = await db.execute(
+        select(RoleAct.role_id, RoleAct.act_kind, func.count(RoleAct.id))
+        .where(RoleAct.work_day >= date_from, RoleAct.work_day <= date_to)
+        .group_by(RoleAct.role_id, RoleAct.act_kind)
+        .order_by(RoleAct.role_id, RoleAct.act_kind)
+    )
+    return {(role_id, kind): int(count) for role_id, kind, count in result.all()}
+
+
+async def role_summary(db: AsyncSession, date_from: date, date_to: date) -> RoleSummary:
+    """
+    Свёртка периода целиком: доли, отклонения, акты по видам и сигнал.
+
+    Один расчёт на неделю, месяц и любой другой период — второй реализации под
+    месяц не заводится: разошлись бы они молча, а сверять сводку недели со
+    сводкой месяца никто не станет.
+
+    Период без единой записи отвечает пустой свёрткой: нули долей здесь значат
+    «нечего делить», и наружу это едет вместе с нулевым `total_minutes`, чтобы
+    экран мог сказать «записей нет» вместо «ноль процентов CTO».
+    """
+    roles = await list_roles(db)
+    minutes = await minutes_by_role(db, date_from, date_to)
+    acts = await acts_by_role_and_kind(db, date_from, date_to)
+    total = sum(minutes.values())
+
+    slices: list[RolePeriodSlice] = []
+    for role in roles:
+        own = minutes.get(role.id, 0)
+        share = _share_pct(own, total)
+        by_kind = {
+            kind: count for (role_id, kind), count in acts.items() if role_id == role.id
+        }
+        slices.append(
+            RolePeriodSlice(
+                role_id=role.id,
+                role_code=role.code,
+                title=role.title,
+                minutes=own,
+                share_pct=share,
+                target_share_pct=role.target_share_pct,
+                delta_pct=(
+                    None
+                    if role.target_share_pct is None
+                    else share - role.target_share_pct
+                ),
+                act_counts=by_kind,
+                act_total=sum(by_kind.values()),
+            )
+        )
+
+    fallback = next(
+        (one for one in slices if one.role_code == ROLE_CODE_FALLBACK), None
+    )
+    unassigned = fallback.minutes if fallback is not None else 0
+
+    window_from = date_to - timedelta(days=UNASSIGNED_WINDOW_DAYS - 1)
+    window = await minutes_by_role(db, window_from, date_to)
+    window_total = sum(window.values())
+    window_unassigned = window.get(fallback.role_id, 0) if fallback is not None else 0
+
+    return RoleSummary(
+        date_from=date_from,
+        date_to=date_to,
+        total_minutes=total,
+        roles=slices,
+        unassigned_minutes=unassigned,
+        unassigned_share_pct=_share_pct(unassigned, total),
+        window_from=window_from,
+        window_minutes=window_total,
+        window_unassigned_minutes=window_unassigned,
+        window_unassigned_share_pct=_share_pct(window_unassigned, window_total),
+        # Отношение, а не округлённый процент: доля 30,4% округляется до
+        # тридцати и молча не поднимала бы флаг, хотя правила уже отстали.
+        rules_lag=window_unassigned * FULL_SHARE_PCT
+        > UNASSIGNED_LAG_PCT * window_total,
+    )
+
+
 async def day_act_facts(db: AsyncSession, work_day: date) -> list[RoleActFact]:
     """
     Акты дня вместе с названиями их ролей — то, чем судит клауз роли (`#137`).
@@ -476,7 +652,14 @@ async def titles_by_code(db: AsyncSession) -> dict[str, str]:
 
 
 __all__ = [
+    "UNASSIGNED_LAG_PCT",
+    "UNASSIGNED_WINDOW_DAYS",
     "ActDraft",
+    "RolePeriodSlice",
+    "RoleSummary",
+    "acts_by_role_and_kind",
+    "minutes_by_role",
+    "role_summary",
     "RoleResolution",
     "TimeBlockDraft",
     "WriteOutcome",

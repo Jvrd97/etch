@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134
+# [review:need-review] PHASE-03/134, PHASE-03/138
 # summary: the roles endpoints — directory and rules CRUD, minutes and acts written/corrected/deleted by hand, and GET /roles/day[/{date}] returning the distribution of the day's minutes together with its acts; a request naming an unknown role or asking for zero minutes comes back 422 (the second because the table refused it, not because a check here did)
 """
 HTTP surface of the roles.
@@ -23,13 +23,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import today_local
 from app.crud import role as role_crud
+from app.roles.report import render_summary_md
 from app.models.role import (
     SOURCE_MANUAL,
     Role,
@@ -49,6 +51,8 @@ from app.schemas.role import (
     RoleRuleCreate,
     RoleRulePatch,
     RoleRuleResponse,
+    RoleSummaryResponse,
+    RoleSummarySlice,
     RoleTimeBlockIn,
     RoleTimeBlockPatch,
     RoleTimeBlockResponse,
@@ -478,6 +482,83 @@ async def _day(db: AsyncSession, work_day: date_type) -> RoleDayResponse:
         blocks=[_block_dto(block, codes) for block in blocks],
         acts=[_act_dto(act, codes) for act in acts],
     )
+
+
+# Как отдать свёртку. `json` — объект, `md` — тот же объект, отрендеренный в
+# готовый блок отчёта. Два имени, и третьего не будет: формат — это проекция
+# одного расчёта, а не второй расчёт.
+FORMAT_JSON = "json"
+FORMAT_MD = "md"
+SUMMARY_FORMATS: tuple[str, ...] = (FORMAT_JSON, FORMAT_MD)
+
+MARKDOWN_MEDIA_TYPE = "text/markdown; charset=utf-8"
+
+
+def _summary_dto(summary: role_crud.RoleSummary) -> RoleSummaryResponse:
+    """Свёртка как её несёт провод, вместе с готовым текстом отчёта."""
+    return RoleSummaryResponse(
+        date_from=summary.date_from,
+        date_to=summary.date_to,
+        total_minutes=summary.total_minutes,
+        roles=[
+            RoleSummarySlice(
+                role_id=one.role_id,
+                role_code=one.role_code,
+                title=one.title,
+                minutes=one.minutes,
+                share_pct=one.share_pct,
+                target_share_pct=one.target_share_pct,
+                delta_pct=one.delta_pct,
+                act_counts=dict(one.act_counts),
+                act_total=one.act_total,
+            )
+            for one in summary.roles
+        ],
+        unassigned_minutes=summary.unassigned_minutes,
+        unassigned_share_pct=summary.unassigned_share_pct,
+        window_from=summary.window_from,
+        window_minutes=summary.window_minutes,
+        window_unassigned_share_pct=summary.window_unassigned_share_pct,
+        lag_threshold_pct=role_crud.UNASSIGNED_LAG_PCT,
+        rules_lag=summary.rules_lag,
+        markdown=render_summary_md(summary),
+    )
+
+
+@router.get("/roles/summary", response_model=None)
+async def get_summary(
+    date_from: date_type,
+    date_to: date_type,
+    response_format: str = Query(default=FORMAT_JSON, alias="format"),
+    db: AsyncSession = Depends(get_db),
+) -> RoleSummaryResponse | PlainTextResponse:
+    """
+    Свёртка ролей за произвольный период: доли, отклонения, акты, `unassigned`.
+
+    - **date_from**, **date_to**: обе границы включительно
+    - **format**: `json` — объект, `md` — готовый блок пятничного отчёта текстом
+
+    Один эндпоинт на неделю и на месяц: второй расчёт под месяц разошёлся бы с
+    первым молча, а сверять сводку недели со сводкой месяца никто не станет.
+
+    Текст `md` и поле `markdown` объекта — один и тот же рендер: `format` это
+    проекция одного расчёта, а не второй расчёт, поэтому числа в тексте
+    совпадают с числами в JSON по построению, а не по договорённости.
+    """
+    if response_format not in SUMMARY_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"format must be one of: {', '.join(SUMMARY_FORMATS)}",
+        )
+    if date_to < date_from:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_to is earlier than date_from",
+        )
+    dto = _summary_dto(await role_crud.role_summary(db, date_from, date_to))
+    if response_format == FORMAT_MD:
+        return PlainTextResponse(dto.markdown, media_type=MARKDOWN_MEDIA_TYPE)
+    return dto
 
 
 @router.get("/roles/day", response_model=RoleDayResponse)
