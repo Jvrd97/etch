@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # [review:need-review] PHASE-03/120
-# summary: post-`up` proof that the running containers are this commit's build — three checks (no dev mount shadows the app dir, image label == HEAD, container content == image content), any failure exits non-zero
+# summary: post-`up` proof that the running containers are this commit's build — four checks (no dev mount shadows the app dir, image label == HEAD, container content == image content, and the backend image actually carries its alembic revisions), any failure exits non-zero
 #
 # Why this exists
 # ---------------
@@ -171,6 +171,25 @@ check_service() {
 		return
 	fi
 	green "  ok    container content matches image ($in_image)"
+
+	# 4. migrations ------------------------------------------------------------
+	# Только бэкенд: ревизии живут в его образе, и именно их отсутствие
+	# остановило выкат 31.08 — `.dockerignore` исключал `alembic/versions/*.py`,
+	# а прод до того монтировал исходники поверх образа и читал ревизии с хоста.
+	# Проверяется образ, а не контейнер: контейнер уже сверен с образом выше.
+	if [ "$svc" = "backend" ]; then
+		revisions=$(docker run --rm --entrypoint sh "$img" -c \
+			'ls alembic/versions/*.py 2>/dev/null | wc -l' | tr -d '\r\n ')
+		if [ -z "$revisions" ] || [ "$revisions" -lt 2 ]; then
+			fail "$svc: в образе нет миграций (найдено файлов: ${revisions:-0})."
+			red  "      alembic внутри контейнера не найдёт ревизию, на которой стоит"
+			red  "      база, и 'alembic upgrade head' остановит выкат. Проверьте"
+			red  "      services/backend/.dockerignore: строка alembic/versions/*.py"
+			red  "      выбрасывает ревизии из образа."
+			return
+		fi
+		green "  ok    миграции в образе ($revisions ревизий)"
+	fi
 }
 
 # The frontend sits behind the `web` profile; verify it only when the caller's

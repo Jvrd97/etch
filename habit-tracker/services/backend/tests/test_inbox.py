@@ -442,3 +442,32 @@ class TestTheWorkingWorkspace:
         )
         assert personal is not None
         assert inbox_crud.may_write_back(personal) is True
+
+
+def test_migrations_are_not_excluded_from_the_image() -> None:
+    """
+    Ревизии обязаны попадать в образ бэкенда.
+
+    Строка `alembic/versions/*.py` стояла в `.dockerignore` с бутстрапа и не
+    мешала ровно до тех пор, пока прод монтировал `./services/backend:/app`
+    поверх образа: alembic читал ревизии с диска хоста. Как только dev-маунты
+    убрали и контейнер стал жить своим образом, `alembic upgrade head` перестал
+    находить ревизию, на которой стоит база, и выкат встал на миграции.
+
+    Тест дешёвый и стоит здесь, потому что цена ошибки — остановленный выкат,
+    а заметить её иначе можно только на проде.
+    """
+    from pathlib import Path
+
+    lines = [
+        line.strip()
+        for line in Path(".dockerignore").read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    offenders = [
+        line for line in lines if "alembic" in line and not line.startswith("!")
+    ]
+    assert offenders == [], (
+        f".dockerignore исключает миграции из образа: {offenders}. "
+        "Контейнер живёт образом, и alembic внутри него не найдёт ревизий."
+    )
