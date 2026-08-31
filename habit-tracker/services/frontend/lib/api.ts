@@ -538,6 +538,19 @@ export const dayAPI = {
   },
 
   /**
+   * Ask the model for the day's plan; the answer is the plan it wrote.
+   *
+   * Never 503: a missing model stopped being a state of the day in `#148`. The
+   * answer always carries a plan, and `source` says who assembled it — `llm`
+   * when the model did, `fallback` when the skeleton stepped in for it, with
+   * the reason in `fallback_reason`. Slow by nature: the server spends up to
+   * two calls to the model before it answers.
+   */
+  generatePlan: async (date: string) => {
+    return fetcher<Plan>(`/day/${date}/plan/generate`, { method: 'POST' });
+  },
+
+  /**
    * Build the day out of the canon, without a model.
    *
    * The insurance of `#147`: the day is never left without a plan, whatever the

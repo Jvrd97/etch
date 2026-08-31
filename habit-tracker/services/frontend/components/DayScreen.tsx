@@ -1,10 +1,10 @@
 'use client';
 // [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148
-// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" with the button that builds one when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day beside it, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
 import { useMemo } from 'react';
-import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import { CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
@@ -20,6 +20,7 @@ import DayVerdict from '@/components/day/DayVerdict';
 import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import PlanBuilder from '@/components/day/PlanBuilder';
 import PlanSections from '@/components/day/PlanSections';
 import {
   NEEDS_REVIEW_BADGE,
@@ -43,13 +44,7 @@ import {
   type Mark,
   type WorkDay,
 } from '@/lib/api';
-import {
-  NO_PLAN_HINT,
-  NO_PLAN_TEXT,
-  dayKindLabel,
-  ruleLines,
-  ruleValidity,
-} from '@/lib/day-format';
+import { dayKindLabel, ruleLines, ruleValidity } from '@/lib/day-format';
 import { DAY_NEVER_OPENED, taskCountsLine } from '@/lib/marks';
 import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
 
@@ -151,13 +146,9 @@ export default function DayScreen({ date }: DayScreenProps) {
       </div>
 
       {plan === null ? (
-        <div className="bg-card border border-white/5 rounded-3xl text-center py-16 px-6">
-          <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
-            <CalendarCheck className="w-8 h-8 text-text-disabled" strokeWidth={2} />
-          </div>
-          <p className="text-text-primary text-lg font-medium">{NO_PLAN_TEXT}</p>
-          <p className="mt-2 text-text-secondary max-w-md mx-auto">{NO_PLAN_HINT}</p>
-        </div>
+        // Не тупик: день без плана — это состояние, из которого есть выход, и
+        // выход стоит на самой карточке, а не в чужом скрипте.
+        <PlanBuilder date={day.date} onBuilt={reload} />
       ) : (
         <>
           {plan.lede && (
@@ -167,8 +158,9 @@ export default function DayScreen({ date }: DayScreenProps) {
           {planFallbackLabel(plan) !== null && (
             // Причина стоит рядом с авторством, а не в логах: «почему в плане
             // именно это» — вопрос человека к экрану, и «модель не настроена»
-            // и «план дважды нарушил канон» чинятся по-разному.
-            <p className="text-sm text-text-secondary">{planFallbackLabel(plan)}</p>
+            // и «план дважды нарушил канон» чинятся по-разному. Цветом
+            // предупреждения, потому что это урезанный план, а не примечание.
+            <p className="text-sm text-warning">{planFallbackLabel(plan)}</p>
           )}
           {plan.needs_review && (
             <p className="inline-block px-3 py-1 rounded-2xl bg-warning/10 text-sm text-warning">
