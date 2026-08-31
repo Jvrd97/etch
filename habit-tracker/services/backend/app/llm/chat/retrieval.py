@@ -42,7 +42,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import entry as entry_crud
 from app.crud import health as health_crud
+from app.crud import inbox as inbox_crud
 from app.crud import journal as journal_crud
+from app.models.inbox import SIGNAL_STATE_NEW
 from app.crud import streak as streak_crud
 from app.crud import table as table_crud
 from app.llm.chat.context import build_day_card
@@ -56,6 +58,11 @@ QUERY_JOURNAL_RANGE = "journal_range"
 QUERY_HEALTH_DAILY = "health_daily"
 QUERY_STREAK = "streak"
 QUERY_TABLE_SLICE = "table_slice"
+# Задачи, приехавшие снаружи через контур входящих (`#97`). Единственный путь,
+# которым ClickUp попадает в разговор: CLI запускается с `--tools ""` и наружу
+# не ходит вовсе, поэтому «модель сходит и посмотрит» — не вариант ни в каком
+# виде. Читается таблица `inbound_signals`, наполняет её опрос источника.
+QUERY_INBOX_TASKS = "inbox_tasks"
 
 # Потолок диапазона — квартал. Не «год, чтобы точно хватило»: сравнение недели с
 # позапрошлой укладывается в две недели, а год строк — это уже не выборка, а
@@ -160,6 +167,21 @@ class RowsRangeParams(RangeParams):
     """Диапазон плюс явный потолок строк — для выборок, длина которых не от дней."""
 
     limit: int = Field(default=100, ge=1, le=MAX_ROWS)
+
+
+class InboxTasksParams(BaseModel):
+    """
+    Что взять из входящих.
+
+    Умолчания названы так, чтобы обычный вопрос «что у меня по задачам» не
+    требовал параметров вовсе: неразобранное, тридцать строк. Разобранное и
+    отклонённое модель просит явно — иначе в контекст поедет архив.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str | None = Field(default=SIGNAL_STATE_NEW)
+    limit: int = Field(default=30, ge=1, le=MAX_ROWS)
 
 
 class StreakParams(BaseModel):
@@ -279,6 +301,24 @@ async def _run_table_slice(db: AsyncSession, params: RowsRangeParams) -> QueryRo
     return QueryRows(lines=lines, row_count=rows)
 
 
+async def _run_inbox_tasks(db: AsyncSession, params: InboxTasksParams) -> QueryRows:
+    """
+    Задачи и письма, приехавшие снаружи, — заголовок и ссылка обратно.
+
+    Тела здесь нет и взяться ему неоткуда: контур его не хранит (ADR-0016, D2).
+    Модель получает то же, что человек видит на экране «Входящие», — и ссылку,
+    по которой человек вернётся к оригиналу.
+    """
+    rows = await inbox_crud.list_signals(db, state=params.state, limit=params.limit)
+    lines = [
+        f"{_fmt_date(row.local_date)} {row.external_id}: "
+        f"{row.title or '(без заголовка)'}"
+        + (f" — {row.external_url}" if row.external_url else "")
+        for row in rows
+    ]
+    return QueryRows(lines=lines, row_count=len(rows))
+
+
 ParamsT = TypeVar("ParamsT", bound=BaseModel)
 
 
@@ -314,6 +354,7 @@ NAMED_QUERIES: dict[str, NamedQuery] = {
     QUERY_HEALTH_DAILY: _Named(RangeParams, _run_health_daily),
     QUERY_STREAK: _Named(StreakParams, _run_streak),
     QUERY_TABLE_SLICE: _Named(RowsRangeParams, _run_table_slice),
+    QUERY_INBOX_TASKS: _Named(InboxTasksParams, _run_inbox_tasks),
 }
 
 
@@ -334,6 +375,10 @@ QUERY_HINTS: dict[str, str] = {
     QUERY_STREAK: "серия по категории — `category_id`",
     QUERY_TABLE_SLICE: (
         "свод таблицы по полям за диапазон — `date_from`, `date_to`, `limit`"
+    ),
+    QUERY_INBOX_TASKS: (
+        "задачи и письма, приехавшие снаружи (ClickUp и прочие источники), "
+        "с ссылкой обратно — `state` (по умолчанию `new`), `limit`"
     ),
 }
 

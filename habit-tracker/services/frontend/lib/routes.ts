@@ -196,6 +196,18 @@ export const APP_ROUTES: readonly AppRoute[] = [
     inHeader: false,
   },
   {
+    id: 'inbox',
+    name: 'Входящие',
+    href: '/inbox',
+    // Мобильного близнеца пока нет: экран читают за столом, разбирая день.
+    hasMobile: false,
+    hasMobileNested: false,
+    inTabBar: null,
+    // «Данные»: это вход в систему, а не её настройка.
+    section: 'data',
+    inHeader: false,
+  },
+  {
     id: 'quick-marks',
     name: 'Быстрые отметки',
     href: '/quick-marks',

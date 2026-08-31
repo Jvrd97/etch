@@ -35,6 +35,13 @@ from app.models.entry_value import EntryValue
 from app.models.goal import GoalLevel, Milestone, MilestoneDep, QuarterGoal
 from app.models.health import HealthHourBucket, HealthMetric
 from app.models.import_source import ImportSource
+from app.models.inbox import (
+    Commitment,
+    InboundSignal,
+    SignalMirrorOp,
+    SignalScope,
+    SignalSource,
+)
 from app.models.journal import JournalEntry
 from app.models.mark import PlanMark, PlanMarkEvent
 from app.models.plan import DayPlan, PlanItem, PlanSection
@@ -55,6 +62,11 @@ from app.models.work_interval import WorkInterval
 
 __all__ = [
     "ActivityInterval",
+    "Commitment",
+    "InboundSignal",
+    "SignalMirrorOp",
+    "SignalScope",
+    "SignalSource",
     "AgentHeartbeat",
     "AgentSetting",
     "AIReport",

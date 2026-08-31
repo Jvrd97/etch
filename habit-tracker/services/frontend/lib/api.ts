@@ -3381,6 +3381,64 @@ export interface QuickMarkTap {
   utc_offset_minutes?: number;
 }
 
+/** Один входящий сигнал: что-то случилось снаружи и может требовать ответа. */
+export interface InboundSignal {
+  id: number;
+  source_id: number;
+  external_id: string;
+  /** Заголовок есть там, где он и есть титул: имя задачи, тема письма. */
+  title: string | null;
+  /** Ссылка обратно в источник. Тела письма или сообщения тут нет и не будет. */
+  external_url: string | null;
+  occurred_at: string;
+  local_date: string;
+  state: 'new' | 'parsed' | 'ignored' | 'duplicate';
+}
+
+/** Источник в справочнике: что подключено, что заготовка, когда читали. */
+export interface SignalSource {
+  id: number;
+  provider: string;
+  account: string;
+  direction: 'read' | 'read_write';
+  is_active: boolean;
+  /** Имя переменной окружения с токеном — не сам токен. */
+  credential_ref: string | null;
+  last_polled_at: string | null;
+  last_error_code: string | null;
+}
+
+/** Чем кончился ручной прогон источника. */
+export interface PollOutcome {
+  ingested: number;
+  updated: number;
+}
+
+export const inboxAPI = {
+  /** Лента входящих, свежие сверху. */
+  signals: async (options: { state?: string; sourceId?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (options.state !== undefined) query.set('state', options.state);
+    if (options.sourceId !== undefined) query.set('source_id', String(options.sourceId));
+    const tail = query.toString();
+    return fetcher<InboundSignal[]>(`/inbox/signals${tail ? `?${tail}` : ''}`);
+  },
+
+  sources: async () => {
+    return fetcher<SignalSource[]>('/inbox/sources');
+  },
+
+  /**
+   * Прочитать источник сейчас.
+   *
+   * Отказ приезжает 409 с машинным кодом: «выключен», «нет адаптера» и «нет
+   * токена» — три разных состояния, и экран показывает их по-разному.
+   */
+  poll: async (sourceId: number) => {
+    return fetcher<PollOutcome>(`/inbox/sources/${sourceId}/poll`, { method: 'POST' });
+  },
+};
+
 export const quickMarksAPI = {
   /**
    * The directory with today's state on it.

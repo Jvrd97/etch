@@ -33,13 +33,15 @@ dependencies = [
     # frontmatter of `training/state.md` (`#92`); already in the tree via
     # uvicorn[standard], declared here because the import reads it directly
     "pyyaml>=6.0",
+    # Контур входящих (`#97`) ходит в ClickUp по HTTP. До него клиента в проде
+    # не было вообще — httpx стоял только в dev ради тестового транспорта.
+    "httpx==0.25.2",
 ]
 
 [dependency-groups]
 dev = [
     "pytest==7.4.3",
     "pytest-asyncio==0.21.1",
-    "httpx==0.25.2",
     "mypy>=1.10",
     "ruff>=0.4",
     "asyncpg-stubs>=0.29",

@@ -16,7 +16,7 @@
 import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -39,6 +39,7 @@ from app.llm.chat.retrieval import (
     QUERY_HINTS,
     QUERY_JOURNAL_RANGE,
     QUERY_STREAK,
+    QUERY_INBOX_TASKS,
     QUERY_TABLE_SLICE,
     REFUSAL_BAD_PARAMS,
     REFUSAL_UNKNOWN_QUERY,
@@ -177,10 +178,10 @@ async def add_steps(client: AsyncClient, on: date, value: float) -> None:
 
 @pytest.mark.asyncio
 class TestWhiteList:
-    """Шесть имён, и седьмое до базы не доходит."""
+    """Семь имён, и восьмое до базы не доходит."""
 
-    async def test_the_registry_has_exactly_the_six_named_queries(self) -> None:
-        """Седьмое имя не появляется без правки реестра — и правка видна в диффе."""
+    async def test_the_registry_has_exactly_the_seven_named_queries(self) -> None:
+        """Восьмое имя не появляется без правки реестра — и правка видна в диффе."""
         assert set(NAMED_QUERIES) == {
             QUERY_DAY_CARD,
             QUERY_ENTRIES_RANGE,
@@ -188,6 +189,7 @@ class TestWhiteList:
             QUERY_HEALTH_DAILY,
             QUERY_STREAK,
             QUERY_TABLE_SLICE,
+            QUERY_INBOX_TASKS,
         }
 
     async def test_the_prompt_describes_every_name_and_no_other(self) -> None:
@@ -344,6 +346,61 @@ class TestSixNames:
 
         assert outcomes[0].refusal is None
         assert outcomes[0].row_count == 1
+
+    async def test_inbox_tasks_gives_the_model_the_task_and_its_link(
+        self, db_session: AsyncSession
+    ) -> None:
+        """
+        Задачи ClickUp доезжают до модели — через контур входящих, а не по сети.
+
+        Это и есть ответ на «чат не видит моих задач»: CLI запускается с
+        `--tools ""` и наружу не ходит вовсе, поэтому единственный путь данных
+        внутрь — именованная выборка, которая пишет о себе строку в
+        `chat_retrievals`.
+        """
+        from app.crud import inbox as inbox_crud
+        from app.models.inbox import InboundSignal
+
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
+        assert source is not None
+        db_session.add(
+            InboundSignal(
+                source_id=source.id,
+                external_id="86cb3xtv5",
+                title="Починить сквозной flow покупки",
+                external_url="https://app.clickup.com/t/86cb3xtv5",
+                occurred_at=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+                local_date=TODAY,
+                state="new",
+            )
+        )
+        await db_session.commit()
+
+        outcomes = await run_need(
+            db_session, [NeedItem(query=QUERY_INBOX_TASKS, params={})]
+        )
+
+        assert outcomes[0].refusal is None
+        assert outcomes[0].row_count == 1
+        assert "86cb3xtv5" in outcomes[0].text
+        assert "Починить сквозной flow покупки" in outcomes[0].text
+
+    async def test_inbox_tasks_says_so_when_nothing_arrived(
+        self, db_session: AsyncSession
+    ) -> None:
+        """
+        Пустой контур — это ответ, а не отказ.
+
+        «Задач нет» и «источник не подключён» модель обязана различать: первое
+        значит «планируй без них», второе — «скажи человеку включить источник».
+        """
+        outcomes = await run_need(
+            db_session, [NeedItem(query=QUERY_INBOX_TASKS, params={})]
+        )
+
+        assert outcomes[0].refusal is None
+        assert outcomes[0].row_count == 0
 
     async def test_table_slice_counts_cells(
         self, db_session: AsyncSession, client: AsyncClient, water: dict[str, Any]
