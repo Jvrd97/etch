@@ -10,7 +10,8 @@ import type {
   PlanWarning,
   ScheduleOverlap,
 } from '@/lib/api';
-import { clockRange } from '@/lib/time';
+import { formatMinutes } from '@/lib/day-format';
+import { clock, clockRange } from '@/lib/time';
 
 /** Shown where a plan would be. A day without one is an answer, not an error. */
 export const EMPTY_PLAN_TEXT = 'В плане нет ни одной секции';
@@ -28,8 +29,24 @@ export const OVERLAP_BADGE = 'наложение';
  * decided by the server, and what the wall in front of the reader says is one
  * answer for the whole front end.
  */
-export function formatWindow(startsAt: string, endsAt: string): string {
+export function formatWindow(startsAt: string, endsAt: string | null): string {
+  // Точка печатается одним временем, а не «06:00-06:00»: повтор читается как
+  // окно нулевой длины, а это момент.
+  if (endsAt === null) return clock(startsAt);
   return clockRange(startsAt, endsAt);
+}
+
+/**
+ * Что стоит в колонке длительности у точки.
+ *
+ * Прочерк, а не «0 мин»: ноль — это длительность, а у момента её нет. Так же
+ * читается «20:00 — Конец» в шаблоне плана, откуда эти строки и пришли.
+ */
+export const POINT_DURATION = '—';
+
+/** Длительность строки расписания, как её читает человек. */
+export function scheduleDuration(minutes: number | null): string {
+  return minutes === null ? POINT_DURATION : formatMinutes(minutes);
 }
 
 /**

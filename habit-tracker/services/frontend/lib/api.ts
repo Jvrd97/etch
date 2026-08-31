@@ -1332,8 +1332,10 @@ export interface ScheduleEntry {
   kind: PlanItemKind;
   rigidity: PlanRigidity;
   starts_at: string;
-  ends_at: string;
-  minutes: number;
+  /** Null для точки: у момента есть место на часах и нет длительности. */
+  ends_at: string | null;
+  /** Null у той же точки — ноль был бы утверждением о длительности. */
+  minutes: number | null;
   window_comment: string | null;
 }
 

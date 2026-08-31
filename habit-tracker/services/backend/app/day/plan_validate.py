@@ -112,14 +112,29 @@ class PlanRejected(ValueError):
 
 @dataclass(frozen=True)
 class Window:
-    """A resolved window: two moments, already unrolled across midnight."""
+    """
+    A resolved window: one or two moments, already unrolled across midnight.
+
+    `ends_at is None` is a *point* — a moment the day passes through rather than
+    a stretch it spends. The plan is full of them: подъём в 06:00, старт работы
+    в 07:45, «20:00 — Конец». They have a place on the timeline and no length,
+    and saying otherwise is what turned a day with nothing overlapping into
+    «31 наложение · 66 ч 15 мин».
+    """
 
     starts_at: datetime
-    ends_at: datetime
+    ends_at: datetime | None
 
     @property
-    def minutes(self) -> int:
-        """Length in whole minutes — 60 for `23:30-00:30`, never negative."""
+    def minutes(self) -> int | None:
+        """
+        Length in whole minutes — 60 for `23:30-00:30`, `None` for a point.
+
+        `None` rather than `0`: zero is a length, and a length of zero is a
+        claim about duration that a moment does not make.
+        """
+        if self.ends_at is None:
+            return None
         return int((self.ends_at - self.starts_at).total_seconds() // 60)
 
 
@@ -163,16 +178,28 @@ def resolve_window(on: date, start: time, end: time, boundary: DayBoundary) -> W
     the 31st by the calendar and the 30th by the day. This is what makes
     `23:30-00:30` sixty minutes instead of minus twenty-three hours.
 
-    Should the two still come out equal or backwards — `10:00-10:00` — the end
-    is pushed a full day forward, the same `+24h` `parse_window` in
-    `plan_html.py` has always applied. The CHECK `ends_at > starts_at` then
-    passes, and a zero-length window stays as visible as it deserves to be.
+    Equal ends — `06:00-06:00` — name a point: a moment with a place on the
+    timeline and no length. Until `#111` the end was pushed a full day forward
+    instead (the `+24h` `plan_html.py` had always applied), so every точечный
+    якорь became a twenty-four-hour block that overlapped the whole plan.
+
+    An end that is still *earlier* than its start after the pinning is a typo,
+    and it is refused rather than read as "until tomorrow": the crossing of
+    midnight is already handled above, so nothing legitimate lands here.
     """
     zone = ZoneInfo(boundary.timezone)
     starts_at = _pin(on, start, boundary, zone)
     ends_at = _pin(on, end, boundary, zone)
-    if ends_at <= starts_at:
-        ends_at += timedelta(hours=HOURS_PER_DAY)
+    if ends_at == starts_at:
+        return Window(starts_at=starts_at, ends_at=None)
+    if ends_at < starts_at:
+        raise PlanRejected(
+            "bad_window",
+            f"окно «{start:%H:%M}-{end:%H:%M}» кончается раньше начала. "
+            "Момент без длительности пишется одним и тем же временем "
+            "(«06:00-06:00»), а переход через полночь — как есть «23:30-00:30».",
+            text=f"{start:%H:%M}-{end:%H:%M}",
+        )
     return Window(starts_at=starts_at, ends_at=ends_at)
 
 

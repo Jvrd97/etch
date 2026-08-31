@@ -107,6 +107,12 @@ OVERLAP_SQL = text(
     JOIN plan_section sb ON sb.id = b.section_id
     WHERE sa.plan_id = :plan_id
       AND sb.plan_id = :plan_id
+      -- Точки (`ends_at IS NULL`) пересекаться не умеют: у момента нет
+      -- длительности. Без этого условия `tstzrange(starts_at, NULL)` — это
+      -- диапазон до бесконечности, и один подъём в 06:00 накладывался на весь
+      -- остаток дня и на каждый второй якорь.
+      AND a.ends_at IS NOT NULL
+      AND b.ends_at IS NOT NULL
       AND (a.starts_at, a.id) < (b.starts_at, b.id)
     ORDER BY a.starts_at, b.starts_at
     """
@@ -444,9 +450,12 @@ def build_schedule(plan: DayPlan) -> list[ScheduleEntry]:
     entries: list[ScheduleEntry] = []
     for section in plan.sections:
         for item in section.items:
-            if item.starts_at is None or item.ends_at is None:
+            if item.starts_at is None:
                 continue
-            span = item.ends_at - item.starts_at
+            # Момент: начало без конца. Он стоит в расписании наравне со
+            # блоками — «20:00 — Конец» читается ровно так, — но минут у него
+            # нет, и подставлять ноль значило бы утверждать длительность.
+            span = None if item.ends_at is None else item.ends_at - item.starts_at
             entries.append(
                 ScheduleEntry(
                     item_id=item.id,
@@ -457,11 +466,18 @@ def build_schedule(plan: DayPlan) -> list[ScheduleEntry]:
                     rigidity=item.rigidity,
                     starts_at=item.starts_at,
                     ends_at=item.ends_at,
-                    minutes=int(span.total_seconds()) // SECONDS_PER_MINUTE,
+                    minutes=(
+                        None
+                        if span is None
+                        else int(span.total_seconds()) // SECONDS_PER_MINUTE
+                    ),
                     window_comment=item.window_comment,
                 )
             )
-    entries.sort(key=lambda entry: (entry.starts_at, entry.ends_at))
+    # Точка сортируется по своему началу, а конца у неё нет: `ends_at or
+    # starts_at` ставит её перед блоком, который начинается в ту же минуту, —
+    # подъём в 06:00 стоит раньше тренировки 06:00-07:00.
+    entries.sort(key=lambda entry: (entry.starts_at, entry.ends_at or entry.starts_at))
     return entries
 
 
