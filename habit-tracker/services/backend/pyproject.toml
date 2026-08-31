@@ -36,6 +36,7 @@ dependencies = [
     # Контур входящих (`#97`) ходит в ClickUp по HTTP. До него клиента в проде
     # не было вообще — httpx стоял только в dev ради тестового транспорта.
     "httpx==0.25.2",
+    "cryptography>=42",
 ]
 
 [dependency-groups]

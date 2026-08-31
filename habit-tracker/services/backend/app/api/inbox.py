@@ -18,7 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.crud import inbox as inbox_crud
-from app.schemas.inbox import PollResponse, SignalResponse, SourceResponse
+from app.models.inbox import SignalSource
+from app.schemas.inbox import (
+    CredentialsIn,
+    PollResponse,
+    SignalResponse,
+    SourcePatch,
+    SourceResponse,
+)
 
 router = APIRouter(prefix="/inbox", tags=["inbox"])
 
@@ -76,7 +83,72 @@ async def list_signals(
 async def list_sources(db: AsyncSession = Depends(get_db)) -> list[SourceResponse]:
     """Справочник источников: что подключено, что заготовка, когда читали."""
     rows = await inbox_crud.list_sources(db)
-    return [SourceResponse.model_validate(row) for row in rows]
+    return [_as_source(row) for row in rows]
+
+
+def _as_source(row: SignalSource) -> SourceResponse:
+    """
+    Строка источника наружу — без секрета в любом виде.
+
+    `has_secret` собирается здесь, а не в модели: в базе лежит шифротекст, и
+    единственное, что о нём можно сказать снаружи, — есть он или нет.
+    """
+    return SourceResponse(
+        id=row.id,
+        provider=row.provider,
+        account=row.account,
+        label=row.label,
+        direction=row.direction,
+        is_active=row.is_active,
+        poll_interval_s=row.poll_interval_s,
+        credential_ref=row.credential_ref,
+        has_secret=row.secret_ciphertext is not None,
+        settings={str(k): str(v) for k, v in (row.settings or {}).items()},
+        last_polled_at=row.last_polled_at,
+        last_error_code=row.last_error_code,
+    )
+
+
+@router.put("/sources/{source_id}/credentials", response_model=SourceResponse)
+async def set_credentials(
+    source_id: int, payload: CredentialsIn, db: AsyncSession = Depends(get_db)
+) -> SourceResponse:
+    """
+    Задать источнику ключ и настройки — прямо здесь, без захода на сервер.
+
+    Секрет сохраняется зашифрованным и обратно не отдаётся никогда: ответ
+    говорит «задан», и это всё, что экрану нужно знать.
+    """
+    source = await db.get(SignalSource, source_id)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="source not found"
+        )
+    await inbox_crud.set_credentials(
+        db, source, secret=payload.secret, settings=payload.settings
+    )
+    return _as_source(source)
+
+
+@router.patch("/sources/{source_id}", response_model=SourceResponse)
+async def patch_source(
+    source_id: int, payload: SourcePatch, db: AsyncSession = Depends(get_db)
+) -> SourceResponse:
+    """Включить, выключить, переименовать или сменить интервал опроса."""
+    source = await db.get(SignalSource, source_id)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="source not found"
+        )
+    if payload.is_active is not None:
+        source.is_active = payload.is_active
+    if payload.label is not None:
+        source.label = payload.label
+    if payload.poll_interval_s is not None:
+        source.poll_interval_s = payload.poll_interval_s
+    await db.commit()
+    await db.refresh(source)
+    return _as_source(source)
 
 
 @router.post("/sources/{source_id}/poll", response_model=PollResponse)
@@ -90,7 +162,7 @@ async def poll_source(
     адаптера» и «нет токена» — три разных состояния, и экран показывает их
     по-разному. Текста ответа провайдера здесь нет никогда.
     """
-    source = await db.get(inbox_crud.SignalSource, source_id)
+    source = await db.get(SignalSource, source_id)
     if source is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="source not found"

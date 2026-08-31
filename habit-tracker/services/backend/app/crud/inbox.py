@@ -32,7 +32,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import local_date
+from app.inbox.credentials import SecretUnreadable, decrypt_secret, encrypt_secret
 from app.models.inbox import (
+    SOURCE_DIRECTION_READ_WRITE,
     TITLE_MAX_CHARS,
     InboundSignal,
     SignalSource,
@@ -40,6 +42,8 @@ from app.models.inbox import (
 
 __all__ = [
     "ExternalItem",
+    "may_write_back",
+    "set_credentials",
     "SignalSource",
     "PollOutcome",
     "PollRefused",
@@ -152,6 +156,46 @@ async def get_source_by_name(
     return result.scalar_one_or_none()
 
 
+async def set_credentials(
+    db: AsyncSession,
+    source: SignalSource,
+    *,
+    secret: str | None,
+    settings: dict[str, str] | None = None,
+) -> SignalSource:
+    """
+    Задать источнику учётные данные, не выходя с сервера.
+
+    `secret=None` стирает секрет — способ отключить источник, не удаляя его
+    настроек. Пустая строка сюда не доходит: её отвергает схема запроса, потому
+    что «пустой токен» и «нет токена» — одно состояние, названное двумя словами.
+
+    Курсор при смене секрета не сбрасывается намеренно: другой токен к тому же
+    воркспейсу видит те же задачи, а перечитывание всего воркспейса заново стоит
+    сотни строк, которые человек уже разобрал.
+    """
+    source.secret_ciphertext = None if secret is None else encrypt_secret(secret)
+    if settings is not None:
+        source.settings = {**source.settings, **settings}
+    # Прошлый отказ перестаёт быть правдой: новые данные ещё не проверены, и
+    # держать на экране «нет токена» после ввода токена — врать.
+    source.last_error_code = None
+    await db.commit()
+    await db.refresh(source)
+    return source
+
+
+def may_write_back(source: SignalSource) -> bool:
+    """
+    Можно ли писать в источник обратно.
+
+    Только `read_write`, а это только личный ClickUp (ADR-0016, D7): в рабочем
+    воркспейсе статус задачи что-то значит для команды, и закрывать её из
+    трекера нельзя, даже когда токен это позволяет.
+    """
+    return source.direction == SOURCE_DIRECTION_READ_WRITE
+
+
 async def list_sources(db: AsyncSession) -> list[SignalSource]:
     result = await db.execute(
         select(SignalSource).order_by(SignalSource.provider, SignalSource.account)
@@ -197,6 +241,23 @@ def _hash(*parts: str | None) -> str:
     return digest.hexdigest()
 
 
+def _secret_of(source: SignalSource) -> str:
+    """
+    Секрет источника: сначала введённый на сервере, потом окружение.
+
+    Порядок именно такой. Введённое человеком важнее переменной, оставшейся на
+    машине с прошлого выката: иначе смена токена через интерфейс молча ничего
+    не меняла бы. Окружение остаётся запасным путём ради живого прода, который
+    настроен так с первого среза.
+    """
+    if source.secret_ciphertext is not None:
+        try:
+            return decrypt_secret(source.secret_ciphertext)
+        except SecretUnreadable as error:
+            raise PollRefused("secret_unreadable", str(error)) from error
+    return os.environ.get(source.credential_ref or "", "")
+
+
 async def _read_clickup(
     source: SignalSource, transport: httpx.AsyncBaseTransport | None
 ) -> list[ExternalItem]:
@@ -207,24 +268,25 @@ async def _read_clickup(
     отказ с машинным кодом, а не пустой список: «источник не настроен» и «у
     источника ничего нового» — разные ответы, и путать их нельзя.
     """
-    name = source.credential_ref
-    token = os.environ.get(name or "", "")
+    token = _secret_of(source)
     if not token:
         raise PollRefused(
             "no_credentials",
-            f"Токена нет: переменная окружения {name or '<не названа>'} пуста. "
-            "В базе токен не хранится — только имя переменной.",
+            "Токена нет. Задайте его на экране «Входящие» — он сохранится "
+            "зашифрованным в строке источника.",
         )
 
     # ClickUp адресует воркспейс числовым id, а не именем аккаунта: `account`
     # в справочнике — это «личный» против «рабочего», человеческое различение,
     # и подставлять его в путь значит гарантированный 404 на первом же прогоне.
-    team = os.environ.get(CLICKUP_TEAM_ENV, "")
+    team = str(source.settings.get("team_id") or "") or os.environ.get(
+        CLICKUP_TEAM_ENV, ""
+    )
     if not team:
         raise PollRefused(
             "no_workspace",
-            f"Не назван воркспейс: переменная окружения {CLICKUP_TEAM_ENV} пуста. "
-            "ClickUp адресует воркспейс числовым id, и взять его неоткуда.",
+            "Не назван воркспейс: у ClickUp это числовой id, и взять его "
+            "неоткуда. Впишите его рядом с токеном.",
         )
 
     params: dict[str, str] = {"subtasks": "true", "include_closed": "false"}
@@ -269,10 +331,12 @@ async def _read_clickup(
     return items
 
 
-# Адаптер есть только у личного ClickUp. Остальные три источника стоят в
-# справочнике заготовками: экран показывает на них «не подключён», а обратная
-# запись отвечает отказом — и оба случая проверяются на настоящей строке.
-ADAPTERS = {("clickup", "personal"): _read_clickup}
+# Адаптер выбирается по **провайдеру**, а не по паре с аккаунтом: личный и
+# рабочий ClickUp — это один и тот же API, разные токен и id воркспейса. Второй
+# воркспейс должен быть данными, а не веткой в коде. Gmail и Telegram остаются
+# заготовками до своих тикетов: экран показывает на них «адаптера нет», и poll
+# в сеть не идёт.
+ADAPTERS = {"clickup": _read_clickup}
 
 
 async def poll_source(
@@ -294,7 +358,7 @@ async def poll_source(
             "Источник выключен. Включите его прежде, чем читать.",
         )
 
-    adapter = ADAPTERS.get((source.provider, source.account))
+    adapter = ADAPTERS.get(source.provider)
     if adapter is None:
         raise PollRefused(
             "no_adapter",

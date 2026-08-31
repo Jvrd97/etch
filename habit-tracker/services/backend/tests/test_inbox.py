@@ -292,3 +292,153 @@ async def test_a_range_longer_than_a_year_is_refused_like_table_and_health(
     )
 
     assert response.status_code == 422
+
+
+class TestCredentialsInTheRow:
+    """
+    Учётные данные задаются на сервере, а не переменной окружения.
+
+    Первый срез назвал секрет именем env-переменной, и подключение второго
+    воркспейса стоило захода на VPS с пересборкой контейнера.
+    """
+
+    async def test_a_saved_secret_is_not_readable_in_the_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        В базе лежит шифротекст.
+
+        Цена названа в ADR: дамп `deploy/backup.sh` кладётся файлом на диск VPS,
+        и открытый токен в нём означал бы, что укравший дамп получил и доступ.
+        """
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
+        assert source is not None
+
+        response = await client.put(
+            f"{INBOX_URL}/sources/{source.id}/credentials",
+            json={"secret": "pk_86cb_secret_value", "settings": {"team_id": "9015"}},
+        )
+
+        assert response.status_code == 200
+        await db_session.refresh(source)
+        assert source.secret_ciphertext is not None
+        assert "pk_86cb_secret_value" not in source.secret_ciphertext
+        assert source.settings["team_id"] == "9015"
+
+    async def test_the_secret_never_leaves_the_server(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Наружу уходит «задан» — не значение и не его длина."""
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
+        assert source is not None
+        await client.put(
+            f"{INBOX_URL}/sources/{source.id}/credentials",
+            json={"secret": "pk_86cb_secret_value", "settings": {"team_id": "9015"}},
+        )
+
+        listing = await client.get(f"{INBOX_URL}/sources")
+
+        assert listing.status_code == 200
+        body = listing.text
+        assert "pk_86cb_secret_value" not in body
+        row = next(one for one in listing.json() if one["id"] == source.id)
+        assert row["has_secret"] is True
+        assert "secret" not in row and "secret_ciphertext" not in row
+
+    async def test_the_adapter_prefers_the_stored_secret_over_the_environment(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        Введённое на сервере важнее окружения.
+
+        Иначе смена токена через интерфейс молча ничего не меняла бы на машине,
+        где старый токен остался в `.env`.
+        """
+        monkeypatch.setenv("CLICKUP_PERSONAL_TOKEN", "token_from_env")
+        monkeypatch.setenv("CLICKUP_PERSONAL_TEAM_ID", "team_from_env")
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
+        assert source is not None
+        await inbox_crud.set_credentials(
+            db_session, source, secret="token_from_row", settings={"team_id": "9099"}
+        )
+        source.is_active = True
+        await db_session.commit()
+
+        calls: list[httpx.Request] = []
+        await inbox_crud.poll_source(
+            db_session, source, transport=clickup_transport([TASK], calls)
+        )
+
+        assert calls[0].headers["Authorization"] == "token_from_row"
+        assert "/team/9099/task" in str(calls[0].url)
+
+    async def test_the_environment_still_works_when_nothing_was_entered(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Живой прод с токеном в окружении не ломается появлением хранилища."""
+        monkeypatch.setenv("CLICKUP_PERSONAL_TOKEN", "token_from_env")
+        monkeypatch.setenv("CLICKUP_PERSONAL_TEAM_ID", "team_from_env")
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
+        assert source is not None
+        source.is_active = True
+        await db_session.commit()
+
+        calls: list[httpx.Request] = []
+        await inbox_crud.poll_source(
+            db_session, source, transport=clickup_transport([TASK], calls)
+        )
+
+        assert calls[0].headers["Authorization"] == "token_from_env"
+
+
+class TestTheWorkingWorkspace:
+    """Рабочий ClickUp читается тем же адаптером — и остаётся read-only."""
+
+    async def test_alvion_is_read_by_the_same_adapter(
+        self, db_session: AsyncSession
+    ) -> None:
+        """
+        Второй воркспейс — это данные, а не код.
+
+        Адаптер выбирается по провайдеру: два аккаунта одного ClickUp
+        различаются токеном и id воркспейса, а не веткой в коде.
+        """
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "alvion")
+        assert source is not None
+        await inbox_crud.set_credentials(
+            db_session, source, secret="pk_alvion", settings={"team_id": "9016"}
+        )
+        source.is_active = True
+        await db_session.commit()
+
+        calls: list[httpx.Request] = []
+        outcome = await inbox_crud.poll_source(
+            db_session, source, transport=clickup_transport([TASK], calls)
+        )
+
+        assert outcome.ingested == 1
+        assert "/team/9016/task" in str(calls[0].url)
+
+    async def test_alvion_stays_read_only(self, db_session: AsyncSession) -> None:
+        """
+        Обратная запись — только личный воркспейс (ADR-0016, D7).
+
+        В Alvion статус задачи что-то значит для команды, и закрывать её из
+        трекера нельзя, даже когда токен позволяет.
+        """
+        await inbox_crud.seed_sources(db_session)
+        source = await inbox_crud.get_source_by_name(db_session, "clickup", "alvion")
+        assert source is not None
+        assert source.direction == "read"
+        assert inbox_crud.may_write_back(source) is False
+
+        personal = await inbox_crud.get_source_by_name(
+            db_session, "clickup", "personal"
+        )
+        assert personal is not None
+        assert inbox_crud.may_write_back(personal) is True

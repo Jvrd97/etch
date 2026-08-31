@@ -23,11 +23,18 @@ class SourceResponse(BaseModel):
     id: int
     provider: str
     account: str
+    label: str | None
     direction: str
     is_active: bool
-    # Имя переменной окружения, а не токен. Наружу уходит именно имя: экран
-    # показывает, чего не хватает, не показывая секрета.
+    poll_interval_s: int
+    # Имя переменной окружения — запасной путь, оставшийся от первого среза.
     credential_ref: str | None
+    # Задан ли секрет. Не значение, не длина, не хвост: экран отвечает на
+    # вопрос «надо ли вводить», и большего ему знать незачем.
+    has_secret: bool
+    # Настройки адаптера без секретов: id воркспейса, лейблы. Их человек и
+    # вводил, показывать их обратно — правильно.
+    settings: dict[str, str]
     last_polled_at: datetime | None
     last_error_code: str | None
 
@@ -50,6 +57,35 @@ class SignalResponse(BaseModel):
     occurred_at: datetime
     local_date: date
     state: str
+
+
+class CredentialsIn(BaseModel):
+    """
+    Учётные данные источника, введённые человеком.
+
+    Пустая строка отвергается схемой: «пустой токен» и «нет токена» — одно
+    состояние, названное двумя способами, и различать их на экране было бы
+    ложью. Чтобы стереть секрет, присылают `null`.
+    """
+
+    secret: str | None = Field(default=None, min_length=1)
+    # Настройки адаптера: `team_id` у ClickUp, лейблы у почты. Строки, потому
+    # что id воркспейса ClickUp — это идентификатор, а не число, которым считают.
+    settings: dict[str, str] = Field(default_factory=dict)
+
+
+class SourcePatch(BaseModel):
+    """
+    Что у источника разрешено менять снаружи.
+
+    Провайдер и аккаунт не меняются: строка справочника — это тождество
+    источника, а не его настройка. Переименование «личного» в «рабочий»
+    оставило бы его сигналы и курсор на месте, и вышла бы подмена.
+    """
+
+    is_active: bool | None = None
+    label: str | None = None
+    poll_interval_s: int | None = Field(default=None, ge=60, le=86_400)
 
 
 class PollResponse(BaseModel):
