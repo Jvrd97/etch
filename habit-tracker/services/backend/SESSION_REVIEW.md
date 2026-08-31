@@ -2069,3 +2069,30 @@ Feedback loops (backend): pytest **1479 passed, 2 skipped** (на отдельн
 `habit_tracker_test` занята параллельными агентами), `ruff check app tests`,
 `ruff format --check app tests`, `mypy --strict app` (185 файлов), `alembic heads` — одна голова
 `b4d6f8a0c2e5`. `make check` целиком не отрабатывал: docker не поднимается.
+
+## 2026-08-31 — чат предлагает план дня (`#115`, поверх `#147`/`#148`)
+
+Файлов тронуто: 5.
+
+**mod**: `app/schemas/chat.py` (`ChatDayPlanOp` — четвёртая операция плана чата, поле `day_plan`
+у `ChatPlan`, флаг `day_plan` у `ChatPlanApply`, `day_plan_id` в ответе применения),
+`app/api/chat.py` (`_day_plan_refusal` и `_write_day_plan` — одна проверка на оба конца,
+применение развилось на две половины), `app/llm/chat/prompt.py` (раздел «Когда человек просит
+собрать день», `CHAT_CONTEXT_VERSION` 3 → 4), `tests/test_chat_plan_schema.py`
+(`ALLOWED_OPERATIONS` расширен вручную — растяжной провод сработал).
+**new**: `tests/test_chat_day_plan.py` (13 проверок).
+
+Защита W2 держится тремя механизмами и ни одной строкой промпта: у операции нет поля режима
+вовсе (не `mode` без `replace`, как у `ChatJournalOp`, а отсутствие перечисления); есть ли на дне
+план — решает сервер, а не модель; операция применима только ко дню без плана, и это проверяется
+дважды — при рождении предложения и прямо перед записью. Восемь правил `#147` судят предложенный
+план на уровне `block`: до плашки нарушивший не доезжает, на применении отвечает 422 с кодом
+правила. Полагаться на `replace_plan` было нельзя — он судит только документные правила `#87`.
+
+Проверено обратным ходом: снятие проверки «у дня уже есть план» краснит три теста, снятие
+проверки канона — три других.
+
+Feedback loops (backend): pytest **1492 passed, 2 skipped** (на своей базе `habit_plan_test`),
+`ruff check app tests`, `ruff format --check app tests`, `mypy --strict app` (186 файлов),
+`alembic heads` — одна голова `b4d6f8a0c2e5`. Фронт: `bun test` 1249 pass, `tsc --noEmit` чисто,
+`bun run lint` 0 errors (фронт этой веткой не трогался).
