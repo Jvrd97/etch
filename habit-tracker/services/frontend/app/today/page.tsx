@@ -1,10 +1,10 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
 import { useCallback, useState } from 'react';
-import LoadingSpinner from '@/components/LoadingSpinner';
+import QuickMarkSkeleton from '@/components/QuickMarkSkeleton';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
@@ -31,6 +31,7 @@ export default function TodayPage() {
     checked,
     streaks,
     loading,
+    streaksError,
     error,
     nothingToTrack,
     setError,
@@ -62,7 +63,9 @@ export default function TodayPage() {
     onLegend: openLegend,
   });
 
-  if (loading) return <LoadingSpinner size="lg" />;
+  // Каркас, а не спиннер (#123): спиннер закрывает кнопки на всё время
+  // круга, а открыли вкладку ради кнопки.
+  if (loading) return <QuickMarkSkeleton />;
 
   const {
     avoid: avoidCategories,
@@ -144,6 +147,13 @@ export default function TodayPage() {
                 </span>
                 <div className="flex-1 h-px bg-white/5" />
               </div>
+              {streaksError !== null && (
+                // Внутри секции, а не баннером над экраном: упали цифры дней,
+                // а не кнопки, и убирать из-за них рабочий экран нечестно.
+                <p role="status" className="text-xs text-text-secondary mb-3">
+                  {streaksError}
+                </p>
+              )}
               <div className="space-y-3">
                 {avoidCategories.map(({ category, numberField }) => (
                   <AvoidStreakCard

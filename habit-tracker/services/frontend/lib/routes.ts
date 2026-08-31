@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
 
@@ -43,12 +43,36 @@ export const MORE_PATH = `${MOBILE_PATH_PREFIX}/more`;
 /** Id of the mobile-only "More" tab, which has no entry in `APP_ROUTES`. */
 export const MORE_ROUTE_ID = 'more';
 
+/**
+ * Address the app opens on: the bookmark, the typed host, the PWA icon.
+ *
+ * Today rather than the dashboard, and named here rather than spelled in each
+ * of the three places, because the cold path is «вкладка открыта, отметить
+ * воду»: every click of navigation before the buttons is paid on every single
+ * open of the app.
+ */
+export const HOME_PATH = '/today';
+
+/** Root of the desktop shell, which redirects to `HOME_PATH`. */
+export const ROOT_PATH = '/';
+
+/**
+ * The dashboard's own address, off the root since #123.
+ *
+ * Named because two screens link to it by hand — the nav entry comes from the
+ * registry, but the empty state of Insights sends the reader to the generator
+ * that lives on the dashboard.
+ */
+export const DASHBOARD_PATH = '/dashboard';
+
 /** Every screen, in desktop navigation order. */
 export const APP_ROUTES: readonly AppRoute[] = [
   {
     id: 'dashboard',
     name: 'Dashboard',
-    href: '/',
+    // Своим адресом, а не корневым (#123): корень уводит на Today, и дашборд,
+    // оставшийся на `/`, стал бы экраном, до которого нет ссылки.
+    href: DASHBOARD_PATH,
     hasMobile: true,
     hasMobileNested: false,
     inTabBar: 2,

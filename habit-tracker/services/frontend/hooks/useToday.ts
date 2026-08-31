@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124
-// summary: Today-screen state for both shells — snapshot fetching (categories, entries and the quick-mark directory), the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123
+// summary: Today-screen state for both shells — the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
@@ -19,13 +19,21 @@ import { applyQuickMarkEvent, applyQuickMarkUndo, newTapKey } from '@/lib/quick-
 import {
   buildCheckedMap,
   isFieldChecked,
-  loadStreakMap,
+  loadStreaks,
   mergeOptimisticEntries,
   optimisticNumberEntry,
   setFieldChecked,
   type CheckedMap,
   type StreakMap,
 } from '@/lib/today-entries';
+
+/**
+ * What the streak section says when its own round failed.
+ *
+ * Its own sentence rather than the screen's error: the buttons are on screen
+ * and working, and the only thing missing is the number of days.
+ */
+export const STREAKS_FAILED = 'Стрики не загрузились';
 
 /** Everything a Today screen needs; the two shells differ only in markup. */
 export interface UseTodayResult {
@@ -47,7 +55,25 @@ export interface UseTodayResult {
   quickMarks: QuickMark[];
   checked: CheckedMap;
   streaks: StreakMap;
+  /**
+   * The first round is done: categories, entries and the buttons are on screen.
+   *
+   * Not "everything has arrived". The streaks are a second round and report
+   * themselves through `streaksLoading`, because a screen that waits for them
+   * is a screen with no buttons on it for the length of two serial round trips
+   * — and pressing a button is the reason the tab was opened.
+   */
   loading: boolean;
+  /** The streaks round is still in flight; the rest of the screen is live. */
+  streaksLoading: boolean;
+  /**
+   * Why the streaks round failed, or null.
+   *
+   * Kept apart from `error` so the failure can be drawn inside the streak
+   * section: a banner over the whole screen for a streak that did not load
+   * would take the buttons away over something that is not about them.
+   */
+  streaksError: string | null;
   error: string | null;
   /** True when no category routes to any Today widget. */
   nothingToTrack: boolean;
@@ -106,6 +132,8 @@ export function useToday(): UseTodayResult {
   const [checked, setChecked] = useState<CheckedMap>({});
   const [streaks, setStreaks] = useState<StreakMap>({});
   const [loading, setLoading] = useState(true);
+  const [streaksLoading, setStreaksLoading] = useState(true);
+  const [streaksError, setStreaksError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /**
@@ -117,6 +145,32 @@ export function useToday(): UseTodayResult {
    * until the new one lands, so flipping `loading` would blank a screen the
    * user is already looking at.
    */
+  /**
+   * The second round: one streak per avoid category.
+   *
+   * Separate from the snapshot rather than folded into it, because it is the
+   * only part of Today that scales with the number of categories, and the
+   * buttons must not wait behind it. A category with no avoid streak at all
+   * finishes it immediately — an empty list is a finished round, not a pending
+   * one.
+   */
+  const refreshStreaks = useCallback(async (avoidIds: number[]) => {
+    setStreaksLoading(true);
+    setStreaksError(null);
+    try {
+      const loaded = await loadStreaks(avoidIds, (id) => categoriesAPI.getStreak(id));
+      setStreaks(loaded.streaks);
+      // Упавший запрос раньше был молчаливым «—» в карточке. Секция обязана
+      // сказать, что цифры нет потому, что запрос не дошёл, а не потому, что
+      // стрик нулевой.
+      setStreaksError(loaded.failed.length > 0 ? STREAKS_FAILED : null);
+    } catch (err) {
+      setStreaksError(err instanceof Error ? err.message : STREAKS_FAILED);
+    } finally {
+      setStreaksLoading(false);
+    }
+  }, []);
+
   const loadData = useCallback(async ({ showSpinner = false } = {}) => {
     try {
       if (showSpinner) setLoading(true);
@@ -141,20 +195,24 @@ export function useToday(): UseTodayResult {
       const fetchedIds = new Set(entriesData.map((entry) => entry.id));
       setOptimisticEntries((prev) => prev.filter((entry) => !fetchedIds.has(entry.id)));
       setChecked(buildCheckedMap(categoriesData, entriesData));
-
-      const avoidIds = partitionTodayCategories(categoriesData).avoid.map(
-        ({ category }) => category.id
-      );
-      setStreaks(await loadStreakMap(avoidIds, (id) => categoriesAPI.getStreak(id)));
       // A silent refetch that succeeds must retire the previous failure, or the
       // error banner outlives the outage that caused it.
       setError(null);
+
+      // Второй круг. Раньше он стоял здесь же под `await`, и экран ждал его,
+      // прежде чем показать хоть одну кнопку: стрики читаются по категории,
+      // то есть это N запросов после того, как первый круг уже вернулся.
+      // Ошибка второго круга живёт в своей секции и кнопок не убирает.
+      const avoidIds = partitionTodayCategories(categoriesData).avoid.map(
+        ({ category }) => category.id
+      );
+      void refreshStreaks(avoidIds);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load today data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshStreaks]);
 
   const reload = useCallback(async () => {
     await loadData();
@@ -290,6 +348,8 @@ export function useToday(): UseTodayResult {
     checked,
     streaks,
     loading,
+    streaksLoading,
+    streaksError,
     error,
     nothingToTrack,
     setError,

@@ -1314,6 +1314,23 @@ export interface ScheduleOverlap {
   overlap_minutes: number;
 }
 
+/**
+ * Кем собран план дня. Зеркало `PLAN_SOURCES` из `app/models/plan.py`.
+ *
+ * Не путать с `PlanAuthor`: там автор одной ревизии плана, здесь — источник
+ * самого плана. Слияние дорожек свело оба типа в один файл под одним именем,
+ * и источник переименован, потому что поле, которое он описывает, зовётся
+ * `source`.
+ */
+export type PlanSource = 'day-open' | 'import' | 'manual' | 'llm' | 'fallback';
+
+/** Почему план собрал скелет. Зеркало кодов из `app/day/generate.py`. */
+export type PlanFallbackReason =
+  | 'llm_not_configured'
+  | 'llm_error'
+  | 'llm_timeout'
+  | 'llm_plan_invalid';
+
 export interface Plan {
   id: string;
   day_date: string;
@@ -1325,7 +1342,17 @@ export interface Plan {
   counters: unknown[];
   condition_tomorrow: string | null;
   status: 'draft' | 'active' | 'closed';
-  source: 'day-open' | 'import' | 'manual';
+  /**
+   * Кем собран план.
+   *
+   * `llm` и `fallback` приехали с #148: «кем собран» — часть состояния дня, а
+   * не примечание к нему. День, собранный скелетом потому что модель молчала,
+   * отличается от дня, который человек написал руками, — и человек имеет право
+   * это видеть.
+   */
+  source: PlanSource;
+  /** Почему план собран скелетом. Код, а не предложение; null у остальных. */
+  fallback_reason: PlanFallbackReason | null;
   /** План собран ночным прогоном-страховкой и человеком не смотрен. */
   needs_review: boolean;
   created_at: string;
@@ -2341,7 +2368,21 @@ export type ChallengeDaySource = 'computed' | 'manual';
 /** `any_miss` — the first miss ends it; `budget` — the (allowed + 1)-th does. */
 export type ChallengeFailureMode = 'any_miss' | 'budget';
 
-export type ChallengeStatus = 'active' | 'won' | 'failed' | 'abandoned';
+export type ChallengeStatus =
+  | 'proposed'
+  | 'active'
+  | 'won'
+  | 'failed'
+  | 'abandoned';
+
+/**
+ * Кто предложил обязательство.
+ *
+ * На расчёт не влияет вовсе — влияет на путь появления: человек заводит
+ * челлендж сразу активным, модель и план дня только предлагают, и предложение
+ * ждёт кнопки «принять».
+ */
+export type ChallengeOrigin = 'human' | 'ai' | 'plan';
 
 export interface ChallengeDay {
   day: string;
@@ -2363,6 +2404,7 @@ export interface Challenge {
   failure_mode: ChallengeFailureMode;
   allowed_misses: number;
   status: ChallengeStatus;
+  origin: ChallengeOrigin;
   failed_on: string | null;
   total_days: number;
   day_number: number;
@@ -2443,6 +2485,30 @@ export const challengesAPI = {
 
   recompute: async (id: number) => {
     return fetcher<Challenge>(`/challenges/${id}/recompute`, { method: 'POST' });
+  },
+
+  /**
+   * Принять предложение: оно становится обязательством и начинает считаться.
+   *
+   * Дни считаются от `starts_on`, включая прожитые, — окно человек прочитал,
+   * когда нажимал «принять».
+   */
+  accept: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}/accept`, { method: 'POST' });
+  },
+
+  /**
+   * Отклонить предложение.
+   *
+   * Отдельной ручки нет намеренно: отклонённое предложение — это брошенный
+   * челлендж, и `PATCH {status:'abandoned'}` уже значит ровно это. Второй путь
+   * означал бы два способа сказать одно.
+   */
+  decline: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'abandoned' }),
+    });
   },
 
   /**

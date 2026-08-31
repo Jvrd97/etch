@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/46-mobile-insights
+// [review:need-review] PHASE-01/46-mobile-insights, PHASE-03/123
 // summary: /insights page — report list, open/close/load flow and reload now come from useInsights, shared with /m/insights; markup unchanged
 
 import Markdown from '@/components/Markdown';
@@ -7,6 +7,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 import Link from 'next/link';
+import { DASHBOARD_PATH } from '@/lib/routes';
 import { formatReportDate, useInsights } from '@/hooks/useInsights';
 
 export default function InsightsPage() {
@@ -34,7 +35,9 @@ export default function InsightsPage() {
           </div>
           <p className="text-text-secondary">Пока нет ни одного отчёта</p>
           <Link
-            href="/"
+            // Разбор запускается с дашборда, а он уехал с корня на свой адрес
+            // (#123): корень теперь уводит на Today.
+            href={DASHBOARD_PATH}
             className="mt-5 inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
           >
             <Sparkles className="w-4 h-4" strokeWidth={2} />

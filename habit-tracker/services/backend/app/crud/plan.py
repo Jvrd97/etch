@@ -548,6 +548,7 @@ async def to_response(db: AsyncSession, plan: DayPlan) -> PlanResponse:
         status=plan.status,
         source=plan.source,
         needs_review=plan.needs_review,
+        fallback_reason=plan.fallback_reason,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         sections=sections,

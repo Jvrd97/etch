@@ -1,11 +1,12 @@
 'use client';
-// [review:need-review] PHASE-03/127, PHASE-03/128
-// summary: the Today block of obligations — the cards of the ones running now, the failure mode and budget chosen at creation, and the button that counts today by hand; one component so both shells mount the same behaviour
+// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
+// summary: the Today block of obligations — the cards of the ones running now, the separate «Предложено» block of what the model proposed and nobody has taken on yet, the failure mode and budget chosen at creation, and the button that counts today by hand; one component so both shells mount the same behaviour
 
 import { useState } from 'react';
 import ChallengeCard from '@/components/ChallengeCard';
+import ProposedChallengeCard from '@/components/ProposedChallengeCard';
 import { useChallenges } from '@/hooks/useChallenges';
-import { isOnToday } from '@/lib/challenges';
+import { isOnToday, isProposal } from '@/lib/challenges';
 import type {
   Category,
   Challenge,
@@ -37,6 +38,9 @@ const DEFAULT_WINDOW_DAYS = 6;
  * «месяц без единого пропуска» ставится один раз и заваливается на пятый день,
  * после чего челлендж превращается в мёртвую строку.
  */
+/** Заголовок блока предложений — он же то, за что цепляется тест. */
+export const PROPOSED_TITLE = 'Предложено';
+
 const FAILURE_LABELS: { value: ChallengeFailureMode; label: string }[] = [
   { value: 'any_miss', label: 'первый промах заваливает' },
   { value: 'budget', label: 'бюджет промахов' },
@@ -55,7 +59,17 @@ function isoDaysFromToday(offset: number): string {
  * но сегодняшний экран — про то, что делается сегодня.
  */
 export default function ChallengesSection({ categories }: ChallengesSectionProps) {
-  const { challenges, loading, error, create, countToday, counting } = useChallenges();
+  const {
+    challenges,
+    loading,
+    error,
+    create,
+    countToday,
+    counting,
+    accept,
+    decline,
+    answering,
+  } = useChallenges();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -70,6 +84,9 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
   const [formError, setFormError] = useState<string | null>(null);
 
   const running = challenges.filter(isOnToday);
+  // Отдельным списком, а не вперемешку: предложение — это не обязательство, и
+  // в счёте активных ему делать нечего.
+  const proposed = challenges.filter(isProposal);
   const category = categories.find((item) => item.id === categoryId) ?? null;
   const fields = category?.fields ?? [];
   const needsTarget =
@@ -106,7 +123,7 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
     }
   };
 
-  if (loading && running.length === 0) return null;
+  if (loading && running.length === 0 && proposed.length === 0) return null;
 
   return (
     <section className="space-y-3" aria-label="Челленджи">
@@ -122,6 +139,24 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
       </div>
 
       {error && <p className="text-sm text-rose-500">{error}</p>}
+
+      {proposed.length > 0 && (
+        <section className="space-y-2" aria-label={PROPOSED_TITLE}>
+          <h3 className="text-sm font-medium uppercase tracking-widest text-lime">
+            {PROPOSED_TITLE}
+          </h3>
+          {proposed.map((challenge) => (
+            <ProposedChallengeCard
+              key={challenge.id}
+              challenge={challenge}
+              categories={categories}
+              onAccept={(item: Challenge) => void accept(item.id)}
+              onDecline={(item: Challenge) => void decline(item.id)}
+              answering={answering.has(challenge.id)}
+            />
+          ))}
+        </section>
+      )}
 
       {running.map((challenge) => (
         <ChallengeCard

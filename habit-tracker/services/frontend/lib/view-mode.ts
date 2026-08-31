@@ -1,7 +1,13 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/46-mobile-insights
-// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (nested detail routes, plus the root `/` ↔ bare `/m` dashboard twin) and the persisted user preference
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/46-mobile-insights, PHASE-03/123
+// summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (nested detail routes, plus the root `/` ↔ bare `/m` twin, both of which redirect into Today) and the persisted user preference
 
-import { APP_ROUTES, MOBILE_PATH_PREFIX, isNestedMobileRoute } from './routes';
+import {
+  APP_ROUTES,
+  HOME_PATH,
+  MOBILE_PATH_PREFIX,
+  ROOT_PATH,
+  isNestedMobileRoute,
+} from './routes';
 
 /** Which shell the user wants: the desktop layout or the `/m/*` mobile instance. */
 export type ViewMode = 'desktop' | 'mobile';
@@ -66,20 +72,24 @@ function isDirectChild(desktopPath: string, parent: string): boolean {
  * nesting parent that owns it. Null when the mobile shell has no screen for it.
  */
 function mobileRouteFor(desktopPath: string): string | null {
+  // Оба корня существуют — как редиректы на Today своего шелла (#123). Пара
+  // держится здесь, а не в реестре экранов: `/` — это не экран, а адрес, и
+  // переключатель шелла с корня обязан попасть на корень второго, а не
+  // остаться на месте.
+  if (desktopPath === ROOT_PATH) return ROOT_PATH;
   if (MOBILE_ROUTES.includes(desktopPath)) return desktopPath;
   return NESTED_MOBILE_ROUTES.find((parent) => isDirectChild(desktopPath, parent)) ?? null;
 }
 
 /**
- * Landing screen of the mobile instance — the first registry screen that has a
- * mobile version, so the fallback follows the registry instead of a hardcoded
- * path. Degrades to the bare prefix only in the degenerate case of a registry
- * with no mobile screens at all.
+ * Landing screen of the mobile instance: the mobile twin of `HOME_PATH`.
+ *
+ * The manifest's `start_url` reads this, so the app icon opens the buttons.
+ * Derived from the one home address rather than from «первый экран реестра с
+ * мобильной версией», which used to mean the dashboard and made the order of
+ * the registry a decision about the cold path.
  */
-export const MOBILE_HOME: string =
-  MOBILE_ROUTES.length > 0
-    ? (toMobilePath(MOBILE_ROUTES[0]) ?? MOBILE_PATH_PREFIX)
-    : MOBILE_PATH_PREFIX;
+export const MOBILE_HOME: string = `${MOBILE_PATH_PREFIX}${HOME_PATH}`;
 
 /** Minimal slice of the Web Storage API these helpers need. */
 export interface ViewModeStorage {

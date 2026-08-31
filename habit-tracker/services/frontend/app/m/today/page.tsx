@@ -1,10 +1,10 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-03/123
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 
 import { useState } from 'react';
-import LoadingSpinner from '@/components/LoadingSpinner';
+import QuickMarkSkeleton from '@/components/QuickMarkSkeleton';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
@@ -50,6 +50,7 @@ export default function MobileTodayPage() {
     checked,
     streaks,
     loading,
+    streaksError,
     error,
     nothingToTrack,
     setError,
@@ -66,7 +67,9 @@ export default function MobileTodayPage() {
   const [editing, setEditing] = useState<Category | null>(null);
   const [dictating, setDictating] = useState(false);
 
-  if (loading) return <LoadingSpinner size="lg" />;
+  // Каркас, а не спиннер (#123): спиннер закрывает кнопки на всё время
+  // круга, а открыли вкладку ради кнопки.
+  if (loading) return <QuickMarkSkeleton compact />;
 
   const {
     avoid: avoidCategories,
@@ -136,6 +139,13 @@ export default function MobileTodayPage() {
           {avoidCategories.length > 0 && (
             <section>
               <SectionLabel>Streaks</SectionLabel>
+              {streaksError !== null && (
+                // Внутри секции, а не баннером над экраном: упали цифры дней,
+                // а не кнопки, и убирать из-за них рабочий экран нечестно.
+                <p role="status" className="text-xs text-text-secondary mb-3">
+                  {streaksError}
+                </p>
+              )}
               <div className="space-y-3">
                 {avoidCategories.map(({ category, numberField }) => (
                   <AvoidStreakCard

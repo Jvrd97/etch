@@ -1,12 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-03/109
+// [review:need-review] PHASE-01/40-mobile-shell-toggle-manifest-today, PHASE-03/109, PHASE-03/123
 // summary: desktop nav — Mobile view toggle added as the rightmost item, with "Выйти" after it
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import ViewToggle from '@/components/ViewToggle';
 import LogoutButton from '@/components/LogoutButton';
-import { APP_ROUTES } from '@/lib/routes';
+import { APP_ROUTES, HOME_PATH } from '@/lib/routes';
 import { routeIcon } from '@/components/route-icons';
 
 /** Desktop nav shows every screen, in registry order. */
@@ -19,7 +19,7 @@ export default function Navigation() {
     <nav className="sticky top-0 z-40 bg-background/90 backdrop-blur-md border-b border-white/5">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          <Link href="/" className="flex items-center gap-2 select-none">
+          <Link href={HOME_PATH} className="flex items-center gap-2 select-none">
             <span className="text-xl font-bold tracking-tight text-text-primary">
               Habit Tracker
             </span>

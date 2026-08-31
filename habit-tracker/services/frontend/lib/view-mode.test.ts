@@ -3,7 +3,7 @@
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen but Chat has a mobile twin (Chat's is #118), a nested route of a flat screen is the no-mobile example
 
 import { describe, expect, it } from 'bun:test';
-import { APP_ROUTES } from './routes';
+import { APP_ROUTES, HOME_PATH } from './routes';
 import {
   MOBILE_HOME,
   MOBILE_PATH_PREFIX,
@@ -257,12 +257,14 @@ describe('mobileEntryPath', () => {
     expect(mobileEntryPath('/insights')).toBe('/m/insights');
   });
 
-  it('keeps the user on the dashboard, which now has a mobile screen', () => {
+  it('keeps the user on the root, whose mobile twin is the bare /m', () => {
+    // Оба корня — редиректы на Today своего шелла (#123), но пара сохранена:
+    // переключатель с корня обязан попасть на корень, а не остаться на месте.
     expect(mobileEntryPath('/')).toBe('/m');
   });
 
   it('falls back to the mobile home from a mobile-only screen', () => {
-    expect(mobileEntryPath('/m/more')).toBe('/m');
+    expect(mobileEntryPath('/m/more')).toBe(MOBILE_HOME);
   });
 
   it('is idempotent on a mobile screen that has a desktop twin', () => {
@@ -277,10 +279,11 @@ describe('mobileEntryPath', () => {
 });
 
 describe('MOBILE_HOME', () => {
-  it('is the mobile twin of the first registry screen that has one', () => {
-    expect(MOBILE_HOME).toBe(
-      toMobilePath(APP_ROUTES.filter((route) => route.hasMobile)[0].href) as string
-    );
+  it('is the mobile twin of the home screen, which is Today', () => {
+    // Не «первый экран реестра с мобильной версией»: тот порядок сделал бы
+    // адрес холодного старта следствием порядка записей, а он — решение (#123).
+    expect(MOBILE_HOME).toBe(toMobilePath(HOME_PATH) as string);
+    expect(MOBILE_HOME).toBe('/m/today');
   });
 
   it('is itself a mobile path', () => {
@@ -511,17 +514,42 @@ describe('mobile entry point', () => {
   it('is the single source the PWA manifest starts from', async () => {
     const { default: manifest } = await import('../app/manifest');
     expect(manifest().start_url).toBe(MOBILE_HOME);
+    // Названо буквально: запуск с иконки — это холодный путь, и он обязан
+    // открывать кнопки, а не сводку (#123).
+    expect(manifest().start_url).toBe('/m/today');
   });
 
-  it('renders the dashboard at the bare /m rather than redirecting away', async () => {
-    const source = await Bun.file(new URL('../app/m/page.tsx', import.meta.url)).text();
-    // /m is now the mobile dashboard (twin of `/`), sharing the desktop screen's
-    // logic through the hook — not a redirect to some other landing screen.
+  it('sends the desktop root into Today too, so the bookmark lands on buttons', async () => {
+    const source = await Bun.file(new URL('../app/page.tsx', import.meta.url)).text();
+    expect(source).toContain('redirect(');
+    expect(source).toContain('HOME_PATH');
+  });
+
+  it('keeps the desktop dashboard reachable at its own address', async () => {
+    const source = await Bun.file(
+      new URL('../app/dashboard/page.tsx', import.meta.url)
+    ).text();
     expect(source).toContain('useDashboard');
-    expect(source).not.toContain('redirect(');
+    expect(APP_ROUTES.find((route) => route.id === 'dashboard')?.href).toBe('/dashboard');
   });
 
-  it('agrees with the path helper for the first mobile screen', () => {
-    expect(MOBILE_HOME).toBe(mobileEntryPath(MOBILE_ROUTES[0]));
+  it('sends the bare /m into Today rather than rendering a dashboard there', async () => {
+    const source = await Bun.file(new URL('../app/m/page.tsx', import.meta.url)).text();
+    // Дашборд уехал на `/m/dashboard` (#123): вкладку открывают, чтобы нажать
+    // кнопку, и экран сводки на этом пути — лишний клик до неё.
+    expect(source).toContain('redirect(');
+    expect(source).toContain('MOBILE_HOME');
+    expect(source).not.toContain('useDashboard');
+  });
+
+  it('keeps the dashboard reachable at its own mobile address', async () => {
+    const source = await Bun.file(
+      new URL('../app/m/dashboard/page.tsx', import.meta.url)
+    ).text();
+    expect(source).toContain('useDashboard');
+  });
+
+  it('agrees with the path helper for the home screen', () => {
+    expect(MOBILE_HOME).toBe(mobileEntryPath(HOME_PATH));
   });
 });

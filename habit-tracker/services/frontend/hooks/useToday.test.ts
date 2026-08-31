@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124
-// summary: tests for useToday — silent visibility refetch, the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123
+// summary: tests for useToday — silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -36,6 +36,21 @@ const CATEGORY: Category = {
   created_at: TIMESTAMP,
   updated_at: TIMESTAMP,
   fields: [GLASSES_FIELD],
+};
+
+/**
+ * A category with an avoid streak — the only thing that makes the second round
+ * of the cold path non-empty, since streaks are read one per avoid category.
+ */
+const SMOKING: Category = {
+  id: 2,
+  name: 'Smoking',
+  display_mode: 'form',
+  streak_mode: 'avoid',
+  is_active: true,
+  created_at: TIMESTAMP,
+  updated_at: TIMESTAMP,
+  fields: [],
 };
 
 const ENTRY: Entry = {
@@ -79,6 +94,7 @@ let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
+let getStreakApi: ReturnType<typeof mock>;
 let tapQuickMarkApi: ReturnType<typeof mock>;
 let undoQuickMarkApi: ReturnType<typeof mock>;
 
@@ -197,7 +213,7 @@ mock.module('@/lib/api', () => ({
   categoriesAPI: {
     getAll: () => getAllCategories(),
     getById: () => Promise.resolve(null),
-    getStreak: () => Promise.resolve(null),
+    getStreak: (id: number) => getStreakApi(id),
     create: () => Promise.resolve(null),
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
@@ -219,19 +235,88 @@ mock.module('@/lib/api', () => ({
 
 mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
 
-const { useToday } = await import('./useToday');
+const { useToday, STREAKS_FAILED } = await import('./useToday');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
   listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+  getStreakApi = mock(() => Promise.resolve(null));
   tapQuickMarkApi = mock(() => Promise.resolve(tapAnswer(250)));
   undoQuickMarkApi = mock(() => Promise.resolve(undoAnswer(0)));
 });
 
 afterEach(() => {
   cleanup();
+});
+
+describe('the two rounds of the cold path', () => {
+  it('hands over the screen after the first round, with the streaks still in flight', async () => {
+    const pendingStreak = deferred<null>();
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    getStreakApi = mock(() => pendingStreak.promise);
+
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Кнопки и записи есть, стрики ещё едут — это и есть состояние, ради
+    // которого круги разведены.
+    expect(result.current.streaksLoading).toBe(true);
+    expect(result.current.entries).toEqual([ENTRY]);
+    expect(result.current.quickMarks).toEqual([WATER_MARK]);
+
+    await act(async () => {
+      pendingStreak.resolve(null);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+  });
+
+  it('records a tap while the streaks are still loading', async () => {
+    const pendingStreak = deferred<null>();
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    getStreakApi = mock(() => pendingStreak.promise);
+
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.streaksLoading).toBe(true);
+
+    await act(async () => {
+      await result.current.tapQuickMark(WATER_MARK.id);
+    });
+
+    expect(tapQuickMarkApi).toHaveBeenCalledTimes(1);
+    expect(result.current.quickMarks[0].today_total).toBe(250);
+
+    await act(async () => {
+      pendingStreak.resolve(null);
+      await Promise.resolve();
+    });
+  });
+
+  it('keeps a failed streak inside its own section rather than on the screen', async () => {
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    getStreakApi = mock(() => Promise.reject(new Error('streaks are down')));
+
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+
+    expect(result.current.streaksError).toBe(STREAKS_FAILED);
+    // The buttons are the point: a streak that did not load must not take them
+    // off the screen, and must not raise the screen-wide error either.
+    expect(result.current.error).toBeNull();
+    expect(result.current.quickMarks).toEqual([WATER_MARK]);
+  });
+
+  it('says nothing about streaks when every one of them arrived', async () => {
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+
+    expect(result.current.streaksError).toBeNull();
+  });
 });
 
 describe('useToday', () => {

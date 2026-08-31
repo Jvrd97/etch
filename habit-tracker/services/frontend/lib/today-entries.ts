@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/123
 // summary: pure Today-screen entry state — number totals, optimistic number entries merged over the fetched snapshot, checklist map with flip/rollback, streak loading that degrades to null
 
 import type { Category, CategoryStreak, Entry } from './api';
@@ -132,19 +132,46 @@ export function setFieldChecked(
   };
 }
 
+/** Streaks that arrived, and the categories whose request did not. */
+export interface LoadedStreaks {
+  streaks: StreakMap;
+  /** Categories whose fetch failed, in the order they were asked for. */
+  failed: number[];
+}
+
 /**
- * Streaks for the given avoid categories. They are a secondary widget: a failed
- * fetch degrades that one card to `null` (rendered as "—") instead of failing
- * the whole screen.
+ * Streaks for the given avoid categories, with the failures named.
+ *
+ * They are a secondary widget: a failed fetch degrades that one card to `null`
+ * (rendered as "—") instead of failing the whole screen. `failed` is what keeps
+ * that from being silent — a card showing "—" because the request never
+ * arrived says the same thing as a card showing "—" because the streak is
+ * empty, and only one of those is a fact about the day (#123).
  */
+export async function loadStreaks(
+  categoryIds: readonly number[],
+  fetchStreak: (categoryId: number) => Promise<CategoryStreak>
+): Promise<LoadedStreaks> {
+  const failed: number[] = [];
+  const loaded = await Promise.all(
+    categoryIds.map(
+      async (id) =>
+        [
+          id,
+          await fetchStreak(id).catch(() => {
+            failed.push(id);
+            return null;
+          }),
+        ] as const
+    )
+  );
+  return { streaks: Object.fromEntries(loaded), failed };
+}
+
+/** The streaks alone, for callers that have nowhere to put a failure. */
 export async function loadStreakMap(
   categoryIds: readonly number[],
   fetchStreak: (categoryId: number) => Promise<CategoryStreak>
 ): Promise<StreakMap> {
-  const loaded = await Promise.all(
-    categoryIds.map(
-      async (id) => [id, await fetchStreak(id).catch(() => null)] as const
-    )
-  );
-  return Object.fromEntries(loaded);
+  return (await loadStreaks(categoryIds, fetchStreak)).streaks;
 }

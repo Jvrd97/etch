@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127, PHASE-03/128
+# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
 # summary: lazy materialization of a challenge — one query of the window's entries, `verdict_for_day` over each day, and an upsert on `(challenge_id, day)` that refuses to touch a row a person set by hand; plus the counts the card prints
 """
 Челлендж: чтение окна, ленивая материализация вердиктов, счёт.
@@ -49,8 +49,10 @@ from app.challenge.rules import (
 from app.core.daytime import today_local
 from app.models import Entry, EntryValue, Field
 from app.models.challenge import (
+    ORIGIN_HUMAN,
     STATUS_ACTIVE,
     STATUS_FAILED,
+    STATUS_PROPOSED,
     Challenge,
     ChallengeDay,
 )
@@ -61,6 +63,11 @@ logger = logging.getLogger(__name__)
 # Из чего ручной вердикт умеет вытащить челлендж обратно. `won` сюда не входит —
 # закрытая история не переписывается; `abandoned` тоже — его поставил человек.
 RECOVERABLE_STATUSES: tuple[str, ...] = (STATUS_ACTIVE, STATUS_FAILED)
+
+NOT_A_PROPOSAL = (
+    "челлендж {challenge_id} не предложение, а обязательство в статусе "
+    "{status!r}: принимать нечего"
+)
 
 
 class ChallengeRejected(Exception):
@@ -156,6 +163,14 @@ async def materialize(
     назовёт следующее число. Дни после сегодняшнего не пишутся вовсе: у них
     ещё нет ни данных, ни повода для строки.
     """
+    if challenge.status == STATUS_PROPOSED:
+        # Предложение — это ещё не обязательство. Ни одной строки
+        # `challenge_days` у него нет, поэтому и счёт по нему нулевой, и
+        # пересчёт его не трогает. Проверка стоит здесь, а не в каждом
+        # читающем эндпоинте: путей чтения четыре, и забытый в одном из них
+        # означал бы, что предложение начало считаться само.
+        return 0
+
     now_day = today if today is not None else today_local()
     upto = min(challenge.ends_on, now_day)
     if upto < challenge.starts_on:
@@ -276,14 +291,18 @@ async def create_challenge(
     ends_on: date,
     failure_mode: str,
     allowed_misses: int,
+    origin: str = ORIGIN_HUMAN,
+    status: str = STATUS_ACTIVE,
 ) -> Challenge:
     """
-    Завести обязательство.
+    Завести обязательство — или предложение, если `status='proposed'`.
 
     Пара `(category_id, field_id)` проверяется до вставки: внешние ключи
     удержат каждый идентификатор по отдельности, но не то, что поле относится
     именно к этой категории, — а правило по чужому полю всегда считало бы
-    пустой день.
+    пустой день. Предложение проверяется той же проверкой: предложение,
+    ссылающееся на несуществующую пару, отклоняется на разборе, а не ложится
+    битой строкой, которую человеку потом предъявят кнопкой «принять».
     """
     result = await db.execute(
         select(Field.id).where(Field.id == field_id, Field.category_id == category_id)
@@ -303,11 +322,32 @@ async def create_challenge(
         ends_on=ends_on,
         failure_mode=failure_mode,
         allowed_misses=allowed_misses,
+        origin=origin,
+        status=status,
     )
     db.add(challenge)
     await db.flush()
     await db.refresh(challenge)
     return challenge
+
+
+def accept_proposal(challenge: Challenge) -> None:
+    """
+    Принять предложение: `proposed` -> `active`.
+
+    Окно не сдвигается. Челлендж, предложенный вчера «с понедельника», после
+    принятия считается с понедельника, включая прожитые дни, — материализация
+    сама дойдёт до сегодня. Сдвигать `starts_on` на день согласия значило бы
+    втихую подменить обещание, которое человек прочитал и одобрил.
+
+    Всё, что делает эта функция, — меняет статус: дни материализует вызывающий,
+    тем же путём, каким он делает это на любом другом чтении.
+    """
+    if challenge.status != STATUS_PROPOSED:
+        raise ChallengeRejected(
+            NOT_A_PROPOSAL.format(challenge_id=challenge.id, status=challenge.status)
+        )
+    challenge.status = STATUS_ACTIVE
 
 
 async def get_challenge(db: AsyncSession, challenge_id: int) -> Challenge | None:

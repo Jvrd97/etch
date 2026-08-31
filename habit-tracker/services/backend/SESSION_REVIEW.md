@@ -1795,3 +1795,30 @@ Feedback loops (backend): pytest **1236 passed, 2 skipped** против отд�
 `mypy --strict app` — чисто (164 файла); `alembic heads` — одна голова; каждая из трёх
 миграций прогнана `upgrade → downgrade → upgrade` на `habit_mig_f1`. `make check` целиком не
 отрабатывал: docker на машине не поднимается.
+
+---
+
+## 2026-08-31 — дорожка fast-2: #125, #123, #129, #148
+
+Четыре тикета, четыре коммита (`5294105`, `5c2036d`, `22d403a`, `cbafff5`).
+
+**#129 — предложенный челлендж (backend):**
+- `alembic/versions/2026_09_02_1200-d4f6a8c0e2b5_challenge_origin.py` — **new**.
+- `app/models/challenge.py` — **mod**: `origin`, `STATUS_PROPOSED`, словари в `__table_args__`.
+- `app/crud/challenge.py` — **mod**: `accept_proposal`, ранний выход материализации.
+- `app/api/challenges.py` — **mod**: `POST /{id}/accept`, запрет ручного вердикта у предложения.
+- `app/schemas/challenge.py` — **mod**: `origin`, `initial_status()`.
+- `app/llm/challenge_proposal.py` — **new**: разбор и проверка ответа модели.
+- `tests/test_challenge_proposals.py` — **new** (15 тестов).
+
+**#148 — генерация плана моделью:**
+- `alembic/versions/2026_09_02_1300-e5a7c9b1d3f6_plan_author_and_fallback_reason.py` — **new**.
+- `app/schemas/day_plan.py`, `app/llm/day_plan.py`, `app/day/generate.py` — **new**.
+- `app/api/day.py` — **mod**: `POST /{date}/plan/generate`.
+- `app/models/plan.py`, `app/schemas/plan.py`, `app/crud/plan.py` — **mod**: авторство и причина.
+- `tests/test_day_plan_generation.py` — **new** (13 тестов).
+
+Feedback loops (backend): pytest **1218 passed / 2 skipped** на своей базе `habit_test_f2`,
+`ruff check`, `ruff format --check`, `mypy --strict app` (158 файлов), `alembic heads` — одна
+голова `e5a7c9b1d3f6`, миграции проверены up → down → up на `habit_migrate_f2`.
+`make check` целиком не гонялся: docker на машине не поднят.

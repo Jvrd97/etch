@@ -59,6 +59,7 @@ function plan(sections: PlanSection[]): Plan {
     status: 'active',
     source: 'day-open',
     needs_review: false,
+    fallback_reason: null,
     created_at: '2026-08-31T06:00:00Z',
     updated_at: '2026-08-31T06:00:00Z',
     sections,

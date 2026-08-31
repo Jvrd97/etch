@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127, PHASE-03/128
+# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
 # summary: the challenge endpoints — create, list and read all bring the verdicts up to today before answering (there is no scheduler to do it for them), PATCH edits the promise without touching a single past verdict, and POST /recompute is the same materialization asked for out loud
 """
 Периметр обязательств.
@@ -19,7 +19,7 @@ from app.core.database import get_db
 from app.core.daytime import today_local
 from app.crud import challenge as challenge_crud
 from app.crud.challenge import ChallengeRejected
-from app.models.challenge import Challenge
+from app.models.challenge import STATUS_PROPOSED, Challenge
 from app.schemas.challenge import (
     ChallengeDayIn,
     ChallengeDayResponse,
@@ -35,6 +35,10 @@ CHALLENGE_NOT_FOUND = "челлендж {challenge_id} не найден"
 DAY_OUTSIDE_WINDOW = (
     "день {day} лежит вне окна челленджа ({starts_on} — {ends_on}): "
     "засчитать можно только день, который в обязательство входит"
+)
+PROPOSAL_HAS_NO_DAYS = (
+    "челлендж {challenge_id} — предложение: дней у него нет, и засчитывать "
+    "нечего. Сначала «принять»"
 )
 
 
@@ -54,6 +58,7 @@ def _response(
         failure_mode=challenge.failure_mode,
         allowed_misses=challenge.allowed_misses,
         status=challenge.status,
+        origin=challenge.origin,
         failed_on=challenge.failed_on,
         total_days=counts.total_days,
         day_number=counts.day_number,
@@ -95,7 +100,14 @@ async def _require(db: AsyncSession, challenge_id: int) -> Challenge:
 async def create_challenge(
     payload: ChallengeIn, db: AsyncSession = Depends(get_db)
 ) -> ChallengeResponse:
-    """Завести обязательство и сразу досчитать его дни, если окно уже идёт."""
+    """
+    Завести обязательство и сразу досчитать его дни, если окно уже идёт.
+
+    Челлендж от модели или от плана дня (`origin` не `human`) рождается
+    предложением: дни ему не материализуются, счёт не идёт, на Today он живёт в
+    отдельном блоке. Прислать такому челленджу `status='active'` — 422: взять
+    на себя обязательство может только человек.
+    """
     try:
         challenge = await challenge_crud.create_challenge(
             db,
@@ -108,6 +120,8 @@ async def create_challenge(
             ends_on=payload.ends_on,
             failure_mode=payload.failure_mode,
             allowed_misses=payload.allowed_misses,
+            origin=payload.origin,
+            status=payload.initial_status(),
         )
     except ChallengeRejected as rejected:
         raise HTTPException(
@@ -151,6 +165,35 @@ async def get_challenge(
         **_response(challenge, counts).model_dump(),
         days=[ChallengeDayResponse.model_validate(row) for row in days],
     )
+
+
+@router.post("/{challenge_id}/accept", response_model=ChallengeResponse)
+async def accept_challenge(
+    challenge_id: int, db: AsyncSession = Depends(get_db)
+) -> ChallengeResponse:
+    """
+    Принять предложение: оно становится обязательством и начинает считаться.
+
+    Дни считаются от `starts_on`, а не от момента согласия, — включая уже
+    прожитые. Окно человек прочитал, когда нажимал «принять», и сдвиг его на
+    сегодня был бы подменой одобренного обещания другим.
+
+    - **200** — предложение принято; в ответе счёт уже посчитанного окна
+    - **404** — такого челленджа нет
+    - **422** — это не предложение, а обязательство: принимать нечего
+    """
+    challenge = await _require(db, challenge_id)
+    try:
+        challenge_crud.accept_proposal(challenge)
+    except ChallengeRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=rejected.message
+        ) from rejected
+
+    today = today_local()
+    counts = await _bring_up_to_date(db, challenge, today)
+    await db.commit()
+    return _response(challenge, counts)
 
 
 @router.patch("/{challenge_id}", response_model=ChallengeResponse)
@@ -199,6 +242,14 @@ async def set_day_verdict(
     день» было бы косметикой на дне, который уже никого не спасает.
     """
     challenge = await _require(db, challenge_id)
+    if challenge.status == STATUS_PROPOSED:
+        # Иначе руками можно было бы засчитать день обязательству, которого
+        # человек на себя не брал, — и предложение начало бы вести счёт в обход
+        # «принять».
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=PROPOSAL_HAS_NO_DAYS.format(challenge_id=challenge_id),
+        )
     if not (challenge.starts_on <= day <= challenge.ends_on):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

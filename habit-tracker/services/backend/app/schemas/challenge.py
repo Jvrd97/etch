@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/127, PHASE-03/128
+# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
 # summary: wire types of a challenge — a window the schema refuses to accept backwards or longer than 92 days, a threshold that must be present for `metric_*` and absent for the other two, and a read model that carries the count («день N из M, промахов K из N») rather than making the card derive it, and the manual verdict — which may be `done` or `miss` but never `pending`, because a person putting a day down by hand has decided about it
 """
 Проволочные типы обязательства.
@@ -27,7 +27,14 @@ RuleKind = Literal["metric_at_least", "metric_at_most", "checked", "abstain"]
 DayVerdict = Literal["done", "miss", "pending"]
 DaySource = Literal["computed", "manual"]
 FailureMode = Literal["any_miss", "budget"]
-ChallengeStatus = Literal["active", "won", "failed", "abandoned"]
+ChallengeStatus = Literal["proposed", "active", "won", "failed", "abandoned"]
+ChallengeOrigin = Literal["human", "ai", "plan"]
+
+MACHINE_CANNOT_ACTIVATE = (
+    "челлендж с origin={origin!r} заводится только предложением: статус "
+    "'active' в теле не принимается. Обязательство на себя берёт человек, "
+    "нажимая «принять», — одной галлюцинации в JSON для этого мало"
+)
 
 WINDOW_BACKWARDS = (
     "окно челленджа не может кончиться раньше, чем началось: ends_on должен "
@@ -79,6 +86,20 @@ class ChallengeIn(BaseModel):
         "any_miss", description="any_miss — валит первый промах; budget — N+1-й"
     )
     allowed_misses: int = Field(0, ge=0, le=MAX_CHALLENGE_DAYS)
+    origin: ChallengeOrigin = Field(
+        "human",
+        description=(
+            "Кто предложил. На расчёт не влияет — влияет на путь: 'ai' и "
+            "'plan' рождаются в статусе 'proposed'"
+        ),
+    )
+    status: Literal["proposed", "active"] | None = Field(
+        None,
+        description=(
+            "Статус, с которого челлендж начинается. Обычно не присылается: "
+            "человеческий — сразу 'active', машинный — всегда 'proposed'"
+        ),
+    )
 
     @model_validator(mode="after")
     def check(self) -> ChallengeIn:
@@ -86,7 +107,21 @@ class ChallengeIn(BaseModel):
         _validate_target(self.rule_kind, self.target)
         if self.failure_mode == "any_miss" and self.allowed_misses:
             raise ValueError(BUDGET_WITHOUT_MODE)
+        if self.origin != "human" and self.status == "active":
+            raise ValueError(MACHINE_CANNOT_ACTIVATE.format(origin=self.origin))
         return self
+
+    def initial_status(self) -> str:
+        """
+        Статус, в котором челлендж ляжет в базу.
+
+        Машинный источник — всегда `proposed`, что бы ни стояло в теле:
+        отсутствие статуса и `status='proposed'` дают одно и то же, а
+        `status='active'` до сюда не доходит — его отклонила проверка выше.
+        """
+        if self.origin != "human":
+            return "proposed"
+        return self.status or "active"
 
 
 class ChallengePatch(BaseModel):
@@ -164,6 +199,7 @@ class ChallengeResponse(BaseModel):
     failure_mode: FailureMode
     allowed_misses: int
     status: ChallengeStatus
+    origin: ChallengeOrigin
     failed_on: date | None
 
     total_days: int = Field(..., description="Длина окна в днях")
