@@ -6,6 +6,7 @@
 # summary: PHASE-03/113 moved the system prompt of a turn to compose_system_prompt(day card), so the prompt assertion checks the composition rather than the bare constant
 # summary: SSE tests over a stubbed ChatLLMClient — event order (delta*, usage, done), the answer written with its token counters, monotonic seq across two turns, the dialogue replayed to the model on the second turn, 503 without a backend leaving no row, and a backend failure landing as `failed` with a machine code rather than as a 500
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
@@ -16,7 +17,14 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.chat import ERROR_CODE_BACKEND
+from app.api.chat import (
+    ERROR_CODE_BACKEND,
+    SSE_EVENT_ACTING,
+    SSE_EVENT_STEP_END,
+    SSE_EVENT_STOP,
+    SSE_EVENT_THINKING,
+    SSE_EVENT_WRITING,
+)
 from app.api.deps import get_chat_llm_client, get_session_factory
 from app.crud import chat as chat_crud
 from app.llm.chat.client import ChatChunk, ChatLLMClient
@@ -40,11 +48,15 @@ from app.schemas.chat import (
     SSE_EVENT_DELTA,
     SSE_EVENT_DONE,
     SSE_EVENT_ERROR,
+    SSE_EVENT_RETRIEVAL,
     SSE_EVENT_USAGE,
 )
 
 CONTROL_PHRASE = "якорь-77 контрольная фраза"
 FAKE_SESSION_ID = "11111111-2222-3333-4444-555555555555"
+# Внутренняя речь модели о дне человека. Своя контрольная фраза, потому что
+# проверяется не «нет содержимого вообще», а «мысль не оказалась там, где ответ».
+INNER_SPEECH = "якорь-42 он третий день не спит, надо мягче"
 
 
 class FakeChatClient(ChatLLMClient):
@@ -91,6 +103,60 @@ class FakeChatClient(ChatLLMClient):
             output_tokens=12,
             cache_read_tokens=0,
         )
+
+
+class ScriptedChatClient(ChatLLMClient):
+    """
+    Транспорт, отдающий заготовленные куски какого угодно вида.
+
+    Отдельно от `FakeChatClient`, а не флагом на нём: тот отвечает только
+    текстом, и на нём стоят проверки, которые обязаны продолжать видеть ровно
+    прежний поток — иначе «старый клиент не сломался» доказывается тем же
+    кодом, что и «новый заработал».
+    """
+
+    model: str = "fake-chat-model"
+    backend: str = "fake"
+
+    def __init__(self, chunks: Sequence[ChatChunk], *, fail: bool = False) -> None:
+        self._chunks = list(chunks)
+        self._fail = fail
+
+    @property
+    def cwd(self) -> str | None:
+        return "/tmp/fake-chat-workspace"
+
+    async def stream_turn(
+        self,
+        *,
+        system_prompt: str,
+        turns: Sequence[ChatTurn],
+        resume: ResumeHint | None = None,
+    ) -> AsyncIterator[ChatChunk]:
+        for chunk in self._chunks:
+            yield chunk
+        if self._fail:
+            raise LLMError("upstream said no")
+
+
+# Ход так, как его печатает живой CLI: думает, кончил думать, пишет, кончил
+# писать, остановился — и только потом итог.
+THINKING_TURN: list[ChatChunk] = [
+    ChatChunk.thinking_step(index=0),
+    ChatChunk.thinking_step(index=0, thinking_tokens=50),
+    ChatChunk.step_end(index=0),
+    ChatChunk.writing(index=1),
+    ChatChunk.delta("Первый "),
+    ChatChunk.delta("кусок"),
+    ChatChunk.step_end(index=1),
+    ChatChunk.stop(stop_reason="end_turn", thinking_tokens=27),
+    ChatChunk.usage(
+        session_id=FAKE_SESSION_ID,
+        input_tokens=282,
+        output_tokens=12,
+        cache_read_tokens=0,
+    ),
+]
 
 
 @pytest.fixture(scope="function")
@@ -537,3 +603,288 @@ class TestSessionAndInterruption:
         )
         assert answer.status == MESSAGE_STATUS_INTERRUPTED
         assert answer.content == "первый "
+
+
+@pytest.mark.asyncio
+class TestTurnSteps:
+    """Шаги хода наружу: лента отличает мысль от ответа."""
+
+    async def test_every_step_reaches_the_browser_in_order(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """Мысль, границы блоков и причина остановки едут своими событиями."""
+        install_chat(ScriptedChatClient(THINKING_TURN))
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+
+        assert [name for name, _ in events] == [
+            SSE_EVENT_THINKING,
+            SSE_EVENT_THINKING,
+            SSE_EVENT_STEP_END,
+            SSE_EVENT_WRITING,
+            SSE_EVENT_DELTA,
+            SSE_EVENT_DELTA,
+            SSE_EVENT_STEP_END,
+            SSE_EVENT_STOP,
+            SSE_EVENT_USAGE,
+            SSE_EVENT_DONE,
+        ]
+
+    async def test_thinking_carries_volume_and_stop_carries_the_reason(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """
+        Чем заполнить паузу до первого слова и чем закончить ход.
+
+        Объём мысли — единственная числовая правда о ней, раз слов нет;
+        причина остановки отличает обрезанный по потолку ответ от целого.
+        """
+        install_chat(ScriptedChatClient(THINKING_TURN))
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+        by_name = {name: data for name, data in events}
+
+        assert by_name[SSE_EVENT_THINKING]["thinking_tokens"] == 50
+        assert by_name[SSE_EVENT_STOP] == {"reason": "end_turn", "thinking_tokens": 27}
+        assert by_name[SSE_EVENT_WRITING] == {"index": 1}
+
+    async def test_tool_step_names_the_tool(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """«Клод сейчас делает вот это» — это имя инструмента, а не догадка."""
+        install_chat(
+            ScriptedChatClient(
+                [
+                    ChatChunk.acting(tool_name="Read", index=0),
+                    ChatChunk.step_end(index=0),
+                    ChatChunk.delta("готово"),
+                    ChatChunk.usage(session_id=FAKE_SESSION_ID),
+                ]
+            )
+        )
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+
+        assert (SSE_EVENT_ACTING, {"index": 0, "tool": "Read"}) in events
+
+    async def test_a_step_before_the_failure_keeps_the_stream_open(
+        self, client: AsyncClient, db_session: AsyncSession, install_chat: Any
+    ) -> None:
+        """
+        Сказавший «думаю» и умерший бэкенд ломается внутри потока, а не до него.
+
+        Раньше первым кадром хода мог быть только текст или ошибка, и отказ до
+        текста становился 502. Кадр шага — тоже ответ бэкенда: человек видит
+        «думает», потом `error` в открытой ленте, а строка ответа получает тот
+        же машинный код, что и всегда.
+        """
+        install_chat(ScriptedChatClient([ChatChunk.thinking_step(index=0)], fail=True))
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+
+        assert [name for name, _ in events] == [SSE_EVENT_THINKING, SSE_EVENT_ERROR]
+        answer = (
+            (
+                await db_session.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.conversation_id == conversation_id)
+                    .where(ChatMessage.role == MESSAGE_ROLE_ASSISTANT)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert answer.status == MESSAGE_STATUS_FAILED
+        assert answer.error_code == ERROR_CODE_BACKEND
+
+
+@pytest.mark.asyncio
+class TestThinkingIsNotStored:
+    """Граница приватности: мысль доезжает до экрана и никуда больше."""
+
+    async def test_thinking_words_reach_the_browser(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """
+        Бэкенд, у которого рассуждение настоящее, доносит его до экрана.
+
+        На подписке поле приходит пустым (CLI подменяет мысль подписью), но
+        провод обязан её нести: правило «куда мысли нельзя» должно стоять
+        раньше, чем появится текст, а не после.
+        """
+        install_chat(
+            ScriptedChatClient(
+                [
+                    ChatChunk.thinking_step(index=0, thinking=INNER_SPEECH),
+                    ChatChunk.delta("ответ"),
+                    ChatChunk.usage(session_id=FAKE_SESSION_ID),
+                ]
+            )
+        )
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+        thinking = [data for name, data in events if name == SSE_EVENT_THINKING]
+
+        assert thinking == [
+            {"index": 0, "thinking": INNER_SPEECH, "thinking_tokens": None}
+        ]
+        # Мысль не притворяется куском ответа: ключа `text` в кадре нет.
+        assert "text" not in thinking[0]
+
+    async def test_thinking_never_lands_in_the_message_row(
+        self, client: AsyncClient, db_session: AsyncSession, install_chat: Any
+    ) -> None:
+        """
+        В `chat_messages` уходит ответ, и только он.
+
+        Внутренняя речь модели о дне человека не получает ни колонки, ни срока
+        хранения: колонка означала бы «кто-то это читает позже», а у сырого
+        рассуждения такого читателя нет.
+        """
+        install_chat(
+            ScriptedChatClient(
+                [
+                    ChatChunk.thinking_step(index=0, thinking=INNER_SPEECH),
+                    ChatChunk.delta("ответ по существу"),
+                    ChatChunk.usage(session_id=FAKE_SESSION_ID),
+                ]
+            )
+        )
+        conversation_id = await _new_conversation(client)
+
+        await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+
+        rows = (
+            (
+                await db_session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.conversation_id == conversation_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        stored = " ".join(row.content for row in rows)
+        assert "ответ по существу" in stored
+        assert INNER_SPEECH not in stored
+
+    async def test_thinking_never_lands_in_the_log(
+        self,
+        client: AsyncClient,
+        install_chat: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Лог хода — машинные коды; ни мысли, ни ответа в нём нет."""
+        install_chat(
+            ScriptedChatClient(
+                [
+                    ChatChunk.thinking_step(index=0, thinking=INNER_SPEECH),
+                    ChatChunk.delta("ответ"),
+                    ChatChunk.usage(session_id=FAKE_SESSION_ID),
+                ]
+            )
+        )
+        conversation_id = await _new_conversation(client)
+
+        with caplog.at_level(logging.DEBUG):
+            await _read_events(
+                client,
+                f"/api/v1/chat/conversations/{conversation_id}/messages",
+                CONTROL_PHRASE,
+            )
+
+        assert INNER_SPEECH not in caplog.text
+
+
+@pytest.mark.asyncio
+class TestOldClientKeepsWorking:
+    """Клиент, знающий только текст, шагов хода не замечает."""
+
+    async def test_the_legacy_five_events_are_unchanged_by_the_new_ones(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """
+        Выбросив незнакомые события, старый разборщик получает прежний поток.
+
+        Именно так он и устроен: неизвестное имя события даёт `null` и молча
+        пропускается. Тест держит обещание с той стороны — что после отсева
+        останется ровно `delta*`, `usage`, `done` и тот же текст ответа.
+        """
+        install_chat(ScriptedChatClient(THINKING_TURN))
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+        known = {
+            SSE_EVENT_DELTA,
+            SSE_EVENT_USAGE,
+            SSE_EVENT_DONE,
+            SSE_EVENT_ERROR,
+            SSE_EVENT_RETRIEVAL,
+        }
+        legacy = [(name, data) for name, data in events if name in known]
+
+        assert [name for name, _ in legacy] == [
+            SSE_EVENT_DELTA,
+            SSE_EVENT_DELTA,
+            SSE_EVENT_USAGE,
+            SSE_EVENT_DONE,
+        ]
+        assert (
+            "".join(data["text"] for name, data in legacy if name == SSE_EVENT_DELTA)
+            == "Первый кусок"
+        )
+
+    async def test_a_text_only_backend_still_streams_exactly_as_before(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """Бэкенд без шагов (API) шлёт ровно три вида событий, как и раньше."""
+        install_chat(FakeChatClient(["Пер", "вый ", "кусок"]))
+        conversation_id = await _new_conversation(client)
+
+        events = await _read_events(
+            client,
+            f"/api/v1/chat/conversations/{conversation_id}/messages",
+            CONTROL_PHRASE,
+        )
+
+        assert [name for name, _ in events] == [
+            SSE_EVENT_DELTA,
+            SSE_EVENT_DELTA,
+            SSE_EVENT_DELTA,
+            SSE_EVENT_USAGE,
+            SSE_EVENT_DONE,
+        ]

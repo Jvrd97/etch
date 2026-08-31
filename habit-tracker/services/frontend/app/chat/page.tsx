@@ -1,13 +1,17 @@
 'use client';
-// [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
+// [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117, PHASE-03/120
 // summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end, and a badge saying whether the next turn continues the CLI session or rebuilds the dialogue
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
+// summary: PHASE-03/120 gives the wide screen the same live turn as the phone — the model's thought collapsed above the answer, a sign of life before the first word, a caret while it arrives, and a copy button on every message
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessagesSquare, RefreshCw, RotateCcw, SendHorizonal } from 'lucide-react';
+import ChatBubble from '@/components/chat/ChatBubble';
 import ChatContextDisclosure from '@/components/chat/ChatContextDisclosure';
 import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
+import ThinkingBlock from '@/components/chat/ThinkingBlock';
+import { StreamingCaret, WaitingDots } from '@/components/chat/TurnLive';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
@@ -20,6 +24,7 @@ import {
   type ChatUsage,
 } from '@/lib/api';
 import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
+import { applyProgress, NO_PROGRESS, type TurnProgress } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { formatTokens, turnCost } from '@/lib/chat-usage';
 import { entryInputClass } from '@/lib/ui-constants';
@@ -45,11 +50,24 @@ type Screen =
   | { status: 'failed'; message: string }
   | { status: 'ready'; conversationId: number; resumeReady: boolean };
 
-/** The turn in flight, if any. `text` grows delta by delta. */
+/**
+ * The turn in flight, if any. `text` grows delta by delta.
+ *
+ * `progress` — второе текстовое поле хода: в `text` копится ответ, во внутренней
+ * речи модели живёт `progress.thinking`, и первое никогда не собирается из
+ * второго. Граница та же, что на бэкенде, и стоит она здесь по той же причине —
+ * чтобы мысль не могла дописаться в пузырь модели.
+ */
 type Turn =
   | { phase: 'idle' }
-  | { phase: 'streaming'; question: string; text: string }
-  | { phase: 'failed'; question: string; text: string; code: string };
+  | { phase: 'streaming'; question: string; text: string; progress: TurnProgress }
+  | {
+      phase: 'failed';
+      question: string;
+      text: string;
+      progress: TurnProgress;
+      code: string;
+    };
 
 /** What the reader is told when the backend refuses the turn, by machine code. */
 const TURN_ERROR_TEXT: Record<string, string> = {
@@ -62,23 +80,6 @@ const EMPTY_HINT = 'Напиши сообщение — ответ придёт 
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
-}
-
-function Bubble({ role, children }: { role: string; children: React.ReactNode }) {
-  const mine = role === 'user';
-  return (
-    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[90%] px-5 py-3.5 rounded-3xl text-sm leading-relaxed ${
-          mine
-            ? 'bg-lime text-background font-medium'
-            : 'bg-card border border-white/5 text-text-primary'
-        }`}
-      >
-        {children}
-      </div>
-    </div>
-  );
 }
 
 export default function ChatPage() {
@@ -185,22 +186,25 @@ export default function ChatPage() {
 
   const send = useCallback(
     async (conversationId: number, question: string) => {
-      setTurn({ phase: 'streaming', question, text: '' });
+      setTurn({ phase: 'streaming', question, text: '', progress: NO_PROGRESS });
       // Held in an object rather than in a `let`: the assignment happens inside
       // a callback, and TypeScript would narrow a plain local to `null` for
       // every line that follows the loop.
       const outcome: { errorCode: string | null } = { errorCode: null };
       try {
         await chatAPI.streamMessage(conversationId, question, (event: ChatStreamEvent) => {
-          if (event.kind === 'delta') {
-            setTurn((current) =>
-              current.phase === 'streaming'
-                ? { ...current, text: current.text + event.text }
-                : current
-            );
-          } else if (event.kind === 'error') {
+          if (event.kind === 'error') {
             outcome.errorCode = event.code;
+            return;
           }
+          setTurn((current) => {
+            if (current.phase !== 'streaming') return current;
+            if (event.kind === 'delta') {
+              return { ...current, text: current.text + event.text };
+            }
+            const progress = applyProgress(current.progress, event);
+            return progress === current.progress ? current : { ...current, progress };
+          });
         });
       } catch (error) {
         setTurn({ phase: 'idle' });
@@ -309,9 +313,9 @@ export default function ChatPage() {
         {messages.map((message) => {
           const cost = turnCost(message);
           return (
-            <Bubble key={message.id} role={message.role}>
+            <ChatBubble key={message.id} role={message.role} copyText={message.content}>
               {message.role === 'user' ? (
-                <span className="whitespace-pre-wrap">{message.content}</span>
+                <span className="whitespace-pre-wrap break-words">{message.content}</span>
               ) : (
                 <Markdown content={message.content} />
               )}
@@ -325,18 +329,24 @@ export default function ChatPage() {
               {cost !== null && (
                 <p className="mt-2 text-[11px] text-text-disabled">{cost}</p>
               )}
-            </Bubble>
+            </ChatBubble>
           );
         })}
 
         {turn.phase !== 'idle' && (
           <>
-            <Bubble role="user">
-              <span className="whitespace-pre-wrap">{turn.question}</span>
-            </Bubble>
-            <Bubble role="assistant">
+            <ChatBubble role="user" copyText={turn.question}>
+              <span className="whitespace-pre-wrap break-words">{turn.question}</span>
+            </ChatBubble>
+            <ChatBubble role="assistant" copyText={turn.text}>
+              <ThinkingBlock progress={turn.progress} answering={turn.text.length > 0} />
               {turn.text ? (
-                <span className="whitespace-pre-wrap">{turn.text}</span>
+                <span className="whitespace-pre-wrap break-words">
+                  {turn.text}
+                  {turn.phase === 'streaming' && <StreamingCaret />}
+                </span>
+              ) : turn.phase === 'streaming' ? (
+                <WaitingDots />
               ) : (
                 <span className="text-text-disabled">…</span>
               )}
@@ -345,7 +355,7 @@ export default function ChatPage() {
                   {TURN_ERROR_TEXT[turn.code] ?? TURN_ERROR_FALLBACK}
                 </p>
               )}
-            </Bubble>
+            </ChatBubble>
           </>
         )}
         <div ref={bottom} />

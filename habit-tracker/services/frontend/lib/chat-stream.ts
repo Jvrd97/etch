@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-03/111, PHASE-03/114
+// [review:need-review] PHASE-03/111, PHASE-03/114, PHASE-03/120
 // summary: pure parser of the chat SSE stream — frames buffered across network chunks, `event:`/`data:` turned into a discriminated union, and anything unknown skipped instead of thrown
+// summary: PHASE-03/120 adds the five step events of a turn — thinking, writing, acting, step_end, stop — so the screen can say what the model is busy with instead of showing an empty bubble
 
 /**
  * One event of a chat turn, as the server names it.
@@ -31,6 +32,29 @@ export type ChatStreamEvent =
       chars: number;
       refusal: string | null;
     }
+  /**
+   * Шаги хода (`#120`) — чем модель занята между вопросом и первым словом.
+   *
+   * Пять отдельных видов, а не одно событие с полем «вид»: у них разные данные,
+   * и общая форма с четырьмя необязательными полями — это ровно тот тип, на
+   * котором экран читает `tool` у мысли и `thinking` у остановки.
+   *
+   * `thinking` несёт слова мысли отдельным полем `thinking`, никогда не `text`.
+   * Это не украшение имени: кадр, прочитанный экраном как кусок ответа, дописал
+   * бы внутреннюю речь модели в её же пузырь. На подписке слов не приходит
+   * вовсе — CLI подменяет рассуждение подписью, — поэтому поле бывает пустым, и
+   * это норма, а не потеря.
+   */
+  | {
+      kind: 'thinking';
+      index: number | null;
+      thinking: string;
+      thinkingTokens: number | null;
+    }
+  | { kind: 'writing'; index: number | null }
+  | { kind: 'acting'; index: number | null; tool: string | null }
+  | { kind: 'stepEnd'; index: number | null }
+  | { kind: 'stop'; reason: string | null; thinkingTokens: number | null }
   | { kind: 'error'; code: string };
 
 /** Frame boundary of SSE. Two newlines end an event, wherever the chunk ended. */
@@ -45,6 +69,11 @@ const EVENT_USAGE = 'usage';
 const EVENT_DONE = 'done';
 const EVENT_ERROR = 'error';
 const EVENT_RETRIEVAL = 'retrieval';
+const EVENT_THINKING = 'thinking';
+const EVENT_WRITING = 'writing';
+const EVENT_ACTING = 'acting';
+const EVENT_STEP_END = 'step_end';
+const EVENT_STOP = 'stop';
 
 /** JSON object of a frame, before we know which event it belongs to. */
 type Payload = Record<string, unknown>;
@@ -87,6 +116,33 @@ function toEvent(name: string, payload: Payload): ChatStreamEvent | null {
       rowCount: asNumber(payload.row_count) ?? 0,
       chars: asNumber(payload.chars) ?? 0,
       refusal: asString(payload.refusal),
+    };
+  }
+  // Шаги хода. `index` и `tool` необязательны намеренно: бэкенд, который шагов
+  // не нумерует, шлёт `null`, и это не повод выбросить кадр — факт «модель
+  // думает» несёт само имя события, а не его поля.
+  if (name === EVENT_THINKING) {
+    return {
+      kind: 'thinking',
+      index: asNumber(payload.index),
+      thinking: asString(payload.thinking) ?? '',
+      thinkingTokens: asNumber(payload.thinking_tokens),
+    };
+  }
+  if (name === EVENT_WRITING) {
+    return { kind: 'writing', index: asNumber(payload.index) };
+  }
+  if (name === EVENT_ACTING) {
+    return { kind: 'acting', index: asNumber(payload.index), tool: asString(payload.tool) };
+  }
+  if (name === EVENT_STEP_END) {
+    return { kind: 'stepEnd', index: asNumber(payload.index) };
+  }
+  if (name === EVENT_STOP) {
+    return {
+      kind: 'stop',
+      reason: asString(payload.reason),
+      thinkingTokens: asNumber(payload.thinking_tokens),
     };
   }
   if (name === EVENT_ERROR) {

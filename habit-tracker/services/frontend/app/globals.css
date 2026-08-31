@@ -1,6 +1,6 @@
-/* [review:need-review] PHASE-01/adhoc-lime-redesign, PHASE-03/nav-drawer */
+/* [review:need-review] PHASE-01/adhoc-lime-redesign, PHASE-03/nav-drawer, PHASE-03/120 */
 /* summary: Lime Tech design tokens, dark base styles, scrollbar, selection, loader and ring animations */
-/* summary: plus the navigation drawer's slide-in and its scrim fade, both switched off under prefers-reduced-motion */
+/* summary: plus the navigation drawer's slide-in and its scrim fade; and the chat's two live signs (waiting dots, streaming caret) with the hover-or-touch rule of the copy button — all switched off under prefers-reduced-motion */
 
 @import "tailwindcss";
 
@@ -155,6 +155,93 @@ body {
 
 .animate-total-bump {
   animation: total-bump 220ms ease-out both;
+}
+
+/* Chat: the sign that a turn is alive.
+
+   Two of them, because they answer two different questions. Before the first
+   word the question is "is this working at all" — three dots breathing in
+   turn. Once text is arriving the answer is visible by itself, and all that is
+   left to say is "not finished" — a caret at the end of the line.
+
+   Slow and quiet on purpose: this runs for tens of seconds beside text a
+   person is reading, and a bright blink would be the loudest thing on screen. */
+.chat-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--text-secondary);
+  opacity: 0.3;
+  animation: chat-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+
+.chat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  background: var(--lime);
+  opacity: 0.85;
+  animation: chat-caret 1.1s ease-in-out infinite;
+}
+
+@keyframes chat-caret {
+  0%,
+  45% {
+    opacity: 0.85;
+  }
+  55%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+/* The copy button of a chat message: revealed by hover where hover exists,
+   permanently visible where it does not. A touch screen has no hover state, so
+   a button hidden until hover is a button that cannot be reached there. */
+.copy-affordance {
+  opacity: 1;
+  transition: opacity 150ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .copy-affordance {
+    opacity: 0;
+  }
+
+  .copy-host:hover .copy-affordance,
+  .copy-affordance:focus-visible {
+    opacity: 1;
+  }
+}
+
+/* Asked for less motion — the signs above keep their static half: the dots and
+   the caret stay put, dimmed but legible. The spinner is left spinning: a
+   loader frozen mid-turn reads as a hung screen, which is the opposite of what
+   the setting is for. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-dot,
+  .chat-caret {
+    animation: none;
+    opacity: 0.7;
+  }
+
+  .copy-affordance {
+    transition: none;
+  }
 }
 
 /* Dark native controls (date/time pickers, color input) */

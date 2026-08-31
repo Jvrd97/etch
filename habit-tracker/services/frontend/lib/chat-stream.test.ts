@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/120
+// summary: PHASE-03/120 adds the five step events — the thought carried in its own field and never in `text`, the missing counters mapped to null, and the whole set of them skipped in the order they arrived by a screen that only wants the answer
 // summary: unit tests for the chat SSE parser — frames split across chunks, event order preserved, usage/done/error mapped to the union, unknown names and broken JSON skipped rather than thrown on
 
 import { describe, expect, it } from 'bun:test';
@@ -108,6 +109,61 @@ describe('ChatStreamParser', () => {
 
     expect(parser.flush()).toEqual([
       { kind: 'done', messageId: 3, seq: 2, status: 'complete' },
+    ]);
+  });
+
+  it('maps a thought to its own field, never to the answer text', () => {
+    // Несущее: кадр, прочитанный как кусок ответа, дописал бы внутреннюю речь
+    // модели в её же пузырь. Ключ здесь `thinking`, и в `text` он не попадает.
+    const parser = new ChatStreamParser();
+
+    const events = parser.push(
+      frame('thinking', { index: 0, thinking: 'он спрашивает про сон', thinking_tokens: 96 })
+    );
+
+    expect(events).toEqual([
+      { kind: 'thinking', index: 0, thinking: 'он спрашивает про сон', thinkingTokens: 96 },
+    ]);
+    expect(events.some((event) => 'text' in event)).toBe(false);
+  });
+
+  it('keeps a wordless thought instead of dropping it', () => {
+    // На подписке CLI подменяет рассуждение подписью: слов нет, а факт «модель
+    // думает» есть, и ради него событие и заведено.
+    const parser = new ChatStreamParser();
+
+    const events = parser.push(frame('thinking', { index: 1, thinking: '', thinking_tokens: null }));
+
+    expect(events).toEqual([
+      { kind: 'thinking', index: 1, thinking: '', thinkingTokens: null },
+    ]);
+  });
+
+  it('maps the remaining steps of a turn', () => {
+    const parser = new ChatStreamParser();
+
+    const events = parser.push(
+      frame('writing', { index: 2 }) +
+        frame('acting', { index: 3, tool: 'Read' }) +
+        frame('step_end', { index: 3 }) +
+        frame('stop', { reason: 'end_turn', thinking_tokens: 128 })
+    );
+
+    expect(events).toEqual([
+      { kind: 'writing', index: 2 },
+      { kind: 'acting', index: 3, tool: 'Read' },
+      { kind: 'stepEnd', index: 3 },
+      { kind: 'stop', reason: 'end_turn', thinkingTokens: 128 },
+    ]);
+  });
+
+  it('accepts a step whose index the backend does not number', () => {
+    // Бэкенд без нумерации блоков (API) шлёт `null`, и это не повод выбросить
+    // кадр: факт шага несёт имя события, а не его поля.
+    const parser = new ChatStreamParser();
+
+    expect(parser.push(frame('acting', { tool: null }))).toEqual([
+      { kind: 'acting', index: null, tool: null },
     ]);
   });
 

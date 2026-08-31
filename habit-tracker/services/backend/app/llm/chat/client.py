@@ -1,5 +1,6 @@
 # [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/120
 # summary: ChatLLMClient.stream_turn — the second transport method beside LLMClient.generate; the CLI implementation runs `claude -p` through the shared IsolatedCli of app/llm/cli.py (isolation flags, CLAUDE_CONFIG_DIR, fixed empty cwd), choosing per turn between `--resume` of a live session and a full replay of the stored dialogue, the API one streams messages.stream, and both hand back the same ChatChunk stream
+# summary: STREAM_ARGS gains --verbose, without which CLI 2.1.251 refuses stream-json under --print at all, and parse_stream_line now carries the turn's steps out — thinking (fact and estimated volume, never words: the subscription blanks them), block starts and ends, tool names, stop_reason — as chunk kinds beside CHUNK_DELTA
 """
 Транспорт многоходового разговора.
 
@@ -29,6 +30,19 @@
 **Содержимое разговора не попадает ни в лог, ни в текст исключения.** stderr
 процесса уходит в `/dev/null`: там эхо промпта, а прочитанный и залогированный
 stderr — ровно тот путь, которым тексты дневника оказываются в логах.
+
+**Наружу идёт не только текст ответа, но и то, чем модель занята.** Поток CLI
+называет каждый свой шаг: начал думать, начал писать, взялся за инструмент,
+шаг закончил, ход остановил по такой-то причине. Раньше всё это молча падало в
+`return None`, и пауза до первого слова выглядела на экране одинаково — что
+при работающей модели, что при мёртвом процессе. Теперь каждый шаг — свой вид
+`ChatChunk`, и лента отличает мысль от ответа.
+
+**Слов мысли при этом нет и не будет.** На подписке `thinking_delta.thinking`
+приходит пустым: CLI подменяет рассуждение подписью (`signature_delta`).
+Показать можно факт и объём — «думает, ~50 токенов», — но не текст. Поле под
+текст всё же есть, потому что у API-бэкенда рассуждение бывает настоящим; куда
+ему нельзя — сказано у `ChatChunk`.
 
 **Второй ход дешевле первого — и это выбор внутри одного метода.** Снаружи
 `stream_turn` отдаёт тот же поток кусков; внутри он либо продолжает сессию
@@ -74,14 +88,35 @@ from app.models.chat import MESSAGE_ROLE_ASSISTANT, MESSAGE_ROLE_USER
 BACKEND_CLI = "cli"
 BACKEND_API = "api"
 
+# Виды кусков. Названы тем, что человек видит в ленте, а не тем, как событие
+# зовётся в протоколе: `content_block_start` с блоком `text` — это «пошёл
+# ответ», и лента показывает именно это.
 CHUNK_DELTA = "delta"
 CHUNK_USAGE = "usage"
+# Модель думает. Слов мысли здесь на подписке нет — см. `ChatChunk.thinking`;
+# есть факт и растущая оценка объёма.
+CHUNK_THINKING = "thinking"
+# Пошёл видимый ответ. Граница между паузой и текстом: до неё лента вправе
+# показывать «думает», после — обязана показывать слова.
+CHUNK_WRITING = "writing"
+# Модель взялась за инструмент, и он назван. В этом чате не появится, пока
+# стоит `--tools ""`: разбирается поток CLI, а не одна его конфигурация.
+CHUNK_ACTING = "acting"
+# Шаг закончился. `index` тот же, что у начала, — иначе конец не с чем свести.
+CHUNK_STEP_END = "step_end"
+# Ход кончился, и вот почему: `end_turn`, `max_tokens`, `tool_use`. Без этого
+# обрезанный по потолку ответ неотличим от договорённого до конца.
+CHUNK_STOP = "stop"
 
-# Флаги потока. Все три обязательны вместе: `--include-partial-messages` требует
-# `--output-format stream-json`, а тот под `--print` требует `--verbose` —
-# без него CLI отвечает "When using --print, --output-format=stream-json requires
-# --verbose" и уходит, а чат отдаёт 502. Проверено на живом бинаре 2026-08-31:
-# до этого дня чат не работал ни разу, потому что в тестах CLI подменён моком.
+# Флаги потока. `--include-partial-messages` работает только вместе с
+# `--output-format stream-json`, поэтому они и стоят рядом.
+#
+# `--verbose` — не отладка, а условие запуска. CLI 2.1.251 на `-p` вместе с
+# `--output-format stream-json` без него отвечает «requires --verbose», кодом 1
+# и пустым stdout; stderr у нас уходит в `/dev/null`, поэтому наружу это
+# доезжало как `cli_exit: 1` без единого намёка на причину. Настройка `verbose`
+# из конфига помочь не может: `--setting-sources ""` источники настроек как раз
+# и убирает, так что под изоляцией флаг обязателен всегда.
 STREAM_ARGS: tuple[str, ...] = (
     "--output-format",
     "stream-json",
@@ -100,11 +135,18 @@ ERROR_API = "api_error"
 @dataclass(frozen=True)
 class ChatChunk:
     """
-    Один кусок ответа: либо текст, либо итог хода.
+    Один кусок хода: текст ответа, шаг работы модели или итог.
 
-    Одна структура на два вида событий, различаемых `kind`. Два класса
+    Одна структура на все виды событий, различаемых `kind`. Отдельные классы
     выглядели бы честнее ровно до первого `isinstance` в цикле стрима; здесь
     поле-дискриминатор читается и в тесте, и в обработчике SSE.
+
+    **`text` и `thinking` — два текстовых поля, и это не небрежность.** В
+    `text` лежит ответ: он уходит человеку и в `chat_messages.content`. В
+    `thinking` — внутренняя речь модели о содержимом дня; она доезжает до
+    браузера и **никуда больше**. Разные поля здесь — механизм, а не украшение:
+    строка ответа собирается из `chunk.text`, и мысль в неё попасть не может,
+    сколько бы новых видов кусков ни завелось.
 
     `input_tokens` — это вход **вместе с созданием кеша**: у чата нет отдельной
     колонки под `cache_creation_input_tokens`, а проверка «первый ход дешевле
@@ -113,6 +155,21 @@ class ChatChunk:
 
     kind: str
     text: str = ""
+    # Внутренняя речь модели. На подписке Claude Code всегда пустая: CLI
+    # отдаёт вместо неё `signature_delta` (замер 2026-08-31, CLI 2.1.251).
+    # Поле есть, потому что у API-бэкенда рассуждение бывает настоящим, и тогда
+    # оно обязано ехать по тому же проводу — тому, который не ведёт в базу.
+    thinking: str = ""
+    # Номер блока внутри сообщения. Единственное, чем конец шага сводится с его
+    # началом: CLI в `content_block_stop` не повторяет ни тип, ни имя.
+    index: int | None = None
+    # Имя инструмента, за который взялась модель. Приезжает целиком в начале
+    # блока, до аргументов, — потому «Клод читает файл» показывается сразу.
+    tool_name: str | None = None
+    # Оценка объёма размышления. Единственная числовая правда о мысли, раз слов
+    # нет: по ходу — прикидка CLI, в конце — итог из `usage`.
+    thinking_tokens: int | None = None
+    stop_reason: str | None = None
     session_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -122,6 +179,48 @@ class ChatChunk:
     def delta(cls, text: str) -> "ChatChunk":
         """Кусок видимого текста ответа."""
         return cls(kind=CHUNK_DELTA, text=text)
+
+    @classmethod
+    def thinking_step(
+        cls,
+        *,
+        index: int | None = None,
+        thinking: str = "",
+        thinking_tokens: int | None = None,
+    ) -> "ChatChunk":
+        """Модель думает: начало мысли и её растущий объём."""
+        return cls(
+            kind=CHUNK_THINKING,
+            thinking=thinking,
+            index=index,
+            thinking_tokens=thinking_tokens,
+        )
+
+    @classmethod
+    def writing(cls, *, index: int | None = None) -> "ChatChunk":
+        """Пошёл видимый ответ: дальше в ленте слова, а не ожидание."""
+        return cls(kind=CHUNK_WRITING, index=index)
+
+    @classmethod
+    def acting(cls, *, tool_name: str, index: int | None = None) -> "ChatChunk":
+        """Модель взялась за инструмент; имя известно до аргументов."""
+        return cls(kind=CHUNK_ACTING, tool_name=tool_name, index=index)
+
+    @classmethod
+    def step_end(cls, *, index: int | None = None) -> "ChatChunk":
+        """Шаг закончился — тот, что начинался под этим же `index`."""
+        return cls(kind=CHUNK_STEP_END, index=index)
+
+    @classmethod
+    def stop(
+        cls, *, stop_reason: str | None, thinking_tokens: int | None = None
+    ) -> "ChatChunk":
+        """Ход кончился, и вот почему; заодно итоговый объём мысли."""
+        return cls(
+            kind=CHUNK_STOP,
+            stop_reason=stop_reason,
+            thinking_tokens=thinking_tokens,
+        )
 
     @classmethod
     def usage(
@@ -195,15 +294,32 @@ class ChatLLMClient:
 
 def parse_stream_line(line: bytes) -> ChatChunk | None:
     """
-    Одна строка `--output-format stream-json` в кусок ответа, либо None.
+    Одна строка `--output-format stream-json` в кусок хода, либо None.
 
-    Что разбирается: `stream_event` с `content_block_delta` / `text_delta` —
-    видимый текст, и финальный `result` — `session_id` и `usage`. Всё
-    остальное (`system`, `assistant`, `user`, служебные события) молча
-    пропускается: поток CLI пополняется типами событий от версии к версии, и
-    падать на незнакомом — значит ронять чат при каждом обновлении.
+    Что разбирается — ровно то, что видно в потоке живого CLI 2.1.251:
 
-    Нераспознанная строка не логируется: в ней текст ответа.
+    - `content_block_start` — начало шага: мысль, ответ или инструмент с именем;
+    - `content_block_delta` — `text_delta` (слова ответа) и `thinking_delta`
+      (мысль и её объём);
+    - `content_block_stop` — конец шага;
+    - `message_delta` — `stop_reason` и итоговый объём мысли;
+    - `system/thinking_tokens` — та же оценка объёма отдельным событием;
+    - `result` — `session_id` и `usage` хода.
+
+    Что пропускается сознательно, а не по недосмотру. `signature_delta` — это
+    подпись, которой CLI **заменил** рассуждение; читателю в ней нечего
+    смотреть. `input_json_delta` — аргументы инструмента по кускам: имя уже
+    приехало целиком в начале блока, а склейка обрывков JSON стоила бы
+    состояния в разборщике строки. `message_start` и `message_stop` не говорят
+    ничего сверх границ блоков. `system/init`, `system/status`, `assistant`,
+    `user`, `rate_limit_event` — не про то, что модель делает сейчас;
+    `system/post_turn_summary` приезжает уже после ответа и пересказывает день
+    человека, то есть заводит второй экземпляр содержания там, где хватает
+    первого.
+
+    Незнакомая строка пропускается молча: поток CLI пополняется типами событий
+    от версии к версии, и падать на новом — значит ронять чат при каждом
+    обновлении. Не логируется и она: в ней бывает текст ответа.
     """
     text = line.decode("utf-8", errors="replace").strip()
     if not text:
@@ -218,22 +334,115 @@ def parse_stream_line(line: bytes) -> ChatChunk | None:
     kind = event.get("type")
     if kind == "stream_event":
         return _parse_stream_event(event.get("event"))
+    if kind == "system":
+        return _parse_system(event)
     if kind == "result":
         return _parse_result(event)
     return None
 
 
 def _parse_stream_event(inner: Any) -> ChatChunk | None:
-    """`content_block_delta` с `text_delta` — единственное, что несёт текст."""
-    if not isinstance(inner, dict) or inner.get("type") != "content_block_delta":
+    """Событие Messages API из обёртки CLI — в шаг ленты, либо None."""
+    if not isinstance(inner, dict):
         return None
-    delta = inner.get("delta")
-    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+    kind = inner.get("type")
+    if kind == "content_block_start":
+        return _parse_block_start(inner)
+    if kind == "content_block_delta":
+        return _parse_block_delta(inner)
+    if kind == "content_block_stop":
+        return ChatChunk.step_end(index=_block_index(inner))
+    if kind == "message_delta":
+        return _parse_message_delta(inner)
+    return None
+
+
+def _block_index(event: dict[str, Any]) -> int | None:
+    """Номер блока. `bool` — не номер: True не есть нулевой блок."""
+    value = event.get("index")
+    if isinstance(value, bool) or not isinstance(value, int):
         return None
-    piece = delta.get("text")
-    if not isinstance(piece, str) or not piece:
+    return value
+
+
+def _parse_block_start(event: dict[str, Any]) -> ChatChunk | None:
+    """
+    Начало блока: чем модель занялась.
+
+    Тип блока — единственное место, где «думает» отделяется от «пишет»: до
+    первого `text_delta` разницы не видно ниоткуда, а именно эта пауза и стоит
+    на экране дольше всего.
+    """
+    block = event.get("content_block")
+    if not isinstance(block, dict):
         return None
-    return ChatChunk.delta(piece)
+    index = _block_index(event)
+    kind = block.get("type")
+    if kind == "thinking":
+        return ChatChunk.thinking_step(index=index)
+    if kind == "text":
+        return ChatChunk.writing(index=index)
+    if kind == "tool_use":
+        name = block.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        return ChatChunk.acting(tool_name=name, index=index)
+    return None
+
+
+def _parse_block_delta(event: dict[str, Any]) -> ChatChunk | None:
+    """Прибавка к блоку: слова ответа или мысль."""
+    delta = event.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    kind = delta.get("type")
+    if kind == "text_delta":
+        piece = delta.get("text")
+        if not isinstance(piece, str) or not piece:
+            return None
+        return ChatChunk.delta(piece)
+    if kind == "thinking_delta":
+        piece = delta.get("thinking")
+        return ChatChunk.thinking_step(
+            index=_block_index(event),
+            thinking=piece if isinstance(piece, str) else "",
+            thinking_tokens=_int_or_none(delta, "estimated_tokens"),
+        )
+    return None
+
+
+def _parse_message_delta(event: dict[str, Any]) -> ChatChunk | None:
+    """
+    Конец сообщения: причина остановки и итоговый объём мысли.
+
+    Причина — не украшение. `max_tokens` означает обрубленный на середине
+    ответ, и без неё он выглядит на экране так же, как договорённый до конца.
+    """
+    delta = event.get("delta")
+    reason = delta.get("stop_reason") if isinstance(delta, dict) else None
+    if not isinstance(reason, str) or not reason:
+        return None
+    raw_usage = event.get("usage")
+    usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+    return ChatChunk.stop(stop_reason=reason, thinking_tokens=_thinking_tokens(usage))
+
+
+def _parse_system(event: dict[str, Any]) -> ChatChunk | None:
+    """Служебное событие CLI. Наружу идёт одно — оценка объёма мысли."""
+    if event.get("subtype") != "thinking_tokens":
+        return None
+    estimated = _int_or_none(event, "estimated_tokens")
+    if estimated is None:
+        return None
+    return ChatChunk.thinking_step(thinking_tokens=estimated)
+
+
+def _thinking_tokens(usage: dict[str, Any]) -> int | None:
+    """Итоговый объём мысли из `usage.output_tokens_details`."""
+    details = usage.get("output_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    return _int_or_none(details, "thinking_tokens")
 
 
 def _int_or_none(source: dict[str, Any], key: str) -> int | None:

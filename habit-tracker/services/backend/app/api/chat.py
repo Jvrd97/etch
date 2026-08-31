@@ -41,6 +41,11 @@
 **Ни одна строка содержимого не попадает в лог.** Наружу и в базу уходит
 машинный `error_code`; текст модели живёт ровно в `chat_messages.content`.
 
+**Ход мысли доезжает до экрана и никуда больше.** Кадры `thinking` — единственное,
+чем можно заполнить паузу до первого слова, но внутренняя речь модели о дне
+человека не пишется ни в таблицу, ни в лог: почему именно так — у
+`_progress_frame`.
+
 **Удаление отвечает 204 и тогда, когда файла сессии на диске нет.** Исход по
 файлу — машинный код в логе, а не статус ответа: разговор либо удалён целиком,
 либо не удалён вовсе, и третьего состояния у кнопки нет.
@@ -80,7 +85,17 @@ from app.crud import chat as chat_crud
 from app.crud import daily_summary as daily_summary_crud
 from app.crud.chat import PlanSelectionRejected, narrow_to_plan
 from app.crud.daily_summary import DailySummaryApplyError
-from app.llm.chat.client import CHUNK_DELTA, ChatChunk, ChatLLMClient
+from app.llm.chat.client import (
+    CHUNK_ACTING,
+    CHUNK_DELTA,
+    CHUNK_STEP_END,
+    CHUNK_STOP,
+    CHUNK_THINKING,
+    CHUNK_USAGE,
+    CHUNK_WRITING,
+    ChatChunk,
+    ChatLLMClient,
+)
 from app.llm.chat.context import build_day_card
 from app.llm.chat.limits import (
     ERROR_FIRST_DELTA_TIMEOUT,
@@ -144,6 +159,29 @@ from app.schemas.chat import (
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# События хода, которых нет в `app/schemas/chat.py`, и это граница, а не
+# небрежность. Там названы события, за которыми стоит строка в базе: `delta` —
+# `chat_messages.content`, `usage` — счётчики, `done`/`error` — статус и код,
+# `retrieval` — `chat_retrievals`. Эти пять живут только в проводе: они
+# рассказывают, чем модель занята прямо сейчас, и после хода от них не остаётся
+# ничего, что можно было бы перечитать. Схема сообщения, прочитанного обратно,
+# описывать их не должна — иначе она обещала бы поле, которого в ответе нет.
+SSE_EVENT_THINKING = "thinking"
+SSE_EVENT_WRITING = "writing"
+SSE_EVENT_ACTING = "acting"
+SSE_EVENT_STEP_END = "step_end"
+SSE_EVENT_STOP = "stop"
+
+# Вид куска — имя события. Один к одному: экран отличает мысль от ответа по
+# имени события, а не по разбору полезной нагрузки.
+PROGRESS_EVENTS: dict[str, str] = {
+    CHUNK_THINKING: SSE_EVENT_THINKING,
+    CHUNK_WRITING: SSE_EVENT_WRITING,
+    CHUNK_ACTING: SSE_EVENT_ACTING,
+    CHUNK_STEP_END: SSE_EVENT_STEP_END,
+    CHUNK_STOP: SSE_EVENT_STOP,
+}
 
 SSE_MEDIA_TYPE = "text/event-stream"
 
@@ -627,6 +665,50 @@ async def _run_retrievals(
     return outcomes
 
 
+def _progress_frame(chunk: ChatChunk) -> Frame | None:
+    """
+    Шаг хода как кадр потока: чем модель занята прямо сейчас.
+
+    **Здесь и проходит граница приватности.** Мысль модели — внутренняя речь о
+    содержимом дня человека, и она уходит ровно в одно место: в браузер, тому,
+    чей это день. Дальше её нет нигде.
+
+    Не храним. В `chat_messages` пишется `chunk.text` кусков `delta` — ответ, за
+    который человек может вернуться завтра, перечитать, удалить вместе с
+    разговором. Мысль в эту строку не попадает: она едет отдельным полем
+    `ChatChunk.thinking`, и собиратель ответа его не читает. Отдельной колонки
+    ей тоже не заводим — колонка означала бы срок хранения, право на удаление и
+    ответ на вопрос «кто это читает», а ни одного из трёх у сырого рассуждения
+    модели нет. Ход длится минуту; мысль живёт эту минуту и исчезает.
+
+    Не логируем. Ни один кадр отсюда не идёт в лог — как и всё остальное
+    содержимое хода: наружу из чата логируются машинные коды, и только они.
+
+    На подписке `thinking` вдобавок приходит пустым — CLI подменяет
+    рассуждение подписью. Поле всё равно проводится: у API-бэкенда оно бывает
+    настоящим, и правило должно стоять раньше, чем появится текст, а не после.
+    """
+    event = PROGRESS_EVENTS.get(chunk.kind)
+    if event is None:
+        return None
+    if chunk.kind == CHUNK_THINKING:
+        # Ключ `thinking`, а не `text`: кадр, который экран мог бы по ошибке
+        # прочитать как кусок ответа, дописал бы мысль в пузырь модели.
+        return event, {
+            "index": chunk.index,
+            "thinking": chunk.thinking,
+            "thinking_tokens": chunk.thinking_tokens,
+        }
+    if chunk.kind == CHUNK_ACTING:
+        return event, {"index": chunk.index, "tool": chunk.tool_name}
+    if chunk.kind == CHUNK_STOP:
+        return event, {
+            "reason": chunk.stop_reason,
+            "thinking_tokens": chunk.thinking_tokens,
+        }
+    return event, {"index": chunk.index}
+
+
 async def _turn_frames(
     *,
     factory: SessionFactory,
@@ -639,7 +721,10 @@ async def _turn_frames(
     Ход целиком как поток кадров: имя события и его данные.
 
     Порядок в норме: сколько угодно `delta`, затем `usage`, затем один `done`.
-    `error` заменяет два последних.
+    `error` заменяет два последних. Между ними в любом месте идут кадры шага —
+    `thinking`, `writing`, `acting`, `step_end`, `stop`; они рассказывают, чем
+    модель занята, и на порядок трёх обязательных не влияют. Бэкенд, который
+    шагов не называет (API), не шлёт ни одного из них, и это не сбой.
 
     Статус по умолчанию — `interrupted`, и это несущее решение: сюда попадает
     выход через закрытие генератора, то есть закрытая вкладка, и статус в этом
@@ -668,11 +753,14 @@ async def _turn_frames(
                     ),
                     budget=_remaining(started),
                 ):
+                    # Разбор по видам, а не «текст или всё остальное». Пока
+                    # видов было два, `else` означал `usage`; с шагами хода он
+                    # означал бы «мысль записана в счётчики токенов».
                     if chunk.kind == CHUNK_DELTA:
                         answered.append(chunk.text)
                         parts.append(chunk.text)
                         yield SSE_EVENT_DELTA, {"text": chunk.text}
-                    else:
+                    elif chunk.kind == CHUNK_USAGE:
                         usage = chunk
                         yield (
                             SSE_EVENT_USAGE,
@@ -682,6 +770,10 @@ async def _turn_frames(
                                 "cache_read_tokens": chunk.cache_read_tokens,
                             },
                         )
+                    else:
+                        frame = _progress_frame(chunk)
+                        if frame is not None:
+                            yield frame
                 answer = "".join(answered)
                 items = parse_need(answer) if passes < MAX_NEED_PASSES else None
                 if items is None:
@@ -787,11 +879,18 @@ async def post_message(
 
     Отвечает `text/event-stream`. События: `delta` — кусок текста, `usage` —
     чем обошёлся ход, `done` — ход закрыт, `error` — бэкенд сломался уже после
-    того, как поток начался.
+    того, как поток начался, `retrieval` — модель сходила за данными. Плюс
+    кадры шага: `thinking` (думает — факт и объём, слов там нет), `writing`
+    (пошёл ответ), `acting` (взялся за инструмент), `step_end`, `stop`
+    (остановился, и вот почему).
 
     Коды отказа: 503 — бэкенда нет и реплика не записывается; 409 — в этом
     диалоге ход ещё не закрыт; 429 — свободного слота не нашлось; 502 — бэкенд
     не смог отдать даже первый кадр.
+
+    Кадр шага считается ответом бэкенда наравне с текстом: модель, успевшая
+    сказать «думаю» и умершая следом, сломалась посреди потока, а не до него, и
+    человек видит `error` в открытой ленте, а не 502 на пустом месте.
     """
     if client is None:
         raise HTTPException(
