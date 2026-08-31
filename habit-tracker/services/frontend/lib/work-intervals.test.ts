@@ -3,9 +3,9 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { WorkInterval } from '@/lib/api';
+import { clock } from '@/lib/time';
 import {
   RUNNING_LABEL,
-  clockOf,
   crossesMidnight,
   momentOf,
   proposedLabel,
@@ -36,7 +36,7 @@ describe('momentOf', () => {
     const moment = momentOf(DAY, '09:30');
 
     expect(moment).not.toBeNull();
-    expect(clockOf(moment as string)).toBe('09:30');
+    expect(clock(moment as string)).toBe('09:30');
     expect(new Date(moment as string).getDate()).toBe(24);
   });
 
@@ -46,7 +46,7 @@ describe('momentOf', () => {
     const moment = momentOf(DAY, '01:00', true);
 
     expect(new Date(moment as string).getDate()).toBe(25);
-    expect(clockOf(moment as string)).toBe('01:00');
+    expect(clock(moment as string)).toBe('01:00');
   });
 
   it('refuses a clock it cannot read rather than guessing one', () => {

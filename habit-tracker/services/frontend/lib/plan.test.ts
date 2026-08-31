@@ -1,11 +1,10 @@
 // [review:need-review] PHASE-03/87, PHASE-03/88
-// summary: tests for reading a plan — the duration the server measured is shown as written, both halves of a collision are marked, a section falls back to its kind only when it has no title of its own, and every item is reachable by id at any depth
+// summary: tests for reading a plan — both halves of a collision are marked, a section falls back to its kind only when it has no title of its own, and every item is reachable by id at any depth
 
 import { describe, expect, it } from 'bun:test';
 import type { Plan, PlanItem, PlanSection, ScheduleOverlap } from '@/lib/api';
 import {
   extraLines,
-  formatDuration,
   itemKindLabel,
   itemKindsById,
   overlappingItemIds,
@@ -77,20 +76,6 @@ function plan(sections: PlanSection[]): Plan {
     overlaps: [],
   };
 }
-
-describe('formatDuration', () => {
-  it('spells minutes the way the canon itself is written', () => {
-    expect(formatDuration(60)).toBe('1 ч');
-    expect(formatDuration(90)).toBe('1 ч 30 мин');
-    expect(formatDuration(25)).toBe('25 мин');
-  });
-
-  it('shows a window across midnight as the hour the server measured', () => {
-    // The whole point of taking `minutes` from the server: nothing here knows
-    // that the day runs 04:00 to 04:00, and nothing here has to.
-    expect(formatDuration(60)).toBe('1 ч');
-  });
-});
 
 describe('overlappingItemIds', () => {
   const overlaps: ScheduleOverlap[] = [

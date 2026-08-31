@@ -16,6 +16,7 @@ import {
   selectedKind,
 } from '@/lib/plan-roles';
 import { ACT_KIND_OPTIONS } from '@/lib/role-format';
+import { clockRange } from '@/lib/time';
 
 /** What the button says before a person is sure. Two taps, not a modal. */
 export const DELETE_LABEL = 'Удалить';
@@ -56,14 +57,7 @@ export interface PlanItemEditorProps {
  */
 export function windowField(item: PlanItem): string {
   if (!item.starts_at || !item.ends_at) return '';
-  return `${clock(item.starts_at)}-${clock(item.ends_at)}`;
-}
-
-function clock(moment: string): string {
-  const at = new Date(moment);
-  const hours = String(at.getHours()).padStart(2, '0');
-  const minutes = String(at.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
+  return clockRange(item.starts_at, item.ends_at);
 }
 
 /**

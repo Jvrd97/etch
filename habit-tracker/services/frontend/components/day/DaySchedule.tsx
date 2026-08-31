@@ -3,10 +3,10 @@
 
 import { AlertTriangle, Clock } from 'lucide-react';
 import type { ScheduleEntry, ScheduleOverlap } from '@/lib/api';
+import { formatMinutes } from '@/lib/day-format';
 import {
   EMPTY_SCHEDULE_TEXT,
   OVERLAP_BADGE,
-  formatDuration,
   formatWindow,
   overlappingItemIds,
   totalOverlapMinutes,
@@ -49,7 +49,7 @@ export default function DaySchedule({
         {overlaps.length > 0 && (
           <span className="inline-flex items-center gap-2 px-3 py-1 rounded-2xl bg-surface text-sm text-warning">
             <AlertTriangle className="w-4 h-4" strokeWidth={2} />
-            {overlaps.length} {OVERLAP_BADGE} · {formatDuration(doubleBooked)}
+            {overlaps.length} {OVERLAP_BADGE} · {formatMinutes(doubleBooked)}
           </span>
         )}
       </div>
@@ -87,7 +87,7 @@ export default function DaySchedule({
                 </span>
                 <span className="inline-flex items-center gap-1.5 shrink-0 text-sm text-text-secondary">
                   <Clock className="w-4 h-4" strokeWidth={2} />
-                  {formatDuration(entry.minutes)}
+                  {formatMinutes(entry.minutes)}
                 </span>
                 {collides && (
                   <span className="shrink-0 text-xs text-warning">{OVERLAP_BADGE}</span>

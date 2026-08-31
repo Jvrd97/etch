@@ -19,9 +19,9 @@ import {
   type ChatPlanSelection,
   type ChatUsage,
 } from '@/lib/api';
-import { formatTokens, lastCacheRead, resumeMode } from '@/lib/chat-resume';
+import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
-import { turnCost } from '@/lib/chat-usage';
+import { formatTokens, turnCost } from '@/lib/chat-usage';
 import { entryInputClass } from '@/lib/ui-constants';
 
 /** Расход разговора, у которого ещё не было ни одного хода. */

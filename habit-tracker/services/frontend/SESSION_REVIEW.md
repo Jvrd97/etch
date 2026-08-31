@@ -1605,3 +1605,37 @@ Feedback loops (frontend): `bun test` **1115 pass, 0 fail** (100 файлов),
 
 Feedback loops (frontend): `bun test` **1125 pass, 0 fail** (101 файл),
 `bunx tsc --noEmit` clean.
+
+## 2026-08-31 — приёмка PHASE-03, находка 5.7 (дубли между дорожками)
+
+Пять реализаций «ISO-момент → `HH:MM`» и две `formatTokens` сведены к одной каждая.
+
+Часы живут в новом `lib/time.ts`: `clock()` и `clockRange()`. Из трёх поведений на
+невалидный момент выбрано пустое: `NaN:NaN` и исходная строка ставят в место часов то,
+что часами не является, а два из пяти мест — редактируемые поля.
+
+`formatTokens` осталась одна — та, что группирует разряды руками (`lib/chat-usage.ts`).
+Копия на `toLocaleString('ru-RU')` отдавала неразрывный пробел, и это было замазано в
+тесте заменой ` ` на пробел; обе строки видны на одном экране чата.
+
+`formatDuration` из `lib/plan.ts` схлопнута в `formatMinutes` (`lib/day-format.ts`) —
+тела совпадали байт в байт, у первой был один вызывающий.
+
+Файлов тронуто: 15 (2 new, 13 mod).
+
+- `lib/time.ts` — new, единственное чтение момента как часов + `clockRange`.
+- `lib/time.test.ts` — new, 4 теста: час в зоне читателя, паддинг, пустой ответ на нечитаемый момент, окно.
+- `lib/plan.ts` — mod, `formatMoment`/`formatDuration` удалены, `formatWindow` зовёт `clockRange`.
+- `lib/plan.test.ts` — mod, блок `formatDuration` уехал в `day-format.test.ts`.
+- `lib/day-format.test.ts` — mod, +тест «окно через полночь — час, измеренный сервером».
+- `lib/work-intervals.ts` — mod, `clockOf` удалена; параметры `clock:` переименованы в `wallClock`, чтобы не затенять импорт.
+- `lib/work-intervals.test.ts`, `components/day/WorkIntervals.test.tsx` — mod, импорт `clock` из `@/lib/time`.
+- `lib/interval-rollup.ts` — mod, локальная `clock` удалена, `intervalClock` зовёт `clockRange`.
+- `lib/interval-rollup.test.ts` — mod, `clockField` → `clock`.
+- `components/agent/IntervalEditor.tsx` — mod, `clockField` удалена; параметр `withClock` переименован.
+- `components/day/PlanItemEditor.tsx` — mod, локальная `clock` удалена.
+- `components/day/DaySchedule.tsx` — mod, `formatDuration` → `formatMinutes`.
+- `lib/chat-resume.ts`, `lib/chat-resume.test.ts`, `app/chat/page.tsx` — mod, вторая `formatTokens` и обход неразрывного пробела в тесте убраны.
+
+Feedback loops (frontend): `bun test` **1234 pass, 0 fail** (111 файлов), `bunx tsc --noEmit`
+clean, `bun run lint` 0 errors (13 warnings — чужие `_`-параметры в тестах, не тронуты).

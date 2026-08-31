@@ -12,7 +12,8 @@ import {
   taskTotalMinutes,
   titleIsHidden,
 } from '@/lib/interval-rollup';
-import { changedFields, clockField, withClock } from '@/components/agent/IntervalEditor';
+import { changedFields, withClock } from '@/components/agent/IntervalEditor';
+import { clock } from '@/lib/time';
 
 function interval(overrides: Partial<ActivityInterval> = {}): ActivityInterval {
   return {
@@ -120,7 +121,7 @@ describe('правка интервала', () => {
   it('везёт только то, что человек поменял', () => {
     const row = interval();
     const patch = changedFields(row, {
-      from: clockField(row.started_at),
+      from: clock(row.started_at),
       to: '11:30',
       task: '42',
       note: '',
@@ -134,8 +135,8 @@ describe('правка интервала', () => {
   it('пустая задача — это «убрать привязку», а не «не трогать»', () => {
     const row = interval({ plan_task_id: 42 });
     const patch = changedFields(row, {
-      from: clockField(row.started_at),
-      to: clockField(row.ended_at),
+      from: clock(row.started_at),
+      to: clock(row.ended_at),
       task: '',
       note: '',
     });
@@ -146,8 +147,8 @@ describe('правка интервала', () => {
     const row = interval({ note: 'рефакторинг' });
     expect(
       changedFields(row, {
-        from: clockField(row.started_at),
-        to: clockField(row.ended_at),
+        from: clock(row.started_at),
+        to: clock(row.ended_at),
         task: '',
         note: 'рефакторинг',
       })

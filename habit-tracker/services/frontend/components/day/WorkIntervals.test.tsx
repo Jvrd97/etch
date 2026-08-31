@@ -10,7 +10,8 @@ import {
   waitFor,
 } from '@testing-library/react';
 import type { WorkDay, WorkInterval } from '@/lib/api';
-import { NOT_MEASURED, RUNNING_LABEL, clockOf } from '@/lib/work-intervals';
+import { clock } from '@/lib/time';
+import { NOT_MEASURED, RUNNING_LABEL } from '@/lib/work-intervals';
 import WorkIntervals, {
   ADD_INTERVAL,
   EMPTY_HINT,
@@ -158,8 +159,8 @@ describe('WorkIntervals', () => {
 
     await waitFor(() => expect(onAdd).toHaveBeenCalled());
     const [started, ended] = onAdd.mock.calls[0];
-    expect(clockOf(started)).toBe('09:30');
-    expect(clockOf(ended as string)).toBe('13:00');
+    expect(clock(started)).toBe('09:30');
+    expect(clock(ended as string)).toBe('13:00');
   });
 
   it('reads an end before its start as the next morning, not as an error', async () => {
@@ -181,7 +182,7 @@ describe('WorkIntervals', () => {
     expect(new Date(ended as string).getTime()).toBeGreaterThan(
       new Date(started).getTime()
     );
-    expect(clockOf(ended as string)).toBe('01:00');
+    expect(clock(ended as string)).toBe('01:00');
   });
 
   it('adds an interval with no end when only the start is typed', async () => {

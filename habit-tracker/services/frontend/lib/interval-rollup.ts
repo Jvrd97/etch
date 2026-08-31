@@ -3,6 +3,7 @@
 
 import type { ActivityDay, ActivityInterval } from '@/lib/api';
 import { formatMinutes } from '@/lib/day-format';
+import { clockRange } from '@/lib/time';
 
 /** Mark on an interval whose ends a person moved. */
 export const CORRECTED_MARK = 'исправлено';
@@ -45,14 +46,7 @@ export const UNTASKED_HINT = 'Работа вне плана — видно в �
 
 /** `"10:00-11:30"` — the wall clock of an interval in the reader's own zone. */
 export function intervalClock(interval: ActivityInterval): string {
-  return `${clock(interval.started_at)}-${clock(interval.ended_at)}`;
-}
-
-function clock(moment: string): string {
-  const at = new Date(moment);
-  const hours = String(at.getHours()).padStart(2, '0');
-  const minutes = String(at.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
+  return clockRange(interval.started_at, interval.ended_at);
 }
 
 /** What an interval was: its application, or the fact that it was typed. */

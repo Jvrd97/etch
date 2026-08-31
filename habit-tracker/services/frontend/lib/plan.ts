@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110
-// summary: pure reading of a plan — clock labels for a window, the duration the server measured, which schedule lines collide, the kinds of every item by id, the plain-Russian names of section kinds and item rigidity, and the warnings of an edit indexed by the code of the line they name
+// summary: pure reading of a plan — the window label built from the one clock reading in lib/time, which schedule lines collide, the kinds of every item by id, the plain-Russian names of section kinds and item rigidity, and the warnings of an edit indexed by the code of the line they name
 
 import type {
   Plan,
@@ -10,6 +10,7 @@ import type {
   PlanWarning,
   ScheduleOverlap,
 } from '@/lib/api';
+import { clockRange } from '@/lib/time';
 
 /** Shown where a plan would be. A day without one is an answer, not an error. */
 export const EMPTY_PLAN_TEXT = 'В плане нет ни одной секции';
@@ -20,41 +21,15 @@ export const EMPTY_SCHEDULE_TEXT = 'Ни у одного пункта нет о�
 /** Said next to a pair of windows that collide. */
 export const OVERLAP_BADGE = 'наложение';
 
-const MINUTES_PER_HOUR = 60;
-
 /**
- * The wall clock a moment shows, in the reader's own zone.
+ * `09:30-11:00` — the shape the window had when plans were files.
  *
- * The browser's zone is right here and wrong nowhere else in this system: the
- * server decided which *day* the moment belongs to, and this only decides what
- * the clock on the wall in front of the reader says.
+ * The clock itself is read by `lib/time`: which *day* a moment belongs to was
+ * decided by the server, and what the wall in front of the reader says is one
+ * answer for the whole front end.
  */
-export function formatMoment(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  const hours = String(at.getHours()).padStart(2, '0');
-  const minutes = String(at.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
-}
-
-/** `09:30-11:00` — the shape the window had when plans were files. */
 export function formatWindow(startsAt: string, endsAt: string): string {
-  return `${formatMoment(startsAt)}-${formatMoment(endsAt)}`;
-}
-
-/**
- * Minutes as `1 ч 30 мин`.
- *
- * The number comes from the server, so a window across midnight reads as an
- * hour here without this function knowing anything about the day boundary.
- */
-export function formatDuration(minutes: number): string {
-  const whole = Math.max(0, Math.round(minutes));
-  const hours = Math.floor(whole / MINUTES_PER_HOUR);
-  const rest = whole % MINUTES_PER_HOUR;
-  if (hours === 0) return `${rest} мин`;
-  if (rest === 0) return `${hours} ч`;
-  return `${hours} ч ${rest} мин`;
+  return clockRange(startsAt, endsAt);
 }
 
 /**

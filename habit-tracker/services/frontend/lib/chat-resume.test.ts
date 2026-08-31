@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { ChatMessage } from './api';
-import { formatTokens, lastCacheRead, resumeMode } from './chat-resume';
+import { lastCacheRead, resumeMode } from './chat-resume';
 
 function answer(cacheRead: number | null, seq: number): ChatMessage {
   return {
@@ -63,12 +63,5 @@ describe('lastCacheRead', () => {
   it('answers null for a conversation nobody has answered yet', () => {
     expect(lastCacheRead([question(1)])).toBeNull();
     expect(lastCacheRead([])).toBeNull();
-  });
-});
-
-describe('formatTokens', () => {
-  it('groups thousands so the number is readable at a glance', () => {
-    // Неразрывный пробел — то, что ставит русская локаль.
-    expect(formatTokens(21_685).replace(/ /g, ' ')).toBe('21 685');
   });
 });

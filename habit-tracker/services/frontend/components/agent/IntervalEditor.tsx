@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Check, X } from 'lucide-react';
 import type { ActivityInterval, ActivityIntervalPatch } from '@/lib/api';
+import { clock } from '@/lib/time';
 
 export const SAVE_LABEL = 'Сохранить';
 export const CANCEL_LABEL = 'Отменить';
@@ -17,12 +18,6 @@ export interface IntervalEditorProps {
   onCancel: () => void;
 }
 
-/** `"10:00"` — one end of an interval as the field shows it. */
-export function clockField(moment: string): string {
-  const at = new Date(moment);
-  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-}
-
 /**
  * A wall-clock time put back onto the date the interval already has.
  *
@@ -30,8 +25,8 @@ export function clockField(moment: string): string {
  * correction of its ends, it is a different record, and letting a typo in a
  * time field move an hour into yesterday would be the worst kind of silent.
  */
-export function withClock(moment: string, clock: string): string | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
+export function withClock(moment: string, wallClock: string): string | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(wallClock.trim());
   if (!match) return null;
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
@@ -54,11 +49,11 @@ export function changedFields(
   const patch: ActivityIntervalPatch = {};
 
   const started = withClock(interval.started_at, draft.from);
-  if (started !== null && draft.from !== clockField(interval.started_at)) {
+  if (started !== null && draft.from !== clock(interval.started_at)) {
     patch.started_at = started;
   }
   const ended = withClock(interval.ended_at, draft.to);
-  if (ended !== null && draft.to !== clockField(interval.ended_at)) {
+  if (ended !== null && draft.to !== clock(interval.ended_at)) {
     patch.ended_at = ended;
   }
 
@@ -89,8 +84,8 @@ export default function IntervalEditor({
   onSave,
   onCancel,
 }: IntervalEditorProps) {
-  const [from, setFrom] = useState(() => clockField(interval.started_at));
-  const [to, setTo] = useState(() => clockField(interval.ended_at));
+  const [from, setFrom] = useState(() => clock(interval.started_at));
+  const [to, setTo] = useState(() => clock(interval.ended_at));
   const [task, setTask] = useState(
     interval.plan_task_id === null ? '' : String(interval.plan_task_id)
   );
@@ -104,8 +99,8 @@ export default function IntervalEditor({
   const [shown, setShown] = useState(interval);
   if (shown !== interval) {
     setShown(interval);
-    setFrom(clockField(interval.started_at));
-    setTo(clockField(interval.ended_at));
+    setFrom(clock(interval.started_at));
+    setTo(clock(interval.ended_at));
     setTask(interval.plan_task_id === null ? '' : String(interval.plan_task_id));
     setNote(interval.note ?? '');
   }

@@ -22,11 +22,6 @@ const RESUME_HINT =
 const REPLAY_HINT =
   'Следующий ход соберёт разговор из истории целиком — дороже, но ответ тот же.';
 
-/** Formats a token count the way a header can carry it: `21 685`. */
-export function formatTokens(count: number): string {
-  return count.toLocaleString('ru-RU');
-}
-
 /**
  * The badge of the conversation header.
  *

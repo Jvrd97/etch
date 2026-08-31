@@ -96,6 +96,12 @@ describe('formatMinutes', () => {
   it('falls back to minutes below the hour', () => {
     expect(formatMinutes(45)).toBe('45 мин');
   });
+
+  it('shows a window across midnight as the hour the server measured', () => {
+    // Смысл того, что минуты приезжают с сервера: здесь никто не знает, что
+    // день идёт с 04:00 до 04:00, и знать не обязан.
+    expect(formatMinutes(60)).toBe('1 ч');
+  });
 });
 
 describe('formatClock', () => {
