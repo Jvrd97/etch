@@ -61,6 +61,7 @@ async def personal_source(
     иначе тест проверял бы не тот путь, которым ходит прод.
     """
     monkeypatch.setenv("CLICKUP_PERSONAL_TOKEN", "pk_test_not_a_real_token")
+    monkeypatch.setenv("CLICKUP_PERSONAL_TEAM_ID", "90152350557")
     await inbox_crud.seed_sources(db_session)
     source = await inbox_crud.get_source_by_name(db_session, "clickup", "personal")
     assert source is not None
@@ -148,6 +149,42 @@ async def test_the_local_date_comes_from_the_day_boundary_not_from_the_calendar(
 
     signal = (await db_session.execute(select(InboundSignal))).scalars().one()
     assert signal.local_date == local_date(at)
+
+
+async def test_the_workspace_id_travels_in_the_path_not_the_account_name(
+    db_session: AsyncSession, personal_source: SignalSource
+) -> None:
+    """
+    ClickUp адресует воркспейс числовым id.
+
+    `account` в справочнике — это «личный» против «рабочего», человеческое
+    различение; подставленное в путь, оно даёт 404 на первом же живом прогоне.
+    Тест смотрит на URL запроса, потому что мок ответит на любой.
+    """
+    calls: list[httpx.Request] = []
+    await inbox_crud.poll_source(
+        db_session, personal_source, transport=clickup_transport([TASK], calls)
+    )
+
+    assert len(calls) == 1
+    assert "/team/90152350557/task" in str(calls[0].url)
+
+
+async def test_a_source_without_a_workspace_id_refuses_before_the_network(
+    db_session: AsyncSession,
+    personal_source: SignalSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLICKUP_PERSONAL_TEAM_ID", raising=False)
+
+    calls: list[httpx.Request] = []
+    with pytest.raises(inbox_crud.PollRefused) as error:
+        await inbox_crud.poll_source(
+            db_session, personal_source, transport=clickup_transport([TASK], calls)
+        )
+
+    assert error.value.code == "no_workspace"
+    assert calls == []
 
 
 async def test_a_disabled_source_refuses_and_does_not_touch_the_network(
