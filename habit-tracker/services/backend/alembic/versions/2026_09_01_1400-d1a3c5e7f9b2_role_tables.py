@@ -8,8 +8,8 @@
 четвёрка живёт в `app/roles/catalog.py` для баз, собранных `create_all` (тесты
 миграций не видят), и обе копии идемпотентны.
 
-Revision ID: d5a7c9e1f3b6
-Revises: c4f6b8d0e2a5
+Revision ID: d1a3c5e7f9b2
+Revises: d5a7c9e1f3b6
 Create Date: 2026-09-01 14:00:00.000000+00:00
 
 """
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "d5a7c9e1f3b6"
-down_revision: Union[str, None] = "c4f6b8d0e2a5"
+revision: str = "d1a3c5e7f9b2"
+down_revision: Union[str, None] = "d5a7c9e1f3b6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

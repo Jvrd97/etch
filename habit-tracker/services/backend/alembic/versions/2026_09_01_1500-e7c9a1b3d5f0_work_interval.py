@@ -1,7 +1,7 @@
 """work intervals — the measured time of a day, manual entry first
 
 Revision ID: e7c9a1b3d5f0
-Revises: d5a7c9e1f3b6
+Revises: d1a3c5e7f9b2
 Create Date: 2026-09-01 15:00:00.000000+00:00
 
 """
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "e7c9a1b3d5f0"
-down_revision: Union[str, None] = "d5a7c9e1f3b6"
+down_revision: Union[str, None] = "d1a3c5e7f9b2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

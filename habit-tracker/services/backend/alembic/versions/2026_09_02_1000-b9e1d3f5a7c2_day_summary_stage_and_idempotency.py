@@ -1,7 +1,7 @@
 """day_summary: stage of closing and one idempotency key per touch
 
 Revision ID: b9e1d3f5a7c2
-Revises: a8d0c2e4b6f1
+Revises: c3e5a7b9d1f2
 Create Date: 2026-09-02 10:00:00.000000+00:00
 
 Закрытие дня идёт в два касания — около 15:40 факт по рабочим задачам, вечером
@@ -28,7 +28,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "b9e1d3f5a7c2"
-down_revision: Union[str, None] = "a8d0c2e4b6f1"
+down_revision: Union[str, None] = "c3e5a7b9d1f2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

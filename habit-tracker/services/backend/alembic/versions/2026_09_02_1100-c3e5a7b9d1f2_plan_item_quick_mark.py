@@ -13,7 +13,7 @@
 Обратимость полная: колонка и её индекс удаляются, данные `#87` не трогаются.
 
 Revision ID: c3e5a7b9d1f2
-Revises: a8d0c2e4b6f1
+Revises: b2d4f6a8c0e3
 Create Date: 2026-09-02 11:00:00.000000+00:00
 
 """
@@ -25,7 +25,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c3e5a7b9d1f2"
-down_revision: Union[str, None] = "a8d0c2e4b6f1"
+down_revision: Union[str, None] = "b2d4f6a8c0e3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

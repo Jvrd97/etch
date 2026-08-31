@@ -214,7 +214,14 @@ async def test_tampered_signature_is_401_not_500(client: AsyncClient) -> None:
     """Испорченный на один символ токен — отказ, а не пятисотка."""
     await client.post(SESSION_URL, json={"api_key": TEST_KEY})
     token = client.cookies[SESSION_COOKIE_NAME]
-    replace_cookie(client, token[:-1] + ("a" if token[-1] != "a" else "b"))
+    # Портится первый символ подписи, а не последний символ токена. Подпись —
+    # base64url, и у последнего символа часть битов не значащая: замена там
+    # раскодируется в те же байты, токен остаётся валидным, и тест краснел раз
+    # в несколько прогонов — по длине подписи, а не по коду.
+    head, dot, signature = token.rpartition(".")
+    assert dot and signature
+    spoiled = ("a" if signature[0] != "a" else "b") + signature[1:]
+    replace_cookie(client, f"{head}.{spoiled}")
     assert (await client.get(PROTECTED_URL)).status_code == 401
 
 

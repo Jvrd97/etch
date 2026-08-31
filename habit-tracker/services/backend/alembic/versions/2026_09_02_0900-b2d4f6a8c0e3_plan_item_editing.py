@@ -20,7 +20,7 @@ DISTINCT` нужен ровно затем, чтобы правило дейст
 остаются как были.
 
 Revision ID: b2d4f6a8c0e3
-Revises: f7c9e1b3d5a8
+Revises: c8f0a2b4d6e7
 Create Date: 2026-09-02 09:00:00.000000+00:00
 
 """
@@ -32,7 +32,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b2d4f6a8c0e3"
-down_revision: Union[str, None] = "f7c9e1b3d5a8"
+down_revision: Union[str, None] = "c8f0a2b4d6e7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

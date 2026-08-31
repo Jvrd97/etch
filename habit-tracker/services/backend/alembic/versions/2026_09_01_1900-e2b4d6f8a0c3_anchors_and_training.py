@@ -1,7 +1,7 @@
 """anchor_kind, day_anchor, training_day, training_state, body_complaint, personal_record
 
-Revision ID: e6b8d0f2a4c7
-Revises: d5a7c9e1f3b6
+Revision ID: e2b4d6f8a0c3
+Revises: e6b8d0f2a4c7
 Create Date: 2026-09-01 16:00:00.000000+00:00
 
 """
@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision: str = "e6b8d0f2a4c7"
-down_revision: Union[str, None] = "d5a7c9e1f3b6"
+revision: str = "e2b4d6f8a0c3"
+down_revision: Union[str, None] = "e6b8d0f2a4c7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

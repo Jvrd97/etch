@@ -1,7 +1,7 @@
 """challenges and challenge_days — an obligation with a verdict on every day
 
 Revision ID: f7c9e1a3b5d8
-Revises: e6b8d0f2a4c7
+Revises: b9e1d3f5a7c2
 Create Date: 2026-09-02 10:00:00.000000+00:00
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "f7c9e1a3b5d8"
-down_revision: Union[str, None] = "e6b8d0f2a4c7"
+down_revision: Union[str, None] = "b9e1d3f5a7c2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
