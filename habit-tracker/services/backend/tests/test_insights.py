@@ -2,7 +2,7 @@
 Tests for the AI insights endpoint (POST /api/v1/insights/).
 """
 
-# [review:need-review] PHASE-01/25-ai-reports-history
+# [review:need-review] PHASE-01/25-ai-reports-history, PHASE-03/120
 # summary: + tests for reports history (GET list newest-first with preview, GET by id, 404)
 import pytest
 from httpx import AsyncClient

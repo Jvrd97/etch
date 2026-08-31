@@ -2,8 +2,8 @@
 Test configuration and fixtures.
 """
 
-# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
+# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
@@ -73,6 +73,28 @@ def day_boundary() -> Generator[None, None, None]:
     daytime.reset_boundary()
     yield
     daytime.reset_boundary()
+
+
+@pytest.fixture(scope="function", autouse=True)
+def isolated_cli_paths(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[None, None, None]:
+    """
+    Каталог конфигурации и рабочий каталог `claude` — временные на время теста.
+
+    Их прод-значения лежат в `/data`, который на машине разработчика создать
+    нельзя; а запуск CLI создаёт рабочий каталог перед стартом процесса. Без
+    подмены любой тест, дошедший до сборки запуска, упирался бы в права на
+    корень файловой системы вместо того, что он проверяет.
+    """
+    root = tmp_path_factory.mktemp("claude-cli")
+    original_config_dir = settings.CHAT_CLAUDE_CONFIG_DIR
+    original_cwd = settings.CHAT_CLI_CWD
+    settings.CHAT_CLAUDE_CONFIG_DIR = str(root / "config")
+    settings.CHAT_CLI_CWD = str(root / "workspace")
+    yield
+    settings.CHAT_CLAUDE_CONFIG_DIR = original_config_dir
+    settings.CHAT_CLI_CWD = original_cwd
 
 
 @pytest.fixture(scope="function")

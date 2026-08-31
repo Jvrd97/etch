@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
-# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, the append that records what a turn cost, and the CLI-session hint written from a finished turn or dropped when the system prompt it was built under is gone
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/117
+# summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, the append that records what a turn cost, the CLI-session hint written from a finished turn or dropped when the system prompt it was built under is gone, and the plans persisted beside the message they were proposed in
 # summary: PHASE-03/117 adds the delete that takes the four tables and the CLI session file with it, and the usage rollup that sums a conversation's tokens without reading one `content`
 """
 Доступ к таблицам разговора.
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -51,11 +51,18 @@ from app.llm.chat.session_files import (
     OUTCOME_REMOVED,
     remove_session_file,
 )
+from app.models.applied_daily_summary import AppliedDailySummary
+from app.schemas.chat import ChatPlan as SchemaChatPlan
+from app.schemas.chat import ChatPlanApply
+from app.schemas.daily_summary import DailySummaryApplyRequest
 from app.models.chat import (
     CONVERSATION_KIND_GENERAL,
     MESSAGE_STATUS_COMPLETE,
+    PLAN_STATUS_PROPOSED,
+    PLAN_STATUS_STALE,
     ChatConversation,
     ChatMessage,
+    ChatPlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -395,3 +402,154 @@ async def drop_stale_session(
     conversation.context_version = context_version
     await db.flush()
     return True
+
+
+async def save_plan(
+    db: AsyncSession, *, message_id: int, entry_date: date, plan: dict[str, Any]
+) -> ChatPlan:
+    """
+    Записать предложение рядом с сообщением, в котором оно прозвучало.
+
+    План персистится, а не живёт в ответе одного запроса, по двум причинам. В
+    многоходовом разговоре реплика «вернись к тому, что ты предлагал два хода
+    назад» — обычная, и возвращаться должно быть к чему. И без записи нельзя
+    доказать, что применено ровно то, что было показано: применение сверяется с
+    этой строкой.
+    """
+    row = ChatPlan(message_id=message_id, entry_date=entry_date, plan=plan)
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return row
+
+
+async def get_plan(db: AsyncSession, plan_id: int) -> ChatPlan | None:
+    """Один план по идентификатору."""
+    result = await db.execute(select(ChatPlan).where(ChatPlan.id == plan_id))
+    return result.scalar_one_or_none()
+
+
+async def plans_for_messages(
+    db: AsyncSession, message_ids: Sequence[int]
+) -> dict[int, ChatPlan]:
+    """
+    Планы лентой: по одному запросу на весь экран, а не на сообщение.
+
+    Ключ — `message_id`, потому что уникальность в таблице стоит на нём: одно
+    сообщение несёт максимум одно предложение.
+    """
+    if not message_ids:
+        return {}
+    result = await db.execute(
+        select(ChatPlan).where(ChatPlan.message_id.in_(message_ids))
+    )
+    return {row.message_id: row for row in result.scalars().all()}
+
+
+async def mark_stale_for_date(
+    db: AsyncSession, entry_date: date, *, except_plan_id: int
+) -> int:
+    """
+    Погасить остальные предложения на ту же дату.
+
+    План на дату, по которой уже применён другой план чата, помечается `stale`,
+    и плашка становится неактивной. Иначе два предложения на один день
+    оставались бы одинаково живыми, и второе применение дописало бы день второй
+    раз — с кнопкой, которая обещала «применить показанное».
+    """
+    result = await db.execute(
+        update(ChatPlan)
+        .where(
+            ChatPlan.entry_date == entry_date,
+            ChatPlan.id != except_plan_id,
+            ChatPlan.status == PLAN_STATUS_PROPOSED,
+        )
+        .values(status=PLAN_STATUS_STALE)
+    )
+    return int(result.rowcount or 0)
+
+
+class PlanSelectionRejected(Exception):
+    """Человек прислал операцию, которой в показанном плане не было."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+NOT_IN_PLAN = (
+    "операция {kind} по категории {category_id} и полю {field_id} не входит в "
+    "показанный план: применить можно только то, что было показано"
+)
+JOURNAL_NOT_IN_PLAN = (
+    "текст дня не совпадает с показанным в плане: применить можно только то, "
+    "что было показано"
+)
+
+
+def narrow_to_plan(
+    stored: SchemaChatPlan, chosen: ChatPlanApply
+) -> DailySummaryApplyRequest:
+    """
+    Свести выбор человека к сохранённому плану — или отказать.
+
+    Плашка присылает подмножество показанного: снятая галочка не должна
+    записаться, а дописанная в обход экрана — тем более. Проверяется это
+    сверкой с `chat_plans.plan`, а не доверием к телу запроса; иначе плашка
+    была бы просто ещё одним путём записи в базу, а строка плана ничего бы не
+    доказывала.
+
+    Дата берётся из плана, а не из тела: она — часть того, что человек видел,
+    когда нажимал.
+    """
+    allowed_metrics = {(op.category_id, op.field_id, op.value) for op in stored.metrics}
+    for op in chosen.metrics:
+        if (op.category_id, op.field_id, op.value) not in allowed_metrics:
+            raise PlanSelectionRejected(
+                NOT_IN_PLAN.format(
+                    kind="log_metric",
+                    category_id=op.category_id,
+                    field_id=op.field_id,
+                )
+            )
+
+    allowed_checks = {(op.category_id, op.field_id) for op in stored.checklist}
+    for check in chosen.checklist:
+        if (check.category_id, check.field_id) not in allowed_checks:
+            raise PlanSelectionRejected(
+                NOT_IN_PLAN.format(
+                    kind="check",
+                    category_id=check.category_id,
+                    field_id=check.field_id,
+                )
+            )
+
+    if chosen.journal is not None:
+        if stored.journal is None or stored.journal.content != chosen.journal.content:
+            raise PlanSelectionRejected(JOURNAL_NOT_IN_PLAN)
+
+    return DailySummaryApplyRequest(
+        entry_date=stored.entry_date,
+        metrics=chosen.metrics,
+        checklist=chosen.checklist,
+        journal=chosen.journal,
+    )
+
+
+async def receipt_id_for(db: AsyncSession, idempotency_key: str) -> int | None:
+    """
+    Идентификатор квитанции применения по её ключу.
+
+    Читается здесь, а не возвращается из `apply_daily_summary`: тот путь общий с
+    экраном разбора дня, и добавлять в его ответ поле ради одного потребителя
+    значило бы менять контракт, которым пользуется не этот тикет.
+
+    Ссылка на квитанцию хранится в `chat_plans` без внешнего ключа — намеренно:
+    удаление квитанции не должно стирать факт, что план применяли.
+    """
+    result = await db.execute(
+        select(AppliedDailySummary.id).where(
+            AppliedDailySummary.idempotency_key == idempotency_key
+        )
+    )
+    return result.scalar_one_or_none()

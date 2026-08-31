@@ -6,6 +6,7 @@ import { useCallback, useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
+import ChallengesSection from '@/components/ChallengesSection';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import QuickMarkRow from '@/components/QuickMarkRow';
 import HotkeyLegend from '@/components/HotkeyLegend';
@@ -22,6 +23,7 @@ export default function TodayPage() {
   const {
     date,
     entries,
+    categories,
     groups,
     quickMarks,
     checked,
@@ -84,6 +86,8 @@ export default function TodayPage() {
       </div>
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+
+      <ChallengesSection categories={categories} />
 
       {nothingToTrack ? (
         <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">

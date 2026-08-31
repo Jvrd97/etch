@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/121, PHASE-03/134
-# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, days, weeks, roles, chat and quick-marks routers in the API-key perimeter
+# [review:need-review] PHASE-03/106, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/152
+# summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, days, weeks, roles, chat, day-rules, challenge and quick-marks routers in the API-key perimeter
 # summary: the auth router is mounted OUTSIDE that perimeter — logging in is what a client without a key or a cookie has to be able to do
 """
 Сборка FastAPI-приложения.
@@ -17,9 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import (
     auth,
     categories,
+    challenges,
     chat,
     daily_summary,
     day,
+    day_rules,
     entries,
     goals,
     health,
@@ -75,12 +77,14 @@ API_ROUTERS = (
     daily_summary.router,
     health.router,
     day.router,
+    day_rules.router,
     goals.router,
     roles.router,
     chat.router,
     week.days_router,
     week.weeks_router,
     quick_marks.router,
+    challenges.router,
 )
 
 

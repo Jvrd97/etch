@@ -1,5 +1,5 @@
 
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/134
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/134, PHASE-03/152
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
 
 /**
@@ -179,6 +179,19 @@ export const APP_ROUTES: readonly AppRoute[] = [
     href: '/insights',
     hasMobile: true,
     hasMobileNested: false,
+    inTabBar: null,
+  },
+  {
+    id: 'day-rules',
+    name: 'Day rules',
+    href: '/settings/day-rules',
+    // Экран правил читают и правят с ноутбука: он про канон, а не про день, и
+    // мобильного близнеца у него пока нет — мобильная оболочка открывает
+    // десктопный маршрут, как это делали остальные экраны до своих срезов.
+    hasMobile: false,
+    hasMobileNested: false,
+    // Под «More»: канон меняли дважды за месяц, а не дважды в день, и пять
+    // слотов таб-бара заняты.
     inTabBar: null,
   },
   {

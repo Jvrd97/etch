@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117
-# summary: the chat router — conversations created, listed and read back with their messages and with whether the next turn continues a CLI session, and one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/117
+# summary: the chat router — conversations created, listed and read back with their messages, the plans proposed in them and whether the next turn continues a CLI session, one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context, and the apply that goes through the existing transactional `apply_daily_summary` rather than writing anything of its own
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
 """
@@ -46,17 +46,29 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi import Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SessionFactory, get_chat_llm_client, get_session_factory
 from app.core.database import get_db
 from app.core.daytime import now_utc, today_local
+from app.crud import category as category_crud
 from app.crud import chat as chat_crud
+from app.crud import daily_summary as daily_summary_crud
+from app.crud.chat import PlanSelectionRejected, narrow_to_plan
+from app.crud.daily_summary import DailySummaryApplyError
 from app.llm.chat.client import CHUNK_DELTA, ChatChunk, ChatLLMClient
 from app.llm.chat.context import build_day_card
+from app.llm.chat.plan import plan_from_answer
 from app.llm.chat.prompt import (
     CHAT_CONTEXT_VERSION,
     ChatTurn,
@@ -64,8 +76,12 @@ from app.llm.chat.prompt import (
 )
 from app.llm.chat.session import ResumeHint
 from app.llm.client import LLMError
+from app.schemas.daily_summary import DailySummaryApplyRequest
 from app.models.chat import (
     CONVERSATION_KINDS,
+    PLAN_STATUS_APPLIED,
+    PLAN_STATUS_DISMISSED,
+    PLAN_STATUS_PROPOSED,
     MESSAGE_ROLE_ASSISTANT,
     MESSAGE_ROLE_USER,
     MESSAGE_STATUS_COMPLETE,
@@ -73,8 +89,13 @@ from app.models.chat import (
     MESSAGE_STATUS_INTERRUPTED,
     ChatConversation,
 )
+from app.models.chat import ChatPlan as ChatPlanRow
+from app.schemas.chat import ChatPlan as SchemaChatPlan
 from app.schemas.chat import (
     FEED_MAX_LIMIT,
+    ChatPlanApply,
+    ChatPlanApplyResponse,
+    ChatPlanResponse,
     SSE_EVENT_DELTA,
     SSE_EVENT_DONE,
     SSE_EVENT_ERROR,
@@ -245,9 +266,19 @@ async def get_conversation(
         )
     messages = await chat_crud.list_messages(db, conversation_id)
     usage = await chat_crud.usage_of(db, conversation_id)
+    # Один запрос на все планы ленты: плашка висит под сообщением, но запрос на
+    # сообщение превратил бы открытие разговора в N обращений в базу.
+    plans = await chat_crud.plans_for_messages(db, [one.id for one in messages])
     return _detail(
         conversation,
-        [MessageResponse.model_validate(one) for one in messages],
+        [
+            MessageResponse.model_validate(one).model_copy(
+                update={
+                    "plan_id": plans[one.id].id if one.id in plans else None,
+                }
+            )
+            for one in messages
+        ],
         usage,
         client=client,
     )
@@ -419,8 +450,41 @@ async def _record_answer(
                 cli_cwd=client.cwd,
                 context_version=CHAT_CONTEXT_VERSION,
             )
+        await _attach_plan(
+            db,
+            message_id=message.id,
+            text=text,
+            complete=status_value == MESSAGE_STATUS_COMPLETE,
+        )
         await db.commit()
         return message.id
+
+
+async def _attach_plan(
+    db: AsyncSession, *, message_id: int, text: str, complete: bool
+) -> None:
+    """
+    Записать план, если ответ его несёт.
+
+    Ремонтный заход отсюда не делается: сессия уже открыта, ход уже закончен, и
+    второй вызов модели держал бы соединение ещё на десятки секунд. Ответ, из
+    которого план не собрался с первого раза, остаётся обычным сообщением — что
+    и обещано в `app.llm.chat.plan`.
+
+    Оборванный и провалившийся ход план не получает: предложение, снятое с
+    половины ответа, — это предложение, которого модель не договорила.
+    """
+    if not complete:
+        return
+    plan = await plan_from_answer(text)
+    if plan is None:
+        return
+    await chat_crud.save_plan(
+        db,
+        message_id=message_id,
+        entry_date=plan.entry_date,
+        plan=plan.model_dump(mode="json"),
+    )
 
 
 async def _turn_events(
@@ -549,3 +613,172 @@ async def post_message(
         media_type=SSE_MEDIA_TYPE,
         headers=SSE_HEADERS,
     )
+
+
+def _plan_response(row: ChatPlanRow) -> ChatPlanResponse:
+    """Строка плана как её читает плашка."""
+    plan = SchemaChatPlan.model_validate(row.plan)
+    return ChatPlanResponse(
+        id=row.id,
+        message_id=row.message_id,
+        entry_date=row.entry_date,
+        status=row.status,
+        plan=plan,
+        operation_count=plan.operation_count(),
+        applied_summary_id=row.applied_summary_id,
+        applied_at=row.applied_at,
+        created_at=row.created_at,
+    )
+
+
+async def _require_plan(db: AsyncSession, plan_id: int) -> ChatPlanRow:
+    """План или 404."""
+    row = await chat_crud.get_plan(db, plan_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"chat plan {plan_id} not found",
+        )
+    return row
+
+
+@router.get("/plans/{plan_id}", response_model=ChatPlanResponse)
+async def get_plan(
+    plan_id: int, db: AsyncSession = Depends(get_db)
+) -> ChatPlanResponse:
+    """
+    План, показанный сколько угодно ходов назад.
+
+    Отдаётся ровно то, что лежит в `chat_plans.plan`. Плашка в ленте открывается
+    по этой ссылке и обязана совпасть с тем, что было применено, — иначе
+    персистентность плана ничего не доказывает.
+    """
+    return _plan_response(await _require_plan(db, plan_id))
+
+
+@router.post(
+    "/plans/{plan_id}/apply",
+    response_model=ChatPlanApplyResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        200: {"description": "Повтор с тем же Idempotency-Key: ничего не записано"},
+        400: {"description": "План указывает на категорию или поле, которых нет"},
+        409: {
+            "description": (
+                "План уже применён, погашен как `stale`, или Idempotency-Key "
+                "занят другой записью"
+            )
+        },
+        422: {"description": "Отметка в нечеклистовой категории или чужом поле"},
+    },
+)
+async def apply_plan(
+    plan_id: int,
+    payload: ChatPlanApply,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> ChatPlanApplyResponse:
+    """
+    Записать то, что человек оставил отмеченным.
+
+    Пишет не модель и не эта ручка: пишет `apply_daily_summary` — тот самый
+    транзакционный путь, которым записывает экран разбора дня, с тем же
+    `Idempotency-Key` и теми же кодами отказа. Второго способа положить данные в
+    базу из разговора не заводится, поэтому и разбираться потом придётся с одним.
+
+    Присланное сверяется с сохранённым планом: применить можно подмножество
+    показанного и ничего сверх него. Дата берётся оттуда же — из плана, а не из
+    тела.
+    """
+    row = await _require_plan(db, plan_id)
+    if row.status not in (PLAN_STATUS_PROPOSED, PLAN_STATUS_APPLIED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"chat plan {plan_id} is {row.status} and cannot be applied",
+        )
+
+    stored = SchemaChatPlan.model_validate(row.plan)
+    try:
+        request = narrow_to_plan(stored, payload)
+    except PlanSelectionRejected as rejected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=rejected.message
+        ) from rejected
+
+    try:
+        if idempotency_key is not None:
+            replayed = await daily_summary_crud.find_applied_summary(
+                db, request, idempotency_key
+            )
+            if replayed is not None:
+                response.status_code = status.HTTP_200_OK
+                await db.commit()
+                return ChatPlanApplyResponse(
+                    plan=_plan_response(row),
+                    entry_ids=replayed.entry_ids,
+                    journal_entry_id=replayed.journal_entry_id,
+                    applied_operations=_applied_operations(request),
+                )
+
+        categories = await category_crud.get_categories(
+            db, limit=None, active_only=True
+        )
+        written = await daily_summary_crud.apply_daily_summary(
+            db, request, categories, idempotency_key
+        )
+    except DailySummaryApplyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    row.status = PLAN_STATUS_APPLIED
+    row.applied_at = now_utc()
+    # Без внешнего ключа намеренно: удаление квитанции не должно стирать факт,
+    # что план применяли. Та же причина, что у `journal_entry_id`.
+    row.applied_summary_id = (
+        await chat_crud.receipt_id_for(db, idempotency_key)
+        if idempotency_key is not None
+        else None
+    )
+    await db.flush()
+    # План на дату, по которой уже применён другой, становится неактивным.
+    await chat_crud.mark_stale_for_date(db, row.entry_date, except_plan_id=row.id)
+    await db.commit()
+
+    return ChatPlanApplyResponse(
+        plan=_plan_response(row),
+        entry_ids=written.entry_ids,
+        journal_entry_id=written.journal_entry_id,
+        applied_operations=_applied_operations(request),
+    )
+
+
+def _applied_operations(request: DailySummaryApplyRequest) -> int:
+    """Сколько операций закрыло это применение — число под применённой плашкой."""
+    return len(request.metrics) + len(request.checklist) + (1 if request.journal else 0)
+
+
+# `response_model=None` — не украшение: в этом модуле включён
+# `from __future__ import annotations`, и аннотация `-> None` доезжает до FastAPI
+# строкой, которую тот разворачивает в тип и принимает за модель ответа. У 204
+# тела нет, и без явного None маршрут не собирается вовсе.
+@router.post(
+    "/plans/{plan_id}/dismiss",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    response_class=Response,
+)
+async def dismiss_plan(plan_id: int, db: AsyncSession = Depends(get_db)) -> None:
+    """
+    Отклонить предложение.
+
+    Строка остаётся: отклонённый план — такой же факт разговора, как принятый, и
+    «что мне предлагали и что я не взял» читается только по нему.
+    """
+    row = await _require_plan(db, plan_id)
+    if row.status == PLAN_STATUS_APPLIED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"chat plan {plan_id} is already applied",
+        )
+    row.status = PLAN_STATUS_DISMISSED
+    await db.commit()

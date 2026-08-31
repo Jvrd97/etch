@@ -31,6 +31,13 @@ import {
 export interface UseTodayResult {
   date: string;
   entries: Entry[];
+  /**
+   * Every active category, ungrouped.
+   *
+   * `groups` routes categories to widgets; the challenge form needs the plain
+   * list, because a rule may point at a category no Today widget shows.
+   */
+  categories: Category[];
   groups: TodayGroups;
   /**
    * The quick-mark directory with today's state on it, in the order the server
@@ -277,6 +284,7 @@ export function useToday(): UseTodayResult {
   return {
     date: todayISO(),
     entries: mergeOptimisticEntries(entries, optimisticEntries),
+    categories,
     groups,
     quickMarks,
     checked,

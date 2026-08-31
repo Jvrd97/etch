@@ -1,3 +1,5 @@
+# [review:need-review] PHASE-03/120
+# summary: deploy & ops shortcuts; `preflight` delegates the pre-deploy run (check + live-CLI isolation smoke) to the backend
 # habit-tracker/Makefile — deploy & ops shortcuts (run from this dir on the VPS),
 # plus the local dev entrypoint (`make dev`) used on a laptop.
 # Prod stack = base compose + prod override + the optional `web` (frontend) profile.
@@ -22,7 +24,7 @@ BACKEND_PORT ?= 8000
 FRONTEND_PORT ?= 3000
 
 .DEFAULT_GOAL := help
-.PHONY: help up down stop restart logs ps build migrate deploy backup enable-boot \
+.PHONY: help up down stop restart logs ps build migrate deploy preflight backup enable-boot \
         dev dev-back dev-front dev-deps dev-createdb dev-migrate dev-stop dev-db dev-docker \
         front-check
 
@@ -54,10 +56,13 @@ build: ## Rebuild images without starting
 migrate: ## Apply DB migrations (alembic upgrade head)
 	$(COMPOSE) exec backend alembic upgrade head
 
-deploy: ## Full redeploy: pull main, rebuild, restart, migrate
+deploy: ## Full redeploy: pull main, rebuild, restart, migrate (run `make preflight` first)
 	git -C .. pull origin main
 	$(COMPOSE) up -d --build
 	$(COMPOSE) exec backend alembic upgrade head
+
+preflight: ## Pre-deploy run: backend check + the live-CLI isolation smoke (PHASE-03/120)
+	$(MAKE) -C $(BACKEND_DIR) preflight
 
 backup: ## Run a one-off DB backup (see deploy/backup.sh)
 	bash ../deploy/backup.sh

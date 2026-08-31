@@ -11,7 +11,14 @@ import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import Markdown from '@/components/Markdown';
-import { chatAPI, type ChatMessage, type ChatUsage } from '@/lib/api';
+import ChatPlanCard from '@/components/ChatPlanCard';
+import {
+  chatAPI,
+  type ChatMessage,
+  type ChatPlan,
+  type ChatPlanSelection,
+  type ChatUsage,
+} from '@/lib/api';
 import { formatTokens, lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { turnCost } from '@/lib/chat-usage';
@@ -82,6 +89,9 @@ export default function ChatPage() {
   const [removal, setRemoval] = useState<DeleteState>('idle');
   const [draft, setDraft] = useState('');
   const [reloads, setReloads] = useState(0);
+  // Планы лентой, по `plan_id` сообщения. Держатся отдельно от сообщений,
+  // потому что применение меняет план, а не реплику, под которой он висит.
+  const [plans, setPlans] = useState<Record<number, ChatPlan>>({});
   const bottom = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -101,6 +111,7 @@ export default function ChatPage() {
           conversationId: conversation.id,
           resumeReady: detail.resume_ready,
         });
+        await loadPlans(detail.messages, cancelled);
       } catch (error) {
         if (!cancelled) setScreen({ status: 'failed', message: errorText(error) });
       }
@@ -133,6 +144,44 @@ export default function ChatPage() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, turn]);
+
+  /**
+   * Подтянуть планы ленты.
+   *
+   * План читается отдельным запросом, а не приезжает вместе с сообщением:
+   * `chat_plans` — это то, чем можно доказать, что применено ровно показанное, и
+   * читать его надо из его собственной строки.
+   */
+  const loadPlans = useCallback(async (feed: ChatMessage[], cancelled = false) => {
+    const ids = feed
+      .map((message) => message.plan_id)
+      .filter((id): id is number => id != null);
+    if (ids.length === 0) return;
+    const loaded = await Promise.all(ids.map((id) => chatAPI.getPlan(id)));
+    if (cancelled) return;
+    setPlans((current) => {
+      const next = { ...current };
+      for (const plan of loaded) next[plan.id] = plan;
+      return next;
+    });
+  }, []);
+
+  const applyPlan = useCallback(
+    async (planId: number, selection: ChatPlanSelection) => {
+      // Ключ идемпотентности рождается на клиенте и один на попытку: второй тап
+      // по той же плашке обязан быть повтором, а не вторым применением.
+      const key = `chat-plan-${planId}`;
+      const result = await chatAPI.applyPlan(planId, selection, key);
+      setPlans((current) => ({ ...current, [result.plan.id]: result.plan }));
+    },
+    [],
+  );
+
+  const dismissPlan = useCallback(async (planId: number) => {
+    await chatAPI.dismissPlan(planId);
+    const refreshed = await chatAPI.getPlan(planId);
+    setPlans((current) => ({ ...current, [refreshed.id]: refreshed }));
+  }, []);
 
   const send = useCallback(
     async (conversationId: number, question: string) => {
@@ -182,9 +231,12 @@ export default function ChatPage() {
         conversationId,
         resumeReady: detail.resume_ready,
       });
+      // Ответ мог принести предложение: без этого плашка появилась бы только
+      // после перезагрузки страницы.
+      await loadPlans(detail.messages);
       setTurn({ phase: 'idle' });
     },
-    []
+    [loadPlans]
   );
 
   if (screen.status === 'loading') return <LoadingSpinner size="lg" />;
@@ -262,6 +314,13 @@ export default function ChatPage() {
                 <span className="whitespace-pre-wrap">{message.content}</span>
               ) : (
                 <Markdown content={message.content} />
+              )}
+              {message.plan_id != null && plans[message.plan_id] && (
+                <ChatPlanCard
+                  plan={plans[message.plan_id]}
+                  onApply={applyPlan}
+                  onDismiss={dismissPlan}
+                />
               )}
               {cost !== null && (
                 <p className="mt-2 text-[11px] text-text-disabled">{cost}</p>

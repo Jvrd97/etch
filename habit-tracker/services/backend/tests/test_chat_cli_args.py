@@ -2,8 +2,8 @@
 Изоляция хода CLI от личной конфигурации хоста и разбор его потока.
 """
 
-# [review:need-review] PHASE-03/111
-# summary: the isolation flag set is asserted whole (a turn that loses one of them costs tens of thousands of prefix tokens and leaks the host's personal config), CLAUDE_CONFIG_DIR and the fixed cwd reach the process, and the stream-json parser is checked on deltas, on the final result and on lines it must ignore rather than crash on
+# [review:need-review] PHASE-03/111, PHASE-03/120
+# summary: the isolation flag set (now shared with the one-shot `generate` client) is asserted whole (a turn that loses one of them costs tens of thousands of prefix tokens and leaks the host's personal config), CLAUDE_CONFIG_DIR and the fixed cwd reach the process, and the stream-json parser is checked on deltas, on the final result and on lines it must ignore rather than crash on
 import asyncio
 from pathlib import Path
 from typing import Any
@@ -13,8 +13,6 @@ import pytest
 from app.llm.chat.client import (
     CHUNK_DELTA,
     CHUNK_USAGE,
-    CLAUDE_CONFIG_DIR_ENV,
-    ISOLATION_ARGS,
     STREAM_ARGS,
     ChatChunk,
     CliChatClient,
@@ -22,6 +20,12 @@ from app.llm.chat.client import (
 )
 from app.llm.chat.prompt import ChatTurn, render_transcript
 from app.llm.chat.session import MODE_REPLAY, TurnStrategy
+from app.llm.cli import (
+    CLAUDE_CONFIG_DIR_ENV,
+    ISOLATION_ARGS,
+    ISOLATION_FLAGS,
+    CliInsightsClient,
+)
 from app.llm.client import LLMError
 
 SYSTEM_PROMPT = "системный промпт чата"
@@ -109,20 +113,50 @@ class FakeExec:
 class TestIsolationArgs:
     """Набор флагов проверяется целиком: выпавший флаг — это принятый срез, который не работает."""
 
-    def test_every_isolation_flag_is_present(self, tmp_path: Path) -> None:
-        """`--tools ""` и `--setting-sources ""` — оба, вместе со своими значениями."""
-        argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT, FRESH)
-
-        assert argv[0] == "claude"
-        assert "-p" in argv
-        for index in range(0, len(ISOLATION_ARGS), 2):
-            flag, value = ISOLATION_ARGS[index], ISOLATION_ARGS[index + 1]
-            assert flag in argv
-            assert argv[argv.index(flag) + 1] == value
-
     def test_isolation_set_is_the_one_the_measurement_was_made_with(self) -> None:
-        """Состав набора зафиксирован: замер 282 против 52 555 токенов сделан на нём."""
-        assert ISOLATION_ARGS == ("--tools", "", "--setting-sources", "")
+        """
+        Состав набора зафиксирован замером, а не вкусом.
+
+        282 токена против 52 555 (ADR-0017, CLI 2.1.250) и 290 против 21 620
+        для `--strict-mcp-config` (замер 2026-08-31, тот же CLI): источники
+        настроек и MCP-серверы отключаются РАЗНЫМИ флагами, и второй забыли в
+        `#111`. Тест держит набор целиком, чтобы следующая правка была
+        осознанной и приезжала вместе со своим замером.
+        """
+        assert ISOLATION_FLAGS == (
+            ("--tools", ""),
+            ("--setting-sources", ""),
+            ("--strict-mcp-config", None),
+        )
+        assert ISOLATION_ARGS == (
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+        )
+
+    @pytest.mark.parametrize("flag,value", ISOLATION_FLAGS)
+    def test_both_clients_carry_every_flag(
+        self, flag: str, value: str | None, tmp_path: Path
+    ) -> None:
+        """
+        Один набор на четыре юзкейса: чат и одноходовой `generate` — оба.
+
+        Параметризация по парам «флаг — значение» здесь не украшение: тест
+        обязан падать при пропаже ЛЮБОГО флага, а не только первого, и обязан
+        падать за оба клиента сразу — иначе разбор дня уедет без изоляции,
+        пока чат остаётся дешёвым.
+        """
+        chat_argv = CliChatClient(cwd=str(tmp_path)).build_argv(SYSTEM_PROMPT, FRESH)
+        oneshot_argv = CliInsightsClient(cwd=str(tmp_path)).build_argv()
+
+        for argv in (chat_argv, oneshot_argv):
+            assert argv[0] == "claude"
+            assert "-p" in argv
+            assert flag in argv
+            if value is not None:
+                assert argv[argv.index(flag) + 1] == value
 
     def test_stream_flags_are_present(self, tmp_path: Path) -> None:
         """Поток кусками требует stream-json вместе с частичными сообщениями."""

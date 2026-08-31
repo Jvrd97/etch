@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127
 # summary: avoid-streak calculation over full entry history (current/best/last relapse); its day boundary is now the one boundary — `today_local()` — so a mark at 00:30 lands in the same day for the streak as for the plan
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -10,6 +10,13 @@ from app.core.daytime import today_local
 from app.crud.values import is_true_value, parse_number
 from app.models import Entry, EntryValue, Field
 from app.models.field import FieldType
+
+# `is_relapse_value` is exported deliberately: «что такое сорвавшееся значение»
+# has two consumers now — the avoid streak here and the `abstain` rule of a
+# challenge (`app.challenge.rules`) — and one definition. `compute_streak` is
+# *not* shared with them: a day with no entries is clean for a streak and a miss
+# for an obligation, and that difference is the point of the second module.
+__all__ = ["StreakStats", "compute_streak", "get_category_streak", "is_relapse_value"]
 
 
 @dataclass(frozen=True)

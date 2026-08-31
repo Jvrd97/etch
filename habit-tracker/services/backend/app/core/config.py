@@ -1,8 +1,8 @@
-# [review:need-review] PHASE-03/106, PHASE-03/107, PHASE-03/109, PHASE-03/111
+# [review:need-review] PHASE-03/106, PHASE-03/107, PHASE-03/109, PHASE-03/111, PHASE-03/120
 # summary: ENVIRONMENT + CORS_ORIGINS allowlist; in prod an empty API_KEY or a "*" origin kills the start
 # summary: APP_TIMEZONE + DAY_START_HOUR — the temporary source of the one day boundary, validated at build
 # summary: SESSION_SECRET / SESSION_MAX_AGE_S / SESSION_COOKIE_SECURE — the browser session; an empty secret in prod kills the start the same way an empty API_KEY does
-# summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a chat turn from the host configuration is configuration, not a constant
+# summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a CLI call from the host configuration is configuration, not a constant; since #120 the two directory settings serve all four LLM use cases, not the chat alone
 """
 Настройки приложения.
 
@@ -111,7 +111,8 @@ class Settings(BaseSettings):
     # Empty = auto: cli when no API key and the binary is found, else api.
     LLM_BACKEND: Literal["", "cli", "api"] = ""
 
-    # Chat (ADR-0017). A chat turn on the CLI backend runs under its own
+    # Chat (ADR-0017). Every CLI call — a chat turn and the three one-shot
+    # `LLMClient.generate` use cases alike (#120) — runs under its own
     # configuration directory and inside a fixed empty working directory, never
     # under the host's `~/.claude`: otherwise the process loads the personal
     # CLAUDE.md, hooks, MCP servers and skills of whoever owns the machine —

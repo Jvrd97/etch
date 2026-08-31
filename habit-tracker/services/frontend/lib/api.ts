@@ -1,8 +1,8 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134, PHASE-03/143, PHASE-03/147
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed and streams one turn through fetch + ReadableStream instead of waiting for a whole body; chatAPI.context reads back the day card the prompt carried; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/115, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one, and has no way to edit one that exists; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 
 import { loginRedirectTarget } from './auth';
@@ -527,6 +527,44 @@ export const dayAPI = {
   },
 };
 
+// Day rules API: the canon of a day, versioned. There is no update and no
+// delete here, and that is the contract rather than an omission — a rule row
+// that has already judged days is never edited, only superseded from a date
+// that has not happened yet.
+export const dayRulesAPI = {
+  /**
+   * Every version, plus the earliest date a new one may start on.
+   *
+   * That date is the server's answer, not `new Date()`: the day turns at the
+   * boundary hour written in the canon itself, so at 00:30 the browser's
+   * «завтра» is still the server's «сегодня» — the one date publishing is not
+   * allowed to start on.
+   */
+  getHistory: async () => {
+    return fetcher<DayRuleSetHistory>('/day-rule-sets');
+  },
+
+  /** The version in force; 404 when the rule table has never been migrated. */
+  getCurrent: async () => {
+    return fetcher<DayRuleSet>('/day-rule-sets/current');
+  },
+
+  /**
+   * Publish a new version from `valid_from` onwards.
+   *
+   * The server closes the version in force at that same date and inserts this
+   * one, in a single transaction. Verdicts of days already lived are not
+   * recomputed: each of them is judged by the rule that covered its date, and
+   * that rule keeps its numbers.
+   */
+  publish: async (payload: DayRuleSetPublish) => {
+    return fetcher<DayRuleSet>('/day-rule-sets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+};
+
 // Types
 export type CategoryDisplayMode = 'form' | 'checklist';
 export type CategoryStreakMode = 'build' | 'avoid';
@@ -944,6 +982,45 @@ export interface DayMap {
   nocode_days: number[];
   /** Conditions that lower a day, in the order they are weighed. */
   verdict_reasons: VerdictReason[];
+}
+
+/**
+ * A new version of the canon, as the screen sends it.
+ *
+ * No `id` and no `valid_to`: the first would be an edit of a row and the second
+ * a hole in the canon, and a date with no rule covering it has no verdict at
+ * all. The end of an interval is written by the server, when the next version
+ * closes it.
+ */
+export interface DayRuleSetPublish {
+  /** First day lived under the new version; never today or earlier. */
+  valid_from: string;
+  timezone: string;
+  day_start_hour: number;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  /** `HH:MM:SS`. */
+  work_stop_at: string;
+  max_work_tasks: number;
+  /** Decimal string, `1.00` for «закрыты все». */
+  tasks_required_ratio: string;
+  overtime_disqualifies: boolean;
+  workdays: number[];
+  nocode_days: number[];
+  required_anchors: string[];
+  note_md: string;
+}
+
+/** Every version of the canon, and what the screen needs to publish the next. */
+export interface DayRuleSetHistory {
+  /** Today by the day boundary of the rule in force, not by the browser's clock. */
+  today: string;
+  /** Earliest `valid_from` the server will accept — tomorrow. */
+  earliest_valid_from: string;
+  /** id of the version in force; null when the rule table is empty. */
+  current_id: number | null;
+  /** Oldest interval first. */
+  rules: DayRuleSet[];
 }
 
 export interface Day {
@@ -1597,6 +1674,79 @@ export interface ChatMessage {
   latency_ms: number | null;
   model: string | null;
   created_at: string;
+  /** The plan proposed in this message, if it proposed one. */
+  plan_id?: number | null;
+}
+
+/**
+ * What the chat may propose to write — and, more to the point, what it may not.
+ *
+ * There is no operation for unticking, deleting or renaming anything: the class
+ * of destructive writes is closed by the type, not by the prompt. A model that
+ * answers past its instructions still cannot say a word the shape does not have.
+ */
+export interface ChatPlanMetricOp {
+  op: 'log_metric';
+  category_id: number;
+  field_id: number;
+  value: number;
+  source_text: string;
+  uncertain?: boolean;
+  suspicious?: boolean;
+}
+
+/** A box to tick. There is deliberately no field able to carry a `false`. */
+export interface ChatPlanCheckOp {
+  op: 'check';
+  category_id: number;
+  field_id: number;
+  source_text: string;
+  uncertain?: boolean;
+}
+
+/** The day's text. `replace` is not among the modes the chat can name. */
+export interface ChatPlanJournalOp {
+  op: 'write_journal';
+  content: string;
+  title?: string | null;
+  mood?: string | null;
+  tags?: string | null;
+  mode: 'append' | 'create';
+}
+
+export interface ChatPlanBody {
+  entry_date: string;
+  metrics: ChatPlanMetricOp[];
+  checklist: ChatPlanCheckOp[];
+  journal: ChatPlanJournalOp | null;
+}
+
+export type ChatPlanStatus = 'proposed' | 'applied' | 'dismissed' | 'stale';
+
+export interface ChatPlan {
+  id: number;
+  message_id: number;
+  entry_date: string;
+  status: ChatPlanStatus;
+  plan: ChatPlanBody;
+  operation_count: number;
+  applied_summary_id: number | null;
+  applied_at: string | null;
+  created_at: string;
+}
+
+/** What the person left ticked when they pressed «применить». */
+export interface ChatPlanSelection {
+  metrics?: ChatPlanMetricOp[];
+  checklist?: ChatPlanCheckOp[];
+  journal?: ChatPlanJournalOp | null;
+}
+
+export interface ChatPlanApplyResult {
+  plan: ChatPlan;
+  entry_ids: number[];
+  journal_entry_id: number | null;
+  applied_operations: number;
 }
 
 /** A conversation read back with its messages — what a reload of `/chat` draws. */
@@ -1659,6 +1809,34 @@ export const chatAPI = {
     return fetcher<Record<string, never>>(`/chat/conversations/${id}`, {
       method: 'DELETE',
     });
+  },
+
+  /** One plan, however many turns ago it was shown. */
+  getPlan: async (planId: number) => {
+    return fetcher<ChatPlan>(`/chat/plans/${planId}`);
+  },
+
+  /**
+   * Apply what is still ticked.
+   *
+   * The server narrows the selection to the plan it stored, so a row the card
+   * never showed cannot be smuggled in here. `Idempotency-Key` makes the second
+   * tap a 200 that writes nothing, exactly as on the day-review screen.
+   */
+  applyPlan: async (
+    planId: number,
+    selection: ChatPlanSelection,
+    idempotencyKey: string,
+  ) => {
+    return fetcher<ChatPlanApplyResult>(`/chat/plans/${planId}/apply`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(selection),
+    });
+  },
+
+  dismissPlan: async (planId: number) => {
+    return fetcher<void>(`/chat/plans/${planId}/dismiss`, { method: 'POST' });
   },
 
   /**
@@ -1923,5 +2101,147 @@ export const quickMarksAPI = {
     return fetcher<QuickMarkSourceUsage[]>(
       `/quick-marks/events/sources${suffix ? `?${suffix}` : ''}`
     );
+  },
+};
+
+// ============ Challenges ============
+
+/** Which of the four promises a challenge holds its category to. */
+export type ChallengeRuleKind =
+  | 'metric_at_least'
+  | 'metric_at_most'
+  | 'checked'
+  | 'abstain';
+
+/**
+ * The state of one day of an obligation.
+ *
+ * `pending` exists because today has not closed yet: an obligation's day
+ * becomes a miss when `local_date()` names the next date, not at browser
+ * midnight, so the browser never decides this for itself.
+ */
+export type ChallengeDayVerdict = 'done' | 'miss' | 'pending';
+
+/** Who put the verdict there. A recompute never overwrites `manual`. */
+export type ChallengeDaySource = 'computed' | 'manual';
+
+/** `any_miss` — the first miss ends it; `budget` — the (allowed + 1)-th does. */
+export type ChallengeFailureMode = 'any_miss' | 'budget';
+
+export type ChallengeStatus = 'active' | 'won' | 'failed' | 'abandoned';
+
+export interface ChallengeDay {
+  day: string;
+  verdict: ChallengeDayVerdict;
+  source: ChallengeDaySource;
+  note: string | null;
+}
+
+export interface Challenge {
+  id: number;
+  title: string;
+  category_id: number;
+  field_id: number;
+  rule_kind: ChallengeRuleKind;
+  /** Decimal over the wire: the server never rounds a threshold into a float. */
+  target: string | null;
+  starts_on: string;
+  ends_on: string;
+  failure_mode: ChallengeFailureMode;
+  allowed_misses: number;
+  status: ChallengeStatus;
+  failed_on: string | null;
+  total_days: number;
+  day_number: number;
+  done_count: number;
+  misses_used: number;
+  /** How many misses the obligation still survives; 0 under `any_miss`. */
+  misses_left: number;
+  /** null when today is outside the window. */
+  today_verdict: ChallengeDayVerdict | null;
+  created_at: string;
+}
+
+export interface ChallengeDetail extends Challenge {
+  days: ChallengeDay[];
+}
+
+export interface ChallengeDraft {
+  title: string;
+  category_id: number;
+  field_id: number;
+  rule_kind: ChallengeRuleKind;
+  target?: string;
+  starts_on: string;
+  ends_on: string;
+  failure_mode?: ChallengeFailureMode;
+  allowed_misses?: number;
+}
+
+export interface ChallengePatch {
+  title?: string;
+  target?: string | null;
+  ends_on?: string;
+  failure_mode?: ChallengeFailureMode;
+  allowed_misses?: number;
+  /**
+   * The only status a person sets. `won` and `failed` are derived from the
+   * misses, and the server refuses them here.
+   */
+  status?: 'abandoned';
+}
+
+/** A verdict put on a day by hand. `pending` is deliberately not offerable. */
+export interface ChallengeDayDraft {
+  verdict: 'done' | 'miss';
+  note?: string;
+}
+
+/**
+ * Reading a challenge is what advances it.
+ *
+ * There is no scheduler in this project — every line of code runs inside an
+ * HTTP request — so the verdicts of the days that passed are materialized by
+ * the read itself. That is why the card never computes a count of its own: the
+ * numbers it prints are the ones the server just wrote down.
+ */
+export const challengesAPI = {
+  list: async () => {
+    return fetcher<Challenge[]>('/challenges');
+  },
+
+  get: async (id: number) => {
+    return fetcher<ChallengeDetail>(`/challenges/${id}`);
+  },
+
+  create: async (draft: ChallengeDraft) => {
+    return fetcher<Challenge>('/challenges', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  patch: async (id: number, patch: ChallengePatch) => {
+    return fetcher<Challenge>(`/challenges/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  recompute: async (id: number) => {
+    return fetcher<Challenge>(`/challenges/${id}/recompute`, { method: 'POST' });
+  },
+
+  /**
+   * Count a day, or refuse it, by hand.
+   *
+   * A recompute never overwrites this afterwards, and the status is recomputed
+   * from it — which is the only way a failed challenge comes back to active.
+   */
+  setDayVerdict: async (id: number, day: string, draft: ChallengeDayDraft) => {
+    return fetcher<ChallengeDetail>(`/challenges/${id}/days/${day}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
   },
 };

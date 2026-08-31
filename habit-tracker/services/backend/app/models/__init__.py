@@ -1,8 +1,9 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/134
-# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the work intervals of a day, the chat tables, the four role tables, the week snapshot, the quick-mark directory with its journal and the plan violations alongside the existing ones
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134
+# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the work intervals of a day, the chat tables, the four role tables, the week snapshot, the quick-mark directory with its journal, the challenge tables and the plan violations alongside the existing ones
 from app.models.ai_report import AIReport
 from app.models.applied_daily_summary import AppliedDailySummary
 from app.models.category import Category
+from app.models.challenge import Challenge, ChallengeDay
 from app.models.chat import (
     ChatConversation,
     ChatMessage,
@@ -31,6 +32,8 @@ __all__ = [
     "AIReport",
     "AppliedDailySummary",
     "Category",
+    "Challenge",
+    "ChallengeDay",
     "ChatConversation",
     "ChatMessage",
     "ChatPlan",
