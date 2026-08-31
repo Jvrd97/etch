@@ -2046,3 +2046,26 @@ Feedback loops (backend): pytest **1315 passed, 2 skipped**, `ruff check app tes
 - `app/day/evaluate.py` — mod, `_hours` и локальная `MINUTES_PER_HOUR` удалены.
 - `app/roles/report.py` — mod, `_hours` удалена.
 - `tests/test_chat_retrieval.py` — mod, ложный assert.
+
+## 2026-08-31 — приёмка PHASE-03, находка 5.1: клаузы закрытого дня
+
+Файлов тронуто: 2.
+
+**mod**: `app/crud/summary.py` (`_to_response` кладёт `clauses` в ответ — параметр принимался
+и выбрасывался, поэтому закрытый день всегда отдавал пустой список), `tests/test_day_role_clause.py`
+(три проверки в `TestOverTheWire` переписаны).
+
+Дефект держался зелёным потому, что обе проверки выходного и no-code дня были вида
+`assert REASON_ROLE_ACT not in [...]` — на пустом списке это истинно всегда. Теперь проверки
+требуют именно тот список, который день обязан нести: три условия канона у дня, который клауз
+роли не судит, и четыре с непройденным `role_act` у проигранного рабочего дня. Проверено
+обратным ходом: со снятой правкой все три краснеют.
+
+Живьём: `POST /day/2026-08-26/close/final` на чистой базе с `alembic upgrade head` отдаёт
+`lost / role_act` и четыре клауза с текстом («ни одного акта CTO или Системный архитектор»),
+`GET /day/2026-08-26` — те же четыре.
+
+Feedback loops (backend): pytest **1479 passed, 2 skipped** (на отдельной тестовой базе — общая
+`habit_tracker_test` занята параллельными агентами), `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (185 файлов), `alembic heads` — одна голова
+`b4d6f8a0c2e5`. `make check` целиком не отрабатывал: docker не поднимается.
