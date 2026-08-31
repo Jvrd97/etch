@@ -1,7 +1,41 @@
 # [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109
-# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job, and SESSION_SECRET — empty kills the start the same way an empty API_KEY does
-# Usage (on VPS, from habit-tracker/):
-#   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
+# summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job, and SESSION_SECRET — empty kills the start the same way an empty API_KEY does; plus the two things that make a deploy provable — every dev mount dropped, and the deployed commit stamped on each image
+# Usage (on VPS, from habit-tracker/): `make up` — it exports the GIT_SHA this file
+# needs and runs deploy/verify-deploy.sh afterwards. The raw command underneath is
+#   docker compose --profile web -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d --build
+# but run bare it labels the images `revision: unset` and the verification fails.
+#
+# ─── Why every service below drops its volumes ───────────────────────────────
+# docker-compose.yml is the *development* file. Its mounts exist so an edit on
+# the laptop reaches a running container without a rebuild:
+#
+#   backend/worker:  ./services/backend:/app        (host source over image code)
+#   frontend:        ./services/frontend:/app       (host source over image code)
+#                    /app/node_modules              (anonymous volume)
+#                    /app/.next                     (anonymous volume)
+#
+# In production every one of these is a lie detector switched off:
+#
+# 1. The two anonymous volumes are the bug that shipped. Docker creates such a
+#    volume on the container's FIRST start, seeded from the image, and then
+#    reuses the SAME volume forever — it is never re-seeded. From the second
+#    start on, the volume mounted at /app/.next hides the freshly built .next
+#    that lives in the image underneath it. The image had a current
+#    .next/BUILD_ID; the container served the month-old build out of the volume.
+#    `up --build` and even `build --no-cache` do not help: they rebuild the
+#    image, and the image is not what is being served. Only `down -v` /
+#    `docker volume rm` clears it. This override removes the mounts instead, so
+#    /app/.next is the image's directory again and every deploy is visible.
+# 2. The bind mounts of ./services/* over /app make prod run the host working
+#    tree rather than the artefact that was built, reviewed and could be rolled
+#    back. Then the image is decoration: a half-finished edit or a stray file on
+#    the VPS is what actually serves traffic. Prod runs the image, full stop.
+#
+# Compose merges `volumes:` by target path, so a shorter list here would NOT
+# have removed anything — that is exactly how the /app mounts survived into
+# production unnoticed. The `!reset` / `!override` tags below are what actually
+# drop them (Compose Specification merge tags; `docker compose config` prints
+# the result, and an empty `volumes` there is the proof).
 services:
   postgres:
     restart: always
@@ -9,6 +43,17 @@ services:
 
   backend:
     restart: always
+    # Stamp the deployed commit onto the image as an OCI label. The Dockerfile is
+    # untouched: compose applies `build.labels` to the finished image itself.
+    # deploy/verify-deploy.sh reads it back and compares with `git rev-parse HEAD`
+    # on the host. GIT_SHA is exported by habit-tracker/Makefile; a hand-run
+    # `docker compose build` without it leaves the literal "unset" and the
+    # verification fails — an image nobody can date is an image nobody should
+    # trust in production.
+    build:
+      context: ./services/backend
+      labels:
+        org.opencontainers.image.revision: ${GIT_SHA:-unset}
     # --timeout must stay above LLM_TIMEOUT_SECONDS (120s in app/llm/client.py):
     # a month-long insights report is one long synchronous request, and a
     # shorter worker timeout would kill it before the CLI returns.
@@ -40,11 +85,14 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       LLM_BACKEND: ${LLM_BACKEND:-cli}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-    # The claude CLI login has to come from the host: the binary is baked
-    # into the image, the credentials never are. Note that compose merges
-    # volume lists by target, so the base file's /app bind mount stays —
-    # an empty list here never removed it.
-    volumes:
+    # `!override` replaces the base list wholesale instead of merging into it,
+    # which is what drops `./services/backend:/app`. Without it prod ran the host
+    # working tree over the image's code (see the header). The venv already lives
+    # outside /app (/opt/venv, see the Dockerfile) precisely because of that
+    # mount, so removing it costs nothing.
+    # The claude CLI login still has to come from the host: the binary is baked
+    # into the image, the credentials never are.
+    volumes: !override
       - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
       - ${HOME}/.claude.json:/root/.claude.json
       # The weekly `.md` export (deploy/export-md.sh) runs inside this container
@@ -58,6 +106,12 @@ services:
   # twice, and the advisory lock inside each job is the belt, not the braces.
   worker:
     restart: always
+    # Same image as the backend, same stamp — otherwise the scheduler could quietly
+    # run a different build from the API it shares a database with.
+    build:
+      context: ./services/backend
+      labels:
+        org.opencontainers.image.revision: ${GIT_SHA:-unset}
     command: python -m app.worker
     deploy:
       replicas: 1
@@ -72,10 +126,32 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       LLM_BACKEND: ${LLM_BACKEND:-cli}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-    volumes:
+    # Same reason as the backend: `!override` drops ./services/backend:/app so the
+    # scheduler runs image code, not whatever is lying in the checkout.
+    volumes: !override
       - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude
       - ${HOME}/.claude.json:/root/.claude.json
 
   frontend:
     restart: always
     profiles: ["web"]  # optional: enable with --profile web
+    build:
+      context: ./services/frontend
+      labels:
+        org.opencontainers.image.revision: ${GIT_SHA:-unset}
+    # THE BUG. The base file mounts three things here: the host source over /app,
+    # and two anonymous volumes over /app/node_modules and /app/.next. The one at
+    # /app/.next was created on the container's first start, seeded from the image
+    # once, and reused unchanged from then on — covering the freshly built .next
+    # inside the image. Result: the image carried a current .next/BUILD_ID while
+    # the container served a month-old interface, and three `make deploy` runs in
+    # a row reported success. Prod has no reason to own any of the three: nobody
+    # edits source on the VPS, node_modules and .next come from the build.
+    # `!reset` removes the key entirely (an empty list would only have merged and
+    # changed nothing). Check with:
+    #   docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml \
+    #     --profile web config | grep -A5 'frontend:'
+    # An already-poisoned server still needs the old volume destroyed once:
+    #   docker compose ... down -v     (or: docker volume rm <the anonymous id>)
+    # Config alone cannot delete a volume that already exists and is attached.
+    volumes: !reset []

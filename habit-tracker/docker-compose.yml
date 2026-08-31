@@ -103,6 +103,16 @@ services:
       API_PROXY_TARGET: http://backend:8000
     ports:
       - "3000:3000"
+    # DEVELOPMENT MOUNTS — deploy/docker-compose.prod.yml must cancel all three,
+    # and does (`volumes: !reset []`). They are correct here and poison in prod:
+    # `/app/.next` is an anonymous volume, which docker seeds from the image on
+    # the container's FIRST start and then reuses untouched forever. From the
+    # second start on it covers the freshly built `.next` sitting in the image
+    # underneath — the container serves the build it first saw, no matter how
+    # many times the image is rebuilt. That shipped: prod showed a month-old
+    # interface through three green `make deploy` runs. `up --build` and
+    # `build --no-cache` do not clear it; only `down -v` does.
+    # Same trap for backend/worker with `./services/backend:/app` above.
     volumes:
       - ./services/frontend:/app
       - /app/node_modules
