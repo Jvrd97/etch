@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/94
-// summary: the /life timeline — five views (жизнь → год → месяц → неделя → день) over one range of days, the weeks-lived/weeks-left counter life.html showed, squares in three readable states that link to /day/{date}, and a way through to the week page
+// [review:need-review] PHASE-03/94, PHASE-03/144
+// summary: the /life timeline — five views (жизнь → год → месяц → неделя → день) over one range of days, the weeks-lived/weeks-left counter life.html showed, squares in three readable states that link to /day/{date}, the note saying whether the day's verdict was computed or carried over from a record, and a way through to the week page
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -8,6 +8,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import DaySquare, { DaySquareLegend } from '@/components/life/DaySquare';
 import { useDays } from '@/hooks/useDays';
+import { verdictOriginLabel } from '@/lib/day-format';
 import { type DayListItem } from '@/lib/api';
 import {
   DEFAULT_BIRTH,
@@ -532,7 +533,9 @@ function DayView({ cursor, byDate }: { cursor: Date; byDate: Map<string, DayList
         {day === undefined
           ? 'Записи об этом дне нет.'
           : `Задачи ${day.done} из ${day.total}. ${
-              day.verdict === null ? 'День не закрыт.' : `Вердикт: ${day.verdict}.`
+              day.verdict === null
+                ? 'День не закрыт.'
+                : `Вердикт: ${day.verdict} (${verdictOriginLabel(day.verdict_origin)}).`
             }`}
       </p>
       <Link href={`/day/${iso}`} className="inline-block text-lime hover:underline">

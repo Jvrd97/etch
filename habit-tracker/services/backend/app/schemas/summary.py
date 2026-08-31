@@ -38,7 +38,12 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.day.evaluate import VERDICTS
-from app.models.summary import STAGE_OPEN, SUMMARY_STAGES
+from app.models.summary import (
+    ORIGIN_NONE,
+    STAGE_OPEN,
+    SUMMARY_STAGES,
+    VERDICT_ORIGINS,
+)
 
 
 class DayReviewIn(BaseModel):
@@ -244,4 +249,12 @@ class DaySummaryResponse(BaseModel):
     )
     source: str = Field(
         "close", description="close — день закрыт здесь; import — вердикт пришёл прозой"
+    )
+    verdict_origin: str = Field(
+        ORIGIN_NONE,
+        description=(
+            f"Откуда взялся вердикт: {' | '.join(VERDICT_ORIGINS)}. "
+            "`migrated_prose` — перенесён из записи и пересчёту не подлежит; "
+            "`none` — вердикта нет"
+        ),
     )

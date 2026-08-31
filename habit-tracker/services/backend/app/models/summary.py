@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/90, PHASE-03/143
-# summary: `day_summary` — the verdict of a day with the rule it was reached under, the counters behind it, the prose made searchable by a generated tsvector, the CHECK that makes an override without a note impossible for every writer, and the stage of closing with the two idempotency keys that make each of the two touches repeatable
+# [review:need-review] PHASE-03/90, PHASE-03/143, PHASE-03/144
+# summary: `day_summary` — the verdict of a day with the rule it was reached under, the counters behind it, the prose made searchable by a generated tsvector, the CHECK that makes an override without a note impossible for every writer, the stage of closing with the two idempotency keys that make each of the two touches repeatable, and the reading of where the verdict came from — computed here or carried over from prose and never to be recomputed
 from __future__ import annotations
 
 from datetime import date as date_type
@@ -54,6 +54,35 @@ STAGE_OPEN = "open"
 STAGE_REVIEWED = "reviewed"
 STAGE_CLOSED = "closed"
 SUMMARY_STAGES: tuple[str, ...] = (STAGE_OPEN, STAGE_REVIEWED, STAGE_CLOSED)
+
+# Откуда взялся вердикт, который читает экран. ADR-0015 называет это поле
+# `verdict_reason.source = "migrated_prose"`; в базе тот же факт уже записан
+# колонкой `source`, и второе его написание было бы вторым мнением о том, можно
+# ли этот день пересчитывать. Поэтому происхождение — производная, а не колонка:
+# оно вычисляется здесь одним написанием и едет наружу в DTO.
+ORIGIN_COMPUTED = "computed"
+ORIGIN_MIGRATED_PROSE = "migrated_prose"
+ORIGIN_NONE = "none"
+VERDICT_ORIGINS: tuple[str, ...] = (
+    ORIGIN_COMPUTED,
+    ORIGIN_MIGRATED_PROSE,
+    ORIGIN_NONE,
+)
+
+
+def verdict_origin(source: str, verdict: str | None) -> str:
+    """
+    Вычислен вердикт или перенесён из прозы — и есть ли он вообще.
+
+    Пустой вердикт даёт `none` независимо от источника: у дня, который никто не
+    судил, происхождения суждения нет, и `computed` на нём читалось бы как
+    «машина посчитала и получила ничего». Строка `source='import'` с вердиктом —
+    `migrated_prose`: её нельзя пересчитывать, и экран обязан подписать её «из
+    записи», а не выдавать за вычисленную.
+    """
+    if verdict is None:
+        return ORIGIN_NONE
+    return ORIGIN_MIGRATED_PROSE if source == SOURCE_IMPORT else ORIGIN_COMPUTED
 
 
 class DaySummary(Base):

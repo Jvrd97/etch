@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/134, PHASE-03/142, PHASE-03/143
-// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, the map of the day that rule draws (edges, free evening, evening with the family, the formula of the verdict), and the verdict itself with the condition it failed on, what could not be measured and the streak in countable Russian, plus the heading a half-closed day gets so that «рано» never reads as «проиграл» (both shells render the same strings); the three-form arithmetic moved to lib/plural so the role screen does not carry a second copy
+// [review:need-review] PHASE-03/86, PHASE-03/90, PHASE-03/134, PHASE-03/142, PHASE-03/143, PHASE-03/144
+// summary: pure labels for the day screen — what kind of day it is, the plain-Russian reading of the rule it is judged by, the map of the day that rule draws (edges, free evening, evening with the family, the formula of the verdict), and the verdict itself with the condition it failed on, what could not be measured and the streak in countable Russian, plus the heading a half-closed day gets so that «рано» never reads as «проиграл» (both shells render the same strings); the three-form arithmetic moved to lib/plural so the role screen does not carry a second copy, and the label saying whether a verdict was computed here or carried over from prose
 
 import type {
   ClosingStage,
@@ -7,6 +7,7 @@ import type {
   DayMap,
   DayRuleSet,
   VerdictReason,
+  VerdictOrigin,
   MissingData,
 } from '@/lib/api';
 import { countable } from '@/lib/plural';
@@ -127,6 +128,24 @@ export function verdictLabel(verdict: 'won' | 'lost' | null): string {
 
 /** Said above the day whose 15:40 touch is done and whose evening is not. */
 export const VERDICT_LATER = 'Вердикт будет вечером';
+
+/**
+ * Подпись под вердиктом: его вычислили здесь или перенесли из записи.
+ *
+ * Перенесённый вердикт нельзя пересчитать — данных, по которым он выносился, не
+ * сохранилось, — и человек, читающий август, обязан видеть это на экране, а не
+ * узнавать при первой попытке перезакрыть день. `none` не подписывается: у
+ * вердикта, которого нет, происхождения тоже нет.
+ */
+const ORIGIN_LABEL: Record<VerdictOrigin, string> = {
+  computed: 'вычислен',
+  migrated_prose: 'из записи',
+  none: '',
+};
+
+export function verdictOriginLabel(origin: VerdictOrigin): string {
+  return ORIGIN_LABEL[origin];
+}
 
 /** Said on a day closed in one touch: обычный день, но отличимый. */
 export const REVIEW_SKIPPED = 'Ревью в 15:40 не было — день закрыт одним касанием';

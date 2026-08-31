@@ -1409,6 +1409,15 @@ export type ClosingStage = 'open' | 'reviewed' | 'closed';
  * what keeps «не закрыл» a different answer from «проиграл», and `stage` splits
  * that further: `verdict: null` на стадии `reviewed` значит «рано».
  */
+/**
+ * Откуда взялся вердикт дня.
+ *
+ * `migrated_prose` — перенесён из `summaries/**` personal-os и пересчёту не
+ * подлежит: данных, по которым он выносился, не сохранилось. `none` — вердикта
+ * нет вовсе, и это не то же самое, что «проиграл».
+ */
+export type VerdictOrigin = 'computed' | 'migrated_prose' | 'none';
+
 export interface DaySummary {
   day_date: string;
   closed: boolean;
@@ -1438,6 +1447,8 @@ export interface DaySummary {
   /** Texts of the anchors that were neither closed nor set aside. */
   missing_anchors: string[];
   source: 'close' | 'import';
+  /** Вычислен вердикт здесь или перенесён прозой; `none` — вердикта нет. */
+  verdict_origin: VerdictOrigin;
 }
 
 /**
@@ -2119,6 +2130,8 @@ export interface DayListItem {
   /** Title of the day's plan; empty when there is no plan or it had none. */
   title: string;
   verdict: Verdict | null;
+  /** Вычислен вердикт здесь или перенесён прозой; `none` — вердикта нет. */
+  verdict_origin: VerdictOrigin;
   /** Work tasks closed, and work tasks planned. */
   done: number;
   total: number;

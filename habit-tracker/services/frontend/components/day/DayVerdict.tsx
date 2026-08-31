@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/90, PHASE-03/143
-// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form an unclosed one is closed through and the two touches it feeds — ревью 15:40 и вечернее закрытие — with the stage saying «вердикт будет вечером» instead of «проиграл», the note a day closed in one touch carries, and the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose
+// [review:need-review] PHASE-03/90, PHASE-03/143, PHASE-03/144
+// summary: the итог of a day on screen — the verdict, the condition it failed on and which anchor was missed, the counters and the streak, what could not be measured, the prose of a closed day, the form an unclosed one is closed through and the two touches it feeds — ревью 15:40 и вечернее закрытие — with the stage saying «вердикт будет вечером» instead of «проиграл», the note a day closed in one touch carries, the override that stays dead until a note is written and is never offered on a day whose verdict arrived as prose, and the badge beside the heading saying whether the verdict was computed here or carried over from a record
 
 import { useState } from 'react';
 import Markdown from '@/components/Markdown';
@@ -11,6 +11,7 @@ import {
   formatMinutes,
   missingDataLabel,
   streakLabel,
+  verdictOriginLabel,
   verdictReasonLabel,
 } from '@/lib/day-format';
 
@@ -126,6 +127,14 @@ export default function DayVerdict({
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="text-xl font-semibold text-text-primary">
           {closingHeadline(summary.stage, summary.verdict)}
+          {summary.verdict_origin !== 'none' && (
+            <span
+              data-origin={summary.verdict_origin}
+              className="ml-3 align-middle px-2 py-0.5 rounded-full bg-surface text-xs font-normal text-text-secondary"
+            >
+              {verdictOriginLabel(summary.verdict_origin)}
+            </span>
+          )}
         </h2>
         {summary.streak_after !== null && (
           <span className="text-text-secondary">

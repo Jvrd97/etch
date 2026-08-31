@@ -25,7 +25,9 @@ SATURDAY = date(2026, 8, 29)
 SUNDAY = date(2026, 8, 30)
 
 # The five fields the old `/api/days` answered with. Named as a set so a field
-# quietly dropped from the DTO fails here rather than in a browser.
+# quietly dropped from the DTO fails here rather than in a browser. Проверяется
+# вложением, а не равенством: старый читатель не ломается от нового поля рядом
+# («#144» добавил `verdict_origin`), а ломается от пропавшего.
 LEGACY_FIELDS = {"date", "title", "verdict", "done", "total"}
 
 
@@ -93,7 +95,7 @@ async def test_the_range_answers_in_the_shape_the_old_api_days_had(
     body = response.json()
     assert isinstance(body, list)
     assert len(body) == 1
-    assert set(body[0]) == LEGACY_FIELDS
+    assert LEGACY_FIELDS <= set(body[0])
     assert body[0]["date"] == SUNDAY.isoformat()
     assert body[0]["title"] == "Воскресенье"
     assert body[0]["total"] == 2

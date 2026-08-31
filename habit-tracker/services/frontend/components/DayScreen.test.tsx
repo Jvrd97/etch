@@ -111,6 +111,7 @@ const DAY: DayDetail = {
     missing_data: ['work_minutes'],
     missing_anchors: [],
     source: 'close',
+    verdict_origin: 'none' as const,
   },
   work: {
     day_date: '2026-08-30',

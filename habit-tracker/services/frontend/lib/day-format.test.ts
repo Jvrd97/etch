@@ -15,6 +15,7 @@ import {
   closingHeadline,
   VERDICT_LATER,
   verdictLabel,
+  verdictOriginLabel,
   verdictReasonLabel,
   weekdayNames,
 } from './day-format';
@@ -166,6 +167,14 @@ describe('the verdict of a day', () => {
     expect(verdictLabel('won')).toBe('День выигран');
     expect(verdictLabel('lost')).toBe('День проигран');
     expect(verdictLabel(null)).toBe('День не закрыт');
+  });
+
+  it('tells a verdict computed here from one carried over from a record', () => {
+    // Перенесённый вердикт пересчитать нечем, и человек, читающий август,
+    // обязан видеть это на экране, а не узнавать при попытке перезакрыть день.
+    expect(verdictOriginLabel('computed')).toBe('вычислен');
+    expect(verdictOriginLabel('migrated_prose')).toBe('из записи');
+    expect(verdictOriginLabel('none')).toBe('');
   });
 
   it('says what could not be judged in Russian, not in codes', () => {

@@ -26,6 +26,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.day.evaluate import VERDICTS
+from app.models.summary import ORIGIN_NONE, VERDICT_ORIGINS
 
 
 class DayListItem(BaseModel):
@@ -51,6 +52,13 @@ class DayListItem(BaseModel):
         description=(
             f"Одно из: {', '.join(VERDICTS)}; null — день не закрыт. "
             "Три состояния квадрата различаются по этому полю"
+        ),
+    )
+    verdict_origin: str = Field(
+        ORIGIN_NONE,
+        description=(
+            f"Откуда взялся вердикт: {' | '.join(VERDICT_ORIGINS)}. "
+            "`migrated_prose` — перенесён из записи personal-os, а не вычислен"
         ),
     )
     done: int = Field(0, description="Закрытых рабочих задач дня")

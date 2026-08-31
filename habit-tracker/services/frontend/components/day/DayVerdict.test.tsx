@@ -41,6 +41,7 @@ const SUMMARY: DaySummary = {
   missing_data: [],
   missing_anchors: [],
   source: 'close',
+  verdict_origin: 'computed',
 };
 
 function show(patch: Partial<DaySummary> = {}) {
@@ -291,5 +292,25 @@ describe('DayVerdict', () => {
     show({ review_skipped: false });
 
     expect(screen.queryByText(REVIEW_SKIPPED)).toBeNull();
+  });
+
+  it('marks a verdict that arrived as prose as carried over, not computed', () => {
+    show({ source: 'import', verdict_origin: 'migrated_prose' });
+
+    expect(screen.getByText('из записи')).toBeDefined();
+    expect(screen.queryByText('вычислен')).toBeNull();
+  });
+
+  it('marks a verdict reached here as computed', () => {
+    show({ verdict_origin: 'computed' });
+
+    expect(screen.getByText('вычислен')).toBeDefined();
+  });
+
+  it('signs nothing on a day that has no verdict at all', () => {
+    show({ closed: false, stage: 'open', verdict: null, verdict_origin: 'none' });
+
+    expect(screen.queryByText('вычислен')).toBeNull();
+    expect(screen.queryByText('из записи')).toBeNull();
   });
 });
