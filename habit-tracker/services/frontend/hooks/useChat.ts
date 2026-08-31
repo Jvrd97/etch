@@ -1,9 +1,11 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120
+// summary: PHASE-03/120 folds the turn's step events into `turn.progress` — what the model is busy with and the thought behind it, kept apart from `turn.text` so a thought can never end up inside the answer
 // summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { chatAPI, type ChatMessage } from '@/lib/api';
+import { applyProgress, NO_PROGRESS, type TurnProgress } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import {
   browserDraftStorage,
@@ -39,14 +41,29 @@ export interface LiveRetrieval {
   refusal: string | null;
 }
 
-/** Ход в полёте, если он есть. `text` растёт по куску на событие. */
+/**
+ * Ход в полёте, если он есть. `text` растёт по куску на событие.
+ *
+ * `progress` — второе текстовое поле хода, и это не небрежность. В `text`
+ * копится ответ: он уходит в пузырь модели и он же лежит в `chat_messages`.
+ * Внутренняя речь модели живёт в `progress.thinking`, и собиратель ответа его
+ * не читает — сколько бы новых видов событий ни завёл бэкенд, мысль в ответ
+ * попасть не может.
+ */
 export type ChatTurn =
   | { phase: 'idle' }
-  | { phase: 'streaming'; question: string; text: string; retrievals?: LiveRetrieval[] }
+  | {
+      phase: 'streaming';
+      question: string;
+      text: string;
+      progress: TurnProgress;
+      retrievals?: LiveRetrieval[];
+    }
   | {
       phase: 'failed';
       question: string;
       text: string;
+      progress: TurnProgress;
       code: string;
       retrievals?: LiveRetrieval[];
     };
@@ -222,39 +239,44 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
 
   const runTurn = useCallback(
     async (id: number, question: string) => {
-      setTurn({ phase: 'streaming', question, text: '' });
+      setTurn({ phase: 'streaming', question, text: '', progress: NO_PROGRESS });
       // Хранится в объекте, а не в `let`: присваивание происходит внутри
       // колбэка, и TypeScript сузил бы обычную локальную переменную до `null`
       // на каждой строке после цикла.
       const outcome: { errorCode: string | null } = { errorCode: null };
       try {
         await chatAPI.streamMessage(id, question, (event: ChatStreamEvent) => {
-          if (event.kind === 'delta') {
-            setTurn((current) =>
-              current.phase === 'streaming'
-                ? { ...current, text: current.text + event.text }
-                : current
-            );
-          } else if (event.kind === 'retrieval') {
-            setTurn((current) =>
-              current.phase === 'streaming'
-                ? {
-                    ...current,
-                    retrievals: [
-                      ...(current.retrievals ?? []),
-                      {
-                        queryName: event.queryName,
-                        rowCount: event.rowCount,
-                        chars: event.chars,
-                        refusal: event.refusal,
-                      },
-                    ],
-                  }
-                : current
-            );
-          } else if (event.kind === 'error') {
+          if (event.kind === 'error') {
             outcome.errorCode = event.code;
+            return;
           }
+          setTurn((current) => {
+            if (current.phase !== 'streaming') return current;
+            // Разбор по видам, а не «текст или всё остальное»: с шагами хода
+            // ветка `else` означала бы «мысль дописана в ответ».
+            if (event.kind === 'delta') {
+              return { ...current, text: current.text + event.text };
+            }
+            const progress = applyProgress(current.progress, event);
+            if (event.kind === 'retrieval') {
+              return {
+                ...current,
+                progress,
+                retrievals: [
+                  ...(current.retrievals ?? []),
+                  {
+                    queryName: event.queryName,
+                    rowCount: event.rowCount,
+                    chars: event.chars,
+                    refusal: event.refusal,
+                  },
+                ],
+              };
+            }
+            // Тот же объект — тот же рендер: `usage` и `done` про занятость
+            // ничего не говорят, и перерисовывать ленту на них незачем.
+            return progress === current.progress ? current : { ...current, progress };
+          });
         });
       } catch (error) {
         // Отказ ручки — не поломка экрана. 409, 429 и 502 говорят о ходе, а

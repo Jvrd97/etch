@@ -1,11 +1,15 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120
+// summary: PHASE-03/120 makes the wait legible — the thought of the model as a collapsed line above the answer, three breathing dots until the first word, a caret while the text arrives, and a copy button on every message
 // summary: PHASE-03/116 draws a stored turn by its status — partial text under a note for `interrupted`, the machine code spelled out for `failed`, an unclosed `streaming` row named as such with the button that unsticks it; the conversation feed both shells draw — stored messages as bubbles, the turn in flight growing delta by delta, the machine error code turned into a sentence, and the bottom anchor that keeps the newest line in view while the answer arrives
 
 import { useEffect, useRef } from 'react';
 import { MessagesSquare } from 'lucide-react';
 import Markdown from '@/components/Markdown';
+import ChatBubble from '@/components/chat/ChatBubble';
 import ChatRetrievals from '@/components/chat/ChatRetrievals';
+import ThinkingBlock from '@/components/chat/ThinkingBlock';
+import { StreamingCaret, WaitingDots } from '@/components/chat/TurnLive';
 import { RETRIEVALS_PREFIX, liveRetrievalLine } from '@/lib/chat-retrievals';
 import type { ChatMessage } from '@/lib/api';
 import {
@@ -40,23 +44,6 @@ export function statusNote(message: ChatMessage): string | null {
       : (TURN_ERROR_TEXT[message.error_code] ?? TURN_ERROR_FALLBACK);
   }
   return MESSAGE_STATUS_NOTE[message.status] ?? null;
-}
-
-function Bubble({ role, children }: { role: string; children: React.ReactNode }) {
-  const mine = role === 'user';
-  return (
-    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[90%] px-5 py-3.5 rounded-3xl text-sm leading-relaxed ${
-          mine
-            ? 'bg-lime text-background font-medium'
-            : 'bg-card border border-white/5 text-text-primary'
-        }`}
-      >
-        {children}
-      </div>
-    </div>
-  );
 }
 
 /**
@@ -98,16 +85,18 @@ export default function ChatFeed({
       {messages.map((message) => {
         const note = statusNote(message);
         return (
-          <Bubble key={message.id} role={message.role}>
+          // Копируется само сообщение, а не пузырь: пометки ленты — «ответ
+          // оборван», «запрошено: …» — это подписи экрана, а не сказанное.
+          <ChatBubble key={message.id} role={message.role} copyText={message.content}>
             {message.role === 'user' ? (
-              <span className="whitespace-pre-wrap">{message.content}</span>
+              <span className="whitespace-pre-wrap break-words">{message.content}</span>
             ) : (
               // Незавершённый ответ остаётся простым текстом: недописанная
               // разметка рисуется мусором, а не тем, что человек читал.
               message.status === 'complete' ? (
                 <Markdown content={message.content} />
               ) : (
-                <span className="whitespace-pre-wrap">{message.content}</span>
+                <span className="whitespace-pre-wrap break-words">{message.content}</span>
               )
             )}
             {note !== null && (
@@ -125,18 +114,31 @@ export default function ChatFeed({
                 {RESET_LABEL}
               </button>
             )}
-          </Bubble>
+          </ChatBubble>
         );
       })}
 
       {turn.phase !== 'idle' && (
         <>
-          <Bubble role="user">
-            <span className="whitespace-pre-wrap">{turn.question}</span>
-          </Bubble>
-          <Bubble role="assistant">
+          <ChatBubble role="user" copyText={turn.question}>
+            <span className="whitespace-pre-wrap break-words">{turn.question}</span>
+          </ChatBubble>
+          <ChatBubble role="assistant" copyText={turn.text}>
+            {/* Мысль стоит над ответом и отдельно от него: это разные тексты, и
+                общий узел разметки был бы первым шагом к тому, чтобы они
+                склеились в один. */}
+            <ThinkingBlock progress={turn.progress} answering={turn.text.length > 0} />
             {turn.text ? (
-              <span className="whitespace-pre-wrap">{turn.text}</span>
+              <span className="whitespace-pre-wrap break-words">
+                {turn.text}
+                {/* Курсор в конце последнего куска: текст идёт, ход не кончился. */}
+                {turn.phase === 'streaming' && <StreamingCaret />}
+              </span>
+            ) : turn.phase === 'streaming' ? (
+              // До первого слова единственный честный ответ на «оно работает?» —
+              // признак жизни. Три точки, а не многоточие: многоточие не
+              // отличает идущий ход от повисшего.
+              <WaitingDots />
             ) : (
               <span className="text-text-disabled">…</span>
             )}
@@ -156,7 +158,7 @@ export default function ChatFeed({
                 {TURN_ERROR_TEXT[turn.code] ?? TURN_ERROR_FALLBACK}
               </p>
             )}
-          </Bubble>
+          </ChatBubble>
         </>
       )}
       {/* Якорь прокрутки, а не пустой div: поле ввода на обоих экранах прилипло
