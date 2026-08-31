@@ -140,8 +140,24 @@ class SignalSource(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="false")
 
-    # Имя env-переменной с токеном. Не сам токен — см. докстроку класса.
+    # Имя env-переменной с токеном — путь, оставшийся от первого среза.
+    # Читается, когда своего секрета у источника нет: так живой прод с токеном в
+    # окружении продолжает работать после того, как хранилище появилось.
     credential_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Секрет источника, зашифрованный ключом из `SESSION_SECRET`
+    # (`app/inbox/credentials.py`). Открытого текста в базе нет; в дампе лежит
+    # шифротекст, ключ живёт в окружении процесса.
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Настройки адаптера: у ClickUp — числовой id воркспейса, у Gmail будут
+    # лейблы. Непрозрачный jsonb по той же причине, что и курсор: типизированные
+    # колонки под каждого провайдера стояли бы пустыми у остальных.
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, server_default="{}")
+    # Подпись, которую вписывает человек: «Личный», «Alvion». Адаптер её не
+    # тянет из источника — имена чужих воркспейсов система не хранит.
+    label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Как часто воркер `#99` спрашивает источник. В строке, а не в константе:
+    # у почты и у задач разный смысл «свежести».
+    poll_interval_s: Mapped[int] = mapped_column(Integer, server_default="900")
     cursor: Mapped[dict[str, Any]] = mapped_column(JSON, server_default="{}")
 
     last_polled_at: Mapped[datetime | None] = mapped_column(

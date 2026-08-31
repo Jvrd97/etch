@@ -1849,3 +1849,21 @@ Feedback loops (frontend): `bun test` **1294 pass, 0 fail**, `tsc --noEmit` чи
 
 Feedback loops (frontend): `bun test` **1351 pass, 0 fail**, `tsc --noEmit` чисто,
 `bun run lint` 0 errors, `bun run build` чисто.
+
+## 2026-09-03 — PHASE-03/98: карточка источника с полем ключа
+
+Ключи всех интеграций вводятся на экране, а не в файле на сервере.
+
+- `components/inbox/SourceCard.tsx` + тест — new, 6 тестов. Ключ уходит на сервер один раз
+  и обратно не приходит: поле после сохранения пустеет, рядом стоит «ключ задан». Поле,
+  показывающее сохранённый секрет, делает его видимым каждому, кто заглянул через плечо, и
+  попадает в скриншоты. Рядом — настройка адаптера (`id воркспейса` у ClickUp), переключатель
+  «включён» и «перечитать», недоступный, пока источник выключен или без ключа.
+- `hooks/useInbox.ts` — mod, `saveCredentials` и `toggle`; ответ сервера замещает строку
+  справочника целиком — он и есть источник правды про `has_secret`.
+- `lib/api.ts` — mod, `setCredentials`, `patchSource` и поля `has_secret`/`settings`/`label`.
+- `app/inbox/page.tsx` — mod, список строк заменён карточками; провайдеры без адаптера
+  говорят об этом прямо вместо молчаливой серой строки.
+
+Feedback loops (frontend): `bun test` **1357 pass, 0 fail**, `tsc --noEmit` чисто,
+`bun run lint` 0 errors, `bun run build` чисто.

@@ -3400,10 +3400,17 @@ export interface SignalSource {
   id: number;
   provider: string;
   account: string;
+  /** Подпись, которую вписал человек: «Личный ClickUp», «Рабочий (Alvion)». */
+  label: string | null;
   direction: 'read' | 'read_write';
   is_active: boolean;
-  /** Имя переменной окружения с токеном — не сам токен. */
+  poll_interval_s: number;
+  /** Имя переменной окружения — запасной путь первого среза. */
   credential_ref: string | null;
+  /** Задан ли ключ. Не значение и не его длина: экрану хватает факта. */
+  has_secret: boolean;
+  /** Настройки адаптера без секретов: `team_id` у ClickUp, лейблы у почты. */
+  settings: Record<string, string>;
   last_polled_at: string | null;
   last_error_code: string | null;
 }
@@ -3436,6 +3443,37 @@ export const inboxAPI = {
    */
   poll: async (sourceId: number) => {
     return fetcher<PollOutcome>(`/inbox/sources/${sourceId}/poll`, { method: 'POST' });
+  },
+
+  /**
+   * Задать ключ и настройки источника прямо из интерфейса.
+   *
+   * Ключ уходит на сервер один раз и обратно не возвращается никогда: ответ
+   * говорит `has_secret`, и это всё, что экран о нём знает. `secret: null`
+   * стирает ключ, не трогая остальных настроек.
+   */
+  setCredentials: async (
+    sourceId: number,
+    payload: { secret?: string | null; settings?: Record<string, string> }
+  ) => {
+    return fetcher<SignalSource>(`/inbox/sources/${sourceId}/credentials`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        secret: payload.secret ?? null,
+        settings: payload.settings ?? {},
+      }),
+    });
+  },
+
+  /** Включить, выключить или переименовать источник. */
+  patchSource: async (
+    sourceId: number,
+    payload: { is_active?: boolean; label?: string; poll_interval_s?: number }
+  ) => {
+    return fetcher<SignalSource>(`/inbox/sources/${sourceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
   },
 };
 

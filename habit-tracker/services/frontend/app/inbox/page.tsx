@@ -1,8 +1,9 @@
 'use client';
 // [review:need-review] PHASE-03/97
-// summary: /inbox screen — the directory of sources with a manual «перечитать» each, the feed of signals with the link that takes a person back to the task, and the three states a source can be in told apart instead of collapsed into one grey row
+// summary: /inbox screen — every source as a card whose key is typed in here rather than into a file on the server, the feed of signals with the link that takes a person back to the task, and the states a source can be in told apart instead of collapsed into one grey row
 
-import { ExternalLink, Inbox, RefreshCw } from 'lucide-react';
+import { ExternalLink, Inbox } from 'lucide-react';
+import SourceCard from '@/components/inbox/SourceCard';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { useInbox } from '@/hooks/useInbox';
@@ -17,11 +18,18 @@ const POLL_LABEL = 'перечитать';
 const DISABLED_HINT = 'не подключён';
 const NO_ADAPTER_HINT = 'адаптера нет';
 
-/** Источники без адаптера — заготовки: они в справочнике, но читать их нечем. */
-const READABLE = new Set(['clickup/personal']);
+/**
+ * Провайдеры, у которых есть адаптер.
+ *
+ * По провайдеру, а не по паре с аккаунтом: личный и рабочий ClickUp — один и
+ * тот же API, различаются ключом и id воркспейса. Gmail и Telegram ждут своих
+ * тикетов, и карточка говорит об этом прямо вместо молчаливой серой строки.
+ */
+const READABLE_PROVIDERS = new Set(['clickup']);
 
 export default function InboxPage() {
-  const { signals, sources, loading, polling, error, poll, reload } = useInbox();
+  const { signals, sources, loading, polling, error, poll, saveCredentials, toggle, reload } =
+    useInbox();
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -37,41 +45,19 @@ export default function InboxPage() {
 
       {error !== null && <ErrorAlert message={error} onDismiss={reload} />}
 
-      <section className="bg-card border border-white/5 rounded-3xl p-6">
-        <h2 className="text-xl font-semibold text-text-primary">Источники</h2>
-        <ul className="mt-4 space-y-2">
-          {sources.map((source) => {
-            const name = `${source.provider}/${source.account}`;
-            const readable = READABLE.has(name);
-            return (
-              <li
-                key={source.id}
-                className="flex flex-wrap items-center gap-3 rounded-2xl px-3 py-2"
-              >
-                <span className="font-mono text-sm text-text-primary">{name}</span>
-                {!source.is_active && (
-                  <span className="text-xs text-text-disabled">{DISABLED_HINT}</span>
-                )}
-                {!readable && (
-                  <span className="text-xs text-text-disabled">{NO_ADAPTER_HINT}</span>
-                )}
-                {source.last_error_code !== null && (
-                  <span className="text-xs text-warning">{source.last_error_code}</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void poll(source.id)}
-                  disabled={polling !== null || !readable}
-                  className="ml-auto inline-flex items-center gap-1.5 px-4 py-1.5 rounded-3xl bg-surface text-sm text-text-secondary transition-colors hover:text-text-primary disabled:opacity-40"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />
-                  {POLL_LABEL}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+      <div className="space-y-4">
+        {sources.map((source) => (
+          <SourceCard
+            key={source.id}
+            source={source}
+            readable={READABLE_PROVIDERS.has(source.provider)}
+            busy={polling !== null}
+            onSave={(secret, settings) => void saveCredentials(source.id, secret, settings)}
+            onToggle={(active) => void toggle(source.id, active)}
+            onPoll={() => void poll(source.id)}
+          />
+        ))}
+      </div>
 
       <section className="bg-card border border-white/5 rounded-3xl p-6">
         <h2 className="text-xl font-semibold text-text-primary">Лента</h2>

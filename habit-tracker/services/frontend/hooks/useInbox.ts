@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/97
-// summary: inbox state — the feed of signals beside the directory of sources, one manual poll at a time with its refusal read as a machine code rather than as a sentence, and a re-read of the feed after a poll that brought something
+// summary: inbox state — the feed of signals beside the directory of sources, the key of a source saved from the interface and never read back, one manual poll at a time with its refusal read as a machine code rather than as a sentence, and a re-read after anything that changed the server's answer
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { inboxAPI, type InboundSignal, type SignalSource } from '@/lib/api';
@@ -9,7 +9,10 @@ import { inboxAPI, type InboundSignal, type SignalSource } from '@/lib/api';
 export const REFUSAL_TEXT: Record<string, string> = {
   source_disabled: 'Источник выключен — включите его, чтобы читать.',
   no_adapter: 'У источника нет адаптера: строка в справочнике есть, читать нечем.',
-  no_credentials: 'Токена нет: переменная окружения пуста. В базе токен не хранится.',
+  no_credentials: 'Ключа нет — впишите его в карточке источника.',
+  no_workspace: 'Не назван воркспейс: у ClickUp это числовой id рядом с ключом.',
+  secret_unreadable:
+    'Ключ не читается: сменился SESSION_SECRET. Введите ключ заново.',
   transport_failed: 'Источник недоступен.',
 };
 
@@ -24,6 +27,14 @@ export interface UseInboxResult {
   error: string | null;
   /** Прочитать источник; лента перечитывается, если что-то приехало. */
   poll: (sourceId: number) => Promise<void>;
+  /** Сохранить ключ и настройки источника. Ключ обратно не приходит. */
+  saveCredentials: (
+    sourceId: number,
+    secret: string | null,
+    settings: Record<string, string>
+  ) => Promise<void>;
+  /** Включить или выключить источник. */
+  toggle: (sourceId: number, active: boolean) => Promise<void>;
   reload: () => void;
 }
 
@@ -109,7 +120,49 @@ export function useInbox(): UseInboxResult {
     }
   }, []);
 
+  const saveCredentials = useCallback(
+    async (
+      sourceId: number,
+      secret: string | null,
+      settings: Record<string, string>
+    ) => {
+      setError(null);
+      try {
+        const saved = await inboxAPI.setCredentials(sourceId, { secret, settings });
+        // Ответ сервера — истина: он и говорит, задан ли теперь ключ.
+        setSources((current) =>
+          current.map((one) => (one.id === saved.id ? saved : one))
+        );
+      } catch (failure) {
+        setError(errorText(failure));
+      }
+    },
+    []
+  );
+
+  const toggle = useCallback(async (sourceId: number, active: boolean) => {
+    setError(null);
+    try {
+      const saved = await inboxAPI.patchSource(sourceId, { is_active: active });
+      setSources((current) =>
+        current.map((one) => (one.id === saved.id ? saved : one))
+      );
+    } catch (failure) {
+      setError(errorText(failure));
+    }
+  }, []);
+
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
-  return { signals, sources, loading, polling, error, poll, reload };
+  return {
+    signals,
+    sources,
+    loading,
+    polling,
+    error,
+    poll,
+    saveCredentials,
+    toggle,
+    reload,
+  };
 }
