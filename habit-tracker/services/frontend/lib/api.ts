@@ -1326,6 +1326,8 @@ export interface Plan {
   condition_tomorrow: string | null;
   status: 'draft' | 'active' | 'closed';
   source: 'day-open' | 'import' | 'manual';
+  /** План собран ночным прогоном-страховкой и человеком не смотрен. */
+  needs_review: boolean;
   created_at: string;
   updated_at: string;
   sections: PlanSection[];

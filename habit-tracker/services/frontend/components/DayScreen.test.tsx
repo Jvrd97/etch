@@ -7,6 +7,7 @@ import type { DayDetail, Plan, PlanViolation } from '@/lib/api';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
 import { DAY_NEVER_OPENED } from '@/lib/marks';
+import { NEEDS_REVIEW_BADGE } from '@/lib/plan-violations';
 
 const DAY: DayDetail = {
   day: {
@@ -136,6 +137,7 @@ const PLAN: Plan = {
   condition_tomorrow: null,
   status: 'active',
   source: 'day-open',
+  needs_review: false,
   created_at: '2026-08-30T06:00:00Z',
   updated_at: '2026-08-30T06:00:00Z',
   sections: [
@@ -298,5 +300,28 @@ describe('DayScreen', () => {
     render(<DayScreen date="1999-01-01" />);
 
     expect(screen.getByText('нет правила')).toBeDefined();
+  });
+});
+
+describe('DayScreen and the plan built overnight', () => {
+  it('says the plan was built overnight and nobody looked at it', () => {
+    // Ночной прогон строит только скелет; человек утром должен видеть это, а
+    // не думать, что план кто-то продумал.
+    state = {
+      detail: { ...DAY, plan: { ...PLAN, needs_review: true } },
+      loading: false,
+      error: null,
+      violations: [],
+      reload: () => {},
+    };
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.getByText(NEEDS_REVIEW_BADGE)).toBeDefined();
+  });
+
+  it('says nothing of the kind about a plan somebody made', () => {
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.queryByText(NEEDS_REVIEW_BADGE)).toBeNull();
   });
 });

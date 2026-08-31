@@ -20,6 +20,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanSections from '@/components/day/PlanSections';
 import {
+  NEEDS_REVIEW_BADGE,
   planAuthorLabel,
   planWideViolations,
   ruleLabel,
@@ -156,6 +157,11 @@ export default function DayScreen({ date }: DayScreenProps) {
             <p className="text-text-secondary max-w-3xl">{plan.lede}</p>
           )}
           <p className="text-sm text-text-secondary">{planAuthorLabel(plan)}</p>
+          {plan.needs_review && (
+            <p className="inline-block px-3 py-1 rounded-2xl bg-warning/10 text-sm text-warning">
+              {NEEDS_REVIEW_BADGE}
+            </p>
+          )}
           {brokenPlanWide.length > 0 && (
             // Above the plan, because the line each of these is about is the one
             // that is not there: a missing health anchor has nothing to hang on.

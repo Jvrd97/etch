@@ -547,6 +547,7 @@ async def to_response(db: AsyncSession, plan: DayPlan) -> PlanResponse:
         condition_tomorrow=plan.condition_tomorrow,
         status=plan.status,
         source=plan.source,
+        needs_review=plan.needs_review,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         sections=sections,
@@ -801,6 +802,20 @@ def _clock(value: datetime | None) -> str | None:
     return None if value is None else local_time(value).strftime("%H:%M")
 
 
+async def clear_needs_review(db: AsyncSession, on: date) -> None:
+    """
+    Снять пометку «собран ночью, не проверен» с плана этой даты.
+
+    Зовётся из путей правки пункта и из первой отметки дня (`#151`). Отдельной
+    ручки «я посмотрел» нет намеренно: пометка снимается действием с планом, а
+    кнопка подтверждения — это ещё одно место, где можно соврать себе.
+    """
+    plan = await get_plan(db, on)
+    if plan is not None and plan.needs_review:
+        plan.needs_review = False
+        await db.flush()
+
+
 async def _journal(
     db: AsyncSession,
     item: PlanItem,
@@ -817,6 +832,7 @@ async def _journal(
     """
     if editor != EDITED_BY_HUMAN:
         return
+    await clear_needs_review(db, on)
     after = _journalled(item)
     for name, old_value in before.items():
         await revision_crud.record_change(
@@ -892,6 +908,7 @@ async def add_item(
         await revision_crud.record_change(
             db, item, on, FIELD_STATUS, None, "added", AUTHOR_HUMAN
         )
+        await clear_needs_review(db, on)
     return item
 
 
@@ -909,6 +926,7 @@ async def remove_item(db: AsyncSession, on: date, item_id: uuid.UUID) -> None:
     await db.delete(item)
     await db.flush()
     await _renumber(db, section_id, parent_id)
+    await clear_needs_review(db, on)
 
 
 async def move_item(
@@ -1049,6 +1067,7 @@ async def human_warnings(
 
 
 __all__ = [
+    "clear_needs_review",
     "PlanItemNotFound",
     "PlanRejected",
     "PlanSectionNotFound",

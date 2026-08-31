@@ -171,6 +171,8 @@ async def _freeze_plan(db: AsyncSession, on: date) -> None:
     if plan is None:
         return
     await revision_crud.cut_revision(db, on, plan, AUTHOR_HUMAN)
+    # Первая отметка — это и есть «человек посмотрел план» (`#151`).
+    await plan_crud.clear_needs_review(db, on)
 
 
 async def set_mark(
