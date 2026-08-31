@@ -8,6 +8,7 @@ import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
+import DayReportPreview from '@/components/day/DayReportPreview';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayTraining from '@/components/day/DayTraining';
 import DayVerdict from '@/components/day/DayVerdict';
@@ -242,6 +243,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           reload();
         }}
       />
+
+      <DayReportPreview date={day.date} compact />
 
       <DayNotebook
         value={detail.notebook}

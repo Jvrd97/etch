@@ -630,6 +630,29 @@ export const dayAPI = {
   close: async (date: string, draft: DayCloseDraft) => {
     return dayAPI.closeFinal(date, draft);
   },
+
+  /**
+   * Отчёт дня: последняя ревизия или названная номером.
+   *
+   * 404 значит «отчёт этого дня не собирали» — это не пустой текст, а другое
+   * состояние, и экран показывает под него кнопку сборки, а не пустую панель.
+   */
+  getReport: async (date: string, revision?: number) => {
+    const query = revision === undefined ? '' : `?revision=${revision}`;
+    return fetcher<DayReport>(`/day/${date}/report${query}`);
+  },
+
+  /**
+   * Пересобрать отчёт дня.
+   *
+   * Данные не менялись — сервер возвращает ту же ревизию: `content_hash`
+   * узнаёт себя, и вторая одинаковая ревизия не заводится.
+   */
+  buildReport: async (date: string, trigger: DayReportTrigger = 'button') => {
+    return fetcher<DayReport>(`/day/${date}/report?trigger=${trigger}`, {
+      method: 'POST',
+    });
+  },
 };
 
 // Day rules API: the canon of a day, versioned. There is no update and no
@@ -2125,6 +2148,35 @@ export const chatAPI = {
  * закрыт». The square of the timeline is painted from this field alone, which
  * is what `life.py` could not do while it was reading prose with a regexp.
  */
+/** Что вызвало сборку отчёта дня. */
+export type DayReportTrigger = 'close' | 'button' | 'nightly' | 'api';
+
+/** Что один источник отдал отчёту и почему не больше. */
+export interface DayReportSource {
+  available: boolean;
+  count: number;
+  /** Почему записей нет; пусто — источник их отдал. */
+  note: string;
+}
+
+/**
+ * Одна ревизия отчёта дня.
+ *
+ * Ревизия неизменяема: пересборка добавляет строку, а не правит эту.
+ * `content_hash` — sha256 текста, и совпадение хэша значит «данные те же».
+ */
+export interface DayReport {
+  day_date: string;
+  revision: number;
+  trigger: DayReportTrigger;
+  content_md: string;
+  content_hash: string;
+  sources: Record<string, DayReportSource>;
+  built_at: string;
+  /** Все ревизии этой даты по возрастанию — для переключателя. */
+  revisions: number[];
+}
+
 export interface DayListItem {
   date: string;
   /** Title of the day's plan; empty when there is no plan or it had none. */

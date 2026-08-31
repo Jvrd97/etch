@@ -19,18 +19,20 @@ from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
-from app.day import constraints, skeleton
+from app.day import constraints, report as report_service, skeleton
 from app.crud import training as training_crud
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
 from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
+from app.models.day_report import REPORT_TRIGGERS, TRIGGER_API, TRIGGER_CLOSE, DayReport
 from app.models.mark import SOURCE_WEB
 from app.schemas.anchor import (
     DayAnchorResponse,
     DayAnchorsIn,
     DayAnchorsResponse,
 )
+from app.schemas.day_report import DayReportResponse, DayReportSource
 from app.schemas.day import (
     DayDetailResponse,
     DayEdgeResponse,
@@ -447,6 +449,86 @@ def _refused_import(error: summary_crud.ImportedDayIsNotClosable) -> HTTPExcepti
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
 
+REPORT_NOT_BUILT = "отчёт этого дня ещё не собирали"
+REVISION_NOT_FOUND = "такой ревизии отчёта нет"
+
+
+async def _report_answer(db: AsyncSession, row: DayReport) -> DayReportResponse:
+    """Одна ревизия со списком всех ревизий этой даты рядом."""
+    revisions = await report_service.list_revisions(db, row.day_date)
+    return DayReportResponse(
+        day_date=row.day_date,
+        revision=row.revision,
+        trigger=row.trigger,
+        content_md=row.content_md,
+        content_hash=row.content_hash,
+        sources={
+            key: DayReportSource(**value) for key, value in (row.sources or {}).items()
+        },
+        built_at=row.built_at,
+        revisions=revisions,
+    )
+
+
+@router.get("/{on}/report", response_model=DayReportResponse)
+async def get_day_report(
+    on: date,
+    revision: int | None = Query(
+        default=None,
+        ge=0,
+        description="Номер ревизии; без него — последняя собранная",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> DayReportResponse:
+    """
+    Отчёт дня: последняя ревизия или названная номером.
+
+    Отчёта может не быть вовсе — его никто не собирал, — и это 404, а не пустой
+    текст: «отчёт пуст» и «отчёта нет» ведут к разным следующим действиям.
+    """
+    row = (
+        await report_service.latest_revision(db, on)
+        if revision is None
+        else await report_service.read_revision(db, on, revision)
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=REPORT_NOT_BUILT if revision is None else REVISION_NOT_FOUND,
+        )
+    return await _report_answer(db, row)
+
+
+@router.post(
+    "/{on}/report",
+    response_model=DayReportResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def post_day_report(
+    on: date,
+    trigger: str = Query(
+        default=TRIGGER_API,
+        description=f"Повод сборки: {' | '.join(REPORT_TRIGGERS)}",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> DayReportResponse:
+    """
+    Пересобрать отчёт дня и отдать ревизию — новую или ту же.
+
+    Данные не менялись — `content_hash` совпадает с последней ревизией, и
+    возвращается она: вторая одинаковая ревизия не заводится, `built_at` не
+    сдвигается. Прежние ревизии не переписываются никогда.
+    """
+    if trigger not in REPORT_TRIGGERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"неизвестный повод сборки: {trigger}",
+        )
+    day, _ = await _resolve(db, on)
+    row = await report_service.build_report(db, day.day_date, trigger)
+    return await _report_answer(db, row)
+
+
 @router.post(
     "/{on}/close/review",
     response_model=DaySummaryResponse,
@@ -477,13 +559,18 @@ async def post_close_review(
     """
     day, _ = await _resolve(db, on)
     try:
-        return await summary_crud.review_day(
+        answer = await summary_crud.review_day(
             db, day.day_date, body, idempotency_key=idempotency_key
         )
     except KeyBelongsToAnotherDay as error:
         raise _spent_elsewhere(error) from error
     except summary_crud.ImportedDayIsNotClosable as refused:
         raise _refused_import(refused) from refused
+    # Отчёт собирается тем же запросом и в той же транзакции: касание 15:40 —
+    # момент, когда факт по дню записан, и отчёт, собранный секундой позже
+    # отдельной ручкой, описывал бы уже другой день.
+    await report_service.build_report(db, day.day_date, TRIGGER_CLOSE)
+    return answer
 
 
 @router.post(
