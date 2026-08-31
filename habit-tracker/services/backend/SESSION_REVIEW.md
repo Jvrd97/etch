@@ -1773,3 +1773,34 @@ Feedback loops (backend): pytest **1228 passed, 2 skipped**, `ruff check app tes
 `ruff format --check app tests` clean, `mypy --strict app` clean (156 файлов),
 `alembic heads` — одна голова `d0c2e4a6b8f1`. `make check` целиком не отрабатывал: docker
 не поднимается; тесты шли против постгреса на localhost:5432, база `habit_test_f4`.
+
+## 2026-08-31 — PHASE-03/135, интервалы агента становятся минутами ролей
+
+**Схема (new)**: `alembic/versions/2026_09_02_1300-e1d3f5a7c9b0_phase03_mac_agent_tables.py` —
+семь таблиц темы macOS-агента одной ревизией, как предписывают ADR-0019 и `#155`:
+`tracked_app`, `title_rule`, `activity_interval`, `mode_schedule`, `day_mode`,
+`agent_heartbeat`, `claude_session`, с сидами расписания режимов, правил заголовков и
+каталога приложений. `down_revision = d0c2e4a6b8f1`. Схемный слой `#155` взят сюда потому,
+что `#135`, `#158` и `#160` все на нём стоят, а в ветке его не было; заявка объявлена на
+доске роя до реализации. Проверено на чистой базе `habit_mig_f4b`: upgrade → downgrade
+(ни одной из семи таблиц нет) → upgrade, сиды на месте.
+
+**Модель/сервис (new)**: `app/models/activity.py`, `app/crud/activity.py`,
+`app/roles/classify.py`, `app/schemas/activity.py`, `app/api/agent.py`.
+**mod**: `app/models/__init__.py`, `app/main.py` (роутер `agent`), `app/api/roles.py`
+(`POST /roles/classify`, объяснение автоматической записи), `app/schemas/role.py`,
+`app/crud/activity.py`, `app/roles/plan_source.py` (запасной вариант окон плановой записи).
+
+**Тесты (new)**: `tests/test_role_classify.py` (21).
+
+Что стоит назвать вслух. Первое: `day_intervals` выбирает интервалы **по пересечению** с
+окном дня, а не по началу — сессия 03:30-04:30 иначе отдавала бы вторую половину никому.
+Второе: приём пачки размечает все дни, которых интервал коснулся (`classify.touched_days`),
+а не один день его начала. Третье: `external_ref` автоматической записи — `"<id интервала>:
+<дата>"`, потому что разрезанный по границе интервал пишет две строки, а ключ
+`(source, external_ref)` уникален.
+
+Feedback loops (backend): pytest **1249 passed, 2 skipped**, `ruff check app tests`,
+`ruff format --check app tests`, `mypy --strict app` (161 файл), `alembic heads` — одна
+голова `e1d3f5a7c9b0`. `make check` целиком не отрабатывал: docker; тесты шли против
+постгреса на localhost:5432, база `habit_test_f4`.

@@ -1724,6 +1724,12 @@ export interface RoleTimeBlock {
   rule_id: number | null;
   note: string | null;
   is_manual: boolean;
+  /** Запись, посчитанная разметкой активности (#135). */
+  is_automatic: boolean;
+  /** Правило, создавшее запись, одной строкой: «bundle_id = com.microsoft.VSCode». */
+  rule_summary: string | null;
+  /** Приложение, из которого запись посчитана. */
+  app_name: string | null;
 }
 
 /** One act: the role happened, and this is what it was. */
@@ -1778,9 +1784,43 @@ export interface RoleActDraft {
  * from 04:00 and only `app/core/daytime.py` answers that question, so the
  * browser never dates a screen from its own calendar.
  */
+/** Что разметка сделала с одним днём. */
+export interface RoleClassifyDay {
+  work_day: string;
+  mode: string;
+  intervals: number;
+  blocks_written: number;
+  kept_confirmed: number;
+  minutes: number;
+  unassigned_minutes: number;
+  skipped_off_mode: number;
+  skipped_short: number;
+}
+
 export const rolesAPI = {
   day: async (date?: string) => {
     return fetcher<RoleDay>(date ? `/roles/day/${date}` : '/roles/day');
+  },
+
+  /**
+   * Подтвердить автоматическую запись: с этого момента разметка её не трогает.
+   *
+   * Единственный способ сказать «посчитано верно» — и он же единственный, после
+   * которого повторный прогон не переписывает строку.
+   */
+  confirmTimeBlock: async (id: number) => {
+    return fetcher<RoleTimeBlock>(`/role-time-blocks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ confidence: 'confirmed' }),
+    });
+  },
+
+  /** Переразметить диапазон дат — «поправил правило, пересчитай неделю». */
+  classify: async (date_from: string, date_to: string) => {
+    return fetcher<{ days: RoleClassifyDay[] }>('/roles/classify', {
+      method: 'POST',
+      body: JSON.stringify({ date_from, date_to }),
+    });
   },
 
   listRoles: async () => {

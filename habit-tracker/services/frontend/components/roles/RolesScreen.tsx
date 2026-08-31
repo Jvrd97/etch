@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/134, PHASE-03/140
-// summary: the role screen both shells draw — where today's minutes went (share bar per role, the target share always labelled a hypothesis), the acts of the day, and the two manual forms; a record typed by a person is marked as such and can be removed; #140 opens an act that came from the plan up to the line of the plan it came from
+// [review:need-review] PHASE-03/134, PHASE-03/135, PHASE-03/140
+// summary: the role screen both shells draw — where today's minutes went (share bar per role, the target share always labelled a hypothesis), the acts of the day, and the two manual forms; a record typed by a person is marked as such and can be removed; #135 marks a record the markup computed, shows the rule and the application behind it and offers to confirm it, and prints the share nothing could be attributed to; #140 opens an act that came from the plan up to the line of the plan it came from
 
 import { useState } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -10,12 +10,16 @@ import { formatMinutes } from '@/lib/day-format';
 import { fromPlanLine } from '@/lib/plan-roles';
 import {
   ACT_KIND_OPTIONS,
+  CONFIRM_LABEL,
+  CONFIRMED_MARK,
   MANUAL_MARK,
   NO_ACTS_TEXT,
   NO_MINUTES_TEXT,
   actLine,
   actsSummary,
+  markupSource,
   targetShareLine,
+  unassignedLine,
 } from '@/lib/role-format';
 
 export interface RolesScreenProps {
@@ -43,8 +47,17 @@ const DEFAULT_MINUTES = '90';
  * architectural act has to read as both at once.
  */
 export default function RolesScreen({ compact = false }: RolesScreenProps) {
-  const { day, roles, loading, saving, error, addTimeBlock, addAct, deleteTimeBlock } =
-    useRoles();
+  const {
+    day,
+    roles,
+    loading,
+    saving,
+    error,
+    addTimeBlock,
+    addAct,
+    deleteTimeBlock,
+    confirmTimeBlock,
+  } = useRoles();
 
   const [minutesRole, setMinutesRole] = useState('');
   const [minutes, setMinutes] = useState(DEFAULT_MINUTES);
@@ -104,6 +117,11 @@ export default function RolesScreen({ compact = false }: RolesScreenProps) {
           </span>
         </div>
         <p className="text-sm text-text-secondary mt-1">{actsSummary(day)}</p>
+        {unassignedLine(day) && (
+          // Числом, а не молчанием: «не удалось отнести» — это тот показатель,
+          // который говорит, что правилам не хватает строки.
+          <p className="text-sm text-warning mt-1">{unassignedLine(day)}</p>
+        )}
 
         {day.total_minutes === 0 ? (
           <p className="text-sm text-text-secondary mt-4">{NO_MINUTES_TEXT}</p>
@@ -214,28 +232,57 @@ export default function RolesScreen({ compact = false }: RolesScreenProps) {
 
         {day.blocks.length > 0 && (
           <ul className="space-y-2 mt-4">
-            {day.blocks.map((block) => (
-              <li
-                key={block.id}
-                className="flex items-baseline justify-between gap-3 text-sm"
-              >
-                <span className="text-text-primary min-w-0">
-                  {formatMinutes(block.minutes)} · {block.role_code}
-                  {block.note ? ` · ${block.note}` : ''}
-                  {block.is_manual && (
-                    <span className="text-xs text-text-secondary"> · {MANUAL_MARK}</span>
+            {day.blocks.map((block) => {
+              const markup = markupSource(block);
+              const confirmed = block.confidence === 'confirmed';
+              return (
+                <li key={block.id} className="text-sm">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-text-primary min-w-0">
+                      {formatMinutes(block.minutes)} · {block.role_code}
+                      {block.note ? ` · ${block.note}` : ''}
+                      {block.is_manual && (
+                        <span className="text-xs text-text-secondary">
+                          {' '}
+                          · {MANUAL_MARK}
+                        </span>
+                      )}
+                      {confirmed && (
+                        <span className="text-xs text-text-secondary">
+                          {' '}
+                          · {CONFIRMED_MARK}
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-2 shrink-0">
+                      {block.is_automatic && !confirmed && (
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => void confirmTimeBlock(block.id)}
+                          className="text-xs px-2 py-1 rounded-xl border border-white/10 text-text-secondary disabled:opacity-50"
+                        >
+                          {CONFIRM_LABEL}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void deleteTimeBlock(block.id)}
+                        className="text-xs px-2 py-1 rounded-xl border border-white/10 text-text-secondary disabled:opacity-50"
+                      >
+                        убрать
+                      </button>
+                    </span>
+                  </div>
+                  {markup && (
+                    // Правило и приложение — на строке, а не в подсказке при
+                    // наведении: неверную разметку надо видеть, а не искать.
+                    <p className="text-xs text-text-secondary">{markup}</p>
                   )}
-                </span>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void deleteTimeBlock(block.id)}
-                  className="text-xs px-2 py-1 rounded-xl border border-white/10 text-text-secondary disabled:opacity-50"
-                >
-                  убрать
-                </button>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

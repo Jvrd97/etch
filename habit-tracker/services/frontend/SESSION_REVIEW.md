@@ -1480,3 +1480,18 @@ Feedback loops (frontend): `bun test` **761/761 green**, `bunx tsc --noEmit` cle
 
 Feedback loops (frontend): `bun test` **1078 pass, 0 fail** (96 файлов),
 `bunx tsc --noEmit` clean.
+
+## 2026-08-31 — PHASE-03/135, автоматическая запись объясняет себя
+
+**new**: `components/roles/RoleMarkup.test.tsx` (9).
+**mod**: `lib/api.ts` (`RoleTimeBlock.is_automatic`/`rule_summary`/`app_name`,
+`rolesAPI.confirmTimeBlock`, `rolesAPI.classify`), `lib/role-format.ts`
+(`markupSource`, `unassignedLine`, четыре подписи), `hooks/useRoles.ts`
+(`confirmTimeBlock`), `components/roles/RolesScreen.tsx`.
+
+Автоматическая запись помечена, называет приложение и правило прямо на строке (не в
+подсказке при наведении) и даёт кнопку «подтвердить»; доля «не отнесено» печатается числом
+в шапке.
+
+Feedback loops (frontend): `bun test` **1087 pass, 0 fail** (97 файлов),
+`bunx tsc --noEmit` clean.

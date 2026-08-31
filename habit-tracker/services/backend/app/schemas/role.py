@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/134, PHASE-03/140
-# summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day; #140 lets an act from the plan name the line of the plan it came from
+# [review:need-review] PHASE-03/134, PHASE-03/135, PHASE-03/140
+# summary: wire types of the roles — the directory with its target share flagged as a hypothesis, the rules (regex validated before it can be stored), minutes and acts written by role code, and the day view that carries both the distribution of minutes and the acts of the day; #140 lets an act from the plan name the line of the plan it came from; #135 makes an automatic record explain itself — the rule that produced it and the application it was measured from — and adds the answer of one markup run
 """
 Wire types of the roles.
 
@@ -201,6 +201,23 @@ class RoleTimeBlockResponse(BaseModel):
     is_manual: bool = Field(
         description="Ручная запись — то, что человек ввёл сам; экран помечает её"
     )
+    is_automatic: bool = Field(
+        default=False,
+        description=(
+            "Запись, посчитанная разметкой активности. Экран помечает её и даёт "
+            "кнопку «подтвердить»"
+        ),
+    )
+    rule_summary: str | None = Field(
+        default=None,
+        description=(
+            "Правило, которое создало запись, одной строкой: «bundle_id = "
+            "com.microsoft.VSCode». Без него неверная разметка неотличима от верной"
+        ),
+    )
+    app_name: str | None = Field(
+        default=None, description="Приложение, из которого запись посчитана"
+    )
 
 
 class RoleTimeBlockIn(BaseModel):
@@ -366,6 +383,43 @@ class RoleDaySlice(BaseModel):
     act_count: int
 
 
+class RoleClassifyIn(BaseModel):
+    """
+    Диапазон дат, который надо разметить заново.
+
+    Диапазон, а не день: честный повод запустить разметку руками — «поправил
+    правило, переразметь неделю», и семь запросов на это сделали бы экран правил
+    неудобным ровно там, где он нужен.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    date_from: date
+    date_to: date
+
+
+class RoleClassifyDay(BaseModel):
+    """Что разметка сделала с одним днём."""
+
+    work_day: date
+    mode: str = Field(description="Режим дня: вне рабочего минуты не разносятся вовсе")
+    intervals: int
+    blocks_written: int
+    kept_confirmed: int = Field(
+        description="Записи, подтверждённые человеком: разметка их не тронула"
+    )
+    minutes: int
+    unassigned_minutes: int
+    skipped_off_mode: int
+    skipped_short: int = Field(description="Куски короче минуты: минут не дают")
+
+
+class RoleClassifyResponse(BaseModel):
+    """Ответ прогона: по строке на день, старые первыми."""
+
+    days: list[RoleClassifyDay]
+
+
 class RoleDayResponse(BaseModel):
     """
     What `/roles` draws: where the day went and whether the roles happened.
@@ -384,6 +438,9 @@ class RoleDayResponse(BaseModel):
 __all__ = [
     "ACT_KINDS",
     "RoleActIn",
+    "RoleClassifyDay",
+    "RoleClassifyIn",
+    "RoleClassifyResponse",
     "RoleActPatch",
     "RoleActResponse",
     "RoleCreate",

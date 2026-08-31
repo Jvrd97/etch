@@ -238,7 +238,9 @@ def _spans_by_block(
     A plan block is asked back from the plan rather than read off its own
     `started_at`/`ended_at`: those are the ends of the section, and a section
     with a two-hour gap in the middle of it would otherwise claim the gap and
-    displace an agent's hour that nothing planned.
+    displace an agent's hour that nothing planned. A plan row whose section the
+    plan no longer holds falls back to its own ends, like every other row —
+    a stored window is a weaker answer than the plan but a better one than none.
     """
     spans: dict[int, list[Span]] = {}
     for block in blocks:
@@ -247,7 +249,7 @@ def _spans_by_block(
             section_spans = plan_spans.get(section_id) if section_id else None
             if section_spans:
                 spans[block.id] = section_spans
-            continue
+                continue
         if block.started_at is not None and block.ended_at is not None:
             spans[block.id] = merge([Span(start=block.started_at, end=block.ended_at)])
     return spans

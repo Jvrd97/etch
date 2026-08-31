@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
+    agent,
     auth,
     categories,
     challenges,
@@ -70,6 +71,7 @@ API_DESCRIPTION = """
 
 # Роутеры, которые подключаются под API-key auth с общим префиксом
 API_ROUTERS = (
+    agent.router,
     categories.router,
     entries.router,
     journal.router,
