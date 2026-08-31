@@ -978,7 +978,15 @@ async def _apply_marks(
             )
             continue
         await mark_crud.set_mark(
-            db, on, item_id, state=binding.state, note=binding.note, source=MARK_SOURCE
+            db,
+            on,
+            item_id,
+            state=binding.state,
+            note=binding.note,
+            source=MARK_SOURCE,
+            # Импорт не режет ревизий: пачка отметок августа — история импорта,
+            # а не история дня (`#150`).
+            freeze_plan=False,
         )
         written += 1
 
@@ -1015,6 +1023,9 @@ async def _apply_reported(
             state=reported.state,
             note=reported.note,
             source=MARK_SOURCE,
+            # Импорт не режет ревизий: пачка отметок августа — история
+            # импорта, а не история дня (`#150`).
+            freeze_plan=False,
         )
         written += 1
     return written

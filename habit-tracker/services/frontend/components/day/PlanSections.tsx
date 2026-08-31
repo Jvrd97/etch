@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/147
-// summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, and the mark of each line when the screen passes one in
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/147, PHASE-03/150
+// summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the caption saying what the machine proposed on a line the person moved
 // summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
 
 import { Clock, CornerDownRight, Link2, Pencil, Plus, TriangleAlert } from 'lucide-react';
@@ -93,6 +93,14 @@ export interface PlanSectionsProps {
    * the canon it stepped over.
    */
   violations?: Map<string, PlanViolation[]>;
+  /**
+   * Что машина предлагала по этому пункту, если человек это переставил.
+   *
+   * По id пункта — готовая подпись «AI предлагал 09:00-11:00». Строка приходит
+   * собранной, а не считается здесь: сравнивать предложение с текущим планом —
+   * работа сервера, у которого есть обе версии, а не экрана, у которого одна.
+   */
+  proposals?: Map<string, string>;
 }
 
 /**
@@ -117,6 +125,7 @@ export default function PlanSections({
   editing,
   compact = false,
   violations,
+  proposals,
 }: PlanSectionsProps) {
   if (sections.length === 0) {
     return (
@@ -150,6 +159,7 @@ export default function PlanSections({
                 editing={editing}
                 compact={compact}
                 violations={violations}
+                proposals={proposals}
               />
             ))}
           </ul>
@@ -183,6 +193,7 @@ interface PlanLineProps {
   editing?: PlanEditing;
   compact: boolean;
   violations?: Map<string, PlanViolation[]>;
+  proposals?: Map<string, string>;
 }
 
 /**
@@ -203,8 +214,10 @@ function PlanLine({
   editing,
   compact,
   violations,
+  proposals,
 }: PlanLineProps) {
   const broken = violations?.get(item.id) ?? [];
+  const proposed = proposals?.get(item.id) ?? null;
   const indent = Math.min(level, MAX_INDENT_LEVEL) * INDENT_PER_LEVEL;
   const kind = itemKindLabel(item.kind);
   const rigidity = rigidityLabel(item.rigidity);
@@ -265,6 +278,12 @@ function PlanLine({
               </span>
             ))}
           </div>
+
+          {proposed !== null && (
+            <p className="mt-1 text-xs text-text-disabled" data-proposed={item.id}>
+              {proposed}
+            </p>
+          )}
 
           {item.starts_at && item.ends_at && (
             <p
@@ -361,6 +380,7 @@ function PlanLine({
               editing={editing}
               compact={compact}
               violations={violations}
+              proposals={proposals}
             />
           ))}
         </ul>

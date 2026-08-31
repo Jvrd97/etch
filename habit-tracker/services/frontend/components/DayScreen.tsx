@@ -9,6 +9,8 @@ import DayAnchors from '@/components/day/DayAnchors';
 import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
 import DayReportPreview from '@/components/day/DayReportPreview';
+import { usePlanDiff } from '@/hooks/usePlanDiff';
+import { diffSummary, proposalsOf } from '@/lib/plan-diff';
 import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
 import DayTraining from '@/components/day/DayTraining';
@@ -88,6 +90,10 @@ export default function DayScreen({ date }: DayScreenProps) {
   // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
   // и правится, и отмечается, и обе операции обязаны пережить друг друга.
   const editor = usePlanItemEdit(detail?.day.date ?? '');
+  // Диф перечитывается вместе с планом: правка меняет обоих одним действием.
+  const { diff } = usePlanDiff(detail?.day.date ?? '', editor.plan);
+  const proposals = useMemo(() => proposalsOf(diff), [diff]);
+  const planDiffLine = useMemo(() => diffSummary(diff), [diff]);
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -170,10 +176,17 @@ export default function DayScreen({ date }: DayScreenProps) {
           {editor.error && (
             <ErrorAlert message={editor.error} onDismiss={editor.dismissError} />
           )}
+          {planDiffLine !== null && (
+            // Над планом, потому что это цифра о плане целиком: подпись под
+            // пунктом говорит про пункт, а эта строка — про то, чем плох
+            // генератор в этот день.
+            <p className="text-sm text-text-secondary">{planDiffLine}</p>
+          )}
           <PlanSections
             sections={plan.sections}
             overlapping={overlappingItemIds(plan.overlaps)}
             violations={brokenByItem}
+            proposals={proposals}
             marking={{
               marks: marking.marks,
               saving: marking.saving,

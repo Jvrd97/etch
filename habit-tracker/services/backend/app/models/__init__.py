@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/145
-# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the work intervals of a day, the chat tables, the four role tables, the week snapshot, the quick-mark directory with its journal, the challenge tables, the plan violations and the day report revisions alongside the existing ones
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/145, PHASE-03/150
+# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the work intervals of a day, the chat tables, the four role tables, the week snapshot, the quick-mark directory with its journal, the challenge tables, the plan violations the day report revisions and the plan revisions with their change journal alongside the existing ones
 # summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the anchor/training tables the chat tables and the quick-mark tables alongside the existing ones
 from app.models.ai_report import AIReport
 from app.models.anchor import AnchorKind, DayAnchor
@@ -23,6 +23,7 @@ from app.models.import_source import ImportSource
 from app.models.journal import JournalEntry
 from app.models.mark import PlanMark, PlanMarkEvent
 from app.models.plan import DayPlan, PlanItem, PlanSection
+from app.models.plan_revision import PlanItemChange, PlanRevision
 from app.models.plan_violation import PlanViolation
 from app.models.quick_mark import QuickMark, QuickMarkEvent
 from app.models.role import Role, RoleAct, RoleRule, RoleTimeBlock
@@ -71,6 +72,8 @@ __all__ = [
     "PlanMarkEvent",
     "PlanItem",
     "PlanSection",
+    "PlanItemChange",
+    "PlanRevision",
     "PlanViolation",
     "QuarterGoal",
     "QuickMark",

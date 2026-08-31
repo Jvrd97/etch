@@ -14,6 +14,7 @@ from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import plan_revision as revision_crud
 from app.crud import plan_violation as violation_crud
 from app.crud import summary as summary_crud
 from app.crud import work_interval as work_crud
@@ -27,6 +28,7 @@ from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
 from app.models.day_report import REPORT_TRIGGERS, TRIGGER_API, TRIGGER_CLOSE, DayReport
 from app.models.mark import SOURCE_WEB
+from app.models.plan_revision import AUTHOR_FALLBACK
 from app.schemas.anchor import (
     DayAnchorResponse,
     DayAnchorsIn,
@@ -56,6 +58,11 @@ from app.schemas.plan import (
     PlanItemResponse,
     PlanRejection,
     PlanResponse,
+)
+from app.schemas.plan_revision import (
+    PlanDiffResponse,
+    PlanFieldChange,
+    PlanItemDiff,
 )
 from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
@@ -773,6 +780,52 @@ async def delete_work_interval(
     await work_crud.delete(db, row)
 
 
+@router.get("/{on}/plan/diff", response_model=PlanDiffResponse)
+async def get_plan_diff(
+    on: date,
+    db: AsyncSession = Depends(get_db),
+) -> PlanDiffResponse:
+    """
+    Что предлагала машина и что человек с этим сделал.
+
+    По каждому тронутому пункту — поле, старое значение, новое и автор. Пункт,
+    удалённый из плана, из дифа уходит вместе со своими записями (каскад), но в
+    снимке ревизии 0 остаётся: «машина это предлагала» — факт, который удалением
+    не отменяется.
+
+    День, которому плана никто не генерировал, отвечает пустым дифом с
+    `revision_zero: null` — сравнивать не с чем, и это ответ, а не ошибка.
+    """
+    plan = await plan_crud.get_plan(db, on)
+    diff = await revision_crud.diff_of(db, on, plan)
+    zero = diff.revision_zero
+    return PlanDiffResponse(
+        day_date=on,
+        revision_zero=None if zero is None else zero.revision,
+        revision_zero_author=None if zero is None else zero.author,
+        latest_revision=None if diff.latest is None else diff.latest.revision,
+        moved_items=diff.moved_items,
+        items=[
+            PlanItemDiff(
+                plan_item_id=one.plan_item_id,
+                text_md=one.text_md,
+                changes=[
+                    PlanFieldChange(
+                        field=change.field,
+                        old_value=change.old_value,
+                        new_value=change.new_value,
+                        author=change.author,
+                        revision_from=change.revision_from,
+                        changed_at=change.changed_at,
+                    )
+                    for change in one.changes
+                ],
+            )
+            for one in diff.items
+        ],
+    )
+
+
 @router.get("/{on}/plan/violations", response_model=list[PlanViolationResponse])
 async def get_plan_violations(
     on: date, db: AsyncSession = Depends(get_db)
@@ -854,7 +907,12 @@ async def post_plan_skeleton(
 
     document = violation_crud.skeleton_document(built, rule)
     try:
-        stored = await plan_crud.replace_plan(db, day.day_date, rule, document)
+        # `fallback` — автор ревизии, а не `human`: план собран без модели, и
+        # диф `#150` обязан работать и в этом случае, иначе «что предлагала
+        # машина» на дне без генерации не отвечается вовсе.
+        stored = await plan_crud.replace_plan(
+            db, day.day_date, rule, document, author=AUTHOR_FALLBACK
+        )
     except PlanRejected as rejected:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

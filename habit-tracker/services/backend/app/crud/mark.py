@@ -148,6 +148,31 @@ def _append_event(
     )
 
 
+async def _day_has_marks(db: AsyncSession, on: date) -> bool:
+    """Стояла ли на этом дне хоть одна отметка до текущей записи."""
+    found = await db.scalar(
+        select(PlanMark.item_id).where(PlanMark.item_id.in_(_items_of_day(on))).limit(1)
+    )
+    return found is not None
+
+
+async def _freeze_plan(db: AsyncSession, on: date) -> None:
+    """
+    Срез ревизии в момент, когда день начался.
+
+    Импорт `app.crud.plan_revision` стоит внутри функции: модуль отметок читают
+    из `app.crud.plan`, а ревизии читают план — импорт наверху замкнул бы круг.
+    """
+    from app.crud import plan as plan_crud
+    from app.crud import plan_revision as revision_crud
+    from app.models.plan_revision import AUTHOR_HUMAN
+
+    plan = await plan_crud.get_plan(db, on)
+    if plan is None:
+        return
+    await revision_crud.cut_revision(db, on, plan, AUTHOR_HUMAN)
+
+
 async def set_mark(
     db: AsyncSession,
     on: date,
@@ -156,9 +181,17 @@ async def set_mark(
     state: str | None,
     note: str | None,
     source: str,
+    freeze_plan: bool = True,
 ) -> PlanMark | None:
     """
     Give `item_id` the mark `state`, or take its mark off when `state` is None.
+
+    **Первая отметка дня замораживает план.** До неё план — предложение, которое
+    правят; после неё день начался, и то, что стояло в плане на этот момент,
+    отдельная ревизия (`#150`). Срез делается один раз за день — на первой
+    отметке, а не на каждой. `freeze_plan=False` выключает это для импорта:
+    отметки августа приезжают пачкой, и ревизия на каждую из них была бы
+    историей о том, как шёл импорт, а не о том, как шёл день.
 
     Returns the stored mark, or None when the item now has none. The event is
     appended only when the state actually moved: re-sending the same tick is
@@ -170,6 +203,8 @@ async def set_mark(
     existing = await get_mark(db, item_id)
     previous = existing.state if existing is not None else None
     at = _now()
+    if freeze_plan and state is not None and not await _day_has_marks(db, on):
+        await _freeze_plan(db, on)
 
     if state is None:
         if existing is not None:

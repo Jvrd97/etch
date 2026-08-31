@@ -632,6 +632,16 @@ export const dayAPI = {
   },
 
   /**
+   * Диф плана: что предлагала машина и что человек с этим сделал.
+   *
+   * `revision_zero: null` — плана на эту дату никто не генерировал, сравнивать
+   * не с чем. Это ответ, а не ошибка, и экран рисует под него ничего.
+   */
+  getPlanDiff: async (date: string) => {
+    return fetcher<PlanDiff>(`/day/${date}/plan/diff`);
+  },
+
+  /**
    * Отчёт дня: последняя ревизия или названная номером.
    *
    * 404 значит «отчёт этого дня не собирали» — это не пустой текст, а другое
@@ -2148,6 +2158,53 @@ export const chatAPI = {
  * закрыт». The square of the timeline is painted from this field alone, which
  * is what `life.py` could not do while it was reading prose with a regexp.
  */
+/** Кто автор версии плана: модель, скелет, человек или внешний скилл. */
+export type PlanAuthor = 'ai' | 'fallback' | 'human' | 'skill';
+
+/** Поле пункта, изменение которого журналируется. */
+export type PlanChangeField =
+  | 'window_start'
+  | 'window_end'
+  | 'text'
+  | 'ord'
+  | 'section_id'
+  | 'status';
+
+/** Одна правка одного поля одного пункта. */
+export interface PlanFieldChange {
+  field: PlanChangeField;
+  old_value: string | null;
+  new_value: string | null;
+  author: PlanAuthor;
+  /** Ревизия, поверх которой правка сделана. */
+  revision_from: number | null;
+  changed_at: string;
+}
+
+/** Один пункт, который человек тронул, со всеми правками по нему. */
+export interface PlanItemDiff {
+  plan_item_id: string;
+  /** Текст пункта сейчас; пусто — пункт уже удалён. */
+  text_md: string;
+  changes: PlanFieldChange[];
+}
+
+/**
+ * Диф плана дня.
+ *
+ * `revision_zero: null` значит «плана никто не генерировал»: сравнивать не с
+ * чем, и это не то же самое, что «человек ничего не менял».
+ */
+export interface PlanDiff {
+  day_date: string;
+  revision_zero: number | null;
+  revision_zero_author: PlanAuthor | null;
+  latest_revision: number | null;
+  /** Сколько пунктов тронул человек — сводка над планом. */
+  moved_items: number;
+  items: PlanItemDiff[];
+}
+
 /** Что вызвало сборку отчёта дня. */
 export type DayReportTrigger = 'close' | 'button' | 'nightly' | 'api';
 

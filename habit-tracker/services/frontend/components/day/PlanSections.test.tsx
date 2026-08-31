@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/87
-// summary: component tests for the plan — sections keep the order they were sent, a minimum is drawn as its own line under its task, a task shows its criterion of being done, a label without a column of its own is on the screen, and a line that broke a rule is marked with it rather than hidden or refused
+// [review:need-review] PHASE-03/87, PHASE-03/150
+// summary: component tests for the plan — sections keep the order they were sent, a minimum is drawn as its own line under its task, a task shows its criterion of being done, a label without a column of its own is on the screen, a line that broke a rule is marked with it rather than hidden or refused, and a line the person moved carries the version the machine proposed
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -218,5 +218,32 @@ describe('PlanSections and the rules a line broke', () => {
     );
 
     expect(screen.getByText('пункт')).toBeTruthy();
+  });
+});
+
+describe('PlanSections and what the machine proposed', () => {
+  it('signs a line the person moved with the version the machine had', () => {
+    render(
+      <PlanSections
+        sections={[section({ items: [item({ id: 'i7', text_plain: 'Задача W1' })] })]}
+        overlapping={NONE}
+        proposals={new Map([['i7', 'AI предлагал 09:00-11:00']])}
+      />
+    );
+
+    expect(screen.getByText('AI предлагал 09:00-11:00')).toBeDefined();
+  });
+
+  it('signs nothing on a line nobody touched', () => {
+    // Подпись под каждой строкой была бы шумом: интересны те, что разошлись.
+    render(
+      <PlanSections
+        sections={[section({ items: [item({ id: 'i7' })] })]}
+        overlapping={NONE}
+        proposals={new Map([['i9', 'AI предлагал 09:00-11:00']])}
+      />
+    );
+
+    expect(screen.queryByText('AI предлагал 09:00-11:00')).toBeNull();
   });
 });
