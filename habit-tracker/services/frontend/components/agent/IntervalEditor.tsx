@@ -2,7 +2,7 @@
 // [review:need-review] PHASE-03/160
 // summary: one interval corrected where it is drawn — its two ends as wall clock, the task it belongs to, a note, and a patch that carries only what actually changed so «не трогай задачу» stays different from «убери задачу»
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, X } from 'lucide-react';
 import type { ActivityInterval, ActivityIntervalPatch } from '@/lib/api';
 
@@ -96,12 +96,19 @@ export default function IntervalEditor({
   );
   const [note, setNote] = useState(interval.note ?? '');
 
-  useEffect(() => {
+  // Правка соседа переставляет ленту, и под тем же экраном оказывается уже
+  // другой интервал; поля обязаны последовать за ним, иначе человек сохранит
+  // поверх чужого часа то, что набирал в своём. Сброс идёт прямо в рендере, а
+  // не эффектом: эффект сначала показал бы кадр со старыми полями и только
+  // потом перерисовал его новыми.
+  const [shown, setShown] = useState(interval);
+  if (shown !== interval) {
+    setShown(interval);
     setFrom(clockField(interval.started_at));
     setTo(clockField(interval.ended_at));
     setTask(interval.plan_task_id === null ? '' : String(interval.plan_task_id));
     setNote(interval.note ?? '');
-  }, [interval]);
+  }
 
   const field =
     'w-full rounded-2xl bg-surface border border-white/10 px-3 py-2 text-sm text-text-primary';

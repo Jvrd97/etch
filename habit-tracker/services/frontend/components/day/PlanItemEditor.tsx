@@ -2,7 +2,7 @@
 // [review:need-review] PHASE-03/110, PHASE-03/140
 // summary: one plan line edited where it is drawn — text, window and criterion in three fields, save and delete beside them, the arrows that move the line inside its level, and the warning of the canon printed on the line rather than in a modal nobody reads; #140 adds the two optional pickers that turn a line into an intent to act — роль и вид акта, right where the day is already being edited
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ArrowDown, ArrowUp, Check, Trash2, X } from 'lucide-react';
 import type { PlanItem, PlanItemPatch, Role } from '@/lib/api';
 import {
@@ -132,15 +132,19 @@ export default function PlanItemEditor({
 
   // Правка соседа переставляет строки, и сервер возвращает уже другой пункт под
   // тем же экраном; поля обязаны последовать за ним, иначе человек сохранит
-  // поверх чужого текста то, что набирал в своём.
-  useEffect(() => {
+  // поверх чужого текста то, что набирал в своём. Сброс идёт прямо в рендере, а
+  // не эффектом: эффект сначала показал бы кадр со старыми полями и только
+  // потом перерисовал его новыми.
+  const [shown, setShown] = useState(item);
+  if (shown !== item) {
+    setShown(item);
     setText(item.text_md);
     setWindow(windowField(item));
     setCriterion(item.done_criterion ?? '');
     setRoleId(item.role_id);
     setActKind(item.act_kind);
     setConfirming(false);
-  }, [item]);
+  }
 
   const field =
     'w-full rounded-2xl bg-surface border border-white/10 px-3 py-2 text-sm text-text-primary';
