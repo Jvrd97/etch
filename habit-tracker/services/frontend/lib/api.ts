@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/110, PHASE-03/111, PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/110, PHASE-03/111, PHASE-03/121, PHASE-03/118, PHASE-03/116
 // summary: PHASE-03/110 adds the per-item plan editor — patch, create, delete and move of one line, each answering with the whole plan and the document rules a human's edit broke; PHASE-03/116 adds chatAPI.reset and exports APIError so a refused turn keeps its status; entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or the close that judges the day; goalsAPI reads the goal board and moves one milestone; dayAPI also marks the anchors of a day by kind and writes its training, and trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, starts one on a named day and streams a turn through fetch + ReadableStream instead of waiting for a whole body
 
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
@@ -1627,5 +1627,88 @@ export const chatAPI = {
     } finally {
       reader.releaseLock();
     }
+  },
+};
+
+/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
+export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
+
+/** Which client a tap came from; the backend records it on every event. */
+export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
+
+/**
+ * One button of the directory, already carrying the state of the day it was
+ * read for.
+ *
+ * `today_total` is null for a tick — a box is not a quantity — and `done` is
+ * the field both kinds answer. The client never sees `category_id` as a thing
+ * to act on: what the button means is the server's business, and the only id a
+ * tap sends is `id`.
+ */
+export interface QuickMark {
+  id: number;
+  label: string;
+  category_id: number;
+  field_id: number;
+  kind: QuickMarkKind;
+  step: number | null;
+  unit_label: string | null;
+  icon: string | null;
+  color: string | null;
+  hotkey: string | null;
+  order: number;
+  show_in_agent: boolean;
+  is_active: boolean;
+  entry_date: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** The recorded tap and the state it produced — one call per tap, no refetch. */
+export interface QuickMarkEvent {
+  event_id: number;
+  quick_mark_id: number;
+  entry_id: number | null;
+  entry_date: string;
+  occurred_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** What a tap says beyond the button's own id. */
+export interface QuickMarkTap {
+  /** Overrides the button's step; for a tick, 0 unticks. */
+  value?: number;
+  source?: QuickMarkSource;
+  utc_offset_minutes?: number;
+}
+
+export const quickMarksAPI = {
+  /**
+   * The directory with today's state on it.
+   *
+   * No date is sent: which day is running is the server's answer
+   * (`local_date()`), and a browser that computed its own would disagree with
+   * it between midnight and the boundary hour.
+   */
+  list: async () => {
+    return fetcher<QuickMark[]>('/quick-marks');
+  },
+
+  /**
+   * Tap one button.
+   *
+   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
+   * and never decides the day it lands in.
+   */
+  tap: async (id: number, tap: QuickMarkTap = {}) => {
+    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'web',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+        ...tap,
+      }),
+    });
   },
 };

@@ -1,0 +1,110 @@
+// [review:need-review] PHASE-03/121
+// summary: tests for the pure reading of the directory — nothing where the day said nothing, the tap's own answer folded back in without a refetch, and the categories the directory has taken over
+
+import { describe, expect, it } from 'bun:test';
+import type { QuickMark, QuickMarkEvent } from '@/lib/api';
+import {
+  applyQuickMarkEvent,
+  categoriesWithQuickMark,
+  formatMarkTotal,
+  markCaption,
+} from './quick-marks';
+
+function mark(overrides: Partial<QuickMark> = {}): QuickMark {
+  return {
+    id: 1,
+    label: '+250 мл',
+    category_id: 10,
+    field_id: 100,
+    kind: 'increment',
+    step: 250,
+    unit_label: 'мл',
+    icon: null,
+    color: null,
+    hotkey: null,
+    order: 0,
+    show_in_agent: true,
+    is_active: true,
+    entry_date: '2026-08-30',
+    today_total: null,
+    done: false,
+    ...overrides,
+  };
+}
+
+describe('formatMarkTotal', () => {
+  it('says nothing where the day said nothing', () => {
+    expect(formatMarkTotal(null)).toBe('');
+  });
+
+  it('keeps a whole number whole', () => {
+    expect(formatMarkTotal(1250)).toBe('1250');
+  });
+
+  it('drops the trailing zeros of a fraction', () => {
+    expect(formatMarkTotal(0.5)).toBe('0.5');
+    expect(formatMarkTotal(1.2000000001)).toBe('1.2');
+  });
+
+  it('shows a real zero, because "я выпил ноль" is a fact', () => {
+    expect(formatMarkTotal(0)).toBe('0');
+  });
+});
+
+describe('markCaption', () => {
+  it('puts the unit next to the total', () => {
+    expect(markCaption(mark({ today_total: 1250 }))).toBe('1250 мл');
+  });
+
+  it('says nothing at all for a tick', () => {
+    expect(markCaption(mark({ kind: 'check', today_total: null }))).toBe('');
+  });
+
+  it('omits a unit the button does not carry', () => {
+    expect(markCaption(mark({ today_total: 3, unit_label: null }))).toBe('3');
+  });
+});
+
+describe('applyQuickMarkEvent', () => {
+  const event: QuickMarkEvent = {
+    event_id: 7,
+    quick_mark_id: 1,
+    entry_id: 42,
+    entry_date: '2026-08-30',
+    occurred_at: '2026-08-30T10:00:00Z',
+    today_total: 500,
+    done: true,
+  };
+
+  it('repaints the tapped button from the answer, without a second request', () => {
+    const [updated] = applyQuickMarkEvent([mark()], event);
+    expect(updated.today_total).toBe(500);
+    expect(updated.done).toBe(true);
+  });
+
+  it('leaves every other button exactly as it was', () => {
+    const other = mark({ id: 2, today_total: 3 });
+    const [, untouched] = applyQuickMarkEvent([mark(), other], event);
+    expect(untouched).toEqual(other);
+  });
+
+  it('ignores an event for a button that is no longer listed', () => {
+    const marks = [mark({ id: 9 })];
+    expect(applyQuickMarkEvent(marks, event)).toEqual(marks);
+  });
+});
+
+describe('categoriesWithQuickMark', () => {
+  it('is empty for an empty directory, so nothing is hidden', () => {
+    expect(categoriesWithQuickMark([]).size).toBe(0);
+  });
+
+  it('collects every category the directory answers for', () => {
+    const covered = categoriesWithQuickMark([
+      mark({ id: 1, category_id: 10 }),
+      mark({ id: 2, category_id: 10 }),
+      mark({ id: 3, category_id: 11 }),
+    ]);
+    expect([...covered].sort()).toEqual([10, 11]);
+  });
+});

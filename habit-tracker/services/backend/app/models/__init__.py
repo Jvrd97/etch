@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/111
-# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the anchor/training tables and the chat tables alongside the existing ones
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/92, PHASE-03/93, PHASE-03/111, PHASE-03/121
+# summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the anchor/training tables the chat tables and the quick-mark tables alongside the existing ones
 from app.models.ai_report import AIReport
 from app.models.anchor import AnchorKind, DayAnchor
 from app.models.applied_daily_summary import AppliedDailySummary
@@ -19,6 +19,7 @@ from app.models.health import HealthHourBucket, HealthMetric
 from app.models.import_source import ImportSource
 from app.models.journal import JournalEntry
 from app.models.mark import PlanMark, PlanMarkEvent
+from app.models.quick_mark import QuickMark, QuickMarkEvent
 from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.summary import DaySummary
 from app.models.training import (
@@ -60,6 +61,8 @@ __all__ = [
     "PlanMarkEvent",
     "PlanItem",
     "PlanSection",
+    "QuickMark",
+    "QuickMarkEvent",
     "QuarterGoal",
     "TrainingDay",
     "TrainingState",
