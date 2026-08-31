@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152, PHASE-03/nav-drawer
+// summary: plus the desktop grouping — every screen filed under exactly one Russian-named section, the header anchors, and the active-route rule that also lights a screen on its detail routes
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens), and the chat's own registration: a mobile twin under "More" that leaves the five tab slots alone
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
 
@@ -6,11 +7,16 @@ import { describe, expect, it } from 'bun:test';
 import {
   APP_ROUTES,
   DEFAULT_SCREEN_TITLE,
+  HEADER_ROUTES,
   MOBILE_TABS,
   MORE_PATH,
   MORE_ROUTE_ID,
   MORE_ROUTES,
+  NAV_SECTIONS,
+  SECTION_NAMES,
+  SECTION_ORDER,
   TAB_BAR_ROUTES,
+  isActiveRoute,
   mobileScreenTitle,
 } from './routes';
 
@@ -201,5 +207,107 @@ describe('mobileScreenTitle', () => {
 
   it('does not name a nested route of a screen that owns no children', () => {
     expect(mobileScreenTitle('/m/today/12')).toBe(DEFAULT_SCREEN_TITLE);
+  });
+});
+
+describe('NAV_SECTIONS', () => {
+  it('prints День, Данные, Настройка, in that order', () => {
+    expect(NAV_SECTIONS.map((section) => section.id)).toEqual([...SECTION_ORDER]);
+    expect(NAV_SECTIONS.map((section) => section.name)).toEqual(['День', 'Данные', 'Настройка']);
+  });
+
+  it('files every screen under exactly one heading', () => {
+    // A screen missing from the drawer is a screen with no click leading to it:
+    // the drawer is the only place fifteen of the seventeen are reachable from.
+    const filed = NAV_SECTIONS.flatMap((section) => section.routes.map((route) => route.id));
+    expect(filed.slice().sort()).toEqual(
+      APP_ROUTES.map((route) => route.id)
+        .slice()
+        .sort()
+    );
+    expect(new Set(filed).size).toBe(filed.length);
+  });
+
+  it('groups the day and its parts under День', () => {
+    const day = NAV_SECTIONS.find((section) => section.id === 'day');
+    expect(day?.routes.map((route) => route.id)).toEqual([
+      'today',
+      'day',
+      'life',
+      'week',
+      'chat',
+      'daily-summary',
+    ]);
+  });
+
+  it('groups what accumulated under Данные', () => {
+    const data = NAV_SECTIONS.find((section) => section.id === 'data');
+    expect(data?.routes.map((route) => route.id)).toEqual([
+      'dashboard',
+      'roles',
+      'table',
+      'entries',
+      'journal',
+      'insights',
+    ]);
+  });
+
+  it('groups the directories and the canon under Настройка', () => {
+    const setup = NAV_SECTIONS.find((section) => section.id === 'setup');
+    expect(setup?.routes.map((route) => route.id)).toEqual([
+      'goals',
+      'quick-marks',
+      'categories',
+      'day-rules',
+      'onboarding',
+    ]);
+  });
+
+  it('names every section it can be asked for', () => {
+    expect(APP_ROUTES.every((route) => SECTION_NAMES[route.section] !== undefined)).toBe(true);
+  });
+});
+
+describe('HEADER_ROUTES', () => {
+  it('is the two screens opened every day', () => {
+    // Today is the address the app opens on; Быстрые отметки is what a mark is
+    // made from. Anything else on screen costs width the header does not have.
+    expect(HEADER_ROUTES.map((route) => route.id)).toEqual(['today', 'quick-marks']);
+  });
+
+  it('is orthogonal to the mobile tab bar', () => {
+    // The two shells answer different questions — what is pressed with a thumb
+    // versus what a desktop reader opens daily — so neither list constrains the
+    // other. Quick marks is an anchor on the desktop and lives under "More" on
+    // the phone, and that is not a contradiction.
+    expect(HEADER_ROUTES.some((route) => route.inTabBar === null)).toBe(true);
+  });
+});
+
+describe('isActiveRoute', () => {
+  const day = APP_ROUTES.find((route) => route.id === 'day')!;
+  const today = APP_ROUTES.find((route) => route.id === 'today')!;
+  const categories = APP_ROUTES.find((route) => route.id === 'categories')!;
+  const roles = APP_ROUTES.find((route) => route.id === 'roles')!;
+
+  it('marks the screen the reader is on', () => {
+    expect(isActiveRoute('/today', today)).toBe(true);
+  });
+
+  it('marks a screen on its dated detail route', () => {
+    // The old desktop row compared for equality, so /day/2026-08-30 left nothing
+    // at all marked — the reader could not tell where they were.
+    expect(isActiveRoute('/day/2026-08-30', day)).toBe(true);
+    expect(isActiveRoute('/categories/12', categories)).toBe(true);
+    expect(isActiveRoute('/roles/rules', roles)).toBe(true);
+  });
+
+  it('does not mark a screen that owns no children', () => {
+    expect(isActiveRoute('/today/12', today)).toBe(false);
+  });
+
+  it('does not mark a screen whose href is a prefix of an unrelated route', () => {
+    expect(isActiveRoute('/daybook', day)).toBe(false);
+    expect(isActiveRoute('/entries', today)).toBe(false);
   });
 });
