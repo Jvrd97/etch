@@ -64,7 +64,6 @@ from app.llm.chat.session import (
 from app.llm.cli import CLI_BINARY, CLI_MODEL_LABEL, IsolatedCli
 from app.llm.client import (
     INSIGHTS_MODEL,
-    LLM_TIMEOUT_SECONDS,
     MAX_REPORT_TOKENS,
     AnthropicAPIError,
     AnthropicInsightsClient,
@@ -290,11 +289,16 @@ class CliChatClient(ChatLLMClient):
     def __init__(
         self,
         binary: str = CLI_BINARY,
-        timeout: float = LLM_TIMEOUT_SECONDS,
+        timeout: float | None = None,
         config_dir: str | None = None,
         cwd: str | None = None,
     ) -> None:
-        self._timeout = timeout
+        # Свой срок, а не унаследованные 120 секунд одноходовых юзкейсов:
+        # разговор о целом дне — ответ длиннее инсайта, и общий потолок хода
+        # читается из `CHAT_TURN_TIMEOUT_SECONDS` (#116).
+        self._timeout = (
+            float(settings.CHAT_TURN_TIMEOUT_SECONDS) if timeout is None else timeout
+        )
         self._cli = IsolatedCli(binary=binary, config_dir=config_dir, cwd=cwd)
 
     @property

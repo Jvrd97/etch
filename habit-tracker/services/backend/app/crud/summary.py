@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/143
+# [review:need-review] PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/143
 # summary: persistence of the day's итог — the facts gathered from rows that already exist (`work_minutes` measured by the day's intervals, the number sent at a touch only where nothing measured it), the two touches that move one row from `open` through `reviewed` to `closed` with an idempotency key each, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
+# summary: persistence of the day's итог — the facts gathered from rows that already exist (anchors now read off `day_anchor` rather than off the anchor lines of the plan), the upsert that closes a day, the whole-history recompute that never touches an imported verdict, and full-text search over the prose
 """
 Database access for the итог of a day.
 
@@ -62,6 +63,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
@@ -69,6 +71,7 @@ from app.crud import work_interval as work_crud
 from app.day.evaluate import VERDICT_WON, DayFacts, Verdict, evaluate_day
 from app.day.rules import resolve_rule
 from app.day.streak import step_streak
+from app.models.anchor import DayAnchor
 from app.models.day import DayRuleSet
 from app.models.mark import PlanMark
 from app.models.plan import DayPlan
@@ -88,6 +91,7 @@ __all__ = [
     "close_day",
     "facts_of",
     "get_summary",
+    "missing_anchor_names",
     "recompute_history",
     "review_day",
     "search",
@@ -148,6 +152,8 @@ class ImportedDayIsNotClosable(RuntimeError):
 def facts_of(
     plan: DayPlan | None,
     marks: list[PlanMark],
+    rule: DayRuleSet,
+    anchors: list[DayAnchor],
     *,
     work_minutes: int | None,
     closed: bool,
@@ -155,24 +161,55 @@ def facts_of(
     """
     Everything the verdict is decided from, read off rows already in hand.
 
-    Anchors are counted from `plan_item.kind='anchor'` rather than from a
-    catalogue: `anchor_kind`/`day_anchor` arrive with `#92`, and until then the
-    lines of the plan are the only place an anchor exists. Their *kinds* — which
-    anchors of the canon this day closed — are read off the codes those lines
-    carry and are `None` when the plan names none, so an unnamed composition
-    falls back to the counter instead of losing the day (`#142`).
+    **Якоря считаются по `day_anchor`, а не по строкам плана.** Until `#92` an
+    anchor was a bullet recognised by a substring, and a plan that worded one
+    differently lost it silently; now the anchors of a day are rows counted
+    against the composition `day_rule_set.anchors` names.
+
+    The lines of the plan remain the fallback and only that: a day whose anchors
+    say nothing at all — every imported day of July — has no rows to count, and
+    reading that as "closed nothing" would lose the whole history. Such a day is
+    counted the way it was before `#92` and says `anchor_kinds` is unmeasured.
 
     `work_minutes` is passed in rather than read here, because the two callers
     resolve it differently: a live preview measures the intervals as they stand,
     a recompute takes the sum it already read for the whole history at once.
     """
+    counted = anchor_crud.anchor_counts(rule, anchors)
     return DayFacts(
         closed=closed,
         tasks=mark_crud.task_counts(plan, marks),
-        anchors=mark_crud.anchor_counts(plan, marks),
+        anchors=counted
+        if counted is not None
+        else mark_crud.anchor_counts(plan, marks),
         work_minutes=work_minutes,
-        anchor_kinds=mark_crud.closed_anchor_kinds(plan, marks),
+        anchor_kinds=(
+            anchor_crud.closed_kinds(anchors)
+            if counted is not None
+            else mark_crud.closed_anchor_kinds(plan, marks)
+        ),
     )
+
+
+async def missing_anchor_names(
+    db: AsyncSession,
+    rule: DayRuleSet,
+    plan: DayPlan | None,
+    marks: list[PlanMark],
+    anchors: list[DayAnchor],
+) -> list[str]:
+    """
+    Which anchors the day left open, named the way a person reads them.
+
+    From the catalogue when the day has anchors of its own, from the text of the
+    plan's anchor lines otherwise — «не хватило вечера с близкими» is what a
+    reader can act on, and a day that predates `day_anchor` still has to say
+    something rather than nothing.
+    """
+    if anchor_crud.closed_kinds(anchors) is None:
+        return mark_crud.missing_anchors(plan, marks)
+    kinds = await anchor_crud.list_kinds(db)
+    return anchor_crud.missing_anchor_titles(kinds, tuple(rule.anchors or ()), anchors)
 
 
 async def get_summary(db: AsyncSession, on: date) -> DaySummary | None:
@@ -283,7 +320,8 @@ async def summary_for(
     would be a second chance for the counters on the page to disagree with the
     verdict beside them.
     """
-    missing = mark_crud.missing_anchors(plan, marks)
+    anchors = await anchor_crud.list_day_anchors(db, on)
+    missing = await missing_anchor_names(db, rule, plan, marks, anchors)
     stored = await get_summary(db, on)
     if stored is not None and stored.stage == STAGE_CLOSED:
         return _to_response(stored, missing_anchors=missing)
@@ -296,6 +334,8 @@ async def summary_for(
     facts = facts_of(
         plan,
         marks,
+        rule,
+        anchors,
         work_minutes=measured if measured is not None else estimated,
         closed=False,
     )
@@ -575,8 +615,17 @@ async def recompute_history(db: AsyncSession) -> None:
             # verdict was reached from — otherwise the screen would show one
             # number and the judgement stand on another.
             row.work_minutes = measured.get(row.day_date, row.work_minutes)
-            facts = facts_of(plan, marks, work_minutes=row.work_minutes, closed=closed)
-            verdict = evaluate_day(resolve_rule(rules, row.day_date), facts)
+            anchors = await anchor_crud.list_day_anchors(db, row.day_date)
+            rule = resolve_rule(rules, row.day_date)
+            facts = facts_of(
+                plan,
+                marks,
+                rule,
+                anchors,
+                work_minutes=row.work_minutes,
+                closed=closed,
+            )
+            verdict = evaluate_day(rule, facts)
             # Переопределение действует только на закрытом дне: «выигран» на
             # строке, до вечера которой ещё не дошли, было бы вердиктом,
             # вынесенным раньше срока, и CHECK таблицы его и не принял бы.

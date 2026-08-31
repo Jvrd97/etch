@@ -36,6 +36,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.day.evaluate import verdict_reasons
+from app.models.anchor import LEGACY_ANCHOR_CODES
 from app.models.day import (
     DEFAULT_ANCHORS,
     DEFAULT_DAYS_OFF,
@@ -95,19 +96,17 @@ OPEN_WINDOW_DAYS = 1
 # The hard edges of the day. Only these may carry `rigidity='hard'` when plans
 # arrive (`#87`); the middle of the evening breathes. A bound on what a plan may
 # harden, not a checklist the verdict counts against — `app.day.evaluate` reads
-# the anchors of the plan itself and says why.
-REQUIRED_ANCHORS: tuple[str, ...] = (
-    "подъём",
-    "спорт",
-    "старт работы",
-    "ревью",
-    "отбой",
-)
+# the anchors of the day and says why.
+#
+# Виды якорей читаются из каталога `app.models.anchor`, а не перечисляются здесь
+# (`#92`): что такое вид якоря — знание каталога, каким днём какие из них судят —
+# знание строки правила, а этот модуль несёт только сиды. Легаси-строка остаётся
+# с теми пятью краями, под которыми её прожили: «вечер с близкими» вошёл в канон
+# с `#142`, и июльский день не судят сентябрьским правилом.
+REQUIRED_ANCHORS: tuple[str, ...] = LEGACY_ANCHOR_CODES
 
-# The anchor of the third priority — «вечер с близкими». Named here because the
-# seed of the current row includes it and the legacy row does not: the evening
-# with the family became part of the canon with `#142`, and a day lived before
-# that is not judged by it.
+# Якорь третьего приоритета — «вечер с близкими». Назван здесь, потому что сид
+# действующей строки его включает, а легаси-строка — нет.
 ANCHOR_RELATIONSHIP = "relationship"
 
 # Codes of the edges of the day, machine-readable. The Russian a person reads is

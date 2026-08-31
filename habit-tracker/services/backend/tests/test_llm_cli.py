@@ -32,7 +32,10 @@ class FakeProcess:
     def __init__(
         self, returncode: int = 0, stdout: bytes = b"", hang: bool = False
     ) -> None:
-        self.returncode: int | None = returncode
+        # A running process reports `returncode is None`, and code that decides
+        # whether to kill reads exactly that. A hanging fake that claims to have
+        # exited already would make every such check pass by accident.
+        self.returncode: int | None = None if hang else returncode
         self._stdout = stdout
         self._hang = hang
         self.killed = False
@@ -48,7 +51,8 @@ class FakeProcess:
         self.killed = True
 
     async def wait(self) -> int:
-        return -9 if self.killed else (self.returncode or 0)
+        self.returncode = -9 if self.killed else (self.returncode or 0)
+        return self.returncode
 
 
 class FakeExecFactory:

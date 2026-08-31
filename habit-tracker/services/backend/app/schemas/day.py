@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/142, PHASE-03/152
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/142, PHASE-03/152
 # summary: day DTOs — the day itself, the rule it is judged by, the map of the day the rule draws (edges, free evening, ceilings, anchors, the order of the verdict), the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, the итог with the verdict of the day, and the intervals of work with their sum — and no window title, because the table has no column for one; since #152 also the draft of a new version of the canon (`DayRuleSetPublish`) and the history the rules screen reads
+# summary: day DTOs — the day itself, the rule it is judged by, the map of the day the rule draws (edges, free evening, ceilings, anchors, the order of the verdict), the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, the anchors and the training of the day (#92), and the итог with the verdict of the day
 """
 Wire types of the day.
 
@@ -19,10 +20,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.anchor import DayAnchorsResponse
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
 from app.schemas.summary import DaySummaryResponse
 from app.schemas.work_interval import WorkDayResponse
+from app.schemas.training import TrainingDayResponse
 
 
 class DayRuleSetResponse(BaseModel):
@@ -366,6 +369,20 @@ class DayDetailResponse(BaseModel):
     )
     notebook: str | None = Field(
         None, description="Блокнот дня из journal_entries; null — не писали"
+    )
+    anchors: DayAnchorsResponse = Field(
+        ...,
+        description=(
+            "Якоря дня по справочнику: по пункту на каждый вид, которым судится "
+            "этот день, — включая те, по которым ещё ничего не сказано"
+        ),
+    )
+    training: TrainingDayResponse | None = Field(
+        None,
+        description=(
+            "Тренировка дня: запланированное, сделанное и минимум со своим "
+            "пунктом плана; null — на эту дату ничего не записано"
+        ),
     )
     summary: DaySummaryResponse = Field(
         ...,

@@ -43,6 +43,56 @@ let patchMilestone: ReturnType<typeof mock>;
 // the first time anything links against it and shares that registry across the
 // run, so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // Правила дня (#152). Есть в каждом моке api по той же причине, что и
+  // остальная поверхность: bun фиксирует имена экспортов модуля при первой
+  // линковке, и мок, забывший экспорт, удаляет его для всех, кто линкуется следом.
+  dayRulesAPI: {
+    getHistory: () => Promise.resolve(null),
+    getCurrent: () => Promise.resolve(null),
+    publish: () => Promise.resolve(null),
+  },
+  // Тренировка (#92). Есть в каждом моке api по причине, названной выше.
+  trainingAPI: {
+    getState: () => Promise.resolve(null),
+    setProgression: () => Promise.resolve(null),
+    complaints: () => Promise.resolve([]),
+    openComplaint: () => Promise.resolve(null),
+    closeComplaint: () => Promise.resolve(null),
+    records: () => Promise.resolve([]),
+  },
+  // Обязательства (#127). Есть в каждом моке api по причине, названной выше.
+  challengesAPI: {
+    list: () => Promise.resolve([]),
+    get: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+    patch: () => Promise.resolve(null),
+    recompute: () => Promise.resolve(null),
+    setDayVerdict: () => Promise.resolve(null),
+  },
+  // Чат (#111). Есть в каждом моке api по причине, названной выше.
+  chatAPI: {
+    list: () => Promise.resolve([]),
+    create: () => Promise.resolve(null),
+    get: () => Promise.resolve(null),
+    reset: () => Promise.resolve({ reset: 0 }),
+    context: () => Promise.resolve(null),
+    remove: () => Promise.resolve({}),
+    getPlan: () => Promise.resolve(null),
+    applyPlan: () => Promise.resolve(null),
+    dismissPlan: () => Promise.resolve(undefined),
+    streamMessage: () => Promise.resolve(undefined),
+  },
+  // Быстрые отметки (#121). Есть в каждом моке api по причине, названной выше.
+  quickMarksAPI: {
+    list: () => Promise.resolve([]),
+    create: () => Promise.resolve(null),
+    update: () => Promise.resolve(null),
+    remove: () => Promise.resolve({}),
+    reorder: () => Promise.resolve([]),
+    tap: () => Promise.resolve(null),
+    undo: () => Promise.resolve(null),
+    sources: () => Promise.resolve([]),
+  },
   dailySummaryAPI: {
     draft: () => Promise.resolve({ metrics: [], unresolved: [] }),
     apply: () => Promise.resolve({ entry_ids: [] }),

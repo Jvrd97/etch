@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/124
-// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, the last tap can be taken back from the same row it was made in, and on a shell that has a keyboard the button prints the key that fires it
+// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/124, PHASE-03/130
+// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, the last tap can be taken back from the same row it was made in, a button the plan of the day names carries a badge (the order already stands it first, and the badge is what makes that visible), and on a shell that has a keyboard the button prints the key that fires it
 
 import type { QuickMark, QuickMarkEvent } from '@/lib/api';
-import { markActionLabel, markCaption, undoCaption } from '@/lib/quick-marks';
+import { PLANNED_BADGE, markActionLabel, markCaption, undoCaption } from '@/lib/quick-marks';
 import { hotkeyAssignment } from '@/lib/quick-mark-hotkeys';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
@@ -88,6 +88,18 @@ export default function QuickMarkRow({
                 >
                   {hotkey}
                 </kbd>
+              )}
+              {mark.planned && (
+                // Скрыт от скринридера: `aria-label` кнопки уже говорит «в
+                // плане на сегодня», и второе упоминание — шум в объявлении.
+                <span
+                  aria-hidden="true"
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium leading-none ${
+                    mark.done ? 'bg-background/20 text-background' : 'bg-lime/15 text-lime'
+                  }`}
+                >
+                  {PLANNED_BADGE}
+                </span>
               )}
               <span className="text-sm font-medium truncate">{mark.label}</span>
             </span>

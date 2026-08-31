@@ -1,6 +1,6 @@
-
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/134, PHASE-03/152
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
+// summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
 
 /**
  * One screen of the app, described once for every navigation surface.
@@ -119,16 +119,28 @@ export const APP_ROUTES: readonly AppRoute[] = [
     inTabBar: null,
   },
   {
+    id: 'quick-marks',
+    name: 'Быстрые отметки',
+    href: '/quick-marks',
+    // Мобильный близнец есть: кнопку заводят там же, где по ней потом бьют, а
+    // бьют по ней с телефона.
+    hasMobile: true,
+    hasMobileNested: false,
+    // Под «More»: справочник настраивают раз в месяц, а таб-бар — для того,
+    // что открывают каждый день.
+    inTabBar: null,
+  },
+  {
     id: 'chat',
     name: 'Chat',
     href: '/chat',
-    // Экран `/m/chat` — отдельный срез (`#118`). До него мобильная оболочка
-    // открывает десктопный маршрут: тесный, но работающий, — так же, как это
-    // делали остальные экраны до своих мобильных близнецов.
-    hasMobile: false,
+    // Мобильный близнец `/m/chat` (`#118`): чат нужен там, где человек, а
+    // человек — с телефоном.
+    hasMobile: true,
     hasMobileNested: false,
     // Под «More»: пять слотов таб-бара заняты, а первый срез чата и живёт в
-    // «More» по решению ADR-0017.
+    // «More» по решению ADR-0017. Перестановка табов — отдельное решение при
+    // слиянии personal-os, а не побочный эффект появления чата на телефоне.
     inTabBar: null,
   },
   {

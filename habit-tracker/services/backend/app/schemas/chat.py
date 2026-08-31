@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/116, PHASE-03/117
 # summary: wire types of the chat — a conversation created with the day it belongs to, the feed item, one message as it is read back, the body of a turn, the one flag that says whether the next turn continues a CLI session or rebuilds the dialogue, and `ChatPlan`, whose whole point is which operations it cannot express; the SSE events are described here as constants so the frontend parser and the server cannot drift
 # summary: PHASE-03/117 hangs the usage rollup on the feed item, so the header of a conversation can show what the subscription is spending before the first 429 does
 # summary: PHASE-03/113 adds ConversationContext — the day card as it went into the prompt, its size, and which sections the ceiling ate
@@ -289,3 +289,14 @@ class ChatPlanApplyResponse(BaseModel):
     entry_ids: list[int]
     journal_entry_id: int | None = None
     applied_operations: int
+
+
+class ResetResponse(BaseModel):
+    """
+    Ответ ручки сброса: сколько зависших ходов расклинено.
+
+    Число, а не 204: ноль и единица здесь означают разное. Ноль — диалог и так
+    был свободен, и человеку незачем ждать, что «теперь заработает».
+    """
+
+    reset: int = Field(ge=0, description="Сколько ходов переведено в `interrupted`")

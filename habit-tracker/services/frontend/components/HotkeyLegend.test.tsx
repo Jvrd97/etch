@@ -23,6 +23,8 @@ function mark(overrides: Partial<QuickMark> = {}): QuickMark {
     entry_date: '2026-08-30',
     today_total: null,
     done: false,
+    planned: false,
+    plan_item_id: null,
     ...overrides,
   };
 }

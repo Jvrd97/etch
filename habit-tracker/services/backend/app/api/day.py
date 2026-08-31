@@ -1,6 +1,8 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/142, PHASE-03/143, PHASE-03/147
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147
+# summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); #110 adds the per-item editor — PATCH/POST/DELETE of one line and POST .../move for its place, where a human's edit passes everything the database passes and comes back with the document rules it broke as warnings; all three plan writes claim `opened_at` only inside the open window
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close/review is the 15:40 touch and /close/final the evening one that writes the verdict (the bare /close stays as a synonym of `final`), both idempotent by `Idempotency-Key` and both refusing a day whose итог arrived as prose, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 from datetime import date
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -8,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import today_local
+from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
@@ -17,10 +20,17 @@ from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
 from app.day import constraints, skeleton
+from app.crud import training as training_crud
 from app.day.plan_validate import PlanRejected
 from app.day.rules import DayMap, NoRuleForDate, day_map, is_openable
+from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
 from app.models.mark import SOURCE_WEB
+from app.schemas.anchor import (
+    DayAnchorResponse,
+    DayAnchorsIn,
+    DayAnchorsResponse,
+)
 from app.schemas.day import (
     DayDetailResponse,
     DayEdgeResponse,
@@ -35,9 +45,19 @@ from app.schemas.mark import (
     NotebookIn,
     NotebookResponse,
 )
-from app.schemas.plan import PlanDocument, PlanRejection, PlanResponse
+from app.schemas.plan import (
+    PlanDocument,
+    PlanEditResponse,
+    PlanItemCreate,
+    PlanItemMove,
+    PlanItemPatch,
+    PlanItemResponse,
+    PlanRejection,
+    PlanResponse,
+)
 from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
+from app.schemas.training import TrainingDayIn, TrainingDayResponse
 from app.schemas.work_interval import (
     WorkDayResponse,
     WorkIntervalIn,
@@ -133,6 +153,7 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
     marks = await mark_crud.list_marks(db, day.day_date)
     counts = mark_crud.task_counts(stored, marks)
     notebook = await day_crud.get_notebook(db, day.day_date)
+    training = await training_crud.get_training_day(db, day.day_date)
     return DayDetailResponse(
         day=_day(day),
         rule=DayRuleSetResponse.model_validate(rule),
@@ -142,8 +163,54 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
+        anchors=await _anchors(db, day.day_date, rule),
+        training=(
+            None if training is None else TrainingDayResponse.model_validate(training)
+        ),
         summary=await summary_crud.summary_for(db, day.day_date, rule, stored, marks),
         work=await work_crud.day_response(db, day.day_date),
+    )
+
+
+async def _anchors(db: AsyncSession, on: date, rule: DayRuleSet) -> DayAnchorsResponse:
+    """
+    The anchors of one day: one entry per kind of the catalogue, state included.
+
+    Every kind is listed, not only the ones with a row, because «вечера с
+    близкими сегодня не было» has to be different from «про вечер с близкими не
+    спрашивали» — and the second reading is what the anchor of the third
+    priority spent its whole existence in. `required_today` says which of them
+    this day is actually judged by: the canon of July names five kinds, the
+    catalogue holds six.
+    """
+    kinds: list[AnchorKind] = await anchor_crud.list_kinds(db)
+    stored: dict[str, DayAnchor] = {
+        row.kind: row for row in await anchor_crud.list_day_anchors(db, on)
+    }
+    required = tuple(rule.anchors or ())
+    entries = [
+        DayAnchorResponse(
+            kind=kind.code,
+            title=kind.title,
+            ord=kind.ord,
+            counts_for_verdict=kind.counts_for_verdict,
+            required_in_nonwork_evening=kind.required_in_nonwork_evening,
+            state=stored[kind.code].state if kind.code in stored else None,
+            note=stored[kind.code].note if kind.code in stored else None,
+            item_id=stored[kind.code].item_id if kind.code in stored else None,
+            required_today=kind.code in required,
+        )
+        for kind in kinds
+    ]
+    counts = anchor_crud.anchor_counts(rule, list(stored.values()))
+    return DayAnchorsResponse(
+        day_date=on.isoformat(),
+        anchors=entries,
+        done=0 if counts is None else counts.done + counts.skipped,
+        total=len(required),
+        missing=anchor_crud.missing_anchor_titles(
+            kinds, required, list(stored.values())
+        ),
     )
 
 
@@ -259,6 +326,9 @@ async def post_plan(
         ),
         origin=constraints.ORIGIN_HUMAN,
     )
+    # Point each anchor of the day at the line it is written on. Only the link:
+    # a plan rewritten at 14:00 must not tick or untick anything.
+    await anchor_crud.sync_from_plan(db, day.day_date)
     await day_crud.touch_day(db, day, opened=False)
     await db.commit()
     return await plan_crud.to_response(db, stored)
@@ -712,3 +782,312 @@ async def post_plan_skeleton(
     await day_crud.touch_day(db, day, opened=False)
     await db.commit()
     return await plan_crud.to_response(db, stored)
+
+
+# Правка пункта — операция человека, и отвечает она планом целиком: правка
+# одной строки двигает соседей, расписание и пересечения окон, а второй запрос
+# за днём ради того, что сервер уже знает, — это лишний круг на каждое слово.
+EDIT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Пункта или секции нет в плане этого дня"},
+    422: {"model": PlanRejection},
+}
+
+
+async def _edited(
+    db: AsyncSession,
+    day: Day,
+    rule: DayRuleSet,
+    item_id: UUID | None,
+) -> PlanEditResponse:
+    """
+    Ответ правки: план целиком, тронутый пункт и предупреждения канона.
+
+    Предупреждения считаются **после** записи и по сохранённому плану, а не по
+    намерению: асимметрия строгости из ADR-0015 в том и состоит, что правка
+    человека проходит, а канон о ней сообщает. Отказ остаётся только за базой.
+    """
+    plan = await plan_crud.get_plan(db, day.day_date)
+    if plan is None:  # pragma: no cover - правка без плана уже отдала 404
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"На {day.day_date.isoformat()} плана нет.",
+        )
+    await day_crud.touch_day(db, day, opened=_person_is_here(day.day_date))
+    response = await plan_crud.to_response(db, plan)
+    item = None
+    if item_id is not None:
+        item = _find_item(response, item_id)
+    return PlanEditResponse(
+        plan=response,
+        item=item,
+        warnings=[
+            PlanRejection(**broken.as_detail())
+            for broken in await plan_crud.human_warnings(db, plan, rule)
+        ],
+    )
+
+
+def _find_item(plan: PlanResponse, item_id: UUID) -> PlanItemResponse | None:
+    """Найти пункт в уже собранном ответе, чтобы не пересобирать его вторым разом."""
+    stack = [item for section in plan.sections for item in section.items]
+    while stack:
+        item = stack.pop()
+        if item.id == item_id:
+            return item
+        stack.extend(item.children)
+    return None
+
+
+def _plan_rejection(rejected: PlanRejected) -> HTTPException:
+    """Отказ правила как 422 в той же форме, что и отказ документа из #87."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=rejected.as_detail(),
+    )
+
+
+@router.patch(
+    "/{on}/plan/items/{item_id}",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def patch_plan_item(
+    on: date,
+    item_id: UUID,
+    patch: PlanItemPatch,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Поправить один пункт плана, сохранив его id и отметку.
+
+    Присланные поля меняются, остальные не трогаются: `null` в теле — «убрать
+    значение», отсутствие ключа — «не трогать». Замена плана целиком остаётся
+    `POST .../plan` и операцией генератора; здесь `plan_item.id` переживает
+    правку, иначе отметка #88 теряет якорь на каждое исправление слова.
+
+    422 приходит только оттуда, откуда его не миновать, — от `CHECK` базы:
+    задача без окна или без критерия, окно в свободном пункте, задача без цели
+    квартала и без причины. Правила документа человека не останавливают и
+    возвращаются в `warnings`.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.edit_item(db, day.day_date, item_id, patch)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item_id)
+
+
+@router.post(
+    "/{on}/plan/sections/{section_id}/items",
+    response_model=PlanEditResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=EDIT_RESPONSES,
+)
+async def post_plan_item(
+    on: date,
+    section_id: UUID,
+    payload: PlanItemCreate,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Добавить пункт в секцию. Он встаёт в конец своего уровня.
+
+    `parent_id` делает пункт ребёнком — шагом задачи или «Минимумом»
+    тренировки; уровень определяется парой «секция плюс родитель», поэтому
+    родитель из чужой секции — 404, а не тихая перевязка.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        item = await plan_crud.add_item(db, day.day_date, section_id, payload)
+    except plan_crud.PlanSectionNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет секции {section_id}.",
+        ) from missing
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {payload.parent_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item.id)
+
+
+@router.delete(
+    "/{on}/plan/items/{item_id}",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def delete_plan_item(
+    on: date, item_id: UUID, db: AsyncSession = Depends(get_db)
+) -> PlanEditResponse:
+    """
+    Удалить пункт вместе с его детьми и сомкнуть уровень.
+
+    Дочерний «Минимум» уезжает с родителем: минимум без своей задачи — сирота,
+    и 29 августа уже показало, чем это кончается на экране.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.remove_item(db, day.day_date, item_id)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    return await _edited(db, day, rule, None)
+
+
+@router.post(
+    "/{on}/plan/items/{item_id}/move",
+    response_model=PlanEditResponse,
+    responses=EDIT_RESPONSES,
+)
+async def move_plan_item(
+    on: date,
+    item_id: UUID,
+    move: PlanItemMove,
+    db: AsyncSession = Depends(get_db),
+) -> PlanEditResponse:
+    """
+    Переставить пункт: в другое место своей секции или в другую секцию.
+
+    Отдельная операция, а не поле `ord` в патче: перетаскивание меняет порядок
+    сразу нескольких строк, и построчная запись `ord` оставила бы уровень с
+    дырами и дублями. Оба уровня — исходный и приёмный — перенумеровываются
+    одной транзакцией.
+    """
+    day, rule = await _resolve(db, on)
+    try:
+        await plan_crud.move_item(db, day.day_date, item_id, move)
+    except plan_crud.PlanItemNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        ) from missing
+    except plan_crud.PlanSectionNotFound as missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет секции {move.section_id}.",
+        ) from missing
+    except PlanRejected as rejected:
+        raise _plan_rejection(rejected) from rejected
+    return await _edited(db, day, rule, item_id)
+
+
+@router.get("/{on}/anchors", response_model=DayAnchorsResponse)
+async def get_anchors(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> DayAnchorsResponse:
+    """
+    Якоря дня — по пункту на каждый вид справочника.
+
+    Вид якоря — строка `anchor_kind`, а не значение enum: состав меняется
+    `INSERT`-ом и новой строкой правила, и никакой вид не зашит в код. `relationship`
+    («вечер с близкими») стоит в этом списке наравне с якорями здоровья, потому
+    что третий приоритет `config.md` до `#92` не был выражен ничем.
+
+    `required_today` говорит, судится ли день этим якорем: канон до 2026-08-17
+    называет пять видов, справочник держит шесть.
+    """
+    day, rule = await _resolve(db, on)
+    return await _anchors(db, day.day_date, rule)
+
+
+@router.put("/{on}/anchors", response_model=DayAnchorsResponse)
+async def put_anchors(
+    on: date, body: DayAnchorsIn, db: AsyncSession = Depends(get_db)
+) -> DayAnchorsResponse:
+    """
+    Отметить якоря дня: `done`, `failed`, `skipped` или `null` — снять отметку.
+
+    Запрос называет вид якоря, а не позицию в списке: порядок — свойство
+    отображения, и запрос, опирающийся на него, ломается от `INSERT`-а в
+    справочник. Несколько якорей едут одним запросом, потому что вечер закрывает
+    три штуки одним движением.
+
+    Второй якорь того же вида на ту же дату не появляется никогда: `UNIQUE(day_date,
+    kind)` в базе, а не проверка в сервисе, — запись ложится на ту строку,
+    которая уже есть, кто бы ни писал.
+
+    422 — неизвестный вид якоря или состояние вне списка. 404 остаётся за датой,
+    которую не покрывает ни одно правило.
+    """
+    day, rule = await _resolve(db, on)
+    known = await anchor_crud.known_codes(db)
+    for entry in body.anchors:
+        if entry.kind not in known:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Вида якоря «{entry.kind}» нет в справочнике. Состав якорей "
+                    "меняется INSERT-ом в `anchor_kind`, а не запросом отметки."
+                ),
+            )
+        if entry.state is not None and entry.state not in ANCHOR_STATES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Состояние якоря — одно из {list(ANCHOR_STATES)} или null.",
+            )
+        await anchor_crud.set_anchor(
+            db, day.day_date, entry.kind, state=entry.state, note=entry.note
+        )
+    await day_crud.touch_day(db, day, opened=_person_is_here(day.day_date))
+    return await _anchors(db, day.day_date, rule)
+
+
+@router.get("/{on}/training", response_model=TrainingDayResponse | None)
+async def get_training(
+    on: date, db: AsyncSession = Depends(get_db)
+) -> TrainingDayResponse | None:
+    """
+    Тренировка дня: что запланировано, что сделано, минимум и его пункт плана.
+
+    `null` — на эту дату ничего не записано. Это не то же самое, что пропуск:
+    пропуск — это `skipped: true`, и он двигает счётчик `skipped_days`.
+    """
+    day, _ = await _resolve(db, on)
+    row = await training_crud.get_training_day(db, day.day_date)
+    return None if row is None else TrainingDayResponse.model_validate(row)
+
+
+@router.put("/{on}/training", response_model=TrainingDayResponse)
+async def put_training(
+    on: date, body: TrainingDayIn, db: AsyncSession = Depends(get_db)
+) -> TrainingDayResponse:
+    """
+    Записать тренировку дня. Не названное поле не трогается.
+
+    Утро пишет план, вечер пишет факт, и замена строки целиком дала бы второму
+    возможность стереть первое умолчанием.
+
+    `minimum_item_id` — пункт плана, на котором минимум отмечается **своей**
+    галкой. 29 августа показало, чего стоит минимум без неё: он был сформулирован
+    правильно, стоял в нужном дне и не был выполнен, потому что закрывать его
+    было нечем.
+    """
+    day, _ = await _resolve(db, on)
+    row = await training_crud.upsert_training_day(
+        db,
+        day.day_date,
+        patterns=body.patterns,
+        heavy_patterns=body.heavy_patterns,
+        planned_md=body.planned_md,
+        done_md=body.done_md,
+        skipped=body.skipped,
+        outdoor_done=body.outdoor_done,
+        near_failure=body.near_failure,
+        note_md=body.note_md,
+        minimum_md=body.minimum_md,
+        minimum_item_id=body.minimum_item_id,
+        sets=body.sets,
+    )
+    await day_crud.touch_day(db, day, opened=False)
+    return TrainingDayResponse.model_validate(row)

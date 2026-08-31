@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/88
-# summary: day persistence — seed of the rule rows, the rule in force on a date (publishing the day boundary as it goes), lazy creation of a day with kind/is_nocode materialised, and the two writes that make "не открывал" a fact: touch_day and the day's notebook
+# [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/92
+# summary: day persistence — seed of the rule rows together with the catalogue of anchor kinds they name, the rule in force on a date (publishing the day boundary as it goes), lazy creation of a day with kind/is_nocode materialised, and the two writes that make "не открывал" a fact: touch_day and the day's notebook
 """
 Database access for the day.
 
@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import DayBoundary, use_boundary
+from app.crud import anchor as anchor_crud
 from app.crud import journal as journal_crud
 from app.day.rules import (
     SEED_RULES,
@@ -57,7 +58,12 @@ async def seed_rules(db: AsyncSession) -> None:
     same canon as a migrated one. A row is recognised by its `valid_from`: that
     is what identifies a version of the canon, and an overlapping insert would be
     refused by the exclusion constraint anyway.
+
+    The catalogue of anchor kinds is seeded here too, and not by accident: a rule
+    row names its anchors by code, so a canon without the catalogue those codes
+    live in is a foreign key waiting to fail (`#92`).
     """
+    await anchor_crud.seed_anchor_kinds(db)
     existing = {rule.valid_from for rule in await list_rules(db)}
     for seed in SEED_RULES:
         if seed.valid_from in existing:

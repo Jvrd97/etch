@@ -1,10 +1,9 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/111, PHASE-03/115, PHASE-03/117, PHASE-03/121, PHASE-03/124, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152
-// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one, and has no way to edit one that exists; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it and one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152
+// summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — edits one line of the plan at a time, marks the anchors of a day by kind, writes its training, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, resets a stuck dialogue, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it, the button entered, patched, reordered and deleted by hand, one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
-
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -13,10 +12,21 @@ import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 // app reachable from any device on the LAN without host-specific config.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
-class APIError extends Error {
-  constructor(public status: number, message: string) {
+export class APIError extends Error {
+  /**
+   * The body's `detail` as it arrived, beside the message built from it.
+   *
+   * FastAPI answers a rule of the plan with an object — `{error, message,
+   * item_code}` — and flattening it into a string loses the code the screen
+   * needs in order to point at the field. `message` stays a sentence for
+   * everything that only ever shows one.
+   */
+  readonly detail: unknown;
+
+  constructor(public status: number, message: string, detail?: unknown) {
     super(message);
     this.name = 'APIError';
+    this.detail = detail ?? message;
   }
 }
 
@@ -33,6 +43,20 @@ function redirectToLoginIfNeeded(status: number): void {
   const { pathname, search } = window.location;
   const target = loginRedirectTarget(status, pathname, search);
   if (target !== null) window.location.assign(target);
+}
+
+/** The sentence inside a `detail`, whether it arrived as a string or an object. */
+function detailMessage(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail;
+  if (
+    typeof detail === 'object' &&
+    detail !== null &&
+    'message' in detail &&
+    typeof (detail as { message: unknown }).message === 'string'
+  ) {
+    return (detail as { message: string }).message;
+  }
+  return null;
 }
 
 async function fetcher<T>(
@@ -56,7 +80,11 @@ async function fetcher<T>(
   if (!response.ok) {
     redirectToLoginIfNeeded(response.status);
     const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
-    throw new APIError(response.status, error.detail || 'An error occurred');
+    throw new APIError(
+      response.status,
+      detailMessage(error.detail) ?? 'An error occurred',
+      error.detail
+    );
   }
 
   // Handle 204 No Content
@@ -395,6 +423,50 @@ export const dayAPI = {
   },
 
   /**
+   * Edit one line of the plan in place, keeping its id and its mark.
+   *
+   * Only the fields sent are touched: `null` means "clear this", and a key left
+   * out means "do not touch this". The whole-plan `savePlan` is the generator's
+   * operation — it replaces the document; this is the person's, and it is the
+   * only one under which `plan_item.id` survives a change of wording.
+   */
+  patchPlanItem: async (date: string, itemId: string, patch: PlanItemPatch) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** Add a line to a section; it lands at the end of its level. */
+  addPlanItem: async (date: string, sectionId: string, draft: PlanItemDraft) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/sections/${sectionId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Remove a line together with its children — a minimum leaves with its task. */
+  deletePlanItem: async (date: string, itemId: string) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * Move a line to a place: another position, another parent, another section.
+   *
+   * Its own request rather than an `ord` in the patch — one drag renumbers a
+   * whole level, and writing positions one at a time is what leaves a plan with
+   * holes and twins halfway through.
+   */
+  movePlanItem: async (date: string, itemId: string, move: PlanItemMove) => {
+    return fetcher<PlanEdit>(`/day/${date}/plan/items/${itemId}/move`, {
+      method: 'POST',
+      body: JSON.stringify(move),
+    });
+  },
+
+  /**
    * Mark one item of the day, or take its mark off with `state: null`.
    *
    * The request names the state rather than asking for "the next one": two open
@@ -473,6 +545,39 @@ export const dayAPI = {
    */
   buildSkeleton: async (date: string) => {
     return fetcher<Plan>(`/day/${date}/plan/skeleton`, { method: 'POST' });
+  },
+
+  /**
+   * Mark the anchors of a day, by kind rather than by position.
+   *
+   * The kind is what a write names: the order of the list is a property of the
+   * screen, and a request that leaned on it would break the first time a kind
+   * is added to the catalogue. Several anchors travel in one request because
+   * the evening closes three of them in one gesture.
+   */
+  setAnchors: async (date: string, anchors: AnchorMarkDraft[]) => {
+    return fetcher<DayAnchors>(`/day/${date}/anchors`, {
+      method: 'PUT',
+      body: JSON.stringify({ anchors }),
+    });
+  },
+
+  /** Read the anchors of a day on their own, without the rest of the day. */
+  getAnchors: async (date: string) => {
+    return fetcher<DayAnchors>(`/day/${date}/anchors`);
+  },
+
+  /**
+   * Write the training of a day; an absent field is left alone.
+   *
+   * The morning writes the plan and the evening writes the fact, so a
+   * whole-row replace would let the second erase the first by omission.
+   */
+  saveTraining: async (date: string, draft: TrainingDayDraft) => {
+    return fetcher<TrainingDay>(`/day/${date}/training`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
   },
 
   /** Replace the day's notebook text; it stays one entry per date. */
@@ -1071,6 +1176,77 @@ export interface PlanItem {
   children: PlanItem[];
 }
 
+/**
+ * A patch of one plan line: only what is sent gets written.
+ *
+ * Every field is optional twice over — it may be absent (do not touch) or
+ * `null` (clear). The two are different orders, and merging them would wipe
+ * half a task on every corrected word.
+ */
+export interface PlanItemPatch {
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md?: string;
+  /** "ЧЧ:ММ-ЧЧ:ММ" in the day's local clock, or null to take the window off. */
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  why_md?: string | null;
+  plan_md?: string | null;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+}
+
+/** A new line for a section. Position is not sent: it lands at the end. */
+export interface PlanItemDraft {
+  parent_id?: string | null;
+  kind?: PlanItemKind;
+  rigidity?: PlanRigidity;
+  text_md: string;
+  window?: string | null;
+  window_comment?: string | null;
+  code?: string | null;
+  done_criterion?: string | null;
+  quarter_goal_id?: number | null;
+  unlinked_reason?: string | null;
+}
+
+/** Where a line goes: which section, under which parent, in which place. */
+export interface PlanItemMove {
+  section_id: string;
+  parent_id?: string | null;
+  position: number;
+}
+
+/**
+ * What a rule broken by a human's edit looks like on the wire.
+ *
+ * The same shape a 422 carries, because it is the same rule — the difference is
+ * only who broke it. A machine's document is refused; a person's edit is saved
+ * and told.
+ */
+export interface PlanWarning {
+  error: string;
+  message: string;
+  item_code: string | null;
+  item_text: string | null;
+}
+
+/**
+ * The answer of any per-item edit: the plan whole, the line touched, the
+ * warnings earned.
+ *
+ * The plan comes back whole because editing one line moves its neighbours, the
+ * schedule and the overlap list; a second read for what the server already knew
+ * would be a round trip per keystroke.
+ */
+export interface PlanEdit {
+  plan: Plan;
+  item: PlanItem | null;
+  warnings: PlanWarning[];
+}
+
 export interface PlanSection {
   id: string;
   ord: number;
@@ -1312,6 +1488,10 @@ export interface DayDetail {
   task_counts: TaskCounts;
   /** The day's free text, or null when nothing was written. */
   notebook: string | null;
+  /** One entry per kind of the catalogue, including the ones nobody answered. */
+  anchors: DayAnchors;
+  /** null when nothing is recorded for this date — not the same as a skip. */
+  training: TrainingDay | null;
   /** Always present — a live recount while the day is not closed. */
   summary: DaySummary;
   /** The intervals the day's measured time is made of, and their sum. */
@@ -1783,15 +1963,50 @@ export const chatAPI = {
     return fetcher<ChatConversation[]>(`/chat/conversations?limit=${limit}`);
   },
 
-  create: async (kind: ConversationKind = 'general') => {
+  /**
+   * Start a conversation.
+   *
+   * `started_on` is the day the conversation is about, and it travels
+   * explicitly: the server defaults it to its own today, which is the wrong
+   * day for a question asked from a Today screen showing an earlier date.
+   * Omitting it keeps that server default, which is what the bare chat screen
+   * wants.
+   */
+  /**
+   * Start a conversation.
+   *
+   * `started_on` is the day the conversation is about, and it travels
+   * explicitly: the server defaults it to its own today, which is the wrong
+   * day for a question asked from a Today screen showing an earlier date.
+   * Omitting it keeps that server default, which is what the bare chat screen
+   * wants.
+   */
+  create: async (
+    options: { kind?: ConversationKind; started_on?: string } = {}
+  ) => {
+    const { kind = 'general', started_on } = options;
     return fetcher<ChatConversation>('/chat/conversations', {
       method: 'POST',
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify(started_on === undefined ? { kind } : { kind, started_on }),
     });
   },
 
   get: async (id: number) => {
     return fetcher<ChatConversationDetail>(`/chat/conversations/${id}`);
+  },
+
+  /**
+   * Unstick a dialogue whose turn nobody will ever close.
+   *
+   * The case is narrow and real: the worker died together with the CLI
+   * process, so the answer row stayed `streaming` and every later POST is a
+   * 409. Returns how many turns were reset — zero means the dialogue was free
+   * all along, which is worth showing rather than hiding behind a 204.
+   */
+  reset: async (id: number) => {
+    return fetcher<{ reset: number }>(`/chat/conversations/${id}/reset`, {
+      method: 'POST',
+    });
   },
 
   /** Карточка дня разговора — то, что модель увидела перед ответом. */
@@ -1978,132 +2193,6 @@ export const weeksAPI = {
   },
 };
 
-/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
-export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
-
-/** Which client a tap came from; the backend records it on every event. */
-export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
-
-/**
- * One button of the directory, already carrying the state of the day it was
- * read for.
- *
- * `today_total` is null for a tick — a box is not a quantity — and `done` is
- * the field both kinds answer. The client never sees `category_id` as a thing
- * to act on: what the button means is the server's business, and the only id a
- * tap sends is `id`.
- */
-export interface QuickMark {
-  id: number;
-  label: string;
-  category_id: number;
-  field_id: number;
-  kind: QuickMarkKind;
-  step: number | null;
-  unit_label: string | null;
-  icon: string | null;
-  color: string | null;
-  hotkey: string | null;
-  order: number;
-  show_in_agent: boolean;
-  is_active: boolean;
-  entry_date: string;
-  today_total: number | null;
-  done: boolean;
-}
-
-/** The recorded tap and the state it produced — one call per tap, no refetch. */
-export interface QuickMarkEvent {
-  event_id: number;
-  quick_mark_id: number;
-  entry_id: number | null;
-  entry_date: string;
-  occurred_at: string;
-  today_total: number | null;
-  done: boolean;
-}
-
-/** What a tap says beyond the button's own id. */
-export interface QuickMarkTap {
-  /** Overrides the button's step; for a tick, 0 unticks. */
-  value?: number;
-  source?: QuickMarkSource;
-  utc_offset_minutes?: number;
-}
-
-/** A tap taken back, and the state the day is left in. */
-export interface QuickMarkUndo {
-  event_id: number;
-  quick_mark_id: number;
-  entry_date: string;
-  undone_at: string;
-  today_total: number | null;
-  done: boolean;
-}
-
-/** How many taps one client contributed over the period, and how many were undone. */
-export interface QuickMarkSourceUsage {
-  source: QuickMarkSource;
-  events: number;
-  undone: number;
-}
-
-export const quickMarksAPI = {
-  /**
-   * The directory with today's state on it.
-   *
-   * No date is sent: which day is running is the server's answer
-   * (`local_date()`), and a browser that computed its own would disagree with
-   * it between midnight and the boundary hour.
-   */
-  list: async () => {
-    return fetcher<QuickMark[]>('/quick-marks');
-  },
-
-  /**
-   * Tap one button.
-   *
-   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
-   * and never decides the day it lands in.
-   */
-  tap: async (id: number, tap: QuickMarkTap = {}, idempotencyKey?: string) => {
-    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
-      method: 'POST',
-      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
-      body: JSON.stringify({
-        source: 'web',
-        utc_offset_minutes: -new Date().getTimezoneOffset(),
-        ...tap,
-      }),
-    });
-  },
-
-  /**
-   * Take the last tap back.
-   *
-   * One call, and its answer carries the state the day is left in, exactly as a
-   * tap does — the row repaints from it rather than refetching the directory.
-   * A 409 is not a failure of the request but the server's answer that this tap
-   * is no longer the one that can be undone; the caller shows the reason.
-   */
-  undo: async (eventId: number) => {
-    return fetcher<QuickMarkUndo>(`/quick-marks/events/${eventId}/undo`, {
-      method: 'POST',
-    });
-  },
-
-  /** How the taps of a period split between the clients that made them. */
-  sources: async (params: { from?: string; to?: string } = {}) => {
-    const query = new URLSearchParams();
-    if (params.from) query.set('from', params.from);
-    if (params.to) query.set('to', params.to);
-    const suffix = query.toString();
-    return fetcher<QuickMarkSourceUsage[]>(
-      `/quick-marks/events/sources${suffix ? `?${suffix}` : ''}`
-    );
-  },
-};
-
 // ============ Challenges ============
 
 /** Which of the four promises a challenge holds its category to. */
@@ -2243,5 +2332,425 @@ export const challengesAPI = {
       method: 'PUT',
       body: JSON.stringify(draft),
     });
+  },
+};
+
+// -- Anchors and training --------------------------------------------------
+
+/**
+ * What an anchor of a day can say. Absence of an answer is `null`, not a word.
+ *
+ * The same three words a plan mark uses, and deliberately the same type: the
+ * anchor box and the mark box sit one above the other on the day screen, walk
+ * the same ring, and a second vocabulary that happened to coincide would be one
+ * edit away from not coinciding.
+ */
+export type AnchorState = MarkState;
+
+/**
+ * One anchor of one day.
+ *
+ * Every kind of the catalogue arrives, answered or not: «вечера с близкими
+ * сегодня не было» has to read differently from «про вечер с близкими не
+ * спрашивали», and the second is where the third priority of `config.md` spent
+ * its whole existence.
+ */
+export interface DayAnchor {
+  kind: string;
+  title: string;
+  ord: number;
+  counts_for_verdict: boolean;
+  /** True for `relationship`: the canon expects it in an evening that is not work. */
+  required_in_nonwork_evening: boolean;
+  state: AnchorState | null;
+  note: string | null;
+  /** The line of the plan this anchor is written on, when there is one. */
+  item_id: string | null;
+  /** Whether the canon of *this* day is judged by this kind at all. */
+  required_today: boolean;
+}
+
+export interface DayAnchors {
+  day_date: string;
+  anchors: DayAnchor[];
+  done: number;
+  total: number;
+  /** Titles of the anchors the day neither closed nor set aside. */
+  missing: string[];
+}
+
+/** A write of one anchor; `state: null` takes the mark off. */
+export interface AnchorMarkDraft {
+  kind: string;
+  state: AnchorState | null;
+  note?: string | null;
+}
+
+/** What one date planned, did and set aside as its minimum. */
+export interface TrainingDay {
+  day_date: string;
+  patterns: string[];
+  heavy_patterns: string[];
+  planned_md: string | null;
+  done_md: string | null;
+  skipped: boolean;
+  outdoor_done: boolean | null;
+  near_failure: boolean;
+  note_md: string | null;
+  minimum_md: string | null;
+  /** The plan line the minimum is ticked on — its own tick, not the training's. */
+  minimum_item_id: string | null;
+  sets: Record<string, number>;
+}
+
+/** A write of one date's training; an absent field is left alone. */
+export interface TrainingDayDraft {
+  patterns?: string[];
+  heavy_patterns?: string[];
+  planned_md?: string | null;
+  done_md?: string | null;
+  skipped?: boolean;
+  outdoor_done?: boolean | null;
+  near_failure?: boolean;
+  note_md?: string | null;
+  minimum_md?: string | null;
+  minimum_item_id?: string | null;
+  sets?: Record<string, number>;
+}
+
+/** One complaint — a symptom that gates a suggestion, never a diagnosis. */
+export interface BodyComplaint {
+  id: string;
+  opened_on: string;
+  area: string;
+  context: string | null;
+  severity: string | null;
+  status: 'open' | 'closed';
+  closed_on: string | null;
+  closed_reason: string | null;
+}
+
+export interface PersonalRecord {
+  id: string;
+  exercise: string;
+  variant: string | null;
+  sets: string | null;
+  best_plain: number | null;
+  achieved_on: string;
+  target: string | null;
+}
+
+/** One movement that will not be suggested today, and the gate that removed it. */
+export interface TrainingExclusion {
+  exercise: string;
+  gate: string;
+  reason: string;
+}
+
+export interface TrainingGate {
+  code: string;
+  reason: string;
+}
+
+/**
+ * What may be trained today, and why the list is what it is.
+ *
+ * The exclusions travel beside the offer rather than being subtracted in
+ * silence: «сегодня без подтягиваний, плечо open с 10.08» is a sentence a
+ * person can disagree with; a shorter list with no explanation is one that
+ * gets ignored.
+ */
+export interface TrainingSuggestion {
+  exercises: string[];
+  excluded: TrainingExclusion[];
+  gates: TrainingGate[];
+  rir: string;
+  volume_factor: number;
+}
+
+/** The derived snapshot of the body, recomputed on every read. */
+export interface TrainingState {
+  as_of: string;
+  last_heavy_pull: string | null;
+  last_heavy_push: string | null;
+  last_legs: string | null;
+  last_run: string | null;
+  last_outdoor: string | null;
+  last_cardio: string | null;
+  near_failure_days: string[];
+  week_sets: Record<string, number>;
+  progression_stage: Record<string, string>;
+  skipped_days: number;
+  /** When the snapshot was folded — it is derived, and says so. */
+  recomputed_at: string;
+  open_complaints: BodyComplaint[];
+  /** Personal records, most recent first — each with its date and its target. */
+  records: PersonalRecord[];
+  suggestion: TrainingSuggestion;
+}
+
+export const trainingAPI = {
+  /** The state, its suggestion and the open complaints, in one request. */
+  getState: async () => {
+    return fetcher<TrainingState>('/training/state');
+  },
+
+  /** Write the one authored part of the state — where the progression stands. */
+  setProgression: async (progression_stage: Record<string, string>) => {
+    return fetcher<TrainingState>('/training/state', {
+      method: 'PUT',
+      body: JSON.stringify({ progression_stage }),
+    });
+  },
+
+  complaints: async (openOnly = false) => {
+    return fetcher<BodyComplaint[]>(`/body-complaints?open_only=${openOnly}`);
+  },
+
+  openComplaint: async (draft: {
+    area: string;
+    context?: string | null;
+    severity?: string | null;
+    opened_on?: string | null;
+  }) => {
+    return fetcher<BodyComplaint>('/body-complaints', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Close a complaint — and return the movements it was taking out. */
+  closeComplaint: async (id: string, closed_reason?: string) => {
+    return fetcher<BodyComplaint>(`/body-complaints/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'closed', closed_reason }),
+    });
+  },
+
+  records: async () => {
+    return fetcher<PersonalRecord[]>('/personal-records');
+  },
+};
+
+
+/** What a quick-mark button does when it is tapped. Mirrors `app/models/quick_mark.py`. */
+export type QuickMarkKind = 'increment' | 'check' | 'set_value' | 'relapse';
+
+/** Which client a tap came from; the backend records it on every event. */
+export type QuickMarkSource = 'web' | 'ios' | 'agent' | 'plan';
+
+/**
+ * One button of the directory, already carrying the state of the day it was
+ * read for.
+ *
+ * `today_total` is null for a tick — a box is not a quantity — and `done` is
+ * the field both kinds answer. The client never sees `category_id` as a thing
+ * to act on: what the button means is the server's business, and the only id a
+ * tap sends is `id`.
+ */
+export interface QuickMark {
+  id: number;
+  label: string;
+  category_id: number;
+  field_id: number;
+  kind: QuickMarkKind;
+  step: number | null;
+  unit_label: string | null;
+  icon: string | null;
+  color: string | null;
+  hotkey: string | null;
+  order: number;
+  show_in_agent: boolean;
+  is_active: boolean;
+  entry_date: string;
+  today_total: number | null;
+  done: boolean;
+  /**
+   * The plan of `entry_date` names this button.
+   *
+   * Decided by the server, like the order it buys: the same one selection
+   * serves the web, the agent window and iOS, and a flag computed in the
+   * browser would be a flag the other two do not have.
+   */
+  planned: boolean;
+  /** The plan line that named it; a tap on the button closes that line. */
+  plan_item_id: string | null;
+}
+
+/** The recorded tap and the state it produced — one call per tap, no refetch. */
+export interface QuickMarkEvent {
+  event_id: number;
+  quick_mark_id: number;
+  entry_id: number | null;
+  entry_date: string;
+  occurred_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** Which client is asking; `agent` gets only the buttons marked for it. */
+export type QuickMarkSurface = 'web' | 'agent' | 'ios';
+
+/**
+ * A new button, or a patch of one.
+ *
+ * The same shape both ways: the create refuses a missing `label`, the patch
+ * takes whatever it is given. `hotkey: null` in a patch takes the key off; a
+ * key left out of the object does not touch it.
+ */
+export interface QuickMarkDraft {
+  label?: string;
+  category_id?: number;
+  field_id?: number;
+  kind?: QuickMarkKind;
+  step?: number | null;
+  unit_label?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  hotkey?: string | null;
+  order?: number;
+  show_in_agent?: boolean;
+  is_active?: boolean;
+}
+
+/**
+ * The body of a 409: the key is taken, and by which button.
+ *
+ * Named rather than counted, because the repair is "take it off that one" and
+ * the person has to know which one that is without opening the database.
+ */
+export interface HotkeyTaken {
+  error: 'hotkey_taken';
+  message: string;
+  hotkey: string;
+  quick_mark_id: number;
+  label: string;
+}
+
+/** A tap taken back, and the state the day is left in. */
+export interface QuickMarkUndo {
+  event_id: number;
+  quick_mark_id: number;
+  entry_date: string;
+  undone_at: string;
+  today_total: number | null;
+  done: boolean;
+}
+
+/** How many taps one client contributed over the period, and how many were undone. */
+export interface QuickMarkSourceUsage {
+  source: QuickMarkSource;
+  events: number;
+  undone: number;
+}
+
+
+export interface QuickMarkTap {
+  /** Overrides the button's step; for a tick, 0 unticks. */
+  value?: number;
+  source?: QuickMarkSource;
+  utc_offset_minutes?: number;
+}
+
+export const quickMarksAPI = {
+  /**
+   * The directory with today's state on it.
+   *
+   * No date is sent: which day is running is the server's answer
+   * (`local_date()`), and a browser that computed its own would disagree with
+   * it between midnight and the boundary hour.
+   *
+   * `surface` narrows the list the way the asking client needs it; an unknown
+   * value is a 422 rather than a full list, so a typo is found on the first
+   * call instead of a month later.
+   */
+  list: async (options: { surface?: QuickMarkSurface; activeOnly?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (options.surface) query.set('surface', options.surface);
+    if (options.activeOnly === false) query.set('active_only', 'false');
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return fetcher<QuickMark[]>(`/quick-marks${suffix}`);
+  },
+
+  /** Enter a button. 409 carries the button that holds the key it asked for. */
+  create: async (draft: QuickMarkDraft) => {
+    return fetcher<QuickMark>('/quick-marks', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Edit a button; only the fields sent are written. */
+  update: async (id: number, draft: QuickMarkDraft) => {
+    return fetcher<QuickMark>(`/quick-marks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /**
+   * Remove a button. Nothing it ever recorded is removed with it — the day's
+   * values stay where they are, and only the button leaves the screen.
+   */
+  remove: async (id: number) => {
+    return fetcher<Record<string, never>>(`/quick-marks/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /**
+   * Reorder the directory by sending the ids top to bottom.
+   *
+   * A list rather than a number per button: order is a property of the list,
+   * and a client that sends numbers eventually sends two of the same.
+   */
+  reorder: async (ids: number[]) => {
+    return fetcher<QuickMark[]>('/quick-marks/order', {
+      method: 'PATCH',
+      body: JSON.stringify({ ids }),
+    });
+  },
+
+  /**
+   * Tap one button.
+   *
+   * `utc_offset_minutes` is stored, not obeyed — it explains a tap made abroad
+   * and never decides the day it lands in.
+   */
+  tap: async (id: number, tap: QuickMarkTap = {}, idempotencyKey?: string) => {
+    return fetcher<QuickMarkEvent>(`/quick-marks/${id}/events`, {
+      method: 'POST',
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+      body: JSON.stringify({
+        source: 'web',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+        ...tap,
+      }),
+    });
+  },
+
+  /**
+   * Take the last tap back.
+   *
+   * One call, and its answer carries the state the day is left in, exactly as a
+   * tap does — the row repaints from it rather than refetching the directory.
+   * A 409 is not a failure of the request but the server's answer that this tap
+   * is no longer the one that can be undone; the caller shows the reason.
+   */
+  undo: async (eventId: number) => {
+    return fetcher<QuickMarkUndo>(`/quick-marks/events/${eventId}/undo`, {
+      method: 'POST',
+    });
+  },
+
+  /** How the taps of a period split between the clients that made them. */
+  sources: async (params: { from?: string; to?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const suffix = query.toString();
+    return fetcher<QuickMarkSourceUsage[]>(
+      `/quick-marks/events/sources${suffix ? `?${suffix}` : ''}`
+    );
   },
 };

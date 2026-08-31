@@ -79,6 +79,14 @@ const DAY: DayDetail = {
   marks: [],
   task_counts: { planned: 0, done: 0, failed: 0, skipped: 0, pending: 0 },
   notebook: null,
+  anchors: {
+    day_date: '2026-08-30',
+    anchors: [],
+    done: 0,
+    total: 0,
+    missing: [],
+  },
+  training: null,
   summary: {
     day_date: '2026-08-30',
     closed: false,

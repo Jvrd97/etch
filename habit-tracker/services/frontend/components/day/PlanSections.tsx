@@ -1,10 +1,19 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/147
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/147
+// summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, and the mark of each line when the screen passes one in
 // summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
 
-import { Clock, CornerDownRight, Link2 } from 'lucide-react';
+import { Clock, CornerDownRight, Link2, Pencil, Plus, TriangleAlert } from 'lucide-react';
+import PlanItemEditor from '@/components/day/PlanItemEditor';
 import PlanItemMark from '@/components/day/PlanItemMark';
-import type { Mark, MarkState, PlanItem, PlanSection, PlanViolation } from '@/lib/api';
+import type {
+  Mark,
+  MarkState,
+  PlanItem,
+  PlanItemPatch,
+  PlanSection,
+  PlanViolation,
+} from '@/lib/api';
 import { ruleLabel } from '@/lib/plan-violations';
 import {
   EMPTY_PLAN_TEXT,
@@ -36,12 +45,44 @@ export interface PlanMarking {
   onSetNote: (itemId: string, note: string) => void;
 }
 
+/** Text of the two controls the editor adds; named so tests can find them. */
+export const EDIT_LINE_LABEL = 'Править пункт';
+export const ADD_LINE_LABEL = 'Добавить пункт';
+
+/**
+ * What a line needs in order to be editable.
+ *
+ * One object again, and for the same reason as `PlanMarking`: a plan being
+ * read — a preview, a printed day, the import of `#89` — leaves it out whole
+ * and gets exactly the screen it had before this ticket.
+ */
+export interface PlanEditing {
+  /** The line whose editor is open, or null when none is. */
+  openId: string | null;
+  /** Id of the line an edit is in flight for; its fields lock. */
+  saving: string | null;
+  /** Warnings of the canon by the code of the line that earned them. */
+  warnings: Map<string, string>;
+  onOpen: (itemId: string | null) => void;
+  onSave: (itemId: string, patch: PlanItemPatch) => void;
+  onDelete: (itemId: string) => void;
+  onMove: (
+    itemId: string,
+    sectionId: string,
+    position: number,
+    parentId: string | null
+  ) => void;
+  onAdd: (sectionId: string) => void;
+}
+
 export interface PlanSectionsProps {
   sections: PlanSection[];
   /** Ids of items whose windows collide, so the line can say so where it is. */
   overlapping: Set<string>;
   /** Left out where the plan is only being read; then no line shows a box. */
   marking?: PlanMarking;
+  /** Left out where the plan is only being read; then no line can be changed. */
+  editing?: PlanEditing;
   /** Mobile trims the type scale; the structure is identical. */
   compact?: boolean;
   /**
@@ -57,10 +98,12 @@ export interface PlanSectionsProps {
 /**
  * The plan, section by section.
  *
- * The *text* is read-only on purpose: the plan arrives from `/day-open` as one
- * document, and editing a line here would be a second way to write a plan with
- * none of the whole-document rules the server applies — the bar on tasks and
- * "only the edges may be hard" cannot be checked one keystroke at a time.
+ * The *text* used to be read-only, and `#110` ended that: the plan still
+ * arrives from `/day-open` as one document, but a person now edits a line where
+ * it is drawn. The whole-document rules did not go anywhere — the server runs
+ * them after the write and hands back what a human's edit broke as a warning,
+ * because "не перезакручивать" is advice to the author of the day, not a lock
+ * on his own plan.
  *
  * The *marks* are not text. They are what a person adds to a plan while living
  * the day, they hang off the item's uuid rather than its position, and each one
@@ -71,6 +114,7 @@ export default function PlanSections({
   sections,
   overlapping,
   marking,
+  editing,
   compact = false,
   violations,
 }: PlanSectionsProps) {
@@ -93,18 +137,33 @@ export default function PlanSections({
             {sectionTitle(section)}
           </h2>
           <ul className={compact ? 'mt-3 space-y-3' : 'mt-4 space-y-4'}>
-            {section.items.map((item) => (
+            {section.items.map((item, index) => (
               <PlanLine
                 key={item.id}
                 item={item}
+                sectionId={section.id}
+                index={index}
+                siblings={section.items.length}
                 level={0}
                 overlapping={overlapping}
                 marking={marking}
+                editing={editing}
                 compact={compact}
                 violations={violations}
               />
             ))}
           </ul>
+          {editing && (
+            <button
+              type="button"
+              onClick={() => editing.onAdd(section.id)}
+              disabled={editing.saving === section.id}
+              className="mt-3 inline-flex items-center gap-1 rounded-2xl bg-surface px-3 py-1.5 text-sm text-text-secondary"
+            >
+              <Plus className="w-4 h-4" strokeWidth={2} />
+              {ADD_LINE_LABEL}
+            </button>
+          )}
         </section>
       ))}
     </div>
@@ -113,9 +172,15 @@ export default function PlanSections({
 
 interface PlanLineProps {
   item: PlanItem;
+  /** The section this line lives in — a move needs to name it. */
+  sectionId: string;
+  /** Position among its siblings, and how many of them there are. */
+  index: number;
+  siblings: number;
   level: number;
   overlapping: Set<string>;
   marking?: PlanMarking;
+  editing?: PlanEditing;
   compact: boolean;
   violations?: Map<string, PlanViolation[]>;
 }
@@ -129,9 +194,13 @@ interface PlanLineProps {
  */
 function PlanLine({
   item,
+  sectionId,
+  index,
+  siblings,
   level,
   overlapping,
   marking,
+  editing,
   compact,
   violations,
 }: PlanLineProps) {
@@ -142,6 +211,9 @@ function PlanLine({
   const extras = extraLines(item);
   const collides = overlapping.has(item.id);
   const text = compact ? 'text-sm' : 'text-base';
+  // Предупреждение адресуется кодом пункта — тем же, которым его называет 422.
+  const warning =
+    editing && item.code ? (editing.warnings.get(item.code) ?? null) : null;
 
   return (
     <li style={{ marginLeft: `${indent * 0.25}rem` }}>
@@ -160,6 +232,16 @@ function PlanLine({
               </span>
             )}
             <span className="text-text-primary">{item.text_plain}</span>
+            {editing && editing.openId !== item.id && (
+              <button
+                type="button"
+                aria-label={EDIT_LINE_LABEL}
+                onClick={() => editing.onOpen(item.id)}
+                className="rounded-2xl p-1 text-text-disabled hover:text-text-secondary"
+              >
+                <Pencil className="w-3.5 h-3.5" strokeWidth={2} />
+              </button>
+            )}
             {kind && (
               <span className="px-2 py-0.5 rounded-2xl bg-surface text-xs text-text-secondary">
                 {kind}
@@ -211,6 +293,31 @@ function PlanLine({
             </p>
           )}
 
+          {warning !== null && (
+            <p className="mt-1 inline-flex items-start gap-2 text-sm text-warning">
+              <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0" strokeWidth={2} />
+              {warning}
+            </p>
+          )}
+
+          {editing && editing.openId === item.id && (
+            <PlanItemEditor
+              item={item}
+              saving={editing.saving === item.id}
+              atTop={index === 0}
+              atBottom={index === siblings - 1}
+              onSave={(patch) => editing.onSave(item.id, patch)}
+              onDelete={() => editing.onDelete(item.id)}
+              onMoveUp={() =>
+                editing.onMove(item.id, sectionId, index - 1, item.parent_id)
+              }
+              onMoveDown={() =>
+                editing.onMove(item.id, sectionId, index + 1, item.parent_id)
+              }
+              onCancel={() => editing.onOpen(null)}
+            />
+          )}
+
           {marking && (
             <div className="mt-2">
               <PlanItemMark
@@ -241,13 +348,17 @@ function PlanLine({
 
       {item.children.length > 0 && (
         <ul className="mt-2 space-y-2">
-          {item.children.map((child) => (
+          {item.children.map((child, childIndex) => (
             <PlanLine
               key={child.id}
               item={child}
+              sectionId={sectionId}
+              index={childIndex}
+              siblings={item.children.length}
               level={level + 1}
               overlapping={overlapping}
               marking={marking}
+              editing={editing}
               compact={compact}
               violations={violations}
             />

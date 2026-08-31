@@ -1,13 +1,16 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94, PHASE-03/142, PHASE-03/143, PHASE-03/147
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day beside it, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import DayAnchors from '@/components/day/DayAnchors';
 import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
+import DayTraining from '@/components/day/DayTraining';
 import DayVerdict from '@/components/day/DayVerdict';
 import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -21,9 +24,12 @@ import {
 } from '@/lib/plan-violations';
 import { useDay } from '@/hooks/useDay';
 import { useDayMarks } from '@/hooks/useDayMarks';
+import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
+import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import {
   dayAPI,
+  type AnchorState,
   type DayCloseDraft,
   type DayReviewDraft,
   type Mark,
@@ -37,7 +43,7 @@ import {
   ruleValidity,
 } from '@/lib/day-format';
 import { DAY_NEVER_OPENED, taskCountsLine } from '@/lib/marks';
-import { itemKindsById, overlappingItemIds } from '@/lib/plan';
+import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
 
 /**
  * Stable empty list for a day that has not loaded yet.
@@ -77,6 +83,10 @@ export default function DayScreen({ date }: DayScreenProps) {
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
   const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
   const intervals = useWorkIntervals(detail?.day.date ?? '', work);
+  const training = useTrainingState();
+  // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
+  // и правится, и отмечается, и обе операции обязаны пережить друг друга.
+  const editor = usePlanItemEdit(detail?.day.date ?? '');
 
   if (loading) return <LoadingSpinner size="lg" />;
   if (error || detail === null) {
@@ -88,7 +98,10 @@ export default function DayScreen({ date }: DayScreenProps) {
     );
   }
 
-  const { day, rule, plan } = detail;
+  const { day, rule } = detail;
+  // Ответ правки — новая истина: сервер перенумеровал уровень и пересчитал
+  // расписание, и склеивать это на экране значило бы завести второй `ord`.
+  const plan = editor.plan ?? detail.plan;
   const KindIcon = day.kind === 'work' ? Sun : Moon;
 
   return (
@@ -153,6 +166,9 @@ export default function DayScreen({ date }: DayScreenProps) {
             <ErrorAlert message={marking.error} onDismiss={() => reload()} />
           )}
           <DaySchedule schedule={plan.schedule} overlaps={plan.overlaps} />
+          {editor.error && (
+            <ErrorAlert message={editor.error} onDismiss={editor.dismissError} />
+          )}
           <PlanSections
             sections={plan.sections}
             overlapping={overlappingItemIds(plan.overlaps)}
@@ -163,6 +179,16 @@ export default function DayScreen({ date }: DayScreenProps) {
               onCycle: marking.cycle,
               onSetState: marking.setState,
               onSetNote: marking.setNote,
+            }}
+            editing={{
+              openId: editor.openId,
+              saving: editor.saving,
+              warnings: warningsByCode(editor.warnings),
+              onOpen: editor.open,
+              onSave: editor.edit,
+              onDelete: editor.remove,
+              onMove: editor.move,
+              onAdd: editor.add,
             }}
           />
         </>
@@ -187,6 +213,21 @@ export default function DayScreen({ date }: DayScreenProps) {
           await intervals.remove(id);
           reload();
         }}
+      />
+
+      <DayAnchors
+        payload={detail.anchors}
+        onMark={async (kind: string, state: AnchorState | null) => {
+          await dayAPI.setAnchors(day.date, [{ kind, state }]);
+          // Re-read rather than patch in place: an anchor moves the verdict of
+          // the day, and the server's recount is the only correct one.
+          reload();
+        }}
+      />
+
+      <DayTraining
+        training={detail.training}
+        state={training.state}
       />
 
       <DayVerdict

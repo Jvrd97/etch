@@ -489,7 +489,8 @@ class TestSessionAndInterruption:
         обрыве, — и запись должна произойти из `finally`, без единого события в
         уже закрытый поток.
         """
-        from app.api.chat import _turn_events
+        from app.api.chat import _TurnContext, _sse, _turn_frames
+        from app.llm.chat.limits import TurnSlot, TurnSlots
 
         @asynccontextmanager
         async def factory() -> AsyncIterator[AsyncSession]:
@@ -498,21 +499,30 @@ class TestSessionAndInterruption:
         conversation = await chat_crud.create_conversation(
             db_session, started_on=date(2026, 8, 30)
         )
+        # Строка ответа заводится до генерации (`#116`): она же замок диалога, и
+        # именно её `finally` обязан закрыть, когда вкладку закрыли на середине.
+        answer = await chat_crud.open_turn(
+            db_session, conversation_id=conversation.id, seq=1, model=None
+        )
         await db_session.commit()
 
         fake = FakeChatClient(["первый ", "второй"])
-        events = _turn_events(
+        frames = _turn_frames(
             factory=factory,
             client=fake,
+            slot=TurnSlot(TurnSlots(capacity=1)),
             conversation_id=conversation.id,
-            answer_seq=1,
-            turns=[ChatTurn(MESSAGE_ROLE_USER, "вопрос")],
-            system_prompt=CHAT_SYSTEM_PROMPT,
-            resume=ResumeHint(session_id=None, cwd=None, context_version=1),
+            context=_TurnContext(
+                turns=[ChatTurn(MESSAGE_ROLE_USER, "вопрос")],
+                answer_seq=answer.seq,
+                system_prompt=CHAT_SYSTEM_PROMPT,
+                resume=ResumeHint(session_id=None, cwd=None, context_version=1),
+                message_id=answer.id,
+            ),
         )
-        first = await events.__anext__()
-        assert "первый" in first
-        await events.aclose()
+        first = await frames.__anext__()
+        assert "первый" in _sse(*first)
+        await frames.aclose()
 
         answer = (
             (

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/52-text-to-category-plan, PHASE-03/120
-# summary: IsolatedCli — the one place `claude -p` is assembled (isolation flags, CLAUDE_CONFIG_DIR, fixed cwd); CliInsightsClient.generate now runs through it, so insights, onboarding and the day summary stop inheriting the host's personal configuration
+# [review:need-review] PHASE-01/52-text-to-category-plan, PHASE-03/116, PHASE-03/120
+# summary: IsolatedCli — the one place claude -p is assembled (isolation flags, CLAUDE_CONFIG_DIR, fixed cwd); CliInsightsClient.generate now runs through it, so insights, onboarding and the day summary stop inheriting the host's personal configuration; terminate_process is the one kill+wait every exit path of a CLI turn goes through
 """
 Одноходовой бэкенд на бинарнике `claude` и общая сборка его запуска.
 
@@ -60,6 +60,40 @@ CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 
 # Формат ответа одноходового вызова: голый текст, без обёртки.
 TEXT_OUTPUT_ARGS: tuple[str, ...] = ("--output-format", "text")
+
+
+# Сколько ждать умирающий процесс, прежде чем бросить его. Убийство не
+# мгновенно, а вечное ожидание мёртвого процесса держало бы ход навсегда.
+KILL_WAIT_SECONDS = 5.0
+
+
+async def terminate_process(process: asyncio.subprocess.Process) -> None:
+    """
+    Убить процесс и дождаться его — но не дольше `KILL_WAIT_SECONDS`.
+
+    Одной функцией, потому что порознь `kill` и `wait` и забывают: `kill` без
+    `wait` оставляет зомби, `wait` без предела подвешивает отмену хода.
+
+    `shield` здесь несущий. Функция вызывается в том числе из `finally`,
+    раскручиваемого отменой, а обычный `await` внутри отменяемого кода получает
+    `CancelledError` немедленно и оставляет процесс жить дальше — ровно тот
+    случай, ради которого `#116` и требует гарантированного убийства.
+    """
+    if process.returncode is not None:
+        return
+    try:
+        process.kill()
+    except ProcessLookupError:
+        # Успел завершиться сам между проверкой и сигналом — ждать нечего.
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(process.wait()), timeout=KILL_WAIT_SECONDS
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # Процесс уже получил SIGKILL; ядро доберёт его без нас, а держать ход
+        # ради этого ожидания смысла нет.
+        return
 
 
 class IsolatedCli:

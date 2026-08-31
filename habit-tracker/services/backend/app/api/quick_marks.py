@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124
-# summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered by hand with every reason it is refused, and the one write path `POST /quick-marks/{id}/events`, whose answer carries the new state so a tap costs one network call; the undo of the last tap and the split of taps by source
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130
+# summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered, patched, reordered and deleted by hand with every reason it is refused, and the one write path POST /quick-marks/{id}/events, whose answer carries the new state so a tap costs one network call; the undo of the last tap and the split of taps by source
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -14,7 +14,10 @@ request is served. There is no timezone setting in this module and no second
 answer to "какое сегодня число".
 """
 
+import json
 from datetime import date, datetime, timezone
+from hashlib import sha256
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +29,10 @@ from app.crud import category as category_crud
 from app.crud import quick_mark as quick_mark_crud
 from app.models.quick_mark import QuickMark
 from app.schemas.quick_mark import (
+    SURFACES,
+    HotkeyTaken,
+    QuickMarkOrderIn,
+    QuickMarkUpdate,
     QuickMarkCreate,
     QuickMarkEventRequest,
     QuickMarkEventResponse,
@@ -39,14 +46,16 @@ router = APIRouter(prefix="/quick-marks", tags=["quick-marks"])
 
 
 def _to_today_response(
-    mark: QuickMark, state: quick_mark_crud.DayState, on: date
+    listed: quick_mark_crud.ListedMark, on: date
 ) -> QuickMarkTodayResponse:
     """One button plus the day it was read for, as the wire carries it."""
     return QuickMarkTodayResponse(
-        **QuickMarkResponse.model_validate(mark).model_dump(),
+        **QuickMarkResponse.model_validate(listed.mark).model_dump(),
         entry_date=on,
-        today_total=state.today_total,
-        done=state.done,
+        today_total=listed.state.today_total,
+        done=listed.state.done,
+        planned=listed.planned,
+        plan_item_id=listed.planned_item_id,
     )
 
 
@@ -65,16 +74,43 @@ def _to_event_response(
     )
 
 
+def _etag(marks: list[QuickMarkTodayResponse]) -> str:
+    """
+    Отпечаток выдачи целиком, а не `updated_at` справочника.
+
+    Окно агента опрашивает эту ручку каждые несколько секунд, и меняется в
+    ответе чаще всего не строка справочника, а состояние дня: чужой тап сдвинул
+    сумму. Отпечаток по `quick_marks.updated_at` этого не заметил бы и отдавал
+    бы 304 на изменившийся день — то есть окно врало бы ровно про то, ради чего
+    его открыли.
+    """
+    payload = json.dumps(
+        [one.model_dump(mode="json") for one in marks],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return '"' + sha256(payload.encode("utf-8")).hexdigest()[:32] + '"'
+
+
 @router.get("", response_model=list[QuickMarkTodayResponse])
 async def list_quick_marks(
+    response: Response,
     date_: date | None = Query(
         None,
         alias="date",
         description="День, состояние которого навесить на кнопки; по умолчанию сегодня",
     ),
+    surface: str | None = Query(
+        None,
+        description=(
+            "Кто спрашивает: web | agent | ios. `agent` оставляет только "
+            "кнопки с `show_in_agent`. Неизвестное значение — 422"
+        ),
+    ),
     active_only: bool = True,
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
     db: AsyncSession = Depends(get_db),
-) -> list[QuickMarkTodayResponse]:
+) -> Any:
     """
     Справочник кнопок, обогащённый состоянием дня.
 
@@ -83,10 +119,31 @@ async def list_quick_marks(
 
     `date` по умолчанию — день, которому принадлежит текущий момент по
     `local_date()`. Клиенту не нужно знать ни часовой пояс, ни час начала дня.
+
+    Кнопки, названные планом на запрошенный день, помечены `planned` и стоят
+    первыми (#130). Порядок считает сервер: выдача одна на веб, окно агента и
+    iOS, и порядок, посчитанный в браузере, был бы порядком, которого нет у двух
+    остальных. `date` за прошедший день отдаёт план **того** дня.
     """
+    if surface is not None and surface not in SURFACES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"unknown surface {surface!r}; expected one of {', '.join(SURFACES)}"
+            ),
+        )
     on = date_ if date_ is not None else local_date(datetime.now(timezone.utc))
-    marks = await quick_mark_crud.list_quick_marks(db, on=on, active_only=active_only)
-    return [_to_today_response(mark, state, on) for mark, state in marks]
+    marks = await quick_mark_crud.list_quick_marks(
+        db, on=on, active_only=active_only, surface=surface
+    )
+    body = [_to_today_response(listed, on) for listed in marks]
+    tag = _etag(body)
+    if if_none_match is not None and if_none_match == tag:
+        # Пустой ответ без тела: опрос окна не имеет права качать двадцать строк
+        # каждые несколько секунд ради того, что не изменилось.
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": tag})
+    response.headers["ETag"] = tag
+    return body
 
 
 @router.post("", response_model=QuickMarkResponse, status_code=status.HTTP_201_CREATED)
@@ -112,12 +169,19 @@ async def create_quick_mark(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors)
         )
 
+    # Клавиша проверяется до записи (#125): отказ обязан назвать кнопку, которая
+    # её держит, а `IntegrityError` называет имя индекса — по нему форму не
+    # починить, и заполненное в ней теряется.
+    if payload.hotkey is not None:
+        owner = await quick_mark_crud.hotkey_owner(db, payload.hotkey)
+        if owner is not None:
+            raise _hotkey_conflict(payload.hotkey, owner)
+
     try:
         mark = await quick_mark_crud.create_quick_mark(db, payload)
     except IntegrityError:
-        # The only unique thing about a button is its hotkey, and the partial
-        # index is what enforces it. Naming the key rather than the label keeps
-        # the message free of anything the user typed.
+        # Сеть на гонку двух вкладок: индекс остаётся гарантией, эта ветка —
+        # ответом, когда обе прошли проверку до записи.
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -212,6 +276,26 @@ async def create_quick_mark_event(
     return _to_event_response(recorded)
 
 
+def _hotkey_conflict(hotkey: str, owner: QuickMark) -> HTTPException:
+    """
+    409, называющий кнопку, которая держит клавишу.
+
+    Не «нарушение уникальности»: человеку нужно знать, у кого её отобрать, и
+    вернуться в форму, не потеряв заполненное. Поэтому в теле и id, и подпись.
+    """
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=HotkeyTaken(
+            message=(
+                f"клавиша {hotkey!r} уже стоит у кнопки {owner.label!r} (id {owner.id})"
+            ),
+            hotkey=hotkey,
+            quick_mark_id=owner.id,
+            label=owner.label,
+        ).model_dump(),
+    )
+
+
 @router.get("/events/sources", response_model=list[QuickMarkSourceUsage])
 async def quick_mark_source_usage(
     from_: date | None = Query(
@@ -293,3 +377,98 @@ async def undo_quick_mark_event(
         today_total=undone.state.today_total,
         done=undone.state.done,
     )
+
+
+@router.patch(
+    "/order",
+    response_model=list[QuickMarkResponse],
+)
+async def reorder_quick_marks(
+    payload: QuickMarkOrderIn, db: AsyncSession = Depends(get_db)
+) -> list[QuickMarkResponse]:
+    """
+    Переставить кнопки: список id сверху вниз.
+
+    Отдельная ручка, а не `order` в патче: перестановка меняет номера сразу
+    нескольких кнопок, и построчная запись оставила бы справочник с дырами и
+    дублями — то же решение, что у пунктов плана в `#110`.
+
+    Стоит выше `/{quick_mark_id}`, потому что иначе `order` читался бы как id.
+
+    Кнопки, которых нет в списке, уезжают под него в прежнем порядке: экран мог
+    собрать порядок до того, как соседняя вкладка завела новую кнопку.
+    """
+    marks = await quick_mark_crud.reorder_quick_marks(db, payload.ids)
+    return [QuickMarkResponse.model_validate(mark) for mark in marks]
+
+
+@router.patch(
+    "/{quick_mark_id}",
+    response_model=QuickMarkResponse,
+    responses={409: {"model": HotkeyTaken}},
+)
+async def update_quick_mark(
+    quick_mark_id: int,
+    payload: QuickMarkUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> QuickMarkResponse:
+    """
+    Поправить кнопку: только присланные поля.
+
+    Проверяется кнопка целиком, а не присланное: `kind`, `field_id` и `step` —
+    одно утверждение, и патч, меняющий только `kind`, способен сделать
+    невозможной пару, которую он не трогал.
+
+    - **404** — такой кнопки нет
+    - **409** — клавиша уже стоит у другой кнопки; в теле её id и подпись
+    - **422** — справочник отверг правку; в `detail` перечислены все причины
+    """
+    mark = await quick_mark_crud.get_quick_mark(db, quick_mark_id)
+    if mark is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quick mark with id {quick_mark_id} not found",
+        )
+
+    merged = quick_mark_crud.merged_for_validation(mark, payload)
+    category = await category_crud.get_category(db, merged.category_id)
+    errors = quick_mark_crud.validate_quick_mark(merged, category)
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors)
+        )
+
+    # Клавиша проверяется до записи, а не по `IntegrityError`: отказ обязан
+    # назвать занявшую кнопку, а `IntegrityError` называет имя индекса.
+    if merged.hotkey is not None:
+        owner = await quick_mark_crud.hotkey_owner(
+            db, merged.hotkey, exclude_id=mark.id
+        )
+        if owner is not None:
+            raise _hotkey_conflict(merged.hotkey, owner)
+
+    updated = await quick_mark_crud.update_quick_mark(db, mark, payload)
+    return QuickMarkResponse.model_validate(updated)
+
+
+@router.delete("/{quick_mark_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_quick_mark(
+    quick_mark_id: int, db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Удалить кнопку.
+
+    Записанные значения остаются: `entries` и `entry_values` этой ручкой не
+    трогаются вовсе. Выпитая вода остаётся выпитой, а удаление кнопки — это про
+    экран, а не про прожитый день.
+
+    Выключение (`is_active = false`) — не то же самое: оно убирает кнопку с
+    экрана, оставляя её в справочнике вместе с клавишей.
+    """
+    mark = await quick_mark_crud.get_quick_mark(db, quick_mark_id)
+    if mark is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quick mark with id {quick_mark_id} not found",
+        )
+    await quick_mark_crud.delete_quick_mark(db, mark)

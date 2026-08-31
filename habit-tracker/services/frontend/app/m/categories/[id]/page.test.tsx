@@ -71,6 +71,14 @@ mock.module('next/navigation', () => ({
 // first time anything links against it and shares that registry across the run,
 // so a partial mock here would delete members other suites reach for.
 mock.module('@/lib/api', () => ({
+  // Правила дня (#152). Есть в каждом моке api по той же причине, что и
+  // остальная поверхность: bun фиксирует имена экспортов модуля при первой
+  // линковке, и мок, забывший экспорт, удаляет его для всех, кто линкуется следом.
+  dayRulesAPI: {
+    getHistory: () => Promise.resolve(null),
+    getCurrent: () => Promise.resolve(null),
+    publish: () => Promise.resolve(null),
+  },
   // The goal board's client (#93). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.
@@ -98,6 +106,16 @@ mock.module('@/lib/api', () => ({
     patch: () => Promise.resolve(null),
     recompute: () => Promise.resolve(null),
   },
+  chatAPI: {
+    list: () => Promise.resolve([]),
+    create: () => Promise.resolve(null),
+    get: () => Promise.resolve(null),
+    streamMessage: () => Promise.resolve(undefined),
+  },
+  // The training client (#92). Present in every api mock for the same reason
+  // the rest of the surface is: bun fixes a module's export names on first
+  // link, so a mock that omits it deletes it for whoever runs next.
+  trainingAPI: { getState: () => Promise.resolve(null) },
   // The day screen's client (#86). Present in every api mock for the same
   // reason the rest of the surface is: bun fixes a module's export names on
   // first link, so a mock that omits it deletes it for whoever runs next.

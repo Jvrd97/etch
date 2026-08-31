@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87
-# summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database
+# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130
+# summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database; #110 adds the per-item edit — a patch that tells "not sent" from "set to null", a new line for one section, a move to a place, and the answer that carries the whole plan back with the warnings a human's edit earned
 """
 Wire types of the plan.
 
@@ -114,6 +114,13 @@ class PlanItemIn(BaseModel):
             "quarter_goal_id задача не сохраняется"
         ),
     )
+    quick_mark_id: int | None = Field(
+        None,
+        description=(
+            "Кнопка справочника, которой этот пункт отмечается. Кнопка встаёт "
+            "на Today первой и помечается плановой; её отметка закрывает пункт"
+        ),
+    )
 
     carried_from_item_id: UUID | None = None
     carry_count: int = 0
@@ -188,6 +195,7 @@ class PlanItemResponse(BaseModel):
     extra: dict[str, Any]
     quarter_goal_id: int | None
     unlinked_reason: str | None
+    quick_mark_id: int | None
     carried_from_item_id: UUID | None
     carry_count: int
     children: list[PlanItemResponse] = Field(default_factory=list)
@@ -278,6 +286,109 @@ class PlanRejection(BaseModel):
     message: str = Field(..., description="Человеческая формулировка правила")
     item_code: str | None = Field(None, description="Код пункта, который нарушил")
     item_text: str | None = Field(None, description="Его текст, если кода нет")
+
+
+class PlanItemPatch(BaseModel):
+    """
+    Правка одного пункта: только присланные поля, остальные не трогаются.
+
+    Разница между «поле не прислали» и «поле обнулили» здесь несущая, и держится
+    она на `model_fields_set` pydantic, а не на сторожевом значении: `null` в
+    теле — это «убрать критерий», отсутствие ключа — «не трогать критерий», и
+    склеить их значило бы стирать половину пункта на каждой правке слова.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str | None = Field(None, description=f"Одно из: {', '.join(ITEM_KINDS)}")
+    rigidity: str | None = Field(
+        None, description=f"Одно из: {', '.join(RIGIDITY_VALUES)}"
+    )
+    text_md: str | None = Field(None, min_length=1)
+    window: str | None = Field(
+        None, description="Окно как «ЧЧ:ММ-ЧЧ:ММ»; `null` — снять окно"
+    )
+    window_comment: str | None = None
+    code: str | None = Field(None, max_length=MAX_CODE_LENGTH)
+    done_criterion: str | None = None
+    why_md: str | None = None
+    plan_md: str | None = None
+    external_ref: dict[str, Any] | None = None
+    extra: dict[str, Any] | None = None
+    quarter_goal_id: int | None = None
+    unlinked_reason: str | None = None
+    quick_mark_id: int | None = None
+
+
+class PlanItemCreate(BaseModel):
+    """
+    Новый пункт в секцию. Позиция не приходит: пункт встаёт в конец уровня.
+
+    Позиция в теле создания была бы третьим местом, где решается порядок, — есть
+    приём плана документом и есть перенос; вставка в середину делается созданием
+    и переносом, и это две понятные операции вместо одной с сюрпризом.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_id: UUID | None = Field(
+        None, description="Родительский пункт: шаг задачи, «Минимум» тренировки"
+    )
+    kind: str = Field("bullet", description=f"Одно из: {', '.join(ITEM_KINDS)}")
+    rigidity: str = Field("soft", description=f"Одно из: {', '.join(RIGIDITY_VALUES)}")
+    text_md: str = Field(..., min_length=1)
+    window: str | None = None
+    window_comment: str | None = None
+    code: str | None = Field(None, max_length=MAX_CODE_LENGTH)
+    done_criterion: str | None = None
+    why_md: str | None = None
+    plan_md: str | None = None
+    external_ref: dict[str, Any] | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+    quarter_goal_id: int | None = None
+    unlinked_reason: str | None = None
+    quick_mark_id: int | None = None
+
+
+class PlanItemMove(BaseModel):
+    """
+    Перенос пункта: куда и на какое место.
+
+    Отдельная операция, а не поле `ord` в патче: перетаскивание меняет порядок
+    сразу нескольких строк, и построчная запись `ord` на середине оставила бы
+    план с дырами и дублями.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: UUID = Field(
+        ..., description="Секция назначения; та же — перенос внутри"
+    )
+    parent_id: UUID | None = Field(
+        None, description="Родитель назначения; `null` — верхний уровень секции"
+    )
+    position: int = Field(
+        ..., ge=0, description="Место среди братьев; больше длины — в конец"
+    )
+
+
+class PlanEditResponse(BaseModel):
+    """
+    Ответ любой правки пункта: план целиком, тронутый пункт и предупреждения.
+
+    План целиком, потому что правка одного пункта меняет порядок соседей,
+    расписание и пересечения окон; отдать один пункт значило бы заставить экран
+    перечитывать день вторым запросом ради того, что сервер уже знает.
+
+    `warnings` — правила, которые машине запретили бы запись, а человеку не
+    запрещают. Пустой список — правка ничего не нарушила.
+    """
+
+    plan: PlanResponse
+    item: PlanItemResponse | None = Field(
+        None, description="Тронутый пункт; `null` после удаления"
+    )
+    warnings: list[PlanRejection] = Field(default_factory=list)
 
 
 PlanItemIn.model_rebuild()

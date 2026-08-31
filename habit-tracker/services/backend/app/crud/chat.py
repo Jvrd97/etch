@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/117
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/115, PHASE-03/116, PHASE-03/117
 # summary: database access for the chat — the conversation feed, the messages of one dialogue in `seq` order, the next position of a turn taken from the table rather than counted in python, the append that records what a turn cost, the CLI-session hint written from a finished turn or dropped when the system prompt it was built under is gone, and the plans persisted beside the message they were proposed in
 # summary: PHASE-03/117 adds the delete that takes the four tables and the CLI session file with it, and the usage rollup that sums a conversation's tokens without reading one `content`
+# summary: PHASE-03/116 adds the row-locked read of a conversation, the open turn that is also its lock, the close that fills it in, and the reset that unsticks a dialogue whose worker died
 """
 Доступ к таблицам разговора.
 
@@ -25,6 +26,12 @@
 и берёт медиану задержки одним запросом с `GROUP BY`, не выбирая `content`:
 лента из пятидесяти разговоров иначе тянула бы через сеть весь их текст ради
 трёх чисел в шапке.
+
+**Строка ответа заводится до генерации и она же запирает диалог.** `open_turn`
+пишет пустую строку со статусом `streaming`, `close_turn` дописывает её, а
+`find_open_turn` под блокировкой разговора отвечает на вопрос «идёт ли ход». Замок
+в таблице, а не в памяти воркера: воркер, умерший вместе с процессом CLI, оставил
+бы память чистой, а ответ — вечно «идущим». Для этого случая есть `reset_open_turns`.
 
 **Подсказка о сессии стирается здесь же, где пишется.** `--resume` продолжает
 сессию, собранную под прежним системным промптом; когда `CHAT_CONTEXT_VERSION`
@@ -57,7 +64,10 @@ from app.schemas.chat import ChatPlanApply
 from app.schemas.daily_summary import DailySummaryApplyRequest
 from app.models.chat import (
     CONVERSATION_KIND_GENERAL,
+    MESSAGE_ROLE_ASSISTANT,
     MESSAGE_STATUS_COMPLETE,
+    MESSAGE_STATUS_INTERRUPTED,
+    MESSAGE_STATUS_STREAMING,
     PLAN_STATUS_PROPOSED,
     PLAN_STATUS_STALE,
     ChatConversation,
@@ -553,3 +563,110 @@ async def receipt_id_for(db: AsyncSession, idempotency_key: str) -> int | None:
         )
     )
     return result.scalar_one_or_none()
+
+
+async def get_conversation_for_update(
+    db: AsyncSession, conversation_id: int
+) -> ChatConversation | None:
+    """
+    Разговор под блокировкой строки — вход в критическую секцию хода.
+
+    Всё, что решает «занят ли диалог» и вставляет замок, обязано идти отсюда:
+    два POST, пришедшие в одну миллисекунду, иначе оба увидят свободный диалог
+    и оба поднимут по процессу CLI.
+    """
+    result = await db.execute(
+        select(ChatConversation)
+        .where(ChatConversation.id == conversation_id)
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
+async def find_open_turn(db: AsyncSession, conversation_id: int) -> ChatMessage | None:
+    """Незакрытый ход диалога, если он есть: строка ответа в `streaming`."""
+    result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.status == MESSAGE_STATUS_STREAMING,
+        )
+        .order_by(ChatMessage.seq)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def open_turn(
+    db: AsyncSession, *, conversation_id: int, seq: int, model: str | None = None
+) -> ChatMessage:
+    """
+    Завести строку ответа заранее, пустой и в статусе `streaming`.
+
+    Она и есть замок диалога. Пустое `content` — не заглушка: ход только начат,
+    и любой текст здесь был бы выдумкой до того, как модель сказала слово.
+    """
+    return await add_message(
+        db,
+        conversation_id=conversation_id,
+        seq=seq,
+        role=MESSAGE_ROLE_ASSISTANT,
+        content="",
+        status=MESSAGE_STATUS_STREAMING,
+        model=model,
+    )
+
+
+async def close_turn(
+    db: AsyncSession,
+    message_id: int,
+    *,
+    content: str,
+    status: str,
+    error_code: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_read_tokens: int | None = None,
+    latency_ms: int | None = None,
+) -> ChatMessage | None:
+    """
+    Дописать заведённый ход: текст, чем он кончился и чем обошёлся.
+
+    Возвращает None, если строки уже нет — диалог удалили, пока шёл ход.
+    Считать это ошибкой незачем: писать всё равно некуда.
+    """
+    result = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id))
+    message = result.scalar_one_or_none()
+    if message is None:
+        return None
+    message.content = content
+    message.status = status
+    message.error_code = error_code
+    message.input_tokens = input_tokens
+    message.output_tokens = output_tokens
+    message.cache_read_tokens = cache_read_tokens
+    message.latency_ms = latency_ms
+    await db.flush()
+    return message
+
+
+async def reset_open_turns(db: AsyncSession, conversation_id: int) -> int:
+    """
+    Перевести зависшие ходы диалога в `interrupted` и вернуть их число.
+
+    Нужно ровно для одного случая: воркер умер вместе с процессом CLI, и строка
+    осталась в `streaming` навсегда. Ход при этом уже не продолжится, а текст,
+    который успел прийти до перезапуска, остаётся на месте — статус меняется,
+    содержимое нет.
+    """
+    result = await db.execute(
+        select(ChatMessage).where(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.status == MESSAGE_STATUS_STREAMING,
+        )
+    )
+    stuck = list(result.scalars().all())
+    for message in stuck:
+        message.status = MESSAGE_STATUS_INTERRUPTED
+    await db.flush()
+    return len(stuck)

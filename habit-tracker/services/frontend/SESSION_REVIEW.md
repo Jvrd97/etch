@@ -1408,3 +1408,58 @@ Feedback loops: `bun test` **750/750 green** (было 713), `bunx tsc --noEmit`
 `bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.
 Бэкенд того же тикета: pytest 670/670, `ruff`, `mypy --strict`, одна голова `e6b8d0f2a4c7`.
 `make check` целиком не прогонялся — docker-демон на машине не отвечает.
+## 2026-08-30 — PHASE-03/92: якоря и тренировка на странице дня
+
+- `components/day/DayAnchors.tsx` — **new**: секция якорей. По строке на каждый вид справочника,
+  включая те, по которым ещё ничего не сказано, — «вечера с близкими не было» обязано отличаться
+  от «про вечер с близкими не спрашивали». `relationship` стоит в списке наравне с якорями
+  здоровья и отмечается тем же кольцом. Кольцо взято из `lib/marks.nextMarkState`, не скопировано:
+  `AnchorState` объявлен как `MarkState`, потому что коробка якоря и коробка пункта плана стоят
+  одна над другой.
+- `components/day/DayTraining.tsx` — **new**: план, факт, минимум (с прямым ответом, есть ли у
+  него свой отмечаемый пункт), пропуски подряд, открытая жалоба рядом с предложением, причина у
+  каждого снятого движения, личные рекорды с датой и целью.
+- `hooks/useTrainingState.ts` — **new**: снимок состояния; ошибка чтения даёт `null`, а не баннер
+  поверх дня, который загрузился.
+- `lib/api.ts`, `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**.
+- `components/day/DayAnchors.test.tsx`, `components/day/DayTraining.test.tsx` — **new** (16 тестов).
+- 24 тест-файла — **mod, механически**: в `mock.module('@/lib/api', …)` добавлена заглушка
+  `trainingAPI` (bun фиксирует набор экспортов при первой линковке).
+
+Feedback loops (frontend): `bun test` **704/704 green**, `bunx tsc --noEmit` clean.
+
+## 2026-08-30 — PHASE-03/118: чат на мобильном шелле и вход с экрана дня
+
+Срез фронтовый целиком: схемы и ручки чата пришли из `#111`, новых эндпоинтов тикет не заводит.
+В этой ветке фронтовая часть `#111` (`app/chat/page.tsx`, `lib/chat-stream.ts`, запись `chat` в
+реестре, клиент `chatAPI`) взята из ветки `fast-3` — без неё делать мобильный близнец не из чего.
+Бэкенд чата в `fast-2` не переносился: до слияния `fast-3` экран живой, а ручки под ним нет.
+
+- `hooks/useChat.ts` — **new**: состояние разговора на обе оболочки. Разговор из ссылки, иначе
+  свежий, иначе заведённый; ход куском за куском; черновик зеркалится в хранилище на каждое
+  изменение поля, а не по таймеру — приложение на телефоне сворачивают без предупреждения.
+- `components/chat/ChatFeed.tsx`, `components/chat/ChatComposer.tsx` — **new**: лента и поле
+  ввода, которые рисуют оба экрана. Поле — не форма и не `submit`: на телефоне оно стоит внутри
+  формы `FullScreenSheet`, а вложенная форма — невалидная разметка.
+- `components/chat/AskAboutDayButton.tsx` — **new**: «спросить про день». Дата экрана уходит в
+  `started_on` явно; маршрут выбирается по текущему пути, чтобы нажатие в `/m/today` не выкинуло
+  телефон в десктопную вёрстку.
+- `lib/chat-draft.ts` — **new**: черновик по id разговора. Пустой черновик — отсутствующий ключ,
+  иначе хранилище копит запись на каждый когда-либо открытый разговор. Отказ хранилища (приватный
+  режим Safari) не роняет набор текста.
+- `lib/chat-nav.ts` — **new**: `?conversation=<id>`, маршрут чата для текущей оболочки, разбор
+  параметра с мусором в `null`.
+- `app/m/chat/page.tsx` — **new**: лист на весь экран поверх `FullScreenSheet` — единственная
+  причина именно его — слежение за `visualViewport`: иначе поле ввода и последнее сообщение
+  уезжают под клавиатуру.
+- `app/chat/page.tsx` — **mod**: разметка и ничего больше, вся логика ушла в `useChat`.
+- `lib/routes.ts` — **mod**: у чата `hasMobile: true`. Таб-бар не тронут: пять слотов те же.
+- `app/today/page.tsx`, `app/m/today/page.tsx`, `lib/api.ts` — **mod**.
+- `lib/chat-draft.test.ts`, `lib/chat-nav.test.ts`, `hooks/useChat.test.ts`,
+  `components/chat/AskAboutDayButton.test.tsx`, `app/m/chat/page.test.tsx` — **new** (36 тестов).
+- `lib/routes.test.ts`, `lib/view-mode.test.ts`, `app/m/today/page.test.tsx` — **mod**: исключение
+  «экран без мобильного близнеца» закрыто, регистрация чата и дата из `Today` проверяются.
+- 24 тест-файла — **mod, механически**: заглушка `chatAPI` в `mock.module('@/lib/api', …)`.
+
+Feedback loops (frontend): `bun test` **761/761 green**, `bunx tsc --noEmit` clean,
+`bun run lint` 0 errors (6 warnings — в чужом `components/day/DayAnchors.test.tsx`).

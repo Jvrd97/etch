@@ -1,6 +1,6 @@
-
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/134, PHASE-03/152
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/125, PHASE-03/134, PHASE-03/152
 // summary: route id -> lucide icon map (+ the Day summary, Day, Goals, Roles, Chat, Life, Week and Day-rules glyphs) — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
+// summary: route id -> lucide icon map (+ the Day summary, Day, Goals, Chat and Quick-marks glyphs) — keeps the UI dependency out of lib/routes so the registry stays importable from server modules
 
 import {
   BookOpen,
@@ -20,6 +20,7 @@ import {
   Table2,
   Target,
   Wand2,
+  Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { MORE_ROUTE_ID } from '@/lib/routes';
@@ -38,6 +39,7 @@ const ROUTE_ICONS: Record<string, LucideIcon> = {
   goals: Target,
   roles: Gauge,
   chat: MessagesSquare,
+  'quick-marks': Zap,
   'day-rules': ScrollText,
   'daily-summary': NotebookPen,
   table: Table2,

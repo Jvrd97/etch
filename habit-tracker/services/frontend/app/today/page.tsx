@@ -1,20 +1,23 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/121, PHASE-03/122
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
+// summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
 import { useCallback, useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
-import QuickNumberRow from '@/components/QuickNumberRow';
 import QuickMarkRow from '@/components/QuickMarkRow';
+import QuickNumberRow from '@/components/QuickNumberRow';
 import HotkeyLegend from '@/components/HotkeyLegend';
 import EntryForm from '@/components/EntryForm';
+import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
+import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { useQuickMarkHotkeys } from '@/hooks/useQuickMarkHotkeys';
 import { Check, Keyboard, Sun } from 'lucide-react';
@@ -25,7 +28,6 @@ export default function TodayPage() {
     entries,
     categories,
     groups,
-    quickMarks,
     checked,
     streaks,
     loading,
@@ -34,18 +36,18 @@ export default function TodayPage() {
     setError,
     toggleField,
     addNumber,
-    tapQuickMark,
-    lastQuickMarkEvent,
-    undoLastQuickMark,
     reloadStreak,
     reload,
   } = useToday();
+  // Справочник кнопок отдельным чтением: он живёт дольше дня, и его порядок
+  // (плановые впереди, #130) решает сервер, а не этот экран.
+  const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one editor can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
 
-  const markByKey = useCallback((id: number) => void tapQuickMark(id), [tapQuickMark]);
+  const markByKey = useCallback((id: number) => void quickMarks.tap(id), [quickMarks]);
   const openLegend = useCallback(() => setLegendOpen(true), []);
   const closeLegend = useCallback(() => setLegendOpen(false), []);
 
@@ -54,7 +56,7 @@ export default function TodayPage() {
   // for as long as it is up — the legend answers Escape itself, and the entry
   // editor is being typed into.
   useQuickMarkHotkeys({
-    marks: quickMarks,
+    marks: quickMarks.marks,
     dialogOpen: legendOpen || editing !== null,
     onMark: markByKey,
     onLegend: openLegend,
@@ -70,7 +72,7 @@ export default function TodayPage() {
   // A category the directory already answers for loses its legacy card: two
   // ways to add to the same field on one screen is one too many. An empty
   // directory covers nothing, so the screen stays exactly as it was.
-  const covered = categoriesWithQuickMark(quickMarks);
+  const covered = categoriesWithQuickMark(quickMarks.marks);
   const quickFormCategories = allQuickFormCategories.filter(
     ({ category }) => !covered.has(category.id)
   );
@@ -84,6 +86,10 @@ export default function TodayPage() {
         </h1>
         <p className="mt-2 text-text-secondary">{date} — one tap to check things off</p>
       </div>
+
+      {/* Рядом с заголовком, а не внизу экрана: разговор идёт про день целиком,
+          а не про какую-то одну его карточку. */}
+      <AskAboutDayButton date={date} onError={setError} />
 
       {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
@@ -101,7 +107,7 @@ export default function TodayPage() {
         </div>
       ) : (
         <>
-          {quickMarks.length > 0 && (
+          {quickMarks.marks.length > 0 && (
             <section>
               <div className="flex items-center gap-3 mb-4">
                 <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
@@ -121,10 +127,10 @@ export default function TodayPage() {
                 </button>
               </div>
               <QuickMarkRow
-                marks={quickMarks}
+                marks={quickMarks.marks}
                 onTap={markByKey}
-                lastEvent={lastQuickMarkEvent}
-                onUndo={() => void undoLastQuickMark()}
+                lastEvent={quickMarks.lastEvent}
+                onUndo={() => void quickMarks.undo()}
                 showHotkeys
               />
             </section>
@@ -215,7 +221,7 @@ export default function TodayPage() {
         </>
       )}
 
-      {legendOpen && <HotkeyLegend marks={quickMarks} onClose={closeLegend} />}
+      {legendOpen && <HotkeyLegend marks={quickMarks.marks} onClose={closeLegend} />}
 
       {editing && (
         <EntryForm

@@ -1,21 +1,24 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/121
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
+// summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 
 import { useState } from 'react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
-import QuickNumberRow from '@/components/QuickNumberRow';
 import QuickMarkRow from '@/components/QuickMarkRow';
+import QuickNumberRow from '@/components/QuickNumberRow';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
+import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
 import type { Category } from '@/lib/api';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { Check, Mic, Sun } from 'lucide-react';
 
@@ -44,7 +47,6 @@ export default function MobileTodayPage() {
     entries,
     categories,
     groups,
-    quickMarks,
     checked,
     streaks,
     loading,
@@ -53,12 +55,12 @@ export default function MobileTodayPage() {
     setError,
     toggleField,
     addNumber,
-    tapQuickMark,
-    lastQuickMarkEvent,
-    undoLastQuickMark,
     reloadStreak,
     reload,
   } = useToday();
+  // Справочник кнопок отдельным чтением: он живёт дольше дня, и его порядок
+  // (плановые впереди, #130) решает сервер, а не этот экран.
+  const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one sheet can ever be up.
   const [editing, setEditing] = useState<Category | null>(null);
@@ -74,7 +76,7 @@ export default function MobileTodayPage() {
   // A category the directory already answers for loses its legacy card: two
   // ways to add to the same field on one screen is one too many. An empty
   // directory covers nothing, so the screen stays exactly as it was.
-  const covered = categoriesWithQuickMark(quickMarks);
+  const covered = categoriesWithQuickMark(quickMarks.marks);
   const quickFormCategories = allQuickFormCategories.filter(
     ({ category }) => !covered.has(category.id)
   );
@@ -103,6 +105,10 @@ export default function MobileTodayPage() {
         Рассказать день
       </button>
 
+      {/* Под диктовкой и на всю ширину, как она: оба действия — про день
+          целиком, и оба открываются одним большим касанием. */}
+      <AskAboutDayButton date={date} onError={setError} className="w-full" />
+
       {nothingToTrack ? (
         <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
           <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
@@ -115,14 +121,14 @@ export default function MobileTodayPage() {
         </div>
       ) : (
         <>
-          {quickMarks.length > 0 && (
+          {quickMarks.marks.length > 0 && (
             <section>
               <SectionLabel>Быстрые отметки</SectionLabel>
               <QuickMarkRow
-                marks={quickMarks}
-                onTap={(id) => void tapQuickMark(id)}
-                lastEvent={lastQuickMarkEvent}
-                onUndo={() => void undoLastQuickMark()}
+                marks={quickMarks.marks}
+                onTap={(id) => void quickMarks.tap(id)}
+                lastEvent={quickMarks.lastEvent}
+                onUndo={() => void quickMarks.undo()}
               />
             </section>
           )}

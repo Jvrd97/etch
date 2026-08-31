@@ -30,6 +30,9 @@ dependencies = [
     # 4.x pre-releases: 4.x rewrites the API and is not released as stable
     "apscheduler>=3.10,<4",
     "itsdangerous>=2.2",
+    # frontmatter of `training/state.md` (`#92`); already in the tree via
+    # uvicorn[standard], declared here because the import reads it directly
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -40,6 +43,7 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.4",
     "asyncpg-stubs>=0.29",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.uv]

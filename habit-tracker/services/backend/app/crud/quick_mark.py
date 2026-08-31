@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124
-# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write; undo of the last tap, refused when the stored value has moved outside the journal, and the distribution of taps by source
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130
+# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write
 """
 What a quick mark means and where its value lands.
 
@@ -39,10 +39,15 @@ from decimal import Decimal
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import uuid
+
 from app.core.daytime import local_date
 from app.crud import entry as entry_crud
+from app.crud import mark as mark_crud
 from app.crud.values import format_number, parse_number
 from app.models import Category, Entry, EntryValue, FieldType
+from app.models.mark import MARK_DONE
+from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.quick_mark import (
     KIND_CHECK,
     KIND_INCREMENT,
@@ -51,7 +56,11 @@ from app.models.quick_mark import (
     QuickMark,
     QuickMarkEvent,
 )
-from app.schemas.quick_mark import QuickMarkCreate
+from app.schemas.quick_mark import (
+    SURFACE_AGENT,
+    QuickMarkCreate,
+    QuickMarkUpdate,
+)
 
 __all__ = [
     "DayState",
@@ -85,6 +94,10 @@ NUMERIC_FIELD_TYPES: tuple[FieldType, ...] = (FieldType.NUMBER, FieldType.DURATI
 # What one tap is worth when the button has no step and the caller named no
 # value — a cigarette, a glass, one of whatever is being counted.
 IMPLICIT_AMOUNT = 1.0
+
+# Чем помечается отметка плана, поставленная не рукой в плане, а тапом по
+# кнопке. `web` соврал бы: страницу дня никто не открывал.
+SOURCE_PLAN_PROPAGATION = "agent"
 
 
 @dataclass(frozen=True)
@@ -128,9 +141,58 @@ def _ordered() -> Select[tuple[QuickMark]]:
     return select(QuickMark).order_by(QuickMark.order, QuickMark.id)
 
 
+async def planned_marks(db: AsyncSession, on: date) -> dict[int, uuid.UUID]:
+    """
+    Кнопки, названные планом на `on`: id кнопки → id пункта, который её назвал.
+
+    Одним запросом по дню, а не обходом дерева плана: пункт, назвавший кнопку,
+    может лежать на любой глубине любой секции, и `quick_mark_id` — это то, по
+    чему его находят, а не то, что вычисляют из текста.
+
+    Одна кнопка в двух пунктах одного дня — состояние возможное и не запрещённое
+    (утренняя вода и вечерняя). Побеждает первый по `(секция, позиция)`: закрыть
+    оба пункта одной отметкой значило бы сказать про вечер то, чего не было.
+    """
+    result = await db.execute(
+        select(PlanItem.quick_mark_id, PlanItem.id)
+        .join(PlanSection, PlanSection.id == PlanItem.section_id)
+        .join(DayPlan, DayPlan.id == PlanSection.plan_id)
+        .where(DayPlan.day_date == on, PlanItem.quick_mark_id.is_not(None))
+        .order_by(PlanSection.ord, PlanItem.ord)
+    )
+    planned: dict[int, uuid.UUID] = {}
+    for quick_mark_id, item_id in result.all():
+        if quick_mark_id is not None and quick_mark_id not in planned:
+            planned[quick_mark_id] = item_id
+    return planned
+
+
+@dataclass
+class ListedMark:
+    """
+    Кнопка в выдаче: она сама, состояние дня и её место в плане на этот день.
+
+    Не кортеж из трёх, потому что третье поле приехало позже двух первых и
+    следующее приедет так же: `#125` добавит поверхность, `#129` — челлендж.
+    """
+
+    mark: QuickMark
+    state: DayState
+    planned_item_id: uuid.UUID | None
+
+    @property
+    def planned(self) -> bool:
+        """Названа ли эта кнопка планом на запрошенный день."""
+        return self.planned_item_id is not None
+
+
 async def list_quick_marks(
-    db: AsyncSession, *, on: date, active_only: bool = True
-) -> list[tuple[QuickMark, DayState]]:
+    db: AsyncSession,
+    *,
+    on: date,
+    active_only: bool = True,
+    surface: str | None = None,
+) -> list[ListedMark]:
     """
     The directory with the state of the day `on` attached to every button.
 
@@ -138,13 +200,42 @@ async def list_quick_marks(
     twenty rows by design (`hotkey` is one character), and a hand-written join
     over the EAV would be a second implementation of "what does today say" next
     to `day_state`.
+
+    Плановые кнопки идут первыми (#130). Порядок считает сервер, а не экран:
+    выдача одна на веб, окно агента и iOS, и порядок, посчитанный в браузере,
+    был бы порядком, которого нет у двух остальных. Внутри каждой половины
+    сохраняется порядок справочника — «плановая» поднимает кнопку, а не
+    перетасовывает её с соседками.
+
+    День без плана — пустой словарь и порядок справочника: ни пустого блока, ни
+    сообщения «плана нет» посреди кнопок.
+
+    `surface='agent'` оставляет только кнопки с `show_in_agent` (#125). Порядок
+    и `planned` при этом те же самые — в окне помещается пять-шесть кнопок, но
+    это те же пять-шесть, что стоят первыми на Today.
     """
     query = _ordered()
     if active_only:
         query = query.where(QuickMark.is_active.is_(True))
+    if surface == SURFACE_AGENT:
+        # Фильтр здесь, внутри общей выборки, а не отдельной функцией (#125):
+        # вторая выборка — это второй порядок и второй `planned`, то есть окно
+        # агента, показывающее не то, что веб.
+        query = query.where(QuickMark.show_in_agent.is_(True))
     result = await db.execute(query)
     marks = list(result.scalars().all())
-    return [(mark, await day_state(db, mark, on)) for mark in marks]
+    planned = await planned_marks(db, on)
+    listed = [
+        ListedMark(
+            mark=mark,
+            state=await day_state(db, mark, on),
+            planned_item_id=planned.get(mark.id),
+        )
+        for mark in marks
+    ]
+    # Устойчивая сортировка: внутри «плановых» и «остальных» порядок остаётся
+    # тем, который задал справочник.
+    return sorted(listed, key=lambda one: not one.planned)
 
 
 async def _day_total(db: AsyncSession, mark: QuickMark, on: date) -> float | None:
@@ -414,6 +505,7 @@ async def record_event(
     await db.flush()
 
     state = await day_state(db, mark, on)
+    await _close_planned_item(db, mark, on, state)
     recorded = RecordedEvent(
         event_id=event.id,
         quick_mark_id=mark.id,
@@ -424,6 +516,38 @@ async def record_event(
     )
     await db.commit()
     return recorded
+
+
+async def _close_planned_item(
+    db: AsyncSession, mark: QuickMark, on: date, state: DayState
+) -> None:
+    """
+    Закрыть пункт плана, который назвал эту кнопку, когда цель дня достигнута.
+
+    Иначе человек отмечает дважды — на Today и в плане, — а это ровно тот дубль,
+    от которого система уходит.
+
+    Закрывается только вперёд: снятая галка и обнулённый счётчик пункт не
+    открывают обратно. Отметка пункта — суждение человека о дне, и стирать его
+    потому, что счётчик вернулся к нулю, значит спорить с автором дня.
+    """
+    if not state.done:
+        return
+    planned = await planned_marks(db, on)
+    item_id = planned.get(mark.id)
+    if item_id is None:
+        return
+    existing = await mark_crud.get_mark(db, item_id)
+    if existing is not None and existing.state == MARK_DONE:
+        return
+    await mark_crud.set_mark(
+        db,
+        on,
+        item_id,
+        state=MARK_DONE,
+        note=existing.note if existing is not None else None,
+        source=SOURCE_PLAN_PROPAGATION,
+    )
 
 
 async def replayed_event(
@@ -444,6 +568,109 @@ async def replayed_event(
         occurred_at=event.occurred_at,
         state=await day_state(db, mark, event.entry_date),
     )
+
+
+# --- Управление справочником (#125) ---------------------------------------
+#
+# Справочник, который нельзя завести из интерфейса, заводится SQL-ом, а человек
+# не станет писать INSERT, чтобы поменять шаг воды с 250 на 300.
+
+
+async def hotkey_owner(
+    db: AsyncSession, hotkey: str, *, exclude_id: int | None = None
+) -> QuickMark | None:
+    """
+    Кнопка, которая уже держит эту клавишу, либо None.
+
+    Уникальность гарантирует частичный индекс, а это — ответ. `IntegrityError`
+    называет имя ограничения, а человеку нужно «эта клавиша занята кнопкой
+    «Отжимания»» и возможность поправить, не потеряв заполненную форму.
+    """
+    query = select(QuickMark).where(QuickMark.hotkey == hotkey)
+    if exclude_id is not None:
+        query = query.where(QuickMark.id != exclude_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+def merged_for_validation(mark: QuickMark, data: QuickMarkUpdate) -> QuickMarkCreate:
+    """
+    Кнопка после правки — в том виде, в каком её судит `validate_quick_mark`.
+
+    Правка проверяется целиком, а не по присланным полям: `kind`, `field_id` и
+    `step` образуют одно утверждение, и патч, меняющий только `kind`, способен
+    сделать невозможной пару, которую он не трогал.
+    """
+    fields = data.model_dump(exclude_unset=True)
+    return QuickMarkCreate(
+        label=fields.get("label", mark.label),
+        category_id=fields.get("category_id", mark.category_id),
+        field_id=fields.get("field_id", mark.field_id),
+        kind=fields.get("kind", mark.kind),
+        step=fields.get("step", None if mark.step is None else float(mark.step)),
+        unit_label=fields.get("unit_label", mark.unit_label),
+        icon=fields.get("icon", mark.icon),
+        color=fields.get("color", mark.color),
+        hotkey=fields.get("hotkey", mark.hotkey),
+        order=fields.get("order", mark.order),
+        show_in_agent=fields.get("show_in_agent", mark.show_in_agent),
+        is_active=fields.get("is_active", mark.is_active),
+    )
+
+
+async def update_quick_mark(
+    db: AsyncSession, mark: QuickMark, data: QuickMarkUpdate
+) -> QuickMark:
+    """
+    Записать правку кнопки. Валидация — забота вызывающего, как и при создании.
+
+    `step` кладётся строкой в `Decimal`: путь через `float` теряет 0.1 так же
+    надёжно, как и везде, а шаг кнопки — то число, которое человек напечатал.
+    """
+    fields = data.model_dump(exclude_unset=True)
+    for name, value in fields.items():
+        if name == "step":
+            mark.step = None if value is None else Decimal(str(value))
+        else:
+            setattr(mark, name, value)
+    await db.flush()
+    return mark
+
+
+async def delete_quick_mark(db: AsyncSession, mark: QuickMark) -> None:
+    """
+    Убрать кнопку из справочника.
+
+    Ни `entries`, ни `entry_values` не трогаются: выпитая вода остаётся
+    выпитой, и удаление кнопки — это про экран, а не про прожитый день.
+    Журнал тапов уезжает каскадом внешнего ключа — он и есть журнал этой
+    кнопки, и без неё отвечать ему не на что.
+    """
+    await db.delete(mark)
+    await db.flush()
+
+
+async def reorder_quick_marks(db: AsyncSession, ids: list[int]) -> list[QuickMark]:
+    """
+    Перенумеровать справочник по присланному списку сверху вниз.
+
+    Кнопки, которых в списке нет, уезжают под него в прежнем порядке: экран мог
+    прислать порядок, собранный до того, как соседняя вкладка завела новую
+    кнопку, и терять её из-за этого не за что.
+
+    Возвращается весь справочник в новом порядке — тем же чтением, которым его
+    рисует экран, чтобы ответ не пришлось сверять со вторым запросом.
+    """
+    result = await db.execute(_ordered())
+    marks = list(result.scalars().all())
+    by_id = {mark.id: mark for mark in marks}
+    ordered = [by_id[one] for one in ids if one in by_id]
+    named = {one.id for one in ordered}
+    ordered.extend(mark for mark in marks if mark.id not in named)
+    for position, mark in enumerate(ordered):
+        mark.order = position
+    await db.flush()
+    return ordered
 
 
 # Why an undo was refused. The API turns each into a 409 with the sentence that
