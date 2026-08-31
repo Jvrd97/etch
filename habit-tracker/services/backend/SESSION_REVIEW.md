@@ -1334,3 +1334,59 @@ Feedback loops (backend): pytest **629/629 green** (было 604+25), `ruff chec
 
 Долг, названный вслух: `surface=agent` и undo (#124, #125) не делались; сидов справочника нет —
 кнопки заводятся руками через `POST /quick-marks`, пока не приехал экран #125.
+
+---
+
+## 2026-08-30 — PHASE-03/142 канон дня данными: карта дня в `day_rule_set`, формула вердикта строкой
+
+Тронуто 10 файлов бэкенда, из них 2 новых.
+
+- `alembic/versions/2026_09_01_1400-d5a7c9e1f3b6_day_rule_set_generator_columns.py` — **new**:
+  пятнадцать колонок к `day_rule_set` — края дня временами (`wake_at` 06:00, `work_start` 07:45,
+  `review_at` 15:40, `bedtime_max` 22:30), свободный вечер 19:10-21:00, вечер с близкими
+  18:30-21:00 и флаг к нему, `overtime_lost_min` 600, `max_study_items` 2, `days_off`,
+  `hard_edge_kinds`, `anchors`, `verdict_rule`. Сид обеих строк — в теле миграции, без импорта
+  из `app/`. Действующая строка получает якорь `relationship`, legacy — нет: вечер с близкими
+  стал требованием канона вместе с этим тикетом, и день до 2026-08-17 им не судится.
+  `downgrade()` снимает ровно эти пятнадцать и оставляет таблицу в виде [#86] — прогнано вживую
+  (upgrade → downgrade → upgrade на базе `habit_migr_fast2`).
+- `app/models/day.py` — **mod**: те же колонки моделью, JSONB для четырёх списков/словаря, у
+  каждой python-side `default` рядом с `server_default` — иначе строка, собранная в памяти
+  тестом, тянула бы ленивую догрузку в async-контексте.
+- `app/day/rules.py` — **mod**: `DayMap`, `DayEdge`, `Interval` и `day_map(rule)` — вся карта
+  дня одним объектом; `RuleSeed` и оба сида дополнены. Спорт — край без часа (`at=None`):
+  канон ставит его до работы, но минуты для него не называет, и выдуманные 06:15 были бы
+  числом, которого никто не решал.
+- `app/day/evaluate.py` — **mod**: `verdict_reasons(rule)` читает порядок условий из
+  `verdict_rule.reason_order`, `evaluate_day` идёт по нему, а не по фиксированной лесенке;
+  состав якорей берётся из `anchors`. `DayFacts.anchor_kinds` — какие виды якорей день закрыл;
+  `None` значит «состав не измерен» (у плана якоря без кодов, справочник приезжает с [#92]) и
+  уходит в `missing_data` кодом `anchor_kinds` — тем же способом, что и неизмеренные минуты.
+  Опечатка в формуле не проглатывается: `UnknownVerdictReason`.
+- `app/day/plan_validate.py` — **mod**: `check_hard_rigidity` берёт разрешённые виды из
+  `rule.hard_edge_kinds`; `HARD_ALLOWED_KINDS` остаётся ответом для строки без колонки.
+- `app/crud/mark.py` — **mod**: `closed_anchor_kinds` — виды якорей, закрытых днём, по кодам
+  пунктов плана; `None`, когда план не назвал ни одного (пустое множество означало бы «ни
+  одного якоря не закрыто» и снимало бы день).
+- `app/crud/summary.py`, `app/crud/day.py`, `app/schemas/day.py`, `app/api/day.py` — **mod**:
+  факты дня получают состав якорей, сид переносит новые поля, `GET /day/{date}` отдаёт блок
+  `day_map`.
+- `tests/test_day_rules_generator_columns.py` — **new**: 18 тестов — карта дня числами строки,
+  край без часа, снятие флага вечера с близкими, вердикт по составу якорей, тот же прожитый
+  день под двумя строками, неизмеренный состав, формула порядком строки, опечатка в формуле,
+  `hard_edge_kinds` из строки, оба сида, `day_map` по HTTP, 404 на дату вне периодов и полный
+  прогон «новая строка не двигает вчерашний вердикт» через закрытие и пересчёт истории.
+- `tests/test_day_close.py` — **mod**: два ожидания `missing_data` — у планов этих дней якоря
+  без кодов, поэтому состав не измерен и день говорит об этом вслух.
+- `tests/test_plan_constraints.py` — **mod**: утка `_Rule` получила `hard_edge_kinds`.
+
+Решение, которое стоит назвать вслух: `hard_edge_kinds` — это **виды пунктов**
+(`anchor`, `hard_point`), а не пять якорей из иллюстрации ADR-0015. Те пять уже лежат в
+`required_anchors`, а решение человека от 2026-08-30 разрешает жёсткость всему `hard_point`.
+
+Feedback loops (backend): pytest **593/593 green**, `ruff check app tests` clean,
+`ruff format --check` clean, `mypy --strict app` clean (90 файлов), `alembic heads` — одна
+голова `d5a7c9e1f3b6`. `make check` целиком не отрабатывал: docker-демон не отвечает. Тесты шли
+против постгреса на localhost:5432 в отдельной базе `habit_tracker_test_fast2` — в общей
+`habit_tracker_test` лежит `work_interval` из параллельной ветки, и `drop_all` спотыкается о
+её внешний ключ на `day`.

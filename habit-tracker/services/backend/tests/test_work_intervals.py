@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.daytime import local_date
 from app.crud import day as day_crud
 from app.day.evaluate import (
+    MISSING_ANCHOR_KINDS,
     MISSING_WORK_MINUTES,
     REASON_OVERTIME,
     VERDICT_LOST,
@@ -219,7 +220,10 @@ async def test_the_day_answer_carries_the_intervals_and_the_sum(
     assert len(work["intervals"]) == 1
     # An unclosed day now shows the measurement instead of «не измерено».
     assert response.json()["summary"]["work_minutes"] == 210
-    assert response.json()["summary"]["missing_data"] == []
+    # `anchor_kinds` is the honest gap of #142: the plans built here name no
+    # anchor codes, so the composition of the day's anchors is measured by the
+    # counter rather than read off the lines, and the итог says so.
+    assert response.json()["summary"]["missing_data"] == [MISSING_ANCHOR_KINDS]
 
 
 async def test_an_interval_across_midnight_belongs_to_the_day_it_began_on(
@@ -571,7 +575,10 @@ async def test_four_of_four_tasks_and_nine_hours_is_lost_by_overtime(
         REASON_OVERTIME,
     )
     assert closed["work_minutes"] == NINE_HOURS_MIN
-    assert closed["missing_data"] == []
+    # `anchor_kinds` is the honest gap of #142: the plans built here name no
+    # anchor codes, so the composition of the day's anchors is measured by the
+    # counter rather than read off the lines, and the итог says so.
+    assert closed["missing_data"] == [MISSING_ANCHOR_KINDS]
 
 
 async def test_a_day_without_intervals_is_not_judged_on_overtime(
@@ -586,7 +593,10 @@ async def test_a_day_without_intervals_is_not_judged_on_overtime(
     assert closed["verdict"] == VERDICT_WON
     assert closed["verdict_reason"] != REASON_OVERTIME
     assert closed["work_minutes"] is None
-    assert closed["missing_data"] == [MISSING_WORK_MINUTES]
+    # `anchor_kinds` is the honest gap of #142: the plans built here name no
+    # anchor codes, so the composition of the day's anchors is measured by the
+    # counter rather than read off the lines, and the итог says so.
+    assert closed["missing_data"] == [MISSING_WORK_MINUTES, MISSING_ANCHOR_KINDS]
 
 
 async def test_the_measurement_replaces_the_number_typed_at_close(
@@ -621,7 +631,10 @@ async def test_a_day_closed_without_intervals_keeps_the_number_it_was_given(
     response = await client.post(f"{WORK_PATH}/close", json={"work_minutes": 400})
 
     assert response.json()["work_minutes"] == 400
-    assert response.json()["missing_data"] == []
+    # `anchor_kinds` is the honest gap of #142: the plans built here name no
+    # anchor codes, so the composition of the day's anchors is measured by the
+    # counter rather than read off the lines, and the итог says so.
+    assert response.json()["missing_data"] == [MISSING_ANCHOR_KINDS]
     assert response.json()["verdict"] == VERDICT_WON
 
 

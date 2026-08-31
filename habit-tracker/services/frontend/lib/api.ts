@@ -823,10 +823,67 @@ export interface DayRuleSet {
   tasks_required_ratio: string;
   overtime_disqualifies: boolean;
   /** ISO weekday numbers, 1 = Monday. */
+  overtime_lost_min: number;
+  max_study_items: number;
+  /** `HH:MM:SS` hard edges of the day, as the canon writes them. */
+  wake_at: string;
+  work_start: string;
+  review_at: string;
+  bedtime_max: string;
+  free_evening_start: string;
+  free_evening_end: string;
+  relationship_anchor_required: boolean;
+  relationship_evening_start: string;
+  relationship_evening_end: string;
   workdays: number[];
+  /** Days off — not the complement of `workdays`, a list of its own. */
+  days_off: number[];
   nocode_days: number[];
   required_anchors: string[];
+  hard_edge_kinds: string[];
+  anchors: string[];
+  verdict_rule: Record<string, unknown>;
   note_md: string;
+}
+
+/** One hard edge of the day; `at` is null for an edge the canon does not clock. */
+export interface DayEdge {
+  kind: string;
+  label: string;
+  at: string | null;
+}
+
+/** A stretch of the evening, named by its two wall-clock ends. */
+export interface DayInterval {
+  start: string;
+  end: string;
+}
+
+/**
+ * The map of the day: where the hard points stand, which evening stays free.
+ *
+ * Every number is a column of the rule row, so a change of canon changes the
+ * screen without a line of this app being touched.
+ */
+export interface DayMap {
+  rule_set_id: number;
+  edges: DayEdge[];
+  free_evening: DayInterval;
+  relationship_evening: DayInterval;
+  relationship_anchor_required: boolean;
+  work_cap_min: number;
+  work_hard_cap_min: number;
+  overtime_lost_min: number;
+  work_stop_at: string;
+  max_work_tasks: number;
+  max_study_items: number;
+  anchors: string[];
+  hard_edge_kinds: string[];
+  workdays: number[];
+  days_off: number[];
+  nocode_days: number[];
+  /** Conditions that lower a day, in the order they are weighed. */
+  verdict_reasons: VerdictReason[];
 }
 
 export interface Day {
@@ -988,7 +1045,7 @@ export type Verdict = 'won' | 'lost';
 export type VerdictReason = 'tasks' | 'anchors' | 'overtime' | 'not_closed';
 
 /** What the day could not be judged on. `work_minutes` is "не измерено". */
-export type MissingData = 'work_minutes';
+export type MissingData = 'work_minutes' | 'anchor_kinds';
 
 /**
  * The итог of a day: the verdict, what it stands on, and the prose beside it.
@@ -1039,6 +1096,8 @@ export interface DayCloseDraft {
 export interface DayDetail {
   day: Day;
   rule: DayRuleSet;
+  /** The map of the day drawn by the same rule row. */
+  day_map: DayMap;
   plan: Plan | null;
   has_plan: boolean;
   /** One entry per item that has a mark; an item missing here is `pending`. */

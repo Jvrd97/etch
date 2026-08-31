@@ -1211,3 +1211,26 @@ Feedback loops: `bun test` **743/743 green** (было 718), `bunx tsc --noEmit`
 Долг, названный вслух: хоткеи (#122) не сделаны — колонка `hotkey` приезжает в типах и в
 справочнике, клавиатуры на странице нет. `QuickNumberRow` не удалён: справочник заводится
 руками и до первой кнопки он пуст.
+
+---
+
+## 2026-08-30 — PHASE-03/142 карта дня на экране дня
+
+Тронуто 7 файлов фронтенда, из них 2 новых.
+
+- `components/day/DayMapCard.tsx` — **new** (+тест): карта дня рядом с планом — жёсткие точки с
+  часами из строки правила, свободный вечер интервалом и подписью «не расписывается», вечер с
+  близкими, потолки генератора и формула вердикта по порядку. Ни одного числа в вёрстке: новый
+  канон двигает карточку без правки фронта.
+- `lib/day-format.ts` — **mod**: `edgeLines`, `intervalText`, `relationshipEveningText`,
+  `verdictFormulaText`, подпись `EDGE_WITHOUT_A_TIME` для края без часа и метка `anchor_kinds`
+  в списке неизмеренного.
+- `lib/api.ts` — **mod**: `DayMap`, `DayEdge`, `DayInterval`, `day_map` в `DayDetail`,
+  пятнадцать новых полей `DayRuleSet` и `anchor_kinds` в `MissingData`.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` — **mod**: карточка над
+  итогом дня, на мобильном — `compact`.
+- `components/DayScreen.test.tsx`, `hooks/useDay.test.ts`, `lib/day-format.test.ts` — **mod**:
+  фикстуры дополнены новыми полями правила и блоком `day_map`.
+
+Feedback loops: `bun test` **687/687 green** (было 682), `bunx tsc --noEmit` clean,
+`bun run lint` 0 problems. `any`, `@ts-ignore`, `@ts-expect-error` в новом коде — ноль.

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/88, PHASE-03/90
-# summary: mark persistence — an upsert that lets the last of two tabs win, an append-only event beside every change of state, the snapshot/restore that carries marks across a plan being rewritten, and the counts of tasks and anchors the verdict of #90 is decided from
+# [review:need-review] PHASE-03/88, PHASE-03/90, PHASE-03/142
+# summary: mark persistence — an upsert that lets the last of two tabs win, an append-only event beside every change of state, the snapshot/restore that carries marks across a plan being rewritten, the counts of tasks and anchors the verdict of #90 is decided from, and (since #142) which anchor kinds of the canon the day actually closed
 """
 Database access for the marks of a day.
 
@@ -43,6 +43,7 @@ from app.schemas.mark import MarkResponse, TaskCountsResponse
 __all__ = [
     "CarriedMark",
     "anchor_counts",
+    "closed_anchor_kinds",
     "day_item",
     "list_marks",
     "missing_anchors",
@@ -319,6 +320,41 @@ def task_counts(plan: DayPlan | None, marks: list[PlanMark]) -> TaskCounts:
 def anchor_counts(plan: DayPlan | None, marks: list[PlanMark]) -> TaskCounts:
     """The day's anchors, counted by the same rule as its tasks (`#90`)."""
     return count_anchors(_kinds(plan), _states(marks))
+
+
+def closed_anchor_kinds(
+    plan: DayPlan | None, marks: list[PlanMark]
+) -> frozenset[str] | None:
+    """
+    Which anchors of the canon this day closed, by kind — `None` when unmeasured.
+
+    The kind of an anchor is the `code` of its line, the same vocabulary
+    `day_rule_set.required_anchors` speaks and the same one `#87` checks a hard
+    anchor against. A plan whose anchors carry no codes measures nothing: the
+    answer is `None` — «состав не измерен» — rather than an empty set, because
+    an empty set would say the day closed no anchor at all and lose it. The
+    catalogue that always names them, `day_anchor`, arrives with `#92`; this is
+    the reading available until then.
+
+    `skipped` counts as closed, exactly as it does in `missing_anchors`: an
+    anchor that stopped being relevant is not one the day missed.
+    """
+    if plan is None:
+        return None
+    states = _states(marks)
+    coded = [
+        item
+        for section in plan.sections
+        for item in section.items
+        if item.kind == ANCHOR_KIND and item.code
+    ]
+    if not coded:
+        return None
+    return frozenset(
+        item.code
+        for item in coded
+        if item.code and states.get(item.id) in (MARK_DONE, MARK_SKIPPED)
+    )
 
 
 def missing_anchors(plan: DayPlan | None, marks: list[PlanMark]) -> list[str]:

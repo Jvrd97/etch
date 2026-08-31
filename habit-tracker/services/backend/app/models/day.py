@@ -1,9 +1,10 @@
-# [review:need-review] PHASE-03/86
-# summary: the day tables — versioned canon `day_rule_set` (no two intervals may overlap, enforced by a GiST exclusion constraint) and `day` with kind/is_nocode materialised at creation
+# [review:need-review] PHASE-03/86, PHASE-03/142
+# summary: the day tables — versioned canon `day_rule_set` (no two intervals may overlap, enforced by a GiST exclusion constraint) and `day` with kind/is_nocode materialised at creation; since #142 the rule row also carries the map of the day — edges as times, the free evening, the evening with the family — the ceilings of the generator and the verdict formula
 from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -19,9 +20,10 @@ from sqlalchemy import (
     Text,
     Time,
     literal_column,
+    text,
 )
 from sqlalchemy.sql.elements import ColumnClause
-from sqlalchemy.dialects.postgresql import ARRAY, ExcludeConstraint
+from sqlalchemy.dialects.postgresql import ARRAY, ExcludeConstraint, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -36,6 +38,41 @@ RULE_INTERVAL: ColumnClause[str] = literal_column(
 
 # Length of the `kind` value; the check constraint is the real guard.
 KIND_LENGTH = 10
+
+# Which kinds of plan item are allowed to call themselves `rigidity='hard'`.
+# The edges of the day, and nothing else: an anchor of the canon, and a
+# `hard_point`, which is *defined* as a commitment at a clock time. A task that
+# wants to be immovable has to become an anchor first, in the open.
+DEFAULT_HARD_EDGE_KINDS: tuple[str, ...] = ("anchor", "hard_point")
+
+# The anchors a won day has to close. The first five are the edges `config.md`
+# names; `relationship` — «вечер с близкими» — is the third priority of
+# `config.md` becoming measurable, and arrives as a row of `anchor_kind` in
+# `#92`. Composition is data precisely so that adding a sixth anchor is an
+# INSERT rather than an edit of `app.day.evaluate`.
+DEFAULT_ANCHORS: tuple[str, ...] = (
+    "подъём",
+    "спорт",
+    "старт работы",
+    "ревью",
+    "отбой",
+    "relationship",
+)
+
+# The verdict formula: which conditions lower a day, in the order they are
+# weighed. The order is the priority of `config.md` — здоровье > работа >
+# отношения — and the codes are the ones `app.day.evaluate` answers with.
+# Dropping a code here stops that condition from losing a day, without a line
+# of Python changing.
+DEFAULT_VERDICT_RULE: dict[str, Any] = {
+    "reason_order": ["overtime", "anchors", "tasks"]
+}
+
+# ISO weekday numbers of the days off, kept apart from `workdays` because
+# "не рабочий" and "выходной" are not the same statement: the generator plans
+# study and music into a day off and plans nothing at all into a day that is
+# merely not a workday.
+DEFAULT_DAYS_OFF: tuple[int, ...] = (6, 7)
 
 
 class DayRuleSet(Base):
@@ -85,17 +122,95 @@ class DayRuleSet(Base):
     work_hard_cap_min: Mapped[int] = mapped_column(Integer, server_default="540")
     work_stop_at: Mapped[time] = mapped_column(Time, server_default="16:00")
 
+    # The wall of minutes past which a day is never *planned*, however the
+    # exception ceiling is spent. `work_cap_min` judges a day that happened;
+    # this one bounds a day being written (`#147`).
+    overtime_lost_min: Mapped[int] = mapped_column(
+        Integer, default=600, server_default="600"
+    )
+
     max_work_tasks: Mapped[int] = mapped_column(SmallInteger, server_default="4")
+    max_study_items: Mapped[int] = mapped_column(
+        SmallInteger, default=2, server_default="2"
+    )
     # Share of planned tasks that has to be closed for the day to be won.
     tasks_required_ratio: Mapped[Decimal] = mapped_column(
         Numeric(3, 2), server_default="1.00"
     )
     overtime_disqualifies: Mapped[bool] = mapped_column(Boolean, server_default="true")
 
+    # The hard edges of the day, as times rather than as prose. Until `#142`
+    # «подъём 6:00, старт работы 7:45, ревью 15:40, отбой 22:30» lived only in
+    # `config.md`, so a plan could not be checked against the map of the day and
+    # a person could not see the map at all.
+    wake_at: Mapped[time] = mapped_column(
+        Time, default=time(6, 0), server_default="06:00"
+    )
+    work_start: Mapped[time] = mapped_column(
+        Time, default=time(7, 45), server_default="07:45"
+    )
+    review_at: Mapped[time] = mapped_column(
+        Time, default=time(15, 40), server_default="15:40"
+    )
+    bedtime_max: Mapped[time] = mapped_column(
+        Time, default=time(22, 30), server_default="22:30"
+    )
+
+    # The block of the evening that is deliberately left unwritten. «Не
+    # перезакручивать» is exactly this interval: the generator may put nothing
+    # inside it, and that is checkable only because the two times are here.
+    free_evening_start: Mapped[time] = mapped_column(
+        Time, default=time(19, 10), server_default="19:10"
+    )
+    free_evening_end: Mapped[time] = mapped_column(
+        Time, default=time(21, 0), server_default="21:00"
+    )
+
+    # The third priority of `config.md` as data. The flag is a column and not a
+    # branch in the planner for the same reason the ceiling of hours is: a
+    # requirement to the evening changes by a new row, not by an edit of code.
+    relationship_anchor_required: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
+    relationship_evening_start: Mapped[time] = mapped_column(
+        Time, default=time(18, 30), server_default="18:30"
+    )
+    relationship_evening_end: Mapped[time] = mapped_column(
+        Time, default=time(21, 0), server_default="21:00"
+    )
+
+    # Which kinds of plan item may be `rigidity='hard'` — read by
+    # `app.day.plan_validate` instead of a constant of its own.
+    hard_edge_kinds: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=lambda: list(DEFAULT_HARD_EDGE_KINDS),
+        server_default=text("""'["anchor", "hard_point"]'"""),
+    )
+    # The anchors a won day has to close, read by `app.day.evaluate`.
+    anchors: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=lambda: list(DEFAULT_ANCHORS),
+        server_default=text(
+            """'["подъём", "спорт", "старт работы", "ревью", "отбой", "relationship"]'"""
+        ),
+    )
+    # The verdict formula: which conditions lower a day, in which order.
+    verdict_rule: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        default=lambda: dict(DEFAULT_VERDICT_RULE),
+        server_default=text("""'{"reason_order": ["overtime", "anchors", "tasks"]}'"""),
+    )
+
     # ISO weekday numbers, 1 = Monday .. 7 = Sunday — the same numbering
     # `date.isoweekday()` speaks, so nothing has to translate on the way in.
     workdays: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger))
     nocode_days: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger))
+    # Not the complement of `workdays`: a day off is a day the canon fills with
+    # study, lessons and music, and the generator has to tell it apart from a
+    # day that simply is not a workday.
+    days_off: Mapped[list[int]] = mapped_column(
+        JSONB, default=lambda: list(DEFAULT_DAYS_OFF), server_default=text("'[6, 7]'")
+    )
 
     required_anchors: Mapped[list[str]] = mapped_column(ARRAY(Text))
     note_md: Mapped[str] = mapped_column(Text, server_default="")

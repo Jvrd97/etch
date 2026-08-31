@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94
-// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/94, PHASE-03/142
+// summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 
 import { useMemo } from 'react';
 import { CalendarCheck, CodeXml, Moon, Sun } from 'lucide-react';
+import DayMapCard from '@/components/day/DayMapCard';
 import DayNotebook from '@/components/day/DayNotebook';
 import DaySidebar from '@/components/day/DaySidebar';
 import DaySchedule from '@/components/day/DaySchedule';
@@ -139,6 +140,7 @@ export default function DayScreen({ date }: DayScreenProps) {
         </>
       )}
 
+      <DayMapCard map={detail.day_map} />
       <WorkIntervals
         work={intervals.work}
         saving={intervals.saving}

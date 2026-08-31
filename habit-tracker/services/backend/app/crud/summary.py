@@ -75,7 +75,10 @@ def facts_of(
 
     Anchors are counted from `plan_item.kind='anchor'` rather than from a
     catalogue: `anchor_kind`/`day_anchor` arrive with `#92`, and until then the
-    lines of the plan are the only place an anchor exists.
+    lines of the plan are the only place an anchor exists. Their *kinds* — which
+    anchors of the canon this day closed — are read off the codes those lines
+    carry and are `None` when the plan names none, so an unnamed composition
+    falls back to the counter instead of losing the day (`#142`).
 
     `work_minutes` is passed in rather than read here, because the two callers
     resolve it differently: a live preview measures the intervals as they stand,
@@ -86,6 +89,7 @@ def facts_of(
         tasks=mark_crud.task_counts(plan, marks),
         anchors=mark_crud.anchor_counts(plan, marks),
         work_minutes=work_minutes,
+        anchor_kinds=mark_crud.closed_anchor_kinds(plan, marks),
     )
 
 

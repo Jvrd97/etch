@@ -249,11 +249,19 @@ def _task(code: str) -> ItemFacts:
 
 
 class _Rule:
-    """The two fields of `day_rule_set` the validator reads, and nothing else."""
+    """The fields of `day_rule_set` the validator reads, and nothing else."""
 
-    def __init__(self, max_work_tasks: int = 4, anchors: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        max_work_tasks: int = 4,
+        anchors: tuple[str, ...] = (),
+        hard_edge_kinds: tuple[str, ...] = ("anchor", "hard_point"),
+    ) -> None:
         self.max_work_tasks = max_work_tasks
         self.required_anchors = list(anchors) or ["подъём", "спорт", "отбой"]
+        # Since `#142` the kinds allowed to be hard are a column of the row too,
+        # so a duck of `day_rule_set` has to carry one.
+        self.hard_edge_kinds = list(hard_edge_kinds)
 
 
 def test_the_fifth_task_is_named_not_just_counted() -> None:
