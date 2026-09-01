@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { SignalSource } from '@/lib/api';
 import SourceCard, {
+  NEEDS_ACTIVE,
+  NEEDS_SECRET,
   NO_ADAPTER,
   POLL_LABEL,
   PROBE_EMPTY,
@@ -208,5 +210,23 @@ describe('SourceCard', () => {
     fireEvent.click(screen.getByText(PROBE_LABEL));
 
     expect(asked).toHaveBeenCalledTimes(1);
+  });
+
+  it('says why the buttons are dark instead of leaving them silent', () => {
+    // Тёмная кнопка без причины — это экран, который знает ответ и молчит.
+    // Порядок причин тот же, что у отказа сервера: сначала «выключен».
+    renderCard({ source: source({ is_active: false, has_secret: true }) });
+    expect(screen.getByText(NEEDS_ACTIVE)).toBeDefined();
+
+    cleanup();
+    renderCard({ source: source({ is_active: true, has_secret: false }) });
+    expect(screen.getByText(NEEDS_SECRET)).toBeDefined();
+  });
+
+  it('stops explaining once there is nothing in the way', () => {
+    renderCard({ source: source({ is_active: true, has_secret: true }) });
+
+    expect(screen.queryByText(NEEDS_ACTIVE)).toBeNull();
+    expect(screen.queryByText(NEEDS_SECRET)).toBeNull();
   });
 });

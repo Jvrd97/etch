@@ -16,6 +16,11 @@ export const PROBE_LABEL = 'проверить';
 export const PROBE_EMPTY = 'ключ ответил, но задач не видно — их правда нет';
 export const PROBE_HINT =
   'Показывает, что источник отдаёт прямо сейчас. Ничего не записывает, курсор не двигает — можно жать сколько угодно.';
+// Почему обе кнопки заперты. Порядок причин тот же, каким отвечает сервер:
+// сначала «выключен», потом «нет ключа». Тёмная кнопка без причины — это экран,
+// который знает ответ и молчит; он же и породил вопрос «почему не горит».
+export const NEEDS_ACTIVE = 'источник выключен — включите его галочкой справа';
+export const NEEDS_SECRET = 'ключа нет — задайте его полем выше и сохраните';
 export const NO_ADAPTER = 'адаптера нет — источник ждёт своего тикета';
 
 /** Подпись поля настройки, по провайдеру: у каждого адаптера она своя. */
@@ -70,6 +75,12 @@ export default function SourceCard({
 
   const name = source.label ?? `${source.provider}/${source.account}`;
   const settingUnchanged = setting.trim() === (source.settings[settingKey] ?? '');
+  // Что стоит на пути у чтения, либо `null` — ничего.
+  const blocked = !source.is_active
+    ? NEEDS_ACTIVE
+    : !source.has_secret
+      ? NEEDS_SECRET
+      : null;
 
   return (
     <section className="bg-card border border-white/5 rounded-3xl p-5">
@@ -184,7 +195,11 @@ export default function SourceCard({
           {/* Проба под ключом и настройкой, а не над ними: сначала вводят, потом
               проверяют. Блок появляется только после нажатия — пустая рамка на
               каждой карточке говорила бы о состоянии, которого нет. */}
-          <p className="mt-3 text-xs text-text-disabled">{PROBE_HINT}</p>
+          {blocked !== null && (
+            <p className="mt-3 text-xs text-amber-400">{blocked}</p>
+          )}
+
+          <p className="mt-2 text-xs text-text-disabled">{PROBE_HINT}</p>
 
           {probe !== null && (
             <div
