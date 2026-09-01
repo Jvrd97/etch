@@ -8,8 +8,9 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { MessagesSquare, RefreshCw, RotateCcw, SendHorizonal } from 'lucide-react';
+import { MessagesSquare, RefreshCw, RotateCcw } from 'lucide-react';
 import ChatBubble from '@/components/chat/ChatBubble';
+import ChatComposer from '@/components/chat/ChatComposer';
 import ChatContextDisclosure from '@/components/chat/ChatContextDisclosure';
 import ChatHeader, { type DeleteState } from '@/components/chat/ChatHeader';
 import ChatHistory from '@/components/chat/ChatHistory';
@@ -34,7 +35,6 @@ import { useChatHistory } from '@/hooks/useChatHistory';
 import { applyProgress, NO_PROGRESS, type TurnProgress } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 import { formatTokens, turnCost } from '@/lib/chat-usage';
-import { entryInputClass } from '@/lib/ui-constants';
 
 /**
  * Две колонки на широком экране и одна на узком.
@@ -442,34 +442,24 @@ function ChatScreen() {
         <div ref={bottom} />
       </div>
 
-      <form
-        className="flex items-end gap-3 sticky bottom-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const question = draft.trim();
-          if (!question || busy) return;
-          setDraft('');
-          void send(screen.conversationId, question);
-        }}
-      >
-        <textarea
+      {/* Тот же компонент, что на мобильной оболочке. Своё поле здесь стояло с
+          `#118`, и вместе с ним стояла вторая привычка ввода: Enter, добавленный
+          в одном месте, во втором молчал бы. Отправку по Enter и Shift+Enter
+          для абзаца несёт `ChatComposer`, и несёт один раз. */}
+      <div className="sticky bottom-4">
+        <ChatComposer
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          rows={2}
-          placeholder="Сообщение"
-          aria-label="Сообщение"
-          disabled={busy}
-          className={`${entryInputClass} resize-none`}
+          onChange={setDraft}
+          onSend={() => {
+            const question = draft.trim();
+            if (!question || busy) return;
+            setDraft('');
+            void send(screen.conversationId, question);
+          }}
+          busy={busy}
+          canSend={!busy && draft.trim().length > 0}
         />
-        <button
-          type="submit"
-          disabled={busy || draft.trim().length === 0}
-          aria-label="Отправить"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0"
-        >
-          <SendHorizonal className="w-4 h-4" strokeWidth={2} />
-        </button>
-        </form>
+      </div>
       </div>
     </div>
   );

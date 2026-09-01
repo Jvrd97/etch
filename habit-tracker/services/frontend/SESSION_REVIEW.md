@@ -1944,3 +1944,17 @@ Feedback loops (frontend): `bun test` **1376 pass, 0 fail**, `tsc --noEmit` чи
 
 Feedback loops (frontend): `bun test` **1378 pass, 0 fail**, `tsc --noEmit` чисто,
 `bun run lint` 0 errors.
+
+## 2026-09-01 — PHASE-03/192: Enter отправляет, поле ввода одно
+
+- `components/chat/ChatComposer.tsx` + тест — mod/new, 5 тестов. Enter отправляет,
+  Shift+Enter переносит строку. Enter, закрывающий композицию IME, отправкой не
+  считается: тем же нажатием подтверждают иероглиф и диакритику. Признак —
+  `nativeEvent.isComposing`, другого способа их различить нет.
+- `app/chat/page.tsx` — mod. Десктопная оболочка перешла на тот же компонент вместо
+  своей формы с `<textarea>`. Поле было написано дважды с `#118`, и Enter, добавленный
+  в одном месте, во втором молчал бы — вторая привычка ввода на одном продукте хуже,
+  чем отсутствие Enter вовсе.
+
+Feedback loops (frontend): `bun test` **1383 pass, 0 fail**, `tsc --noEmit` чисто,
+`bun run lint` 0 errors.

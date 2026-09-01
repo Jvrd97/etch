@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/118
+// [review:need-review] PHASE-03/118, PHASE-03/192
 // summary: the message field both shells use — a textarea whose every keystroke goes to the caller (which mirrors it into the draft) and a send button that is a plain button, not a submit, so the field can sit inside the mobile sheet's own form without nesting one form in another
+// summary: PHASE-03/192 makes Enter send and Shift+Enter break the line, and keeps the Enter that closes an IME composition out of it
 
 import { SendHorizonal } from 'lucide-react';
 import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
@@ -31,9 +32,15 @@ const DEFAULT_ROWS = 2;
  * `FullScreenSheet`, а тот уже форма; вложенная форма — невалидная разметка, и
  * браузер разбирает её так, как ему удобно, а не так, как написано.
  *
- * Enter здесь ничего не отправляет намеренно: поле многострочное, реплика о дне
- * бывает в три абзаца, и Enter в ней — это перевод строки. Отправку несёт
- * кнопка, на телефоне — ещё и кнопка в шапке листа.
+ * **Enter отправляет, Shift+Enter переносит строку** (`#192`). Прежде Enter
+ * только переносил: поле многострочное, и реплика о дне бывает в три абзаца.
+ * Но чат — это переписка, а не форма, и рука ждёт от него привычки переписки;
+ * абзацы никуда не делись, они за Shift.
+ *
+ * Enter, закрывающий композицию IME, отправкой не считается: тем же нажатием
+ * подтверждают иероглиф и диакритику, и оно ушло бы недописанным словом.
+ * Браузер помечает такое нажатие `isComposing` — другого способа их различить
+ * нет.
  */
 export default function ChatComposer({
   value,
@@ -48,6 +55,15 @@ export default function ChatComposer({
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' || event.shiftKey) return;
+          // `nativeEvent.isComposing` — единственный признак, отличающий Enter
+          // отправки от Enter, которым закрывают композицию ввода.
+          if (event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (!canSend || busy) return;
+          onSend();
+        }}
         rows={rows}
         placeholder={MESSAGE_FIELD_LABEL}
         aria-label={MESSAGE_FIELD_LABEL}
