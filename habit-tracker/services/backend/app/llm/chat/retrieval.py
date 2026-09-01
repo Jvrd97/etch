@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/114
+# [review:need-review] PHASE-03/114, PHASE-03/190
+# summary: PHASE-03/190 checks `state` of inbox_tasks against SIGNAL_STATES, so a name outside the dictionary is a refusal the model can act on instead of an empty result it reports as "there is nothing there"
 # summary: the white list of six named retrievals the chat may ask for by name — a Pydantic params schema with a ceiling per name, execution through the existing CRUD and nothing of its own, a refusal that never reaches the database for a seventh name, and an outcome row per call (including the refused ones) that `chat_retrievals` is written from
 """
 Именованные выборки чата: белый список, потолки, отказы.
@@ -37,14 +38,21 @@ from dataclasses import dataclass
 from datetime import date as date_type
 from typing import Any, Generic, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import entry as entry_crud
 from app.crud import health as health_crud
 from app.crud import inbox as inbox_crud
 from app.crud import journal as journal_crud
-from app.models.inbox import SIGNAL_STATE_NEW
+from app.models.inbox import SIGNAL_STATE_NEW, SIGNAL_STATES
 from app.crud import streak as streak_crud
 from app.crud import table as table_crud
 from app.llm.chat.context import build_day_card
@@ -176,12 +184,38 @@ class InboxTasksParams(BaseModel):
     Умолчания названы так, чтобы обычный вопрос «что у меня по задачам» не
     требовал параметров вовсе: неразобранное, тридцать строк. Разобранное и
     отклонённое модель просит явно — иначе в контекст поедет архив.
+
+    **Состояние проверяется по словарю, а не подставляется в запрос как есть.**
+    Строка вне словаря давала бы `WHERE state = <мимо>` — ноль строк без единого
+    признака, что спросили не то. Наблюдалось 01.09.2026: модель попросила
+    `state: "all"`, получила пустую выборку и сказала человеку, что во входящих
+    ничего нет — уверенно и неправдиво. Ноль строк и «такого состояния нет» —
+    разные ответы, и отказ здесь и есть способ их различить.
+
+    `None` — «все состояния», и это единственный способ так сказать; он назван
+    в подсказке рядом со словарём.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     state: str | None = Field(default=SIGNAL_STATE_NEW)
     limit: int = Field(default=30, ge=1, le=MAX_ROWS)
+
+    @field_validator("state")
+    @classmethod
+    def _known_state(cls, value: str | None) -> str | None:
+        """
+        Состояние из словаря модели входящих — или отказ.
+
+        Словарь берётся из `SIGNAL_STATES`, а не переписывается здесь списком:
+        второй список разошёлся бы с первым на первой же правке, и разошёлся бы
+        молча — именно молчание и чинит этот валидатор.
+        """
+        if value is not None and value not in SIGNAL_STATES:
+            raise ValueError(
+                f"unknown signal state {value!r}; known: {', '.join(SIGNAL_STATES)}"
+            )
+        return value
 
 
 class StreakParams(BaseModel):
@@ -378,7 +412,9 @@ QUERY_HINTS: dict[str, str] = {
     ),
     QUERY_INBOX_TASKS: (
         "задачи и письма, приехавшие снаружи (ClickUp и прочие источники), "
-        "с ссылкой обратно — `state` (по умолчанию `new`), `limit`"
+        "с ссылкой обратно — `state` (`new` по умолчанию, ещё `parsed`, "
+        "`ignored`, `duplicate`; `null` — все сразу, другого способа нет), "
+        "`limit`"
     ),
 }
 

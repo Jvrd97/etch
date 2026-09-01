@@ -51,6 +51,7 @@ from app.llm.chat.retrieval import (
 from app.llm.chat.session import ResumeHint
 from app.main import app
 from app.models.chat import ChatRetrieval
+from app.models.inbox import SIGNAL_STATES
 from app.models.journal import JournalEntry
 
 CHAT_URL = "/api/v1/chat/conversations"
@@ -726,6 +727,56 @@ class TestTurnWithRetrievals:
         await drain(client, conversation_id, "как дела?")
 
         assert await audit(db_session) == []
+
+
+@pytest.mark.asyncio
+class TestInboxState:
+    """
+    Состояние входящих, названное мимо словаря, — отказ, а не пустая выборка.
+
+    Ноль строк и «такого состояния нет» — разные ответы, и модель отвечает по
+    ним разное. Наблюдалось 01.09.2026: на просьбу «посмотри все» модель
+    попросила `state: "all"`, получила `WHERE state = 'all'`, ноль строк и
+    сказала человеку «в ClickUp ничего нет: ни новых, ни в других статусах» —
+    уверенно и неправдиво, потому что такой выборке нечего было найти.
+    """
+
+    async def test_a_state_outside_the_dictionary_is_refused(
+        self, db_session: AsyncSession
+    ) -> None:
+        outcomes = await run_need(
+            db_session,
+            [NeedItem(query=QUERY_INBOX_TASKS, params={"state": "all"})],
+        )
+        assert outcomes[0].refusal == REFUSAL_BAD_PARAMS
+
+    async def test_every_state_of_the_dictionary_is_accepted(
+        self, db_session: AsyncSession
+    ) -> None:
+        outcomes = await run_need(
+            db_session,
+            [
+                NeedItem(query=QUERY_INBOX_TASKS, params={"state": one})
+                for one in SIGNAL_STATES
+            ],
+        )
+        assert [one.refusal for one in outcomes] == [None] * len(SIGNAL_STATES)
+
+    async def test_a_null_state_means_every_state_and_is_accepted(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Способ сказать «все» есть, и он назван в подсказке модели."""
+        outcomes = await run_need(
+            db_session,
+            [NeedItem(query=QUERY_INBOX_TASKS, params={"state": None})],
+        )
+        assert outcomes[0].refusal is None
+
+    def test_the_hint_names_the_states_the_model_may_ask_for(self) -> None:
+        """Подсказка — единственное место, откуда модель узнаёт словарь."""
+        hint = QUERY_HINTS[QUERY_INBOX_TASKS]
+        for one in SIGNAL_STATES:
+            assert one in hint
 
 
 @pytest.mark.asyncio

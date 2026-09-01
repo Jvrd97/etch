@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/98
-// summary: source card tests — a saved key is reported as set and never rendered back, the field empties after saving, a source without an adapter offers no controls, and «перечитать» stays unavailable until the source is on and has a key
+// [review:need-review] PHASE-03/98, PHASE-03/191
+// summary: source card tests — a saved key is reported as set and never rendered back, the field empties after saving, a source without an adapter offers no controls, «перечитать» stays unavailable until the source is on and has a key, and the probe block appears only after a press: the list with a link back, the refusal in words, and «ключ ответил, а задач нет» told apart from a failure
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -7,6 +7,8 @@ import type { SignalSource } from '@/lib/api';
 import SourceCard, {
   NO_ADAPTER,
   POLL_LABEL,
+  PROBE_EMPTY,
+  PROBE_LABEL,
   SAVE_LABEL,
   SECRET_MISSING,
   SECRET_SET,
@@ -37,6 +39,8 @@ function renderCard(props: Partial<React.ComponentProps<typeof SourceCard>> = {}
       onSave={() => {}}
       onToggle={() => {}}
       onPoll={() => {}}
+      onProbe={() => {}}
+      probe={null}
       {...props}
     />
   );
@@ -114,5 +118,95 @@ describe('SourceCard', () => {
     expect(
       (screen.getByRole('button', { name: POLL_LABEL }) as HTMLButtonElement).disabled
     ).toBe(false);
+  });
+
+  it('shows no probe block until the button is pressed', () => {
+    // Пустая рамка на каждой карточке говорила бы о состоянии, которого нет:
+    // «пробовали и ничего» и «не пробовали» — разные ответы.
+    renderCard({ source: source({ has_secret: true }) });
+
+    expect(screen.queryByTestId('probe-1')).toBeNull();
+  });
+
+  it('lists what the source sees, with a link back', () => {
+    renderCard({
+      source: source({ has_secret: true }),
+      probe: {
+        status: 'ok',
+        count: 1,
+        items: [
+          {
+            external_id: '86cb3xtv5',
+            title: 'Починить сквозной flow покупки',
+            external_url: 'https://app.clickup.com/t/86cb3xtv5',
+            occurred_at: '2026-08-31T12:00:00Z',
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByText(/видно задач: 1/)).toBeDefined();
+    const link = screen.getByText('Починить сквозной flow покупки') as HTMLAnchorElement;
+    expect(link.href).toBe('https://app.clickup.com/t/86cb3xtv5');
+  });
+
+  it('says how many were left out when the ceiling cut the list', () => {
+    renderCard({
+      source: source({ has_secret: true }),
+      probe: {
+        status: 'ok',
+        count: 214,
+        items: [
+          {
+            external_id: 'a',
+            title: 'первая',
+            external_url: null,
+            occurred_at: '2026-08-31T12:00:00Z',
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByText(/видно задач: 214 — показаны первые 1/)).toBeDefined();
+  });
+
+  it('tells an answering key with nothing to show apart from a failure', () => {
+    renderCard({
+      source: source({ has_secret: true }),
+      probe: { status: 'ok', count: 0, items: [] },
+    });
+
+    expect(screen.getByText(PROBE_EMPTY)).toBeDefined();
+  });
+
+  it('puts the refusal in words on the card that refused', () => {
+    renderCard({
+      source: source({ has_secret: true }),
+      probe: { status: 'failed', message: 'Источник ответил отказом.' },
+    });
+
+    expect(screen.getByText('Источник ответил отказом.')).toBeDefined();
+  });
+
+  it('offers no probe until the source is on and has a key', () => {
+    renderCard({ source: source({ is_active: false, has_secret: true }) });
+    expect((screen.getByText(PROBE_LABEL) as HTMLButtonElement).disabled).toBe(true);
+
+    cleanup();
+    renderCard({ source: source({ is_active: true, has_secret: false }) });
+    expect((screen.getByText(PROBE_LABEL) as HTMLButtonElement).disabled).toBe(true);
+
+    cleanup();
+    renderCard({ source: source({ is_active: true, has_secret: true }) });
+    expect((screen.getByText(PROBE_LABEL) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('asks the source when the button is pressed', () => {
+    const asked = mock(() => {});
+    renderCard({ source: source({ has_secret: true }), onProbe: asked });
+
+    fireEvent.click(screen.getByText(PROBE_LABEL));
+
+    expect(asked).toHaveBeenCalledTimes(1);
   });
 });

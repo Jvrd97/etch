@@ -3460,6 +3460,26 @@ export interface PollOutcome {
   updated: number;
 }
 
+/** Одна внешняя штука так, как её увидела проба. Тела здесь нет и не будет. */
+export interface ProbeItem {
+  external_id: string;
+  title: string | null;
+  external_url: string | null;
+  occurred_at: string;
+}
+
+/**
+ * Что источник видит снаружи — и ничего из этого не записано.
+ *
+ * `count` — сколько всего вернул источник, `items` обрезаны потолком сервера.
+ * Числу и списку верят по-разному: «показано 100» на воркспейсе из двух тысяч
+ * задач не должно читаться как «их сто».
+ */
+export interface ProbeOutcome {
+  count: number;
+  items: ProbeItem[];
+}
+
 export const inboxAPI = {
   /** Лента входящих, свежие сверху. */
   signals: async (options: { state?: string; sourceId?: number } = {}) => {
@@ -3482,6 +3502,17 @@ export const inboxAPI = {
    */
   poll: async (sourceId: number) => {
     return fetcher<PollOutcome>(`/inbox/sources/${sourceId}/poll`, { method: 'POST' });
+  },
+
+  /**
+   * Показать, что источник видит снаружи, ничего не записав.
+   *
+   * Не «poll, только покажи»: опрос двигает курсор, и после него тот же вопрос
+   * уже не задать — второй опрос вернёт ноль нового, а ноль неотличим от
+   * поломки. Проба курсор не смотрит, поэтому её можно нажать дважды.
+   */
+  probe: async (sourceId: number) => {
+    return fetcher<ProbeOutcome>(`/inbox/sources/${sourceId}/probe`, { method: 'POST' });
   },
 
   /**

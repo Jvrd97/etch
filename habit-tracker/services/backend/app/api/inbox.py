@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/97
+# [review:need-review] PHASE-03/97, PHASE-03/191
+# summary: PHASE-03/191 adds POST /inbox/sources/{id}/probe — the adapter is run with the cursor off and its result shown, nothing is written, so "is the key working" has an answer that does not consume the very rows it is proving
 # summary: the inbox endpoints — the feed of signals with the same 366-day range limit table and health use, the source directory, and the manual poll a person presses (and the mac agent calls) until the worker of #99 exists
 """
 Входящие: лента сигналов, справочник источников и ручной прогон.
@@ -20,8 +21,11 @@ from app.core.database import get_db
 from app.crud import inbox as inbox_crud
 from app.models.inbox import SignalSource
 from app.schemas.inbox import (
+    PROBE_MAX_ITEMS,
     CredentialsIn,
     PollResponse,
+    ProbeItem,
+    ProbeResponse,
     SignalResponse,
     SourcePatch,
     SourceResponse,
@@ -149,6 +153,49 @@ async def patch_source(
     await db.commit()
     await db.refresh(source)
     return _as_source(source)
+
+
+@router.post("/sources/{source_id}/probe", response_model=ProbeResponse)
+async def probe_source(
+    source_id: int, db: AsyncSession = Depends(get_db)
+) -> ProbeResponse:
+    """
+    Показать, что источник видит снаружи, ничего не записав.
+
+    Диагностика, а не чтение. Опрос отвечает числами и двигает состояние, и
+    после него вопрос «а ключ рабочий» тем же способом уже не задать: второй
+    опрос честно вернёт ноль нового, и ноль неотличим от поломки. Проба
+    отвечает списком, курсор не смотрит и не двигает, в базу не пишет — её
+    можно нажать дважды подряд и оба раза увидеть одно и то же.
+
+    Отказы те же и с теми же кодами, что у опроса: «выключен», «нет адаптера»,
+    «нет токена». У выключенного источника наружу по-прежнему не уходит ни
+    одного запроса.
+    """
+    source = await db.get(SignalSource, source_id)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="source not found"
+        )
+    try:
+        items = await inbox_crud.probe_source(source)
+    except inbox_crud.PollRefused as refusal:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": refusal.code, "message": refusal.message},
+        ) from refusal
+    return ProbeResponse(
+        count=len(items),
+        items=[
+            ProbeItem(
+                external_id=one.external_id,
+                title=one.title,
+                external_url=one.external_url,
+                occurred_at=one.occurred_at,
+            )
+            for one in items[:PROBE_MAX_ITEMS]
+        ],
+    )
 
 
 @router.post("/sources/{source_id}/poll", response_model=PollResponse)

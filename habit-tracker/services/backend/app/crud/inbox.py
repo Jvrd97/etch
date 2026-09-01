@@ -24,6 +24,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 
 import httpx
 from sqlalchemy import func, literal_column, select
@@ -47,6 +48,7 @@ __all__ = [
     "SignalSource",
     "PollOutcome",
     "PollRefused",
+    "probe_source",
     "SEED_SOURCES",
     "get_source_by_name",
     "list_signals",
@@ -258,8 +260,30 @@ def _secret_of(source: SignalSource) -> str:
     return os.environ.get(source.credential_ref or "", "")
 
 
+class Adapter(Protocol):
+    """
+    Чем читается источник: одна функция на провайдера.
+
+    Протокол, а не тип из литерала словаря: `ADAPTERS` обязан быть однородным,
+    и второй адаптер с другой сигнатурой должен краснеть здесь, а не в том
+    месте, где его позвали. `full` обязателен у каждого — без него проба
+    показывала бы «ничего нового» вместо «вот что видно».
+    """
+
+    async def __call__(
+        self,
+        source: SignalSource,
+        transport: httpx.AsyncBaseTransport | None,
+        *,
+        full: bool = False,
+    ) -> list[ExternalItem]: ...
+
+
 async def _read_clickup(
-    source: SignalSource, transport: httpx.AsyncBaseTransport | None
+    source: SignalSource,
+    transport: httpx.AsyncBaseTransport | None,
+    *,
+    full: bool = False,
 ) -> list[ExternalItem]:
     """
     Открытые задачи личного воркспейса, изменённые после курсора.
@@ -267,6 +291,11 @@ async def _read_clickup(
     Токен читается из окружения по имени в `credential_ref`. Его отсутствие —
     отказ с машинным кодом, а не пустой список: «источник не настроен» и «у
     источника ничего нового» — разные ответы, и путать их нельзя.
+
+    `full` снимает курсор: спрашивается всё открытое, а не изменившееся с
+    прошлого раза. Так ходит проба (`probe_source`) — у источника, который уже
+    читали, курсор отсекает всё старое, и «покажи, что видно» вернуло бы пустой
+    список на прекрасно работающем ключе.
     """
     token = _secret_of(source)
     if not token:
@@ -290,7 +319,7 @@ async def _read_clickup(
         )
 
     params: dict[str, str] = {"subtasks": "true", "include_closed": "false"}
-    since = source.cursor.get(CURSOR_UPDATED_MS)
+    since = None if full else source.cursor.get(CURSOR_UPDATED_MS)
     if since is not None:
         params["date_updated_gt"] = str(since)
 
@@ -336,7 +365,55 @@ async def _read_clickup(
 # воркспейс должен быть данными, а не веткой в коде. Gmail и Telegram остаются
 # заготовками до своих тикетов: экран показывает на них «адаптера нет», и poll
 # в сеть не идёт.
-ADAPTERS = {"clickup": _read_clickup}
+ADAPTERS: dict[str, Adapter] = {"clickup": _read_clickup}
+
+
+def _adapter_for(source: SignalSource) -> Adapter:
+    """
+    Чем читается этот источник, или отказ.
+
+    Порядок отказов — от самого дешёвого к самому дорогому: выключенный
+    источник и источник без адаптера не доходят до сети вовсе. Это не
+    оптимизация, а свойство: «выключен» обязано означать, что наружу не ушло ни
+    одного запроса, и оно одинаково у опроса и у пробы.
+    """
+    if not source.is_active:
+        raise PollRefused(
+            "source_disabled",
+            "Источник выключен. Включите его прежде, чем читать.",
+        )
+    adapter = ADAPTERS.get(source.provider)
+    if adapter is None:
+        raise PollRefused(
+            "no_adapter",
+            f"У источника {source.provider}/{source.account} нет адаптера: "
+            "строка в справочнике есть, читать её нечем.",
+        )
+    return adapter
+
+
+async def probe_source(
+    source: SignalSource,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> list[ExternalItem]:
+    """
+    Показать, что источник видит снаружи, ничего не записав.
+
+    Отдельная операция, а не «опрос, только покажи». Опрос отвечает числами и
+    двигает состояние: пишет сигналы, сдвигает курсор, ставит `last_polled_at`.
+    После него вопрос «а ключ-то рабочий» тем же способом уже не задать —
+    второй опрос честно вернёт ноль нового, и ноль будет неотличим от поломки.
+
+    Проба не берёт сессию базы вовсе, и это не экономия, а граница: функции без
+    сессии нечем записать даже по недосмотру. Курсор снимается (`full=True`),
+    поэтому дважды нажатая кнопка дважды покажет одно и то же.
+
+    Отказы те же и с теми же кодами, что у опроса, — включая главный: у
+    выключенного источника наружу не уходит ни одного запроса.
+    """
+    adapter = _adapter_for(source)
+    return await adapter(source, transport, full=True)
 
 
 async def poll_source(
@@ -352,19 +429,7 @@ async def poll_source(
     и источник без адаптера не доходят до сети вовсе. Это не оптимизация, а
     свойство: «выключен» обязано означать, что наружу не ушло ни одного запроса.
     """
-    if not source.is_active:
-        raise PollRefused(
-            "source_disabled",
-            "Источник выключен. Включите его прежде, чем читать.",
-        )
-
-    adapter = ADAPTERS.get(source.provider)
-    if adapter is None:
-        raise PollRefused(
-            "no_adapter",
-            f"У источника {source.provider}/{source.account} нет адаптера: "
-            "строка в справочнике есть, читать её нечем.",
-        )
+    adapter = _adapter_for(source)
 
     try:
         items = await adapter(source, transport)

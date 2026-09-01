@@ -471,3 +471,113 @@ def test_migrations_are_not_excluded_from_the_image() -> None:
         f".dockerignore исключает миграции из образа: {offenders}. "
         "Контейнер живёт образом, и alembic внутри него не найдёт ревизий."
     )
+
+
+class TestProbe:
+    """
+    Проба источника: показать, что видно снаружи, и не тронуть ничего внутри.
+
+    Отдельная операция, а не «poll, только покажи». Опрос отвечает числами и
+    двигает состояние — курсор, `last_polled_at`, строки сигналов; после него
+    «работает ли ключ» уже не спросишь тем же способом, потому что второй опрос
+    честно вернёт ноль нового. Проба отвечает списком и не пишет ни строки,
+    поэтому её можно нажать дважды подряд и оба раза увидеть одно и то же.
+    """
+
+    async def test_the_probe_shows_the_tasks_it_can_see(
+        self, personal_source: SignalSource
+    ) -> None:
+        items = await inbox_crud.probe_source(
+            personal_source, transport=clickup_transport([TASK])
+        )
+        assert [one.external_id for one in items] == [TASK["id"]]
+        assert items[0].title == TASK["name"]
+        assert items[0].external_url == TASK["url"]
+
+    async def test_the_probe_writes_nothing_at_all(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """
+        Ни сигналов, ни курсора, ни отметки о чтении.
+
+        Проба — это вопрос «а видно ли», и ответ на него не должен менять того,
+        что увидит следующий настоящий опрос. Сдвинутый пробой курсор украл бы
+        у опроса ровно те задачи, которые проба показала человеку.
+        """
+        await inbox_crud.probe_source(
+            personal_source, transport=clickup_transport([TASK])
+        )
+
+        signals = await db_session.execute(select(InboundSignal))
+        assert signals.scalars().all() == []
+        await db_session.refresh(personal_source)
+        assert personal_source.cursor == {}
+        assert personal_source.last_polled_at is None
+
+    async def test_the_probe_ignores_the_cursor_and_asks_for_everything(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """
+        Смысл кнопки — «покажи всё», а не «покажи новое с прошлого раза».
+
+        У источника, который уже читали, курсор отсекает всё старое, и проба
+        показала бы пустой список на прекрасно работающем ключе. Это худший из
+        возможных ответов диагностики: он выглядит как поломка.
+        """
+        personal_source.cursor = {"updated_ms": 1788199200000}
+        await db_session.commit()
+        calls: list[httpx.Request] = []
+
+        await inbox_crud.probe_source(
+            personal_source, transport=clickup_transport([TASK], calls)
+        )
+
+        assert "date_updated_gt" not in calls[0].url.params
+
+    async def test_a_disabled_source_is_refused_without_touching_the_network(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """«Выключен» означает, что наружу не ушло ни одного запроса, — и здесь тоже."""
+        personal_source.is_active = False
+        await db_session.commit()
+        calls: list[httpx.Request] = []
+
+        with pytest.raises(inbox_crud.PollRefused) as refusal:
+            await inbox_crud.probe_source(
+                personal_source, transport=clickup_transport([TASK], calls)
+            )
+
+        assert refusal.value.code == "source_disabled"
+        assert calls == []
+
+    async def test_the_handle_answers_with_the_list(
+        self,
+        client: AsyncClient,
+        personal_source: SignalSource,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            inbox_crud,
+            "ADAPTERS",
+            {"clickup": lambda source, transport, *, full=False: _one_task()},
+        )
+
+        response = await client.post(f"{INBOX_URL}/sources/{personal_source.id}/probe")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["count"] == 1
+        assert body["items"][0]["external_id"] == TASK["id"]
+
+
+async def _one_task() -> list[inbox_crud.ExternalItem]:
+    """Один разобранный элемент — то, что вернул бы адаптер на живом ключе."""
+    return [
+        inbox_crud.ExternalItem(
+            external_id=str(TASK["id"]),
+            title=str(TASK["name"]),
+            external_url=str(TASK["url"]),
+            occurred_at=datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc),
+            content_hash="0" * 8,
+        )
+    ]

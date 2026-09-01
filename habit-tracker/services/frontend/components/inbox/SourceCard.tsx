@@ -1,16 +1,21 @@
 'use client';
-// [review:need-review] PHASE-03/98
+// [review:need-review] PHASE-03/98, PHASE-03/191
 // summary: one source card — the key typed into the interface instead of into a file on the server, shown as «ключ задан» and never echoed back, the adapter's own setting beside it, the switch that turns the source on, and the reasons a source can be silent told apart
 
 import { useState } from 'react';
-import { Check, KeyRound, RefreshCw } from 'lucide-react';
+import { Check, KeyRound, RefreshCw, Stethoscope } from 'lucide-react';
 import type { SignalSource } from '@/lib/api';
+import type { ProbeState } from '@/hooks/useInbox';
 import { entryInputClass } from '@/lib/ui-constants';
 
 export const SECRET_SET = 'ключ задан';
 export const SECRET_MISSING = 'ключа нет';
 export const SAVE_LABEL = 'Сохранить';
 export const POLL_LABEL = 'перечитать';
+export const PROBE_LABEL = 'проверить';
+export const PROBE_EMPTY = 'ключ ответил, но задач не видно — их правда нет';
+export const PROBE_HINT =
+  'Показывает, что источник отдаёт прямо сейчас. Ничего не записывает, курсор не двигает — можно жать сколько угодно.';
 export const NO_ADAPTER = 'адаптера нет — источник ждёт своего тикета';
 
 /** Подпись поля настройки, по провайдеру: у каждого адаптера она своя. */
@@ -35,6 +40,10 @@ export interface SourceCardProps {
   onSave: (secret: string | null, settings: Record<string, string>) => void;
   onToggle: (active: boolean) => void;
   onPoll: () => void;
+  /** Спросить источник, что он видит, ничего не записывая. */
+  onProbe: () => void;
+  /** Чем кончилась последняя проба, либо `null` — ещё не пробовали. */
+  probe: ProbeState | null;
 }
 
 /**
@@ -52,6 +61,8 @@ export default function SourceCard({
   onSave,
   onToggle,
   onPoll,
+  onProbe,
+  probe,
 }: SourceCardProps) {
   const settingKey = SETTING_KEY[source.provider] ?? 'value';
   const [secret, setSecret] = useState('');
@@ -152,6 +163,16 @@ export default function SourceCard({
               {POLL_LABEL}
             </button>
 
+            <button
+              type="button"
+              onClick={onProbe}
+              disabled={busy || !source.is_active || !source.has_secret}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-3xl bg-surface text-sm text-text-secondary disabled:opacity-40"
+            >
+              <Stethoscope className="w-3.5 h-3.5" strokeWidth={2} />
+              {PROBE_LABEL}
+            </button>
+
             {source.last_polled_at !== null && (
               <span className="inline-flex items-center gap-1.5 text-xs text-text-disabled">
                 <Check className="w-3.5 h-3.5" strokeWidth={2} />
@@ -159,6 +180,54 @@ export default function SourceCard({
               </span>
             )}
           </div>
+
+          {/* Проба под ключом и настройкой, а не над ними: сначала вводят, потом
+              проверяют. Блок появляется только после нажатия — пустая рамка на
+              каждой карточке говорила бы о состоянии, которого нет. */}
+          <p className="mt-3 text-xs text-text-disabled">{PROBE_HINT}</p>
+
+          {probe !== null && (
+            <div
+              className="mt-2 rounded-2xl border border-white/10 p-3"
+              data-testid={`probe-${source.id}`}
+            >
+              {probe.status === 'failed' ? (
+                <p className="text-sm text-danger">{probe.message}</p>
+              ) : probe.count === 0 ? (
+                <p className="text-sm text-text-secondary">{PROBE_EMPTY}</p>
+              ) : (
+                <>
+                  <p className="text-sm text-text-secondary">
+                    видно задач: {probe.count}
+                    {probe.items.length < probe.count
+                      ? ` — показаны первые ${probe.items.length}`
+                      : ''}
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {probe.items.map((item) => (
+                      <li key={item.external_id} className="text-sm">
+                        <span className="font-mono text-xs text-text-disabled">
+                          {item.external_id}
+                        </span>{' '}
+                        {item.external_url !== null ? (
+                          <a
+                            href={item.external_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-lime underline underline-offset-2"
+                          >
+                            {item.title ?? '(без заголовка)'}
+                          </a>
+                        ) : (
+                          (item.title ?? '(без заголовка)')
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
         </>
       )}
     </section>

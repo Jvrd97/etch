@@ -3,7 +3,12 @@
 // summary: inbox state — the feed of signals beside the directory of sources, the key of a source saved from the interface and never read back, one manual poll at a time with its refusal read as a machine code rather than as a sentence, and a re-read after anything that changed the server's answer
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { inboxAPI, type InboundSignal, type SignalSource } from '@/lib/api';
+import {
+  inboxAPI,
+  type InboundSignal,
+  type ProbeItem,
+  type SignalSource,
+} from '@/lib/api';
 
 /** Что показывает экран, когда источник отказал. По машинному коду сервера. */
 export const REFUSAL_TEXT: Record<string, string> = {
@@ -35,8 +40,23 @@ export interface UseInboxResult {
   ) => Promise<void>;
   /** Включить или выключить источник. */
   toggle: (sourceId: number, active: boolean) => Promise<void>;
+  /** Спросить источник, что он видит, ничего не записывая. */
+  probe: (sourceId: number) => Promise<void>;
+  /** Чем кончилась последняя проба каждого источника. */
+  probes: Record<number, ProbeState>;
   reload: () => void;
 }
+
+/**
+ * Чем кончилась проба одного источника.
+ *
+ * Размеченное объединение, а не пара «список плюс ошибка»: «ещё не пробовали»,
+ * «пусто» и «отказ» — три разных состояния, и на экране они выглядят
+ * по-разному. Пара полей позволила бы выразить четвёртое, которого не бывает.
+ */
+export type ProbeState =
+  | { status: 'ok'; count: number; items: ProbeItem[] }
+  | { status: 'failed'; message: string };
 
 /** Машинный код отказа из 409, если сервер его прислал. */
 function refusalOf(error: unknown): string | null {
@@ -69,6 +89,7 @@ export function useInbox(): UseInboxResult {
   const [sources, setSources] = useState<SignalSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState<number | null>(null);
+  const [probes, setProbes] = useState<Record<number, ProbeState>>({});
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const inFlight = useRef(false);
@@ -120,6 +141,29 @@ export function useInbox(): UseInboxResult {
     }
   }, []);
 
+  const probe = useCallback(async (sourceId: number) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setPolling(sourceId);
+    try {
+      const outcome = await inboxAPI.probe(sourceId);
+      setProbes((current) => ({
+        ...current,
+        [sourceId]: { status: 'ok', count: outcome.count, items: outcome.items },
+      }));
+    } catch (failure) {
+      // Отказ пробы живёт на карточке источника, а не в общей полосе ошибки
+      // экрана: он про этот источник, и рядом с ним его и читают.
+      setProbes((current) => ({
+        ...current,
+        [sourceId]: { status: 'failed', message: errorText(failure) },
+      }));
+    } finally {
+      inFlight.current = false;
+      setPolling(null);
+    }
+  }, []);
+
   const saveCredentials = useCallback(
     async (
       sourceId: number,
@@ -163,6 +207,8 @@ export function useInbox(): UseInboxResult {
     poll,
     saveCredentials,
     toggle,
+    probe,
+    probes,
     reload,
   };
 }

@@ -28,8 +28,19 @@ const NO_ADAPTER_HINT = 'адаптера нет';
 const READABLE_PROVIDERS = new Set(['clickup']);
 
 export default function InboxPage() {
-  const { signals, sources, loading, polling, error, poll, saveCredentials, toggle, reload } =
-    useInbox();
+  const {
+    signals,
+    sources,
+    loading,
+    polling,
+    error,
+    poll,
+    saveCredentials,
+    toggle,
+    probe,
+    probes,
+    reload,
+  } = useInbox();
 
   if (loading) return <LoadingSpinner size="lg" />;
 
@@ -55,6 +66,8 @@ export default function InboxPage() {
             onSave={(secret, settings) => void saveCredentials(source.id, secret, settings)}
             onToggle={(active) => void toggle(source.id, active)}
             onPoll={() => void poll(source.id)}
+            onProbe={() => void probe(source.id)}
+            probe={probes[source.id] ?? null}
           />
         ))}
       </div>
