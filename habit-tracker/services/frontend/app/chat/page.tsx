@@ -26,6 +26,7 @@ import {
   type ChatPlanSelection,
   type ChatUsage,
 } from '@/lib/api';
+import { visibleAnswer } from '@/lib/chat-answer';
 import { CHAT_PATH, chatHrefFor, conversationIdFrom } from '@/lib/chat-nav';
 import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import { todayISO } from '@/lib/date';
@@ -388,12 +389,16 @@ function ChatScreen() {
 
         {messages.map((message) => {
           const cost = turnCost(message);
+          // Служебные блоки — `need` и `plan` — из пузыря вырезаются: первый
+          // отражён строкой выборки, второй плашкой под ответом. Сохранённое
+          // сообщение при этом цело, режется только показ.
+          const shown = visibleAnswer(message.content);
           return (
-            <ChatBubble key={message.id} role={message.role} copyText={message.content}>
+            <ChatBubble key={message.id} role={message.role} copyText={shown}>
               {message.role === 'user' ? (
-                <span className="whitespace-pre-wrap break-words">{message.content}</span>
+                <span className="whitespace-pre-wrap break-words">{shown}</span>
               ) : (
-                <Markdown content={message.content} />
+                <Markdown content={shown} />
               )}
               {message.plan_id != null && plans[message.plan_id] && (
                 <ChatPlanCard
@@ -414,11 +419,11 @@ function ChatScreen() {
             <ChatBubble role="user" copyText={turn.question}>
               <span className="whitespace-pre-wrap break-words">{turn.question}</span>
             </ChatBubble>
-            <ChatBubble role="assistant" copyText={turn.text}>
+            <ChatBubble role="assistant" copyText={visibleAnswer(turn.text)}>
               <ThinkingBlock progress={turn.progress} answering={turn.text.length > 0} />
-              {turn.text ? (
+              {visibleAnswer(turn.text) ? (
                 <span className="whitespace-pre-wrap break-words">
-                  {turn.text}
+                  {visibleAnswer(turn.text)}
                   {turn.phase === 'streaming' && <StreamingCaret />}
                 </span>
               ) : turn.phase === 'streaming' ? (

@@ -262,6 +262,11 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
               return {
                 ...current,
                 progress,
+                // Текст, после которого пришёл кадр выборки, был адресован
+                // серверу — это блок `need`, и в пузыре ему делать нечего.
+                // Сервер тем же правилом не кладёт его в сохранённое сообщение
+                // (`#189`), и живая лента обязана совпадать с перезагруженной.
+                text: '',
                 retrievals: [
                   ...(current.retrievals ?? []),
                   {

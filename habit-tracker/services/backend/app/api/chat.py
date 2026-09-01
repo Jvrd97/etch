@@ -735,12 +735,6 @@ async def _attach_plan(
     )
 
 
-# Чем разделяются заходы одного хода в сохранённом тексте ответа. Пустая
-# строка, а не склейка встык: иначе последнее слово блока `need` срастается с
-# первым словом настоящего ответа.
-TURN_PASS_SEPARATOR = "\n\n"
-
-
 def _remaining(started: float) -> float:
     """Сколько секунд осталось всему ходу с момента его начала."""
     return float(settings.CHAT_TURN_TIMEOUT_SECONDS) - (time.monotonic() - started)
@@ -864,7 +858,10 @@ async def _turn_frames(
     ручного сброса.
     """
     started = time.monotonic()
-    parts: list[str] = []
+    # Текст, адресованный человеку. Не склейка всех заходов: заход, кончившийся
+    # блоком `need`, — это разговор модели с сервером, и в пузыре ему делать
+    # нечего (`#189`). Он и так виден строкой `chat_retrievals` под ответом.
+    answered: list[str] = []
     usage: ChatChunk | None = None
     status_value = MESSAGE_STATUS_INTERRUPTED
     error_code: str | None = None
@@ -874,7 +871,7 @@ async def _turn_frames(
     try:
         try:
             while True:
-                answered: list[str] = []
+                answered.clear()
                 async for chunk in guarded_turn(
                     client.stream_turn(
                         system_prompt=context.system_prompt,
@@ -888,7 +885,6 @@ async def _turn_frames(
                     # означал бы «мысль записана в счётчики токенов».
                     if chunk.kind == CHUNK_DELTA:
                         answered.append(chunk.text)
-                        parts.append(chunk.text)
                         yield SSE_EVENT_DELTA, {"text": chunk.text}
                     elif chunk.kind == CHUNK_USAGE:
                         usage = chunk
@@ -908,6 +904,10 @@ async def _turn_frames(
                 items = parse_need(answer) if passes < MAX_NEED_PASSES else None
                 if items is None:
                     break
+                # Заход оказался просьбой к серверу. Забывается он здесь, до
+                # выборок: упади они — человеку всё равно ещё ничего не сказано,
+                # и пузырь с блоком `need` был бы худшим из возможных отчётов.
+                answered.clear()
                 passes += 1
                 outcomes = await _run_retrievals(
                     factory, message_id=context.message_id, items=items
@@ -930,7 +930,6 @@ async def _turn_frames(
                         render_outcomes(outcomes, exhausted=passes >= MAX_NEED_PASSES),
                     )
                 )
-                parts.append(TURN_PASS_SEPARATOR)
                 resume = _next_resume(client, usage) or resume
         except LLMError as exc:
             # Текст исключения не пересылается наружу: у него нет обязательства
@@ -960,7 +959,7 @@ async def _turn_frames(
             factory,
             conversation_id=conversation_id,
             message_id=context.message_id,
-            text="".join(parts),
+            text="".join(answered),
             status_value=status_value,
             error_code=error_code,
             usage=usage,

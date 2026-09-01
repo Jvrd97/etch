@@ -70,6 +70,43 @@ class TestParsing:
         assert plan.entry_date == DAY
         assert plan.operation_count() == 1
 
+    def test_the_plan_is_taken_from_the_last_object_of_the_answer(self) -> None:
+        """
+        Ответ бывает не одним объектом — берётся последний, несущий `plan`.
+
+        Прежний разбор вырезал кусок от первой открывающей скобки до последней
+        закрывающей во всём тексте. Ответ, где перед планом стоит ещё один
+        объект — процитированный, обсуждаемый, оставшийся от прошлого захода, —
+        давал span с двумя объектами и прозой между ними, то есть битый JSON и
+        молчаливое отсутствие плашки.
+        """
+        plan = parse_plan(
+            'Ты просил {"query": "day_card"} — вот что вышло.\n\n'
+            + answer_with(
+                {
+                    "entry_date": DAY.isoformat(),
+                    "journal": {"op": "write_journal", "content": "день прошёл"},
+                }
+            )
+        )
+        assert plan.entry_date == DAY
+        assert plan.journal is not None
+
+    def test_an_object_without_a_plan_key_does_not_shadow_the_one_with_it(
+        self,
+    ) -> None:
+        """Последним берётся не любой объект, а тот, в котором план есть."""
+        plan = parse_plan(
+            answer_with(
+                {
+                    "entry_date": DAY.isoformat(),
+                    "journal": {"op": "write_journal", "content": "день прошёл"},
+                }
+            )
+            + '\n\nА `{"need": [...]}` я больше не прошу.'
+        )
+        assert plan.journal is not None
+
     async def test_an_answer_without_a_block_carries_no_plan(self) -> None:
         """Самый частый случай разговора: просто ответ словами."""
         assert await plan_from_answer("Понял, ничего записывать не надо.") is None

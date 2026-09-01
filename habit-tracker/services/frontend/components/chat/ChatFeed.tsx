@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/189
 // summary: PHASE-03/120 makes the wait legible — the thought of the model as a collapsed line above the answer, three breathing dots until the first word, a caret while the text arrives, and a copy button on every message
 // summary: PHASE-03/116 draws a stored turn by its status — partial text under a note for `interrupted`, the machine code spelled out for `failed`, an unclosed `streaming` row named as such with the button that unsticks it; the conversation feed both shells draw — stored messages as bubbles, the turn in flight growing delta by delta, the machine error code turned into a sentence, and the bottom anchor that keeps the newest line in view while the answer arrives
 
@@ -10,6 +10,7 @@ import ChatBubble from '@/components/chat/ChatBubble';
 import ChatRetrievals from '@/components/chat/ChatRetrievals';
 import ThinkingBlock from '@/components/chat/ThinkingBlock';
 import { StreamingCaret, WaitingDots } from '@/components/chat/TurnLive';
+import { visibleAnswer } from '@/lib/chat-answer';
 import { RETRIEVALS_PREFIX, liveRetrievalLine } from '@/lib/chat-retrievals';
 import type { ChatMessage } from '@/lib/api';
 import {
@@ -84,19 +85,23 @@ export default function ChatFeed({
 
       {messages.map((message) => {
         const note = statusNote(message);
+        // Служебные блоки — `need` и `plan` — из пузыря вырезаются: первый
+        // отражён строкой выборки под ответом, второй плашкой. Сохранённое
+        // сообщение цело, режется только показ.
+        const shown = visibleAnswer(message.content);
         return (
           // Копируется само сообщение, а не пузырь: пометки ленты — «ответ
           // оборван», «запрошено: …» — это подписи экрана, а не сказанное.
-          <ChatBubble key={message.id} role={message.role} copyText={message.content}>
+          <ChatBubble key={message.id} role={message.role} copyText={shown}>
             {message.role === 'user' ? (
-              <span className="whitespace-pre-wrap break-words">{message.content}</span>
+              <span className="whitespace-pre-wrap break-words">{shown}</span>
             ) : (
               // Незавершённый ответ остаётся простым текстом: недописанная
               // разметка рисуется мусором, а не тем, что человек читал.
               message.status === 'complete' ? (
-                <Markdown content={message.content} />
+                <Markdown content={shown} />
               ) : (
-                <span className="whitespace-pre-wrap break-words">{message.content}</span>
+                <span className="whitespace-pre-wrap break-words">{shown}</span>
               )
             )}
             {note !== null && (
@@ -123,14 +128,14 @@ export default function ChatFeed({
           <ChatBubble role="user" copyText={turn.question}>
             <span className="whitespace-pre-wrap break-words">{turn.question}</span>
           </ChatBubble>
-          <ChatBubble role="assistant" copyText={turn.text}>
+          <ChatBubble role="assistant" copyText={visibleAnswer(turn.text)}>
             {/* Мысль стоит над ответом и отдельно от него: это разные тексты, и
                 общий узел разметки был бы первым шагом к тому, чтобы они
                 склеились в один. */}
             <ThinkingBlock progress={turn.progress} answering={turn.text.length > 0} />
-            {turn.text ? (
+            {visibleAnswer(turn.text) ? (
               <span className="whitespace-pre-wrap break-words">
-                {turn.text}
+                {visibleAnswer(turn.text)}
                 {/* Курсор в конце последнего куска: текст идёт, ход не кончился. */}
                 {turn.phase === 'streaming' && <StreamingCaret />}
               </span>

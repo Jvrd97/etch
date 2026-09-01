@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/189
 // summary: PHASE-03/116 adds the refusals — a busy dialogue answered 409 keeps the feed readable, an exhausted slot ceiling carries its machine code, a stored turn left `streaming` locks the field until reset clears it; tests for the chat state both shells share — a half-written reply survives the screen being torn down and mounted again (the app backgrounded on a phone), a successful send leaves the draft empty on screen and in storage, the link's conversation wins over "the latest one", and a turn is not startable twice
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -299,6 +299,48 @@ describe('useChat: sending', () => {
     // Лента перечитывается с сервера после хода — строки таблицы и есть
     // разговор.
     expect(getConversation).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgets the block addressed to the server when its retrieval arrives', async () => {
+    /*
+     * Живая лента обязана совпадать с перезагруженной.
+     *
+     * Сервер не кладёт заход, кончившийся блоком `need`, в сохранённое
+     * сообщение (`#189`). Кадр выборки — это признак, что предыдущий текст был
+     * разговором модели с сервером: он уже отражён строкой выборки под ответом,
+     * и в пузыре ему делать нечего. Без сброса человек видел бы сырой JSON до
+     * первой перезагрузки, а после неё — нет.
+     */
+    let finish: () => void = () => {};
+    streamMessage = mock(
+      (_id: number, _content: string, onEvent: (event: unknown) => void) =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+          onEvent({ kind: 'delta', text: '{"need": [{"query": "streak"}]}' });
+          onEvent({
+            kind: 'retrieval',
+            queryName: 'streak',
+            rowCount: 1,
+            chars: 12,
+            refusal: null,
+          });
+          onEvent({ kind: 'delta', text: 'Серия 4 дня.' });
+        })
+    );
+    const view = await mountChat(fakeStorage());
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+
+    act(() => view.result.current.send());
+
+    await waitFor(() => {
+      const turn = view.result.current.turn;
+      expect(turn.phase === 'streaming' ? turn.text : null).toBe('Серия 4 дня.');
+    });
+
+    await act(async () => {
+      finish();
+    });
+    await waitFor(() => expect(view.result.current.turn.phase).toBe('idle'));
   });
 
   it('marks the turn failed when the backend refuses it', async () => {

@@ -139,6 +139,28 @@ async def new_conversation(client: AsyncClient) -> int:
     return conversation_id
 
 
+def journal_plan_answer(text: str) -> str:
+    """Ответ словами и предложение записать текст дня рядом, как просит промпт."""
+    plan = {
+        "plan": {
+            "entry_date": TODAY.isoformat(),
+            "journal": {"op": "write_journal", "content": text},
+        }
+    }
+    return (
+        "Записал бы так.\n\n```json\n" + json.dumps(plan, ensure_ascii=False) + "\n```"
+    )
+
+
+async def last_answer(client: AsyncClient, conversation_id: int) -> dict[str, Any]:
+    """Последняя реплика ассистента так, как её читает экран после перезагрузки."""
+    response = await client.get(f"{CHAT_URL}/{conversation_id}")
+    assert response.status_code == 200, response.text
+    answers = [one for one in response.json()["messages"] if one["role"] == "assistant"]
+    assert answers, "в разговоре нет ни одного ответа"
+    return dict(answers[-1])
+
+
 async def drain(client: AsyncClient, conversation_id: int, content: str) -> None:
     """Пройти ход целиком: важен его исход, а не отдельные кадры."""
     async with client.stream(
@@ -704,6 +726,84 @@ class TestTurnWithRetrievals:
         await drain(client, conversation_id, "как дела?")
 
         assert await audit(db_session) == []
+
+
+@pytest.mark.asyncio
+class TestWhatTheHumanSees:
+    """
+    Что остаётся человеку от хода, в котором модель ходила за данными.
+
+    Ход из нескольких заходов — это разговор модели с сервером, и только
+    последний его заход адресован человеку. Блок `need` — служебная просьба:
+    она уже отражена строкой `chat_retrievals` под ответом, и её место не в
+    пузыре. Проверяется здесь и обратное: план, приложенный к ответу **после**
+    похода за данными, обязан доехать до плашки, как доезжает план из хода без
+    выборок.
+    """
+
+    async def test_the_need_block_never_reaches_the_stored_answer(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """В сообщении остаётся ответ словами, а не переписка с сервером."""
+        await add_steps(client, TODAY, STEPS_TODAY)
+        install_chat(
+            ScriptedChatClient(
+                [
+                    need_block(
+                        {
+                            "query": QUERY_HEALTH_DAILY,
+                            "params": {
+                                "date_from": TODAY.isoformat(),
+                                "date_to": TODAY.isoformat(),
+                            },
+                        }
+                    ),
+                    "Сегодня 6231 шаг.",
+                ]
+            )
+        )
+        conversation_id = await new_conversation(client)
+
+        await drain(client, conversation_id, "сколько я сегодня прошёл?")
+
+        answer = await last_answer(client, conversation_id)
+        assert answer["content"] == "Сегодня 6231 шаг."
+        assert "need" not in answer["content"]
+
+    async def test_a_plan_offered_after_a_retrieval_still_reaches_the_card(
+        self, client: AsyncClient, install_chat: Any
+    ) -> None:
+        """
+        Поход за данными не должен стоить предложения.
+
+        `extract_json` берёт кусок от первой открывающей скобки до последней
+        закрывающей. Пока текст хода был склейкой всех заходов, ход «сначала
+        `need`, потом план» давал span, внутри которого два объекта и проза
+        между ними, — то есть битый JSON, и плашка не появлялась никогда.
+        """
+        await add_steps(client, TODAY, STEPS_TODAY)
+        install_chat(
+            ScriptedChatClient(
+                [
+                    need_block(
+                        {
+                            "query": QUERY_HEALTH_DAILY,
+                            "params": {
+                                "date_from": TODAY.isoformat(),
+                                "date_to": TODAY.isoformat(),
+                            },
+                        }
+                    ),
+                    journal_plan_answer("Прошёл 6231 шаг."),
+                ]
+            )
+        )
+        conversation_id = await new_conversation(client)
+
+        await drain(client, conversation_id, "запиши, сколько я прошёл")
+
+        answer = await last_answer(client, conversation_id)
+        assert answer["plan_id"] is not None, "план не доехал до плашки"
 
 
 @pytest.mark.asyncio
