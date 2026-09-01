@@ -7,6 +7,7 @@ import type { SignalSource } from '@/lib/api';
 import SourceCard, {
   NEEDS_ACTIVE,
   NEEDS_SECRET,
+  NOT_INGESTED,
   NO_ADAPTER,
   POLL_LABEL,
   PROBE_EMPTY,
@@ -228,5 +229,39 @@ describe('SourceCard', () => {
 
     expect(screen.queryByText(NEEDS_ACTIVE)).toBeNull();
     expect(screen.queryByText(NEEDS_SECRET)).toBeNull();
+  });
+
+  it('says a successful probe has not put anything into the tracker', () => {
+    /*
+     * Проба читает источник живьём и не пишет ни строки. Сотня задач на экране
+     * выглядит как «всё приехало», а трекер при этом пуст, и следующий вопрос
+     * человека — «почему чат их не видит». Экран, знающий это, обязан сказать.
+     */
+    renderCard({
+      source: source({ has_secret: true, last_polled_at: null }),
+      probe: {
+        status: 'ok',
+        count: 100,
+        items: [
+          {
+            external_id: 'a',
+            title: 'первая',
+            external_url: null,
+            occurred_at: '2026-09-01T12:00:00Z',
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByText(NOT_INGESTED)).toBeDefined();
+  });
+
+  it('stops nudging once the source has actually been read', () => {
+    renderCard({
+      source: source({ has_secret: true, last_polled_at: '2026-09-01T12:00:00Z' }),
+      probe: { status: 'ok', count: 100, items: [] },
+    });
+
+    expect(screen.queryByText(NOT_INGESTED)).toBeNull();
   });
 });
