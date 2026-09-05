@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-# summary: + show_in_today on category base/update (tri-state override of the Today heuristic)
+# [review:need-review] 175
+# summary: category schemas expose the optional explicit primary table field
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Annotated, Literal, Union
@@ -88,6 +88,7 @@ class CategoryBase(BaseModel):
             "выбор пользователя, который эвристику перекрывает."
         ),
     )
+    primary_field_id: int | None = None
 
 
 class CategoryCreate(CategoryBase):
@@ -114,6 +115,7 @@ class CategoryUpdate(BaseModel):
     # присланный явно `null` возвращает категорию под эвристику, а не значит
     # «не трогай». Ровно это и делает update_category, патчащий по exclude_unset.
     show_in_today: bool | None = None
+    primary_field_id: int | None = None
     # None (поле не прислано) — поля не трогаем. Список (в т.ч. пустой) —
     # полный desired-state: синхронизируем существующие/новые/удалённые.
     fields: list[FieldUpsert] | None = None

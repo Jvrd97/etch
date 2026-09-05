@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder
-// summary: Categories-screen state extracted from app/categories/page.tsx — the list with its layout preference and delete, plus useCategoryDraft, the single owner of the category editor form, of its reorderable keyed field rows, and of the diff-syncing save both shells post
+// [review:need-review] PHASE-01/73-category-field-reorder, 175
+// summary: Shared category draft state, including explicit selection and clearing of the table field in both editors
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -148,6 +148,9 @@ export interface UseCategoryDraftResult {
   setShowInToday: (showInToday: boolean | null) => void;
   isActive: boolean;
   setIsActive: (isActive: boolean) => void;
+  /** Explicit table field; null asks the backend to use its legacy heuristic. */
+  primaryFieldId: number | null;
+  setPrimaryFieldId: (primaryFieldId: number | null) => void;
   /** The draft's fields in display order; existing ones keep their id. */
   fields: DraftField[];
   addField: () => void;
@@ -265,6 +268,9 @@ export function useCategoryDraft({
     editing?.show_in_today ?? null
   );
   const [isActive, setIsActive] = useState(editing?.is_active ?? true);
+  const [primaryFieldId, setPrimaryFieldId] = useState<number | null>(
+    editing?.primary_field_id ?? null
+  );
   // Seeded from the ordered copy, never from the array as it arrived: `order` is
   // what the editor then re-derives from position on save, so a draft built in
   // whatever sequence the API serialised would show the rows in one order and
@@ -297,9 +303,16 @@ export function useCategoryDraft({
     setFields((prev) => [...prev, blankField(prev.length)]);
   }, []);
 
-  const removeField = useCallback((index: number) => {
-    setFields((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+  const removeField = useCallback(
+    (index: number) => {
+      const removed = fields[index];
+      // The chosen row may disappear in this very save. Clearing it here means
+      // the desired-state payload cannot retain a reference to a deleted field.
+      if (removed?.id === primaryFieldId) setPrimaryFieldId(null);
+      setFields((prev) => prev.filter((_, i) => i !== index));
+    },
+    [fields, primaryFieldId]
+  );
 
   const updateField = useCallback((index: number, updates: Partial<FieldCreate>) => {
     setFields((prev) =>
@@ -352,6 +365,7 @@ export function useCategoryDraft({
       streak_mode: streakMode,
       group: group.trim() || null,
       show_in_today: showInToday,
+      primary_field_id: primaryFieldId,
       is_active: isActive,
       // Unnamed rows are the placeholder the editor hands out, not fields the
       // user filled in; `order` is re-derived from position so add, remove and
@@ -386,6 +400,7 @@ export function useCategoryDraft({
     isActive,
     name,
     onSaved,
+    primaryFieldId,
     showInToday,
     streakMode,
   ]);
@@ -407,6 +422,8 @@ export function useCategoryDraft({
     setShowInToday,
     isActive,
     setIsActive,
+    primaryFieldId,
+    setPrimaryFieldId,
     fields,
     addField,
     removeField,

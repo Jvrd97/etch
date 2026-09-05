@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/53-apply-plan-batch-endpoint
-# summary: + POST /categories/batch — transactional apply of an additive-only plan (create_category / add_field), CategoryBatchError -> HTTP
+# [review:need-review] 175
+# summary: category update maps invalid explicit primary fields to HTTP 422
 from typing import cast, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,7 +12,9 @@ from app.models import Category, Field
 from app.crud.category import (
     CHECKLIST_DISPLAY_MODE,
     CHECKLIST_NEEDS_BOOLEAN_DETAIL,
+    PRIMARY_FIELD_ON_CREATE_DETAIL,
     CategoryBatchError,
+    PrimaryFieldDoesNotBelongError,
 )
 from app.schemas import (
     CategoryCreate,
@@ -156,6 +158,12 @@ async def create_category(
     }
     ```
     """
+    if category.primary_field_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=PRIMARY_FIELD_ON_CREATE_DETAIL,
+        )
+
     if category.display_mode == CHECKLIST_DISPLAY_MODE:
         _ensure_checklist_has_boolean_field(
             [field.field_type for field in category.fields or []]
@@ -228,7 +236,12 @@ async def update_category(
             [field.field_type for field in effective_fields]
         )
 
-    category = await category_crud.update_category(db, category_id, category_update)
+    try:
+        category = await category_crud.update_category(db, category_id, category_update)
+    except PrimaryFieldDoesNotBelongError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     if not category:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

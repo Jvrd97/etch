@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/73-daily-summary-metrics-vertical
-# summary: table view aggregation; DURATION sums like NUMBER (elapsed seconds), the sum is rendered by the shared format_number
+# [review:need-review] 175
+# summary: explicit primary field selection with legacy fallback
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import cast
@@ -53,8 +53,15 @@ class _CellAccumulator:
 
 
 def _category_meta(category: Category) -> TableCategoryMeta:
-    """Build table metadata for a category; primary field = first by (order, id)."""
-    primary = min(category.fields, key=lambda f: (f.order, f.id), default=None)
+    """Build table metadata, preferring a valid explicit primary field."""
+    primary = next(
+        (item for item in category.fields if item.id == category.primary_field_id),
+        None,
+    )
+    if primary is None:
+        primary = min(
+            category.fields, key=lambda item: (item.order, item.id), default=None
+        )
     return TableCategoryMeta(
         id=category.id,
         name=category.name,

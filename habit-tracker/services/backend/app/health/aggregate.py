@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: the whole Health arithmetic — unit canonicalisation, local hourly bucketing, DST merge, weighted daily fold; no database, no HTTP
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
+# summary: Health arithmetic, including canonical units for the complete 24-metric catalog
 """
 Aggregation of raw HealthKit samples into local hourly buckets.
 
@@ -141,6 +141,10 @@ _UNITS: dict[str, tuple[str, float]] = {
     "fraction": ("ratio", 100.0),
     # dimensionless counts
     "count": ("count", 1.0),
+    # volume, base millilitre
+    "mL": ("volume", 1.0),
+    # oxygen uptake, base millilitre per kilogram per minute
+    "mL/(kg*min)": ("oxygen_uptake", 1.0),
 }
 
 

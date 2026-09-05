@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-category-field-reorder
-// summary: integration tests for /m/categories — create a category, add, remove and reorder fields and have the edits actually persist, the announcement and focus a reorder owes the keyboard and the screen reader, plus the layout rules on a narrow screen: no form control two-in-a-row, and a field card's action row wrapping instead of shrinking its 44px targets
+// [review:need-review] PHASE-01/73-category-field-reorder, 175
+// summary: integration tests for the mobile category editor, including explicit table-field selection and clearing
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -462,6 +462,33 @@ describe('/m/categories', () => {
       show_in_today: false,
       is_active: true,
     });
+  });
+
+  it('loads the selected table field and sends an explicit clear from the editor', async () => {
+    const categoryWithPrimary = { ...CATEGORY, primary_field_id: QUALITY_FIELD.id };
+    getAllCategories = mock(() => Promise.resolve([categoryWithPrimary]));
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+
+    const selectedRadio = screen.getByLabelText(
+      'Показывать в таблице: Quality'
+    ) as HTMLInputElement;
+    expect(selectedRadio.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить выбор' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ primary_field_id: null });
+  });
+
+  it('sends the id of the field selected for the table', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Sleep' }));
+    fireEvent.click(screen.getByLabelText('Показывать в таблице: Quality'));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ primary_field_id: QUALITY_FIELD.id });
   });
 
   it('offers the builder alongside the form when there is no category yet', async () => {

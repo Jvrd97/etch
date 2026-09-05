@@ -285,3 +285,14 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 ## 2026-07-23 — PHASE-01/39-server-idempotency-key-entries (iOS wiring)
 Файлы: API/APIClient.swift (mod: keyed createEntry overload + Idempotency-Key header), Cache/OutboxQueue.swift (mod: flush передаёт PendingEntry.id.uuidString, доки), HabitTrackerTests/OutboxQueueTests.swift (mod: тест стабильного ключа при replay). Сьюта 153/153.
+
+## 2026-09-05 — PHASE-02/65: чтение Apple Health
+
+Изменено 8 файлов кода и конфигурации: 5 `new`, 3 `mod`.
+
+- `HabitTracker/Features/HealthSync/HealthMetricCatalog.swift` — new: 24 типа и четыре группы.
+- `HabitTracker/Features/HealthSync/HealthDataReader.swift` — new: read-only разрешение и чтение каждого типа.
+- `HabitTracker/Features/HealthSync/HealthSyncView.swift` — new: запрос при первом входе и явное «Нет данных».
+- `HabitTrackerTests/HealthSyncViewModelTests.swift` — new: каталог, один запрос разрешения и чтение всех типов.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: вход в раздел через отдельную вкладку.
+- `project.yml`, `HabitTracker/Info.plist`, `HabitTracker/HabitTracker.entitlements` — mod/new: HealthKit capability и описание чтения без разрешения на запись.

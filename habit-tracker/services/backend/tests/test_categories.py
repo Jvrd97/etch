@@ -2,17 +2,24 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] PHASE-01/73-category-field-reorder
-# summary: category CRUD coverage — show_in_today tri-state, field diff-sync by id, and a reorder that has to be visible in every response that carries fields
+# [review:need-review] 175
+# summary: category CRUD coverage includes explicit primary table field validation and deletion behavior
 
 import logging
+from io import StringIO
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import category as category_crud
-from app.models import Category
+from app.models import Category, Field
+
+PRIMARY_FIELD_REVISION = "e7a9c1b3d5f8"
+PRIMARY_FIELD_PREVIOUS_REVISION = "d6f8a0c2e4b7"
 
 
 @pytest.mark.asyncio
@@ -717,6 +724,232 @@ class TestCategoryDelete:
         """Test deleting nonexistent category returns 404."""
         response = await client.delete("/api/v1/categories/9999")
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestCategoryPrimaryField:
+    """Explicit selection of the field represented by a category table column."""
+
+    async def test_category_defaults_primary_field_to_null(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.post("/api/v1/categories", json={"name": "Sleep"})
+
+        assert response.status_code == 201
+        assert response.json()["primary_field_id"] is None
+
+    async def test_category_accepts_own_primary_field_and_explicit_null(
+        self, client: AsyncClient
+    ) -> None:
+        created = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Workout",
+                "fields": [
+                    {"name": "Done", "field_type": "boolean", "order": 0},
+                    {"name": "Quantity", "field_type": "number", "order": 1},
+                ],
+            },
+        )
+        category = created.json()
+        quantity_id = next(
+            field["id"] for field in category["fields"] if field["name"] == "Quantity"
+        )
+
+        selected = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={"primary_field_id": quantity_id},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["primary_field_id"] == quantity_id
+
+        cleared = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={"primary_field_id": None},
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["primary_field_id"] is None
+
+    async def test_foreign_primary_field_is_rejected_before_update(
+        self, client: AsyncClient
+    ) -> None:
+        first = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Workout",
+                    "fields": [{"name": "Quantity", "field_type": "number"}],
+                },
+            )
+        ).json()
+        second = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Sleep",
+                    "fields": [{"name": "Hours", "field_type": "number"}],
+                },
+            )
+        ).json()
+        foreign_field_id = second["fields"][0]["id"]
+
+        response = await client.patch(
+            f"/api/v1/categories/{first['id']}",
+            json={"name": "Must not persist", "primary_field_id": foreign_field_id},
+        )
+
+        assert response.status_code == 422
+        unchanged = await client.get(f"/api/v1/categories/{first['id']}")
+        assert unchanged.json()["name"] == "Workout"
+        assert unchanged.json()["primary_field_id"] is None
+
+    async def test_same_save_deletion_clears_selected_primary_field(
+        self, client: AsyncClient
+    ) -> None:
+        created = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Workout",
+                    "fields": [
+                        {"name": "Done", "field_type": "boolean", "order": 0},
+                        {"name": "Quantity", "field_type": "number", "order": 1},
+                    ],
+                },
+            )
+        ).json()
+        done, quantity = created["fields"]
+        await client.patch(
+            f"/api/v1/categories/{created['id']}",
+            json={"primary_field_id": quantity["id"]},
+        )
+
+        response = await client.patch(
+            f"/api/v1/categories/{created['id']}",
+            json={
+                "primary_field_id": quantity["id"],
+                "fields": [
+                    {
+                        "id": done["id"],
+                        "name": done["name"],
+                        "field_type": done["field_type"],
+                        "order": done["order"],
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["primary_field_id"] is None
+
+    async def test_create_rejects_non_null_primary_field_id(
+        self, client: AsyncClient
+    ) -> None:
+        existing = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Existing",
+                    "fields": [{"name": "Quantity", "field_type": "number"}],
+                },
+            )
+        ).json()
+
+        response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "New category",
+                "primary_field_id": existing["fields"][0]["id"],
+            },
+        )
+
+        assert response.status_code == 422
+
+    async def test_batch_create_rejects_non_null_primary_field_id(
+        self, client: AsyncClient
+    ) -> None:
+        existing = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Existing",
+                    "fields": [{"name": "Quantity", "field_type": "number"}],
+                },
+            )
+        ).json()
+
+        response = await client.post(
+            "/api/v1/categories/batch",
+            json={
+                "operations": [
+                    {
+                        "op": "create_category",
+                        "name": "New category",
+                        "primary_field_id": existing["fields"][0]["id"],
+                    }
+                ]
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == category_crud.PRIMARY_FIELD_ON_CREATE_DETAIL
+
+    async def test_database_field_delete_sets_primary_field_to_null(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        created = (
+            await client.post(
+                "/api/v1/categories",
+                json={
+                    "name": "Workout",
+                    "fields": [{"name": "Quantity", "field_type": "number"}],
+                },
+            )
+        ).json()
+        field_id = created["fields"][0]["id"]
+        selected = await client.patch(
+            f"/api/v1/categories/{created['id']}",
+            json={"primary_field_id": field_id},
+        )
+        assert selected.status_code == 200
+
+        field = await db_session.get(Field, field_id)
+        assert field is not None
+        await db_session.delete(field)
+        await db_session.commit()
+        db_session.expire_all()
+
+        response = await client.get(f"/api/v1/categories/{created['id']}")
+        assert response.status_code == 200
+        assert response.json()["primary_field_id"] is None
+
+
+def _primary_field_migration_sql(revision_range: str, *, downgrade: bool) -> str:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    buffer = StringIO()
+    config.output_buffer = buffer
+    runner = command.downgrade if downgrade else command.upgrade
+    runner(config, revision_range, sql=True)
+    return buffer.getvalue().lower()
+
+
+def test_primary_field_migration_is_reversible_and_keeps_one_head() -> None:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
+
+    upgrade_sql = _primary_field_migration_sql(
+        f"{PRIMARY_FIELD_PREVIOUS_REVISION}:{PRIMARY_FIELD_REVISION}", downgrade=False
+    )
+    assert "add column primary_field_id integer" in upgrade_sql
+    assert "on delete set null" in upgrade_sql
+
+    downgrade_sql = _primary_field_migration_sql(
+        f"{PRIMARY_FIELD_REVISION}:{PRIMARY_FIELD_PREVIOUS_REVISION}", downgrade=True
+    )
+    assert "drop constraint fk_categories_primary_field_id_fields" in downgrade_sql
+    assert "drop column primary_field_id" in downgrade_sql
 
 
 @pytest.mark.asyncio

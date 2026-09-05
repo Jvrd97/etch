@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-# summary: _sync_category_fields matches fields by id only; create paths carry show_in_today through
+# [review:need-review] 175
+# summary: category updates validate and safely clear the explicit primary table field
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 BOOLEAN_FIELD_TYPE = "boolean"
 
 CHECKLIST_DISPLAY_MODE = "checklist"
+PRIMARY_FIELD_ON_CREATE_DETAIL = (
+    "primary_field_id cannot be set while creating a category; "
+    "save the category fields first"
+)
 
 
 class CategoryBatchError(Exception):
@@ -38,6 +42,10 @@ class CategoryBatchError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+class PrimaryFieldDoesNotBelongError(ValueError):
+    """The requested primary field is not owned by the updated category."""
 
 
 def checklist_has_boolean_field(field_types: list[str]) -> bool:
@@ -203,12 +211,32 @@ async def update_category(
     if not db_category:
         return None
 
+    if (
+        "primary_field_id" in category_update.model_fields_set
+        and category_update.primary_field_id is not None
+        and category_update.primary_field_id
+        not in {field.id for field in db_category.fields}
+    ):
+        raise PrimaryFieldDoesNotBelongError(
+            f"Field {category_update.primary_field_id} does not belong to "
+            f"category {category_id}"
+        )
+
     # fields патчим отдельно: setattr на relationship списком dict сломал бы ORM.
     scalar_data = category_update.model_dump(exclude_unset=True, exclude={"fields"})
     for field, value in scalar_data.items():
         setattr(db_category, field, value)
 
     if category_update.fields is not None:
+        desired_field_ids = {
+            field.id for field in category_update.fields if field.id is not None
+        }
+        if (
+            db_category.primary_field_id is not None
+            and db_category.primary_field_id not in desired_field_ids
+        ):
+            db_category.primary_field_id = None
+            await db.flush()
         await _sync_category_fields(db, db_category, category_update.fields)
 
     await db.commit()
@@ -261,6 +289,9 @@ async def _apply_create_category(
     отвергается 422, дубль имени (в БД или внутри самого плана) — 400. Ничего
     не коммитит: только flush, чтобы получить id.
     """
+    if op.primary_field_id is not None:
+        raise CategoryBatchError(422, PRIMARY_FIELD_ON_CREATE_DETAIL)
+
     if op.display_mode == CHECKLIST_DISPLAY_MODE and not checklist_has_boolean_field(
         [field.field_type for field in op.fields]
     ):

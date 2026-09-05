@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder
-// summary: desktop Categories page — list/cards layout and the editor modal, whose field rows are keyed by draft row and reorderable through the shared FieldReorderButtons, with a live region announcing where a moved row landed; all of the state (load, layout preference, delete, form draft with the id-carrying field diff-sync) comes from hooks/useCategories, field order from lib/today-categories and the enum labels plus field styling from lib/ui-constants, all shared with /m/categories
+// [review:need-review] PHASE-01/73-category-field-reorder, 175
+// summary: Desktop category editor with explicit, clearable selection of the field shown in the table
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -486,12 +486,23 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
                   position={index + 1}
                   canMoveUp={index > 0}
                   canMoveDown={index < draft.fields.length - 1}
+                  primaryFieldId={draft.primaryFieldId}
                   onChange={(updates) => draft.updateField(index, updates)}
+                  onPrimaryFieldChange={draft.setPrimaryFieldId}
                   onRemove={() => draft.removeField(index)}
                   onMove={(direction) => draft.moveField(index, direction)}
                 />
               ))}
             </div>
+
+            <button
+              type="button"
+              onClick={() => draft.setPrimaryFieldId(null)}
+              disabled={draft.primaryFieldId === null}
+              className="mt-3 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50"
+            >
+              Сбросить выбор
+            </button>
 
             {/* Add field lives at the bottom: with many fields you don't scroll
                 back up to add one more. */}
@@ -541,7 +552,9 @@ interface FieldRowProps {
   position: number;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  primaryFieldId: number | null;
   onChange: (updates: Partial<FieldCreate>) => void;
+  onPrimaryFieldChange: (fieldId: number | null) => void;
   onRemove: () => void;
   onMove: (direction: FieldMoveDirection) => void;
 }
@@ -552,7 +565,9 @@ function FieldRow({
   position,
   canMoveUp,
   canMoveDown,
+  primaryFieldId,
   onChange,
+  onPrimaryFieldChange,
   onRemove,
   onMove,
 }: FieldRowProps) {
@@ -601,6 +616,18 @@ function FieldRow({
             className="w-4 h-4 accent-[#B8FF36] rounded"
           />
           <span className="text-sm text-text-secondary">Required</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="primary-table-field"
+            aria-label={`Показывать в таблице: ${field.name || `поле ${position}`}`}
+            checked={field.id === primaryFieldId}
+            disabled={!field.id}
+            onChange={() => onPrimaryFieldChange(field.id ?? null)}
+            className="w-4 h-4 accent-[#B8FF36]"
+          />
+          <span className="text-sm text-text-secondary">Показывать в таблице</span>
         </label>
         <div className="flex items-center gap-2">
           <FieldReorderButtons

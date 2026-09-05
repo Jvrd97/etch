@@ -2292,6 +2292,31 @@ Feedback loops (backend): `make check` зелёный — pytest **1549 passed, 
 `mypy --strict app` (192 файла) чисто, `ruff check` и `ruff format --check` чисто,
 у цепочки alembic одна голова.
 
+## 2026-09-05 — #175: явное основное поле категории
+
+Изменено 9 файлов кода: 8 `mod`, 1 `new`.
+
+- `app/api/categories.py` — mod: ошибки выбора поля категории отображаются в HTTP 422.
+- `app/crud/category.py` — mod: проверка принадлежности поля, очистка выбора при удалении и запрет выбора при создании.
+- `app/crud/table.py` — mod: выбранное поле определяет заголовок и значения колонки, с прежней эвристикой при пустом выборе.
+- `app/models/category.py` — mod: необязательная ссылка `primary_field_id` на поле.
+- `app/models/field.py` — mod: отношения SQLAlchemy разведены явно для двух связей между категориями и полями.
+- `app/schemas/category.py` — mod: `primary_field_id` добавлен в схемы категории.
+- `tests/test_categories.py` — mod: API, удаление и обратимость миграции покрыты тестами; ответ 422 проверяется по общему контракту `PRIMARY_FIELD_ON_CREATE_DETAIL`.
+- `tests/test_table.py` — mod: явный выбор, пустой выбор и отсутствующее выбранное поле покрыты тестами таблицы.
+- `alembic/versions/2026_09_04_1200-e7a9c1b3d5f8_category_primary_field.py` — new: обратимая миграция с `ON DELETE SET NULL`.
+
+Feedback loops (backend): `ruff check app tests` и `ruff format --check app tests` чисто;
+`mypy --strict app` чисто (192 файла); `alembic heads` вернул одну голову
+`e7a9c1b3d5f8`; pytest — **1575 passed, 3 skipped**, 0 падений.
+`bashs/review-status.sh` завершился с кодом 1 из-за общего долга репозитория:
+714 `need-review`, 0 `approved`; все 15 файлов кода #175 присутствуют в списке.
+
+Раунд 2: проверка единственной головы больше не привязана к конкретному revision;
+upgrade/downgrade SQL целевой миграции по-прежнему проверяется. Повторно прошли
+`ruff check app tests`, `ruff format --check app tests`, `mypy --strict app` и
+`alembic heads` (одна строка); `tests/test_categories.py` — **52 passed**.
+
 ## 2026-09-01 — PHASE-03/190: состояние входящих вне словаря отвергается
 
 Модель попросила `inbox_tasks` с `state: "all"`, схема пропустила любую строку, в базу
@@ -2369,3 +2394,14 @@ Feedback loops (backend): `make check` зелёный — pytest **1549 passed, 
 
 Проверено на живых данных прода: ответ, из-за которого всё началось, разбирается в план из
 11 строк и отвергается ровно правилом `free_evening_empty`.
+
+## 2026-09-05 — PHASE-02/65: полный каталог метрик здоровья
+
+Изменено 6 файлов кода: 2 `new`, 4 `mod`.
+
+- `app/health/catalog.py` — mod: серверный каталог расширен до 24 метрик в четырёх группах.
+- `app/health/aggregate.py` — mod: добавлены каноничные единицы воды и VO2max.
+- `alembic/versions/2026_09_05_1200-f8b0d2e4a6c9_full_health_metric_catalog.py` — new: обычный INSERT добавляет только 22 новые строки и останавливается при конфликте; downgrade удаляет только их.
+- `tests/test_health_aggregate.py` — mod: параметризованный тест всех единиц каталога.
+- `tests/test_health.py` — mod: точный каталог, динамически добавленная строка и 422 для неизвестной единицы проверены через API.
+- `tests/test_health_catalog_migration.py` — new: снимок миграции сверяется с runtime-каталогом по всем пяти полям, а SQL — на отсутствие `ON CONFLICT` и исходных строк #64.

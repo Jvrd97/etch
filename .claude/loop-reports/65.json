@@ -1,0 +1,60 @@
+{
+  "id": 65,
+  "date": "2026-09-05",
+  "layers": ["backend", "frontend", "ios"],
+  "title": "Health: полный каталог метрик и честное „нет данных“",
+  "issuePath": "issues/PHASE-02/backlog/65-health-full-metric-catalog.md",
+  "verdict": "approved",
+  "summary": "Добавлен полный каталог из 24 метрик в 4 группах с каноническими единицами, динамический API, экран Health во frontend и чтение всех поддержанных типов через HealthKit в iOS. Во всех клиентах отсутствие измерений показано явно.",
+  "why": "Пользователь видит одинаковый каталог метрик на сервере, в веб-интерфейсе и iOS и получает честное состояние «Нет данных» вместо пропущенных или выдуманных значений.",
+  "mermaid": "flowchart LR\n  C[Каталог: 24 метрики, 4 группы] --> A[Dynamic API]\n  A --> W[Frontend Health]\n  C --> H[iOS HealthKit]\n  W --> E[Нет данных / Settings]\n  H --> E",
+  "files": [
+    {"path": "backend/services/health/catalog.py", "lines": "1-240", "group": "backend catalog"},
+    {"path": "backend/services/health/aggregate.py", "lines": "1-220", "group": "backend aggregate"},
+    {"path": "backend/services/health/tests/test_catalog.py", "lines": "1-220", "group": "backend tests"},
+    {"path": "backend/services/health/tests/test_api.py", "lines": "1-260", "group": "backend tests"},
+    {"path": "backend/services/health/alembic/versions/seed_health_metric_catalog.py", "lines": "1-260", "group": "backend migration"},
+    {"path": "frontend/src/api/health.ts", "lines": "1-180", "group": "frontend api"},
+    {"path": "frontend/src/pages/health.tsx", "lines": "1-260", "group": "frontend page"},
+    {"path": "frontend/src/pages/health.test.tsx", "lines": "1-220", "group": "frontend test"},
+    {"path": "ios/HabitTracker.xcodeproj/project.pbxproj", "lines": "1-900", "group": "ios project"},
+    {"path": "ios/HabitTracker/Info.plist", "lines": "1-80", "group": "ios plist"},
+    {"path": "ios/HabitTracker/HabitTracker.entitlements", "lines": "1-40", "group": "ios entitlement"},
+    {"path": "ios/HabitTracker/HabitTrackerApp.swift", "lines": "1-160", "group": "ios app"},
+    {"path": "ios/HabitTracker/Health/HealthMetric.swift", "lines": "1-260", "group": "ios HealthSync"},
+    {"path": "ios/HabitTracker/Health/HealthKitClient.swift", "lines": "1-300", "group": "ios HealthSync"},
+    {"path": "ios/HabitTracker/Health/HealthSyncService.swift", "lines": "1-300", "group": "ios HealthSync"},
+    {"path": "ios/HabitTracker/Health/HealthView.swift", "lines": "1-280", "group": "ios HealthSync"},
+    {"path": "ios/HabitTrackerTests/HealthSyncTests.swift", "lines": "1-300", "group": "ios tests"},
+    {"path": "backend/services/health/SESSION_REVIEW.md", "lines": "1-80", "group": "session review"},
+    {"path": "frontend/SESSION_REVIEW.md", "lines": "1-80", "group": "session review"},
+    {"path": "ios/SESSION_REVIEW.md", "lines": "1-80", "group": "session review"}
+  ],
+  "adrs": [],
+  "tests": [
+    "Backend: 51 pytest — PASS",
+    "Backend: ruff check и format — PASS",
+    "Backend: mypy — PASS",
+    "Backend: одна голова Alembic — PASS",
+    "Backend: изолированные upgrade, downgrade и conflict check — PASS",
+    "Frontend: 2 теста, tsc и lint — PASS",
+    "iOS: сборка в симуляторе и XCTest — PASS",
+    "Итоговая проверка diff — PASS"
+  ],
+  "rounds": 2,
+  "errors": [
+    "Первый запуск XCTest завершился временной ошибкой runner NSMachError -308; повторный запуск прошёл успешно."
+  ],
+  "checklist": [
+    "Каталог содержит 24 метрики и 4 группы.",
+    "Для всех метрик заданы канонические единицы.",
+    "Alembic seed обратим.",
+    "API строится динамически из каталога.",
+    "Frontend показывает группы, «Нет данных» и ссылку Apple Settings.",
+    "iOS запрашивает доступ при первом входе на вкладку Health и читает все 24 типа.",
+    "iOS явно показывает пустое состояние и переход в Settings.",
+    "Три проверки второго раунда завершились APPROVE."
+  ],
+  "startedAt": null,
+  "generatedAt": "2026-09-05T14:27:55Z"
+}

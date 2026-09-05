@@ -1,11 +1,11 @@
-# [review:need-review] PHASE-01/73-category-field-reorder
-# summary: Category + show_in_today (tri-state: NULL = decide by heuristic, true/false = user override); fields relationship ordered by (order, id), so a reorder is visible in every response
+# [review:need-review] 175
+# summary: Category stores an optional explicit field for its table column
 from __future__ import annotations
 
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -42,6 +42,15 @@ class Category(Base):
     # и это дефолт: иначе каждую новую категорию пришлось бы включать руками,
     # а все заведённые до этой миграции разом исчезли бы с экрана.
     show_in_today: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    primary_field_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "fields.id",
+            name="fk_categories_primary_field_id_fields",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
     group: Mapped[str | None] = mapped_column(String(100))
 
     created_at: Mapped[datetime] = mapped_column(
@@ -60,6 +69,7 @@ class Category(Base):
     fields: Mapped[list[Field]] = relationship(
         back_populates="category",
         cascade="all, delete-orphan",
+        foreign_keys="Field.category_id",
         order_by="(Field.order, Field.id)",
     )
     entries: Mapped[list[Entry]] = relationship(

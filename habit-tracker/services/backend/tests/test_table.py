@@ -2,13 +2,17 @@
 Tests for the table view endpoint (per-day aggregation).
 """
 
-# [review:need-review] PHASE-01/17-table-groups-sport-columns
-# summary: API tests for GET /api/v1/table; added category metadata tests (group, primary field = first by order)
+# [review:need-review] 175
+# summary: table metadata tests cover explicit primary field selection and legacy fallback
 import logging
 from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
+
+from app.crud.table import _category_meta
+from app.models import Category, Field
+from app.models.field import FieldType
 
 
 @pytest.fixture
@@ -399,3 +403,70 @@ class TestTableRangeValidation:
         )
         assert response.status_code == 422
         assert "366" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+class TestExplicitTablePrimaryField:
+    """The explicit category choice wins without changing legacy fallback."""
+
+    async def test_table_uses_explicit_primary_field(self, client: AsyncClient) -> None:
+        category = await _create_category(
+            client,
+            "Workout",
+            "Sport",
+            [
+                {"name": "Done", "field_type": "boolean", "order": 0},
+                {"name": "Quantity", "field_type": "number", "order": 1},
+            ],
+        )
+        quantity_id = _field_id(category, "Quantity")
+        selected = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={"primary_field_id": quantity_id},
+        )
+        assert selected.status_code == 200
+
+        response = await client.get(
+            "/api/v1/table?date_from=2024-01-15&date_to=2024-01-15"
+        )
+        assert response.status_code == 200
+        meta = next(
+            item
+            for item in response.json()["categories"]
+            if item["id"] == category["id"]
+        )
+        assert meta["primary_field_id"] == quantity_id
+        assert meta["primary_field_name"] == "Quantity"
+        assert meta["primary_field_type"] == "number"
+
+
+def test_category_meta_falls_back_when_selected_field_is_missing() -> None:
+    category = Category(
+        id=1,
+        name="Workout",
+        display_mode="form",
+        group=None,
+        primary_field_id=999,
+    )
+    category.fields = [
+        Field(
+            id=10,
+            category_id=1,
+            name="Done",
+            field_type=FieldType.BOOLEAN,
+            order=0,
+        ),
+        Field(
+            id=11,
+            category_id=1,
+            name="Quantity",
+            field_type=FieldType.NUMBER,
+            order=1,
+        ),
+    ]
+
+    meta = _category_meta(category)
+
+    assert meta.primary_field_id == 10
+    assert meta.primary_field_name == "Done"
+    assert meta.primary_field_type == "boolean"

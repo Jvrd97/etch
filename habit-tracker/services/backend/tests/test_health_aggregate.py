@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: pure aggregation tests — weighted daily fold, local hour buckets, DST merge, unit canonicalisation
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
+# summary: pure aggregation tests — weighted daily fold, local hour buckets, DST merge, and every catalog unit
 """
 Unit tests for `app.health.aggregate`. No database, no HTTP: these cover the one
 place in the Health contour where an error is invisible after the fact — a daily
@@ -18,6 +18,7 @@ from app.health.aggregate import (
     canonicalize,
     fold_daily,
 )
+from app.health.catalog import SEED_METRICS
 
 
 def utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
@@ -89,6 +90,13 @@ class TestCanonicalize:
         self, value: float, from_unit: str, to_unit: str, expected: float
     ) -> None:
         assert canonicalize(value, from_unit, to_unit) == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        "unit",
+        sorted({metric.canonical_unit for metric in SEED_METRICS}),
+    )
+    def test_every_catalog_unit_is_canonical(self, unit: str) -> None:
+        assert canonicalize(1.0, unit, unit) == 1.0
 
     def test_unknown_unit_raises(self) -> None:
         with pytest.raises(UnitError):

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/03-ios-scaffold-settings
-# summary: XcodeGen spec for HabitTracker iOS app + unit-test bundle (hosted tests for Keychain access)
+# [review:need-review] PHASE-01/03-ios-scaffold-settings, PHASE-02/65
+# summary: XcodeGen spec for the app, tests, and read-only HealthKit capability
 name: HabitTracker
 options:
   bundleIdPrefix: com.habittracker
@@ -14,10 +14,15 @@ targets:
     platform: iOS
     sources:
       - HabitTracker
+    entitlements:
+      path: HabitTracker/HabitTracker.entitlements
+      properties:
+        com.apple.developer.healthkit: true
     info:
       path: HabitTracker/Info.plist
       properties:
         UILaunchScreen: {}
+        NSHealthShareUsageDescription: Habit Tracker читает данные здоровья, чтобы показать ваши метрики.
         # Dev app talks to a local backend over plain HTTP (localhost / Tailscale IP).
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

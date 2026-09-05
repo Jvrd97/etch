@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: integration tests for the Health contour — raw-sample intake, natural-key idempotency, 422 on an unknown identifier, daily fold by local_date, isolation from entries
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
+# summary: Health API integration tests, including the complete catalog and runtime-added metrics
 """
 Tests for `POST /api/v1/health/samples` and `GET /api/v1/health/metrics`.
 
@@ -17,11 +17,122 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import health as health_crud
-from app.models import Entry, HealthHourBucket
+from app.health.aggregate import MetricKind
+from app.health.catalog import SEED_METRICS
+from app.models import Entry, HealthHourBucket, HealthMetric
 
 STEPS = "HKQuantityTypeIdentifierStepCount"
 RESTING_HR = "HKQuantityTypeIdentifierRestingHeartRate"
 BERLIN_SUMMER_OFFSET = 120
+
+EXPECTED_GROUP_SIZES = {
+    "movement": 7,
+    "heart": 7,
+    "body": 5,
+    "nutrition": 5,
+}
+
+EXPECTED_CATALOG = {
+    "HKQuantityTypeIdentifierStepCount": ("cumulative", "count", "Шаги", "movement"),
+    "HKQuantityTypeIdentifierDistanceWalkingRunning": (
+        "cumulative",
+        "m",
+        "Дистанция ходьбы и бега",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierFlightsClimbed": (
+        "cumulative",
+        "count",
+        "Этажи",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierActiveEnergyBurned": (
+        "cumulative",
+        "kcal",
+        "Активная энергия",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierBasalEnergyBurned": (
+        "cumulative",
+        "kcal",
+        "Базальная энергия",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierAppleExerciseTime": (
+        "cumulative",
+        "min",
+        "Минуты тренировки",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierAppleStandTime": (
+        "cumulative",
+        "min",
+        "Время стоя",
+        "movement",
+    ),
+    "HKQuantityTypeIdentifierHeartRate": ("discrete", "count/min", "Пульс", "heart"),
+    "HKQuantityTypeIdentifierRestingHeartRate": (
+        "discrete",
+        "count/min",
+        "Пульс покоя",
+        "heart",
+    ),
+    "HKQuantityTypeIdentifierWalkingHeartRateAverage": (
+        "discrete",
+        "count/min",
+        "Средний пульс при ходьбе",
+        "heart",
+    ),
+    "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": (
+        "discrete",
+        "ms",
+        "Вариабельность пульса (SDNN)",
+        "heart",
+    ),
+    "HKQuantityTypeIdentifierRespiratoryRate": (
+        "discrete",
+        "count/min",
+        "Частота дыхания",
+        "heart",
+    ),
+    "HKQuantityTypeIdentifierOxygenSaturation": ("discrete", "%", "Сатурация", "heart"),
+    "HKQuantityTypeIdentifierVO2Max": ("discrete", "mL/(kg*min)", "VO2max", "heart"),
+    "HKQuantityTypeIdentifierBodyMass": ("discrete", "kg", "Вес", "body"),
+    "HKQuantityTypeIdentifierBodyFatPercentage": (
+        "discrete",
+        "%",
+        "Процент жира",
+        "body",
+    ),
+    "HKQuantityTypeIdentifierLeanBodyMass": (
+        "discrete",
+        "kg",
+        "Мышечная масса",
+        "body",
+    ),
+    "HKQuantityTypeIdentifierBodyMassIndex": (
+        "discrete",
+        "count",
+        "Индекс массы тела",
+        "body",
+    ),
+    "HKQuantityTypeIdentifierHeight": ("discrete", "cm", "Рост", "body"),
+    "HKQuantityTypeIdentifierDietaryEnergyConsumed": (
+        "cumulative",
+        "kcal",
+        "Съеденные калории",
+        "nutrition",
+    ),
+    "HKQuantityTypeIdentifierDietaryProtein": ("cumulative", "g", "Белки", "nutrition"),
+    "HKQuantityTypeIdentifierDietaryFatTotal": ("cumulative", "g", "Жиры", "nutrition"),
+    "HKQuantityTypeIdentifierDietaryCarbohydrates": (
+        "cumulative",
+        "g",
+        "Углеводы",
+        "nutrition",
+    ),
+    "HKQuantityTypeIdentifierDietaryWater": ("cumulative", "mL", "Вода", "nutrition"),
+}
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +229,29 @@ class TestSampleIntake:
         assert response.status_code == 422
         assert "HKQuantityTypeIdentifierNumberOfTimesFallen" in response.text
 
+    async def test_runtime_catalog_row_is_accepted_without_application_restart(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        identifier = "HKQuantityTypeIdentifierRuntimeTest"
+        db_session.add(
+            HealthMetric(
+                identifier=identifier,
+                kind=MetricKind.CUMULATIVE.value,
+                canonical_unit="count",
+                display_name="Тестовая метрика",
+                group="movement",
+            )
+        )
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/v1/health/samples",
+            json={"samples": [sample(identifier, 3, "count", "2026-07-20T06:00:00Z")]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["samples_received"] == 1
+
     async def test_a_refused_chunk_writes_nothing(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
@@ -195,8 +329,35 @@ class TestMetricsRead:
 
         assert response.status_code == 200
         metrics = response.json()["metrics"]
-        assert {m["identifier"] for m in metrics} == {STEPS, RESTING_HR}
+        assert {m["identifier"] for m in metrics} == {
+            metric.identifier for metric in SEED_METRICS
+        }
         assert all(m["days"] == [] for m in metrics)
+
+    async def test_catalog_has_exactly_the_four_canonical_groups(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.get(
+            "/api/v1/health/metrics",
+            params={"date_from": "2026-07-20", "date_to": "2026-07-20"},
+        )
+
+        assert response.status_code == 200
+        metrics = response.json()["metrics"]
+        actual_catalog = {
+            metric["identifier"]: (
+                metric["kind"],
+                metric["canonical_unit"],
+                metric["display_name"],
+                metric["group"],
+            )
+            for metric in metrics
+        }
+        assert actual_catalog == EXPECTED_CATALOG
+        assert {
+            group: sum(metric["group"] == group for metric in metrics)
+            for group in EXPECTED_GROUP_SIZES
+        } == EXPECTED_GROUP_SIZES
 
     async def test_days_outside_the_range_are_not_returned(
         self, client: AsyncClient

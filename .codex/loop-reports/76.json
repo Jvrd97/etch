@@ -1,0 +1,15 @@
+{
+  "issue": 76,
+  "date": "2026-09-05",
+  "verdict": "BLOCKED",
+  "rounds": 0,
+  "summary": "GET /entries уже поддерживает сортировку и лимит из #173, но Field.unit отсутствует. Обязательное отображение значения с единицей невозможно до завершения #176.",
+  "evidence": [
+    "issues/PHASE-01/backlog/76-dashboard-recent-activity-feed.md:18",
+    "habit-tracker/services/frontend/lib/api.ts:779",
+    "habit-tracker/services/backend/app/models/field.py:53",
+    "habit-tracker/services/backend/app/schemas/category.py:14"
+  ],
+  "tests": [],
+  "blockers": ["#176-field-unit-quick-steps-continue-tracking"]
+}

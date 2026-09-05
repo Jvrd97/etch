@@ -1,0 +1,479 @@
+'use client';
+// [review:need-review] PHASE-01/73-category-field-reorder, 175
+// summary: Shared category draft state, including explicit selection and clearing of the table field in both editors
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  categoriesAPI,
+  type Category,
+  type CategoryCreate,
+  type CategoryDisplayMode,
+  type CategoryStreakMode,
+  type FieldCreate,
+} from '@/lib/api';
+import { orderedFields } from '@/lib/today-categories';
+import { DEFAULT_CATEGORY_COLOR } from '@/lib/ui-constants';
+
+/**
+ * Cards-vs-list layout of the Categories screen.
+ *
+ * A per-screen preference, unrelated to the desktop/mobile shell `ViewMode` in
+ * `lib/view-mode` — the two used to be told apart only by the storage key.
+ */
+export type CategoryLayout = 'cards' | 'list';
+
+export const CATEGORY_LAYOUT_STORAGE_KEY = 'habit-tracker:categories-layout';
+
+/**
+ * Re-exported so the Categories screens keep taking their colour default from
+ * the hook they already import; the value itself belongs to `lib/ui-constants`
+ * alongside the other cross-shell UI constants.
+ */
+export { DEFAULT_CATEGORY_COLOR };
+
+export const LOAD_CATEGORIES_ERROR = 'Failed to load categories';
+export const DELETE_CATEGORY_ERROR = 'Failed to delete category';
+export const SAVE_CATEGORY_ERROR = 'Failed to save category';
+
+/** Everything a Categories list screen needs; the two shells differ only in markup. */
+export interface UseCategoriesResult {
+  categories: Category[];
+  loading: boolean;
+  error: string | null;
+  setError: (message: string | null) => void;
+  /** Cards or list; persisted, so the choice survives a reload. */
+  layout: CategoryLayout;
+  setLayout: (layout: CategoryLayout) => void;
+  reload: () => Promise<void>;
+  /** Delete a category and refetch; a rejection lands in `error` and keeps the list. */
+  remove: (id: number) => Promise<void>;
+}
+
+function readStoredLayout(): CategoryLayout | null {
+  if (typeof window === 'undefined') return null;
+  const stored = window.localStorage.getItem(CATEGORY_LAYOUT_STORAGE_KEY);
+  return stored === 'cards' || stored === 'list' ? stored : null;
+}
+
+export function useCategories(): UseCategoriesResult {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [layout, setLayoutState] = useState<CategoryLayout>('cards');
+
+  /**
+   * The management screen edits inactive categories too, so it asks for the
+   * unfiltered list rather than the active-only default every other screen uses.
+   */
+  const load = useCallback(async ({ showSpinner = false } = {}) => {
+    try {
+      if (showSpinner) setLoading(true);
+      // Cleared up front rather than on success only: a banner that outlives the
+      // failure it reports keeps claiming the screen is broken while the user is
+      // already looking at freshly loaded categories.
+      setError(null);
+      setCategories(await categoriesAPI.getAll(false));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : LOAD_CATEGORIES_ERROR);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load({ showSpinner: true });
+  }, [load]);
+
+  // Read after mount rather than as the initial state: localStorage does not
+  // exist while the page is prerendered, and a value read during render would
+  // make the server and the client disagree on the first paint.
+  useEffect(() => {
+    const stored = readStoredLayout();
+    if (stored) setLayoutState(stored);
+  }, []);
+
+  const setLayout = useCallback((next: CategoryLayout) => {
+    setLayoutState(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(CATEGORY_LAYOUT_STORAGE_KEY, next);
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    await load();
+  }, [load]);
+
+  const remove = useCallback(
+    async (id: number) => {
+      try {
+        await categoriesAPI.delete(id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : DELETE_CATEGORY_ERROR);
+        return;
+      }
+      await load();
+    },
+    [load]
+  );
+
+  return { categories, loading, error, setError, layout, setLayout, reload, remove };
+}
+
+export interface UseCategoryDraftOptions {
+  /** Category being edited; null starts a new one. Read once, on mount. */
+  category: Category | null;
+  /** Called after the category has been persisted. */
+  onSaved: () => void;
+}
+
+export interface UseCategoryDraftResult {
+  name: string;
+  setName: (name: string) => void;
+  description: string;
+  setDescription: (description: string) => void;
+  color: string;
+  setColor: (color: string) => void;
+  displayMode: CategoryDisplayMode;
+  setDisplayMode: (mode: CategoryDisplayMode) => void;
+  streakMode: CategoryStreakMode;
+  setStreakMode: (mode: CategoryStreakMode) => void;
+  group: string;
+  setGroup: (group: string) => void;
+  /**
+   * Whether the category shows on Today: `null` leaves it to the heuristic,
+   * `true`/`false` is the user overriding it. Tri-state rather than a boolean
+   * so a new category does not have to be switched on by hand.
+   */
+  showInToday: boolean | null;
+  setShowInToday: (showInToday: boolean | null) => void;
+  isActive: boolean;
+  setIsActive: (isActive: boolean) => void;
+  /** Explicit table field; null asks the backend to use its legacy heuristic. */
+  primaryFieldId: number | null;
+  setPrimaryFieldId: (primaryFieldId: number | null) => void;
+  /** The draft's fields in display order; existing ones keep their id. */
+  fields: DraftField[];
+  addField: () => void;
+  removeField: (index: number) => void;
+  updateField: (index: number, updates: Partial<FieldCreate>) => void;
+  updateQuickStepsText: (index: number, text: string) => void;
+  /**
+   * Swap a field with its neighbour; `order` follows from the new position at
+   * save time. A move off either end is a no-op, so the screens can wire the
+   * buttons up unconditionally and only disable them for looks.
+   */
+  moveField: (index: number, direction: FieldMoveDirection) => void;
+  /**
+   * Text for the editor's live region: where the last moved row ended up.
+   *
+   * Empty until something moves. Rendering it is the screens' job, but the
+   * wording is not theirs to invent — two shells describing the same move
+   * differently is two different apps to anyone listening rather than looking.
+   */
+  moveAnnouncement: string;
+  /** True when a checklist category has no boolean field — the save would be rejected. */
+  checklistNeedsBoolean: boolean;
+  /** True while the save request is in flight. */
+  saving: boolean;
+  error: string | null;
+  dismissError: () => void;
+  /** Persist the draft: update when editing, create otherwise. */
+  save: () => Promise<void>;
+}
+
+export type FieldMoveDirection = 'up' | 'down';
+
+/**
+ * A draft row: the field the API speaks plus the identity React needs.
+ *
+ * The rows are reorderable, so a positional key would make React keep the DOM
+ * of whichever row used to sit at that index — the text in the inputs would
+ * swap back under the user, focus included. `key` is minted once per row and
+ * travels with it; `save` strips it before the payload leaves.
+ */
+export interface DraftField extends FieldCreate {
+  key: string;
+  quickStepsText: string;
+}
+
+export const QUICK_STEPS_ERROR =
+  'Quick steps must be comma-separated finite non-zero numbers';
+
+export function parseQuickSteps(text: string): number[] | null {
+  if (text.trim() === '') return null;
+  const parts = text.split(',').map((part) => part.trim());
+  const steps = parts.map(Number);
+  if (
+    parts.some((part) => part === '') ||
+    steps.some((step) => !Number.isFinite(step) || step === 0)
+  ) {
+    throw new Error(QUICK_STEPS_ERROR);
+  }
+  return steps;
+}
+
+/** Distinct across a draft's lifetime, which is all a React key has to be. */
+let nextFieldKey = 0;
+function mintFieldKey(): string {
+  nextFieldKey += 1;
+  return `field-${nextFieldKey}`;
+}
+
+/**
+ * Strip the editor's row identity and stamp the position as `order`.
+ *
+ * `key` exists only so React can tell the rows apart across a reorder; sending
+ * it would put a field the API has no column for into the payload.
+ */
+function toFieldPayload(field: DraftField, index: number): FieldCreate {
+  // Justification for the suppression: `key` is bound only to be left out of
+  // `rest` — that is the whole point of the line — and this config does not set
+  // `ignoreRestSiblings`. Listing the payload's keys by hand instead would drop
+  // any field later added to `FieldCreate` without a word.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { key, quickStepsText, ...rest } = field;
+  return {
+    ...rest,
+    quick_steps: field.field_type === 'number' ? parseQuickSteps(quickStepsText) : rest.quick_steps,
+    order: index,
+  };
+}
+
+/**
+ * What a screen reader is told after a field row changed places.
+ *
+ * The move is otherwise a purely visual event: the row swaps with its
+ * neighbour, and someone who cannot see the list gets no confirmation that the
+ * press did anything at all. Spelled once here because both shells announce it
+ * and the tests read it.
+ */
+export function fieldMovedMessage(position: number): string {
+  return `Field moved to position ${position}`;
+}
+
+/** A brand-new category starts on one blank field, so there is nothing to add first. */
+function blankField(order: number): DraftField {
+  return {
+    key: mintFieldKey(),
+    quickStepsText: '',
+    name: '',
+    field_type: 'text',
+    is_required: false,
+    order,
+  };
+}
+
+/**
+ * The category editor's state and its save, so the desktop modal and the mobile
+ * sheet differ only in markup.
+ *
+ * The one non-obvious rule lives in `save`: an existing field is sent back with
+ * its `id`, which is what makes the backend update it in place. Drop the id and
+ * the field is replaced — the rename goes through, and every value ever logged
+ * against the old field is orphaned.
+ */
+export function useCategoryDraft({
+  category,
+  onSaved,
+}: UseCategoryDraftOptions): UseCategoryDraftResult {
+  // Snapshotted on mount: the draft is the user's copy and must not be
+  // overwritten by a background reload of the list underneath. Give the editor
+  // a `key` tied to the category if it has to be retargeted.
+  const [editing] = useState<Category | null>(category);
+  const [name, setName] = useState(editing?.name ?? '');
+  const [description, setDescription] = useState(editing?.description ?? '');
+  const [color, setColor] = useState(editing?.color || DEFAULT_CATEGORY_COLOR);
+  const [displayMode, setDisplayMode] = useState<CategoryDisplayMode>(
+    editing?.display_mode ?? 'form'
+  );
+  const [streakMode, setStreakMode] = useState<CategoryStreakMode>(
+    editing?.streak_mode ?? 'build'
+  );
+  const [group, setGroup] = useState(editing?.group ?? '');
+  // `?? null` collapses the two "no choice yet" shapes — an absent key on a row
+  // written before the column existed, and an explicit null — into the one the
+  // rest of the editor speaks.
+  const [showInToday, setShowInToday] = useState<boolean | null>(
+    editing?.show_in_today ?? null
+  );
+  const [isActive, setIsActive] = useState(editing?.is_active ?? true);
+  const [primaryFieldId, setPrimaryFieldId] = useState<number | null>(
+    editing?.primary_field_id ?? null
+  );
+  // Seeded from the ordered copy, never from the array as it arrived: `order` is
+  // what the editor then re-derives from position on save, so a draft built in
+  // whatever sequence the API serialised would show the rows in one order and
+  // save them in another — the reorder the user just made, undone by opening
+  // the editor again.
+  const [fields, setFields] = useState<DraftField[]>(() =>
+    editing
+      ? orderedFields(editing).map((f) => ({
+          key: mintFieldKey(),
+          id: f.id,
+          name: f.name,
+          field_type: f.field_type,
+          is_required: f.is_required,
+          options: f.options,
+          order: f.order,
+          unit: f.unit ?? null,
+          quick_steps: f.quick_steps ?? null,
+          quickStepsText: f.quick_steps?.join(', ') ?? '',
+        }))
+      : [blankField(0)]
+  );
+  const [saving, setSaving] = useState(false);
+  /** Same fact as `saving`, readable synchronously — see the guard in `save`. */
+  const savingRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  /** Empty until the first move: a live region announces changes, not its own arrival. */
+  const [moveAnnouncement, setMoveAnnouncement] = useState('');
+  const fieldCount = fields.length;
+
+  const addField = useCallback(() => {
+    // Appended rather than prepended: with many fields you should not have to
+    // scroll back up to add one more.
+    setFields((prev) => [...prev, blankField(prev.length)]);
+  }, []);
+
+  const removeField = useCallback(
+    (index: number) => {
+      const removed = fields[index];
+      // The chosen row may disappear in this very save. Clearing it here means
+      // the desired-state payload cannot retain a reference to a deleted field.
+      if (removed?.id === primaryFieldId) setPrimaryFieldId(null);
+      setFields((prev) => prev.filter((_, i) => i !== index));
+    },
+    [fields, primaryFieldId]
+  );
+
+  const updateField = useCallback((index: number, updates: Partial<FieldCreate>) => {
+    setFields((prev) =>
+      prev.map((field, i) => (i === index ? { ...field, ...updates } : field))
+    );
+  }, []);
+
+  const updateQuickStepsText = useCallback((index: number, text: string) => {
+    setFields((prev) =>
+      prev.map((field, i) =>
+        i === index ? { ...field, quickStepsText: text } : field
+      )
+    );
+  }, []);
+
+  const moveField = useCallback(
+    (index: number, direction: FieldMoveDirection) => {
+      const target = direction === 'up' ? index - 1 : index + 1;
+      // Checked here rather than inside the updater so the announcement below
+      // only fires for a move that actually happened — and so the updater stays
+      // the pure function React is allowed to run twice.
+      if (index < 0 || index >= fieldCount || target < 0 || target >= fieldCount) {
+        return;
+      }
+      setFields((prev) => {
+        // Whole objects change places, ids and all: a swap that moved only the
+        // visible name and type would hand the backend a field it has never seen
+        // at that id and orphan every value logged against the other one.
+        const next = [...prev];
+        [next[index], next[target]] = [next[target], next[index]];
+        return next;
+      });
+      setMoveAnnouncement(fieldMovedMessage(target + 1));
+    },
+    [fieldCount]
+  );
+
+  const checklistNeedsBoolean = useMemo(
+    () => displayMode === 'checklist' && !fields.some((f) => f.field_type === 'boolean'),
+    [displayMode, fields]
+  );
+
+  const dismissError = useCallback(() => setError(null), []);
+
+  const save = useCallback(async () => {
+    // `saving` is state, so it still reads false for a second call made in the
+    // same tick as the first — two submits would then post the same draft twice.
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setError(null);
+
+    try {
+      const payload: CategoryCreate = {
+        name,
+        description,
+        color,
+        display_mode: displayMode,
+        streak_mode: streakMode,
+        group: group.trim() || null,
+        show_in_today: showInToday,
+        primary_field_id: primaryFieldId,
+        is_active: isActive,
+        // Unnamed rows are the placeholder the editor hands out, not fields the
+        // user filled in; `order` is re-derived from position so add, remove and
+        // reorder leave no gaps behind.
+        fields: fields.filter((f) => f.name.trim()).map(toFieldPayload),
+      };
+      if (editing) {
+        await categoriesAPI.update(editing.id, payload);
+      } else {
+        await categoriesAPI.create(payload);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : SAVE_CATEGORY_ERROR);
+      savingRef.current = false;
+      setSaving(false);
+      return;
+    }
+    // Released before handing control over: `onSaved` typically unmounts the
+    // editor, and a state update after that lands on a component that is gone.
+    savingRef.current = false;
+    setSaving(false);
+    onSaved();
+  }, [
+    color,
+    description,
+    displayMode,
+    editing,
+    fields,
+    group,
+    isActive,
+    name,
+    onSaved,
+    primaryFieldId,
+    showInToday,
+    streakMode,
+  ]);
+
+  return {
+    name,
+    setName,
+    description,
+    setDescription,
+    color,
+    setColor,
+    displayMode,
+    setDisplayMode,
+    streakMode,
+    setStreakMode,
+    group,
+    setGroup,
+    showInToday,
+    setShowInToday,
+    isActive,
+    setIsActive,
+    primaryFieldId,
+    setPrimaryFieldId,
+    fields,
+    addField,
+    removeField,
+    updateField,
+    updateQuickStepsText,
+    moveField,
+    moveAnnouncement,
+    checklistNeedsBoolean,
+    saving,
+    error,
+    dismissError,
+    save,
+  };
+}

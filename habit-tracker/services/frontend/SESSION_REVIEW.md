@@ -2002,3 +2002,27 @@ Feedback loops (frontend): `bun test` **1396 pass, 0 fail**, `tsc --noEmit` чи
 
 Feedback loops (frontend): `bun test` **1399 pass, 0 fail**, `tsc --noEmit` чисто,
 `bun run lint` 0 errors.
+
+## 2026-09-05 — #175: выбор поля для колонки категории
+
+Изменено 6 файлов кода: 6 `mod`.
+
+- `app/categories/page.tsx` — mod: desktop-редактор показывает выбор поля таблицы и позволяет его сбросить.
+- `app/categories/page.test.tsx` — mod: загрузка сохранённого выбора, его состояние `checked`, сброс и отправка нового выбора покрыты тестами.
+- `app/m/categories/page.tsx` — mod: mobile-редактор показывает тот же выбор и сброс.
+- `app/m/categories/page.test.tsx` — mod: mobile-поток проверяет сохранённое состояние `checked`, сброс и отправку выбора.
+- `hooks/useCategories.ts` — mod: черновик и обновление категории сохраняют `primary_field_id`.
+- `lib/api.ts` — mod: типы API категории содержат `primary_field_id`.
+
+Feedback loops (frontend): `bun test` — **1403 pass, 0 fail**; `tsc --noEmit`
+чисто; `bun run lint` завершился с 0 errors и 17 прежними warnings вне файлов #175.
+`bashs/review-status.sh` завершился с кодом 1 из-за общего долга репозитория:
+714 `need-review`, 0 `approved`; все 15 файлов кода #175 присутствуют в списке.
+
+## 2026-09-05 — PHASE-02/65: мобильный экран здоровья
+
+Изменено 3 файла кода: 2 `new`, 1 `mod`.
+
+- `lib/api.ts` — mod: DTO и клиент `GET /health/metrics`.
+- `app/m/health/page.tsx` — new: четыре серверные группы, значения и точный текст «Нет данных».
+- `app/m/health/page.test.tsx` — new: группировка, пустые значения и ссылка на инструкцию Apple.

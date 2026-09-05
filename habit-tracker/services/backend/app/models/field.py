@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/34-duration-field-type
-# summary: FieldType gained DURATION (elapsed seconds) alongside the SQLAlchemy 2.0 model
+# [review:need-review] 175
+# summary: Field.category explicitly uses category_id now that Category also references Field
 from __future__ import annotations
 
 import enum
@@ -66,7 +66,9 @@ class Field(Base):
     )
 
     # Relationships
-    category: Mapped[Category] = relationship(back_populates="fields")
+    category: Mapped[Category] = relationship(
+        back_populates="fields", foreign_keys=[category_id]
+    )
     entry_values: Mapped[list[EntryValue]] = relationship(
         back_populates="field", cascade="all, delete-orphan"
     )

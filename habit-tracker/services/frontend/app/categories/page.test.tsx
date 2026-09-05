@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-category-field-reorder
-// summary: characterization tests for the desktop /categories page — the cards/list switch, the editor modal opening and closing, the field rows moving up and down with their ids, their DOM, their announcement and their focus, the category card listing fields in field order, and the sticky footer submitting the form it is not nested in
+// [review:need-review] PHASE-01/73-category-field-reorder, 175
+// summary: integration tests for the desktop category editor, including explicit table-field selection and clearing
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -260,6 +260,33 @@ describe('/categories (desktop)', () => {
       expect(screen.queryByRole('heading', { name: 'Edit category' })).toBeNull()
     );
     expect(getAllCategories.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('loads the selected table field and sends an explicit clear from the editor', async () => {
+    const categoryWithPrimary = { ...CATEGORY, primary_field_id: QUALITY_FIELD.id };
+    getAllCategories = mock(() => Promise.resolve([categoryWithPrimary]));
+    await renderPage();
+    fireEvent.click(screen.getByLabelText('Edit category'));
+
+    const selectedRadio = screen.getByLabelText(
+      'Показывать в таблице: Quality'
+    ) as HTMLInputElement;
+    expect(selectedRadio.checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить выбор' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ primary_field_id: null });
+  });
+
+  it('sends the id of the field selected for the table', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByLabelText('Edit category'));
+    fireEvent.click(screen.getByLabelText('Показывать в таблице: Quality'));
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(updateCategory).toHaveBeenCalled());
+    expect(updateCategory.mock.calls[0][1]).toMatchObject({ primary_field_id: QUALITY_FIELD.id });
   });
 
   it('moves a field up and saves the new order with the ids intact', async () => {
