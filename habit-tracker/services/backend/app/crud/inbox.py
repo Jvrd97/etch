@@ -49,6 +49,7 @@ __all__ = [
     "PollOutcome",
     "PollRefused",
     "probe_source",
+    "refresh_stale",
     "SEED_SOURCES",
     "get_source_by_name",
     "list_signals",
@@ -414,6 +415,55 @@ async def probe_source(
     """
     adapter = _adapter_for(source)
     return await adapter(source, transport, full=True)
+
+
+def _is_stale(source: SignalSource, now: datetime) -> bool:
+    """
+    Вышел ли срок у источника.
+
+    Никогда не читанный просрочен всегда. Дальше меряет `poll_interval_s` —
+    колонка, которая до `#195` лежала в таблице мёртвой: читать её было некому,
+    и «интервал опроса» был обещанием без исполнителя.
+    """
+    if source.last_polled_at is None:
+        return True
+    return (now - source.last_polled_at).total_seconds() >= source.poll_interval_s
+
+
+async def refresh_stale(
+    db: AsyncSession,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    now: datetime | None = None,
+) -> list[str]:
+    """
+    Освежить источники, чей срок вышел, и вернуть коды тех, кто отказал.
+
+    Читается это перед выборкой входящих: человек спрашивает «что у меня по
+    задачам», а не «сходи в ClickUp и потом ответь». Кнопка «перечитать»
+    остаётся для «хочу прямо сейчас», но разговор от неё больше не зависит.
+
+    **Отказ провайдера не бросается наружу.** Освежение — удобство поверх
+    чтения, а не его условие: упавший ClickUp обязан деградировать до «читаю,
+    что есть», а не ронять разговор о дне. Код уходит в возврат для лога и
+    остаётся в `last_error_code`, как после ручного опроса.
+
+    Источники обходятся по одному, а не разом: у них общая сессия базы, и
+    параллельная запись в неё — это не ускорение, а гонка.
+    """
+    moment = now if now is not None else datetime.now(timezone.utc)
+    result = await db.execute(
+        select(SignalSource).where(SignalSource.is_active.is_(True))
+    )
+    refusals: list[str] = []
+    for source in result.scalars().all():
+        if source.provider not in ADAPTERS or not _is_stale(source, moment):
+            continue
+        try:
+            await poll_source(db, source, transport=transport)
+        except PollRefused as refusal:
+            refusals.append(refusal.code)
+    return refusals
 
 
 async def poll_source(

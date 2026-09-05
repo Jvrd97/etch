@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/guard-dangerous-bash.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/format-on-save.sh' \"$CLAUDE_TOOL_INPUT_FILE_PATH\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/backup-before-compact.sh'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/session-context.sh'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/capture-label.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/.codex/hooks/check-feedback-loops.sh'",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

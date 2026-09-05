@@ -439,6 +439,52 @@ class TestPromptAndDisclosure:
 
 
 @pytest.mark.asyncio
+class TestRulesSection:
+    """
+    Числа канона в карточке — иначе модель собирает день вслепую.
+
+    Наблюдалось 01.09.2026: модель поставила якорь отношений на 19:00-20:00 и
+    получила отказ по правилу `free_evening_empty` — свободный вечер того дня был
+    19:10-21:00. Узнать эти числа ей было неоткуда: промпт называет правила
+    словами («свободный вечер пуст», «есть якорь на отношения»), а границы окон
+    живут в строке `day_rule_set` и в карточку не попадали.
+    """
+
+    async def test_the_card_carries_the_windows_the_canon_judges_by(
+        self, db_session: AsyncSession, seeded_rules: None
+    ) -> None:
+        card = await build_day_card(db_session, CARD_DAY)
+
+        assert "Свободный вечер" in card.text
+        assert "Вечер отношений" in card.text
+        assert "Потолок работы" in card.text
+
+    async def test_the_card_names_the_only_slot_the_two_evenings_leave(
+        self, db_session: AsyncSession, seeded_rules: None
+    ) -> None:
+        """
+        Два правила поодиночке выполнимы, вместе оставляют щель.
+
+        Вечер отношений 18:30-21:00 при свободном вечере 19:10-21:00 — сорок
+        минут. Модель, читающая окна порознь, ставит якорь в середину своего и
+        ломает чужое. Щель считается по числам канона, а не пишется словами.
+        """
+        card = await build_day_card(db_session, CARD_DAY)
+
+        assert "Якорь отношений помещается только в 18:30-19:10" in card.text
+
+    async def test_the_free_evening_is_printed_as_numbers(
+        self, db_session: AsyncSession, seeded_rules: None
+    ) -> None:
+        """Не «пуст», а «с 19:10 до 21:00» — правило судит по числам."""
+        rule = await day_crud.rule_for_date(db_session, CARD_DAY)
+        card = await build_day_card(db_session, CARD_DAY)
+
+        assert rule.free_evening_start.strftime("%H:%M") in card.text
+        assert rule.free_evening_end.strftime("%H:%M") in card.text
+
+
+@pytest.mark.asyncio
 class TestPlanSection:
     """План дня и его отметки — одной секцией, а не двумя половинами."""
 

@@ -3,7 +3,7 @@
 
 import hashlib
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -581,3 +581,91 @@ async def _one_task() -> list[inbox_crud.ExternalItem]:
             content_hash="0" * 8,
         )
     ]
+
+
+class TestFreshness:
+    """
+    Источник освежается сам, когда его спрашивают, — если срок вышел.
+
+    Кнопка «перечитать» существует и остаётся, но чат не должен от неё зависеть:
+    человек спрашивает «что у меня по задачам», а не «сходи в ClickUp и потом
+    ответь». `poll_interval_s` до этого лежал в таблице мёртвым — читать его
+    было некому.
+    """
+
+    async def test_a_source_never_read_is_refreshed(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        codes = await inbox_crud.refresh_stale(
+            db_session, transport=clickup_transport([TASK])
+        )
+
+        assert codes == []
+        signals = await inbox_crud.list_signals(db_session, state=None)
+        assert [one.external_id for one in signals] == [TASK["id"]]
+
+    async def test_a_fresh_source_is_left_alone(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """Свежесть меряется `poll_interval_s`, а не «каждый раз»."""
+        personal_source.last_polled_at = datetime.now(timezone.utc)
+        await db_session.commit()
+        calls: list[httpx.Request] = []
+
+        await inbox_crud.refresh_stale(
+            db_session, transport=clickup_transport([TASK], calls)
+        )
+
+        assert calls == []
+
+    async def test_a_source_past_its_interval_is_refreshed(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        personal_source.last_polled_at = datetime.now(timezone.utc) - timedelta(
+            seconds=personal_source.poll_interval_s + 1
+        )
+        await db_session.commit()
+        calls: list[httpx.Request] = []
+
+        await inbox_crud.refresh_stale(
+            db_session, transport=clickup_transport([TASK], calls)
+        )
+
+        assert len(calls) == 1
+
+    async def test_a_disabled_source_is_not_touched(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """«Выключен» означает, что наружу не ушло ни одного запроса, — и здесь."""
+        personal_source.is_active = False
+        await db_session.commit()
+        calls: list[httpx.Request] = []
+
+        codes = await inbox_crud.refresh_stale(
+            db_session, transport=clickup_transport([TASK], calls)
+        )
+
+        assert calls == []
+        assert codes == []
+
+    async def test_a_refusing_source_comes_back_as_a_code_not_an_exception(
+        self, db_session: AsyncSession, personal_source: SignalSource
+    ) -> None:
+        """
+        Упавший ClickUp не должен ронять разговор о дне.
+
+        Освежение — это удобство поверх чтения, а не его условие. Отказ
+        провайдера деградирует до «читаю, что есть»: код возвращается наружу для
+        лога, а выборка отвечает тем, что уже лежит в базе.
+        """
+
+        def refusing(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={})
+
+        codes = await inbox_crud.refresh_stale(
+            db_session, transport=httpx.MockTransport(refusing)
+        )
+
+        assert codes == ["http_500"]
+        await db_session.refresh(personal_source)
+        assert personal_source.last_error_code == "http_500"

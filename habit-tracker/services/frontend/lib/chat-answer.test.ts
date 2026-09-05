@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { visibleAnswer } from './chat-answer';
+import { carriesPlan, visibleAnswer } from './chat-answer';
 
 const PLAN = {
   plan: {
@@ -51,5 +51,29 @@ describe('visibleAnswer', () => {
 
   it('gives back an empty string when the answer was nothing but a block', () => {
     expect(visibleAnswer(`\`\`\`json\n${JSON.stringify(PLAN)}\n\`\`\``)).toBe('');
+  });
+
+});
+
+describe('carriesPlan', () => {
+  it('sees a plan the server ended up refusing', () => {
+    /*
+     * Отвергнутый план не оставляет ни плашки, ни следа: блок вырезан из показа,
+     * а строки в `chat_plans` нет. Человек читает «вот план на сегодня» и
+     * пустоту под ним. Признак «блок был» — единственное, чем экран может
+     * отличить это от ответа, который ничего не предлагал.
+     */
+    const content = `Вот план.\n\n\`\`\`json\n${JSON.stringify(PLAN)}\n\`\`\``;
+
+    expect(carriesPlan(content)).toBe(true);
+  });
+
+  it('does not see one in an ordinary answer', () => {
+    expect(carriesPlan('Плана на этот день нет. Собрать?')).toBe(false);
+  });
+
+  it('does not mistake a retrieval for a plan', () => {
+    const need = { need: [{ query: 'inbox_tasks' }] };
+    expect(carriesPlan(`Смотрю.\n\n${JSON.stringify(need)}`)).toBe(false);
   });
 });

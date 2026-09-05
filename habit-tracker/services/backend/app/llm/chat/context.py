@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/113, PHASE-03/187
+# [review:need-review] PHASE-03/113, PHASE-03/187, PHASE-03/196
 # summary: build_day_card — the bounded day card that goes into the chat system prompt: a registry of sections with priorities, an explicit "записей нет" instead of a silent gap, and a ceiling held by eating the tail of the least important section rather than by slicing the string
 # summary: PHASE-03/187 prints the code, the rigidity and the done criterion of every plan line, without which a rewrite of the day cannot keep a single mark
+# summary: PHASE-03/196 puts the canon of the day into the card as numbers — the edges, the free evening, the relationship evening, the work ceiling and the task caps — because the prompt names those rules in words while check_all judges them by figures the model could not see
 """
 Карточка дня: всё, что чат знает о дне, и ничего сверх того.
 
@@ -40,6 +41,7 @@ from app.crud import journal as journal_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
 from app.crud import table as table_crud
+from app.day.rules import DayMap, Interval, NoRuleForDate, day_map
 
 # Заголовок карточки. Модель по нему отличает данные дня от инструкции над ними.
 CARD_TITLE = "# Карточка дня"
@@ -105,6 +107,93 @@ class DayCard:
     max_chars: int
     truncated: bool
     dropped_sections: tuple[str, ...] = field(default=())
+
+
+async def _rules_section(db: AsyncSession, on: date) -> list[str] | None:
+    """
+    Канон этого дня числами — окна, потолки, планки.
+
+    Промпт называет правила словами: «свободный вечер пуст», «в нерабочий вечер
+    есть якорь на отношения», «работа не выходит за потолок». Судит же их
+    `check_all` по числам из строки `day_rule_set`, и до `#196` этих чисел
+    модель не видела нигде. Она собирала день на глаз и получала отказ по
+    правилу, границ которого не знала, — а ремонтного захода у чата нет, так что
+    первый промах и был окончательным.
+
+    Наблюдалось 01.09.2026: якорь отношений поставлен на 19:00-20:00 при
+    свободном вечере 19:10-21:00. Обе строки промпта соблюдены, правило
+    нарушено, плашки нет.
+
+    Дата вне канона — пустая секция, а не отказ: карточка собирается и для дня,
+    которого правило не покрывает, и молчание здесь честнее выдуманных чисел.
+    """
+    try:
+        rule = await day_crud.rule_for_date(db, on)
+    except NoRuleForDate:
+        return []
+
+    plan_map = day_map(rule)
+    lines = [
+        "Края дня: "
+        + ", ".join(
+            f"{edge.label} {edge.at.strftime('%H:%M')}"
+            for edge in plan_map.edges
+            if edge.at is not None
+        ),
+        f"Жёсткими бывают только: {', '.join(plan_map.hard_edge_kinds)}",
+        f"Свободный вечер: {_window(plan_map.free_evening)} — в него не кладётся ничего",
+        f"Вечер отношений: {_window(plan_map.relationship_evening)}"
+        + (
+            ", якорь обязателен"
+            if plan_map.relationship_anchor_required
+            else ", якорь не обязателен"
+        ),
+        f"Потолок работы: {plan_map.work_cap_min} мин "
+        f"(жёсткий {plan_map.work_hard_cap_min} мин), стоп работы "
+        f"{plan_map.work_stop_at.strftime('%H:%M')}",
+        f"Рабочих задач не больше {plan_map.max_work_tasks}, "
+        f"учебных пунктов не больше {plan_map.max_study_items}",
+    ]
+    if plan_map.anchors:
+        lines.append(f"Якоря дня: {', '.join(plan_map.anchors)}")
+    slot = _relationship_slot(plan_map)
+    if slot is not None:
+        lines.append(slot)
+    return lines
+
+
+def _relationship_slot(plan_map: DayMap) -> str | None:
+    """
+    Где на самом деле помещается якорь отношений, если вечера пересекаются.
+
+    Два правила канона поодиночке выполнимы, а вместе оставляют щель: вечер
+    отношений 18:30-21:00 при свободном вечере 19:10-21:00 — это сорок минут, и
+    ни минутой больше. Модель, читающая оба окна отдельно, ставит якорь в
+    середину своего и ломает чужое; ровно это и случилось 01.09.2026.
+
+    Считается, а не пишется словами: канон меняется, и вторая копия арифметики
+    разошлась бы с первой молча.
+    """
+    if not plan_map.relationship_anchor_required:
+        return None
+    evening = plan_map.relationship_evening
+    free = plan_map.free_evening
+    if evening is None or free is None:
+        return None
+    if evening.start >= free.start or evening.end <= free.start:
+        return None
+    return (
+        "Внимание: вечера пересекаются. Якорь отношений помещается только в "
+        f"{evening.start.strftime('%H:%M')}-{free.start.strftime('%H:%M')} — "
+        "дальше начинается свободный вечер, и туда нельзя ничего"
+    )
+
+
+def _window(interval: Interval | None) -> str:
+    """Окно канона как «ЧЧ:ММ-ЧЧ:ММ», либо словами, что его нет."""
+    if interval is None:
+        return "не задан"
+    return f"{interval.start.strftime('%H:%M')}-{interval.end.strftime('%H:%M')}"
 
 
 async def _plan_section(db: AsyncSession, on: date) -> list[str] | None:
@@ -215,6 +304,10 @@ async def _journal_section(db: AsyncSession, on: date) -> list[str] | None:
 # потолке — обратный порядку `priority`. Секции, чьих источников ещё нет
 # (входящие сигналы `#101`, задачи `#97`), добавляются сюда строкой.
 DAY_CARD_SECTIONS: tuple[SectionSpec, ...] = (
+    # Канон стоит первым и с наивысшим приоритетом: план собирается по нему,
+    # и секция, которую съест потолок, не должна быть той, без которой
+    # предложение отвергнут.
+    SectionSpec("rules", "Правила дня", priority=5, build=_rules_section),
     SectionSpec("plan", "План дня и отметки", priority=10, build=_plan_section),
     SectionSpec("health", "Здоровье за день", priority=20, build=_health_section),
     SectionSpec("entries", "Записи трекера", priority=30, build=_entries_section),

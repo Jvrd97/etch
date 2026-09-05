@@ -1,0 +1,7 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+BASH_DEFAULT_TIMEOUT_MS = "120000"
+PYTHONDONTWRITEBYTECODE = "1"
+FORCE_COLOR = "1"

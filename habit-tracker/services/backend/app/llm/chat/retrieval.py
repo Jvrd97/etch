@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/114, PHASE-03/190
+# [review:need-review] PHASE-03/114, PHASE-03/190, PHASE-03/195
 # summary: PHASE-03/190 checks `state` of inbox_tasks against SIGNAL_STATES, so a name outside the dictionary is a refusal the model can act on instead of an empty result it reports as "there is nothing there"
 # summary: the white list of six named retrievals the chat may ask for by name — a Pydantic params schema with a ceiling per name, execution through the existing CRUD and nothing of its own, a refusal that never reaches the database for a seventh name, and an outcome row per call (including the refused ones) that `chat_retrievals` is written from
 """
@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date as date_type
@@ -60,6 +61,8 @@ from app.llm.plan_flow import extract_json
 
 # Шесть имён и седьмого нет. Строки, а не enum: они уезжают в промпт текстом и
 # приезжают из ответа модели текстом, и превращать их в тип по дороге незачем.
+logger = logging.getLogger(__name__)
+
 QUERY_DAY_CARD = "day_card"
 QUERY_ENTRIES_RANGE = "entries_range"
 QUERY_JOURNAL_RANGE = "journal_range"
@@ -342,7 +345,20 @@ async def _run_inbox_tasks(db: AsyncSession, params: InboxTasksParams) -> QueryR
     Тела здесь нет и взяться ему неоткуда: контур его не хранит (ADR-0016, D2).
     Модель получает то же, что человек видит на экране «Входящие», — и ссылку,
     по которой человек вернётся к оригиналу.
+
+    **Источники освежаются перед чтением, если вышел срок** (`#195`). Человек
+    спрашивает «что у меня по задачам», а не «сходи в ClickUp и потом ответь»;
+    до этого база была свежа ровно в момент нажатия кнопки «перечитать», и
+    выборка честно отвечала «пусто» на полный ClickUp. Срок меряет
+    `poll_interval_s` — колонка, которая до сих пор лежала в таблице мёртвой.
+
+    Отказ источника не роняет выборку: он уходит в лог кодом, а читается то,
+    что уже лежит в базе. Освежение — удобство поверх чтения, а не его условие,
+    и упавший ClickUp не должен ломать разговор о дне.
     """
+    refusals = await inbox_crud.refresh_stale(db)
+    if refusals:
+        logger.info("inbox refresh refused: %s", ", ".join(sorted(set(refusals))))
     rows = await inbox_crud.list_signals(db, state=params.state, limit=params.limit)
     lines = [
         f"{_fmt_date(row.local_date)} {row.external_id}: "

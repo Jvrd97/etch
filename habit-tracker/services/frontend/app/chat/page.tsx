@@ -27,7 +27,7 @@ import {
   type ChatPlanSelection,
   type ChatUsage,
 } from '@/lib/api';
-import { visibleAnswer } from '@/lib/chat-answer';
+import { carriesPlan, visibleAnswer } from '@/lib/chat-answer';
 import { CHAT_PATH, chatHrefFor, conversationIdFrom } from '@/lib/chat-nav';
 import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import { todayISO } from '@/lib/date';
@@ -92,6 +92,11 @@ const TURN_ERROR_TEXT: Record<string, string> = {
 
 const TURN_ERROR_FALLBACK = 'Ход не удался.';
 
+// Предложение было и не прошло проверку сервера. Причину экран не знает —
+// она осталась машинным кодом в логе, — но знает факт, и факт надо сказать:
+// иначе отвергнутый план неотличим от ответа, который ничего не предлагал.
+const PLAN_REFUSED =
+  'Предложение не прошло проверку правил дня — записывать нечего. Числа канона видны в «Что чат видит».';
 const EMPTY_HINT = 'Напиши сообщение — ответ придёт по кускам, а не целиком в конце.';
 
 function errorText(error: unknown): string {
@@ -393,6 +398,14 @@ function ChatScreen() {
           // отражён строкой выборки, второй плашкой под ответом. Сохранённое
           // сообщение при этом цело, режется только показ.
           const shown = visibleAnswer(message.content);
+          // Блок плана в ответе был, а плашки под ним нет — значит сервер
+          // предложение отверг: канон дня, дата вне канона, нечитаемое окно.
+          // Молчать об этом нельзя: человек прочитал «вот план на сегодня» и
+          // увидел под ним пустоту, а это выглядит как поломка ленты.
+          const planRefused =
+            message.role === 'assistant' &&
+            message.plan_id == null &&
+            carriesPlan(message.content);
           return (
             <ChatBubble key={message.id} role={message.role} copyText={shown}>
               {message.role === 'user' ? (
@@ -406,6 +419,9 @@ function ChatScreen() {
                   onApply={applyPlan}
                   onDismiss={dismissPlan}
                 />
+              )}
+              {planRefused && (
+                <p className="mt-2 text-xs text-amber-400">{PLAN_REFUSED}</p>
               )}
               {cost !== null && (
                 <p className="mt-2 text-[11px] text-text-disabled">{cost}</p>

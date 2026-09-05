@@ -106,3 +106,31 @@ export function visibleAnswer(content: string): string {
 
   return result.replace(/\n{3,}/g, '\n\n').trim();
 }
+
+
+/**
+ * Нёс ли ответ предложение записать.
+ *
+ * Нужен ровно для одного вопроса экрана: блок плана в ответе был, а плашки под
+ * ним нет — значит сервер предложение отверг. Молча вырезать блок и не сказать
+ * об этом значит показать «вот план на сегодня» и пустоту под ним; это худший
+ * из возможных исходов, потому что выглядит как поломка ленты.
+ *
+ * Блок `need` планом не считается: он про данные, а не про запись.
+ */
+export function carriesPlan(content: string): boolean {
+  return objectSpans(content).some((span) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content.slice(span.start, span.end));
+    } catch {
+      return false;
+    }
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      'plan' in (parsed as Record<string, unknown>)
+    );
+  });
+}
