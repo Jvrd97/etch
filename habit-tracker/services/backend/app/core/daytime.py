@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/113
-# summary: the single day boundary — local_date()/day_bounds()/now_utc() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC; since #90 nothing in app/ counts days any other way
+# [review:need-review] PHASE-03/107, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/113, PHASE-03/185
+# summary: the single day boundary — local_date()/calendar_date_of()/day_bounds()/now_utc() over the boundary published from the day_rule_set row in force, settings only until one is published; a naive datetime is refused, not assumed to be UTC
 # summary: PHASE-03/113 adds local_time() — the wall clock of a stored moment, so a card printing a plan window does not open a second zone of its own
 """
 The one answer to "which day does this moment belong to".
@@ -42,11 +42,11 @@ Consumers: `#86` (a moment's day), `#90` (the verdict of a day and the streak of
 categories), `#91` (work intervals), `#97` (a signal's `local_date`), `#121`
 (quick marks), `#124` (undo), `#127` (challenges), `#134`/`#135` (role minutes),
 `#146` (day signals). `app.crud.streak` counted UTC days until `#90` and asks here
-like everyone else now. One second expression of the same rule is still open:
-`app.day.plan_validate._pin` decides which calendar date `00:30` belongs to by
-comparing `at.hour` with `day_start_hour`, where `local_date` subtracts the
-hours instead. The two agree; they are two spellings, and folding `_pin` in here
-as `calendar_date_of(on, at)` is the way that ends.
+like everyone else now. A plan's wall-clock time uses
+`calendar_date_of(on, at, boundary)`: it reads the same boundary arithmetic as
+`local_date`, then chooses the calendar date on which that logical day's time
+occurs. This keeps an 00:30 plan item and a 00:30 quick mark in the same day
+when the boundary changes.
 
 Related: ADR-0014 (day in postgres), ADR-0016 (external inbox), ADR-0018
 (challenges and quick marks).
@@ -62,6 +62,7 @@ from app.core.config import settings
 
 __all__ = [
     "DayBoundary",
+    "calendar_date_of",
     "current_boundary",
     "day_bounds",
     "local_date",
@@ -164,13 +165,34 @@ def local_date(at: datetime) -> date:
             f"by the local offset. Got {at!r}; use "
             "datetime.now(timezone.utc) or attach the origin's tzinfo."
         )
-    boundary = current_boundary()
+    return _date_of_moment(at, current_boundary())
+
+
+def _date_of_moment(at: datetime, boundary: DayBoundary) -> date:
+    """Read `at` through one supplied boundary after `local_date` validated it."""
     # Wall-clock arithmetic on purpose: aware datetimes subtract inside their
     # own zone, so this reads the local clock `day_start_hour` hours earlier and
     # takes its date. Across a DST transition the intermediate value may carry
     # a stale offset, which does not matter — only `.date()` is used.
     shifted = at.astimezone(_zone(boundary)) - timedelta(hours=boundary.day_start_hour)
     return shifted.date()
+
+
+def calendar_date_of(on: date, at: time, boundary: DayBoundary | None = None) -> date:
+    """
+    The calendar date on which the wall-clock time `at` occurs in day `on`.
+
+    Plan windows name a logical day and a time, while their database columns
+    store moments. A time before the boundary belongs to the next calendar
+    date. Reusing `_date_of_moment` keeps that conversion identical to
+    `local_date`; callers with a versioned plan rule pass it explicitly,
+    everyone else reads the boundary currently published for the process.
+    """
+    resolved_boundary = boundary if boundary is not None else current_boundary()
+    moment = datetime.combine(on, at, tzinfo=_zone(resolved_boundary))
+    if _date_of_moment(moment, resolved_boundary) == on:
+        return on
+    return on + timedelta(days=1)
 
 
 def local_time(at: datetime) -> time:

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/107
-# summary: the one day boundary — 04:00 checked from both sides, midnight, both DST weekends, naive input refused, and a signature test that keeps #86 from having to edit call sites
+# [review:need-review] PHASE-03/107, PHASE-03/185
+# summary: the one day boundary — 04:00 checked from both sides, calendar dates for plan windows, both DST weekends, naive input refused, and stable public signatures
 """
 Tests for the single day boundary.
 
@@ -16,13 +16,14 @@ an example-based test misses.
 from __future__ import annotations
 
 import inspect
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.core.config import Settings
-from app.core.daytime import day_bounds, local_date, today_local
+from app.core import daytime
+from app.core.daytime import calendar_date_of, day_bounds, local_date, today_local
 
 BERLIN = ZoneInfo("Europe/Berlin")
 
@@ -72,6 +73,35 @@ def test_the_boundary_is_read_in_the_configured_zone_not_in_the_caller_s() -> No
 
 def test_late_evening_stays_in_its_own_day() -> None:
     assert local_date(berlin(2026, 8, 29, 23, 59)) == date(2026, 8, 29)
+
+
+def test_calendar_date_of_uses_the_same_shifted_boundary_as_local_date() -> None:
+    """A plan's 00:30 follows the central boundary after its hour changes."""
+    boundary = daytime.DayBoundary(timezone="Europe/Berlin", day_start_hour=1)
+    daytime.use_boundary(boundary)
+
+    on = date(2026, 8, 29)
+    calendar_date = calendar_date_of(on, time(0, 30), boundary)
+    moment = datetime.combine(calendar_date, time(0, 30), tzinfo=BERLIN)
+
+    assert calendar_date == on + timedelta(days=1)
+    assert local_date(moment) == on
+
+
+def test_today_local_and_a_plan_time_stay_together_after_boundary_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The quick-mark wrapper and the plan helper answer one day for one moment."""
+    boundary = daytime.DayBoundary(timezone="Europe/Berlin", day_start_hour=1)
+    daytime.use_boundary(boundary)
+
+    on = date(2026, 8, 29)
+    calendar_date = calendar_date_of(on, time(0, 30), boundary)
+    moment = datetime.combine(calendar_date, time(0, 30), tzinfo=BERLIN)
+    monkeypatch.setattr(daytime, "now_utc", lambda: moment.astimezone(timezone.utc))
+
+    assert today_local() == on
+    assert local_date(moment) == on
 
 
 # --- naive input -----------------------------------------------------------

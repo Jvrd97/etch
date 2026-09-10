@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130
-# summary: the quick-mark endpoints — the directory read with the day's state on it, the button entered, patched, reordered and deleted by hand with every reason it is refused, and the one write path POST /quick-marks/{id}/events, whose answer carries the new state so a tap costs one network call; the undo of the last tap and the split of taps by source
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185
+# summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.daytime import local_date
+from app.core.daytime import local_date, today_local
 from app.crud import category as category_crud
 from app.crud import quick_mark as quick_mark_crud
 from app.models.quick_mark import QuickMark
@@ -132,7 +132,7 @@ async def list_quick_marks(
                 f"unknown surface {surface!r}; expected one of {', '.join(SURFACES)}"
             ),
         )
-    on = date_ if date_ is not None else local_date(datetime.now(timezone.utc))
+    on = date_ if date_ is not None else today_local()
     marks = await quick_mark_crud.list_quick_marks(
         db, on=on, active_only=active_only, surface=surface
     )

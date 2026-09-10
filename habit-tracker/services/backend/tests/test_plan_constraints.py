@@ -8,8 +8,8 @@ second calls `app.day.plan_validate` with no database at all, and asserts the
 same refusals arrive as messages naming the line.
 """
 
-# [review:need-review] PHASE-03/87, PHASE-03/93
-# summary: the four CHECKs refuse a plan written past the service, generated `window`/`search` are populated by postgres, and the pure validator (task bar, hardness, windows across midnight, markdown flattening) answers with the offending item
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/185
+# summary: the four CHECKs refuse a plan written past the service, and pure validation pins windows through the shared day-boundary helper
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import date, datetime, time, timezone
@@ -465,6 +465,16 @@ def test_a_window_before_the_boundary_hour_belongs_to_the_same_day() -> None:
         window.starts_at
         > resolve_window(PLAN_DAY, time(22, 0), time(23, 0), BOUNDARY).starts_at
     )
+
+
+def test_plan_window_uses_the_central_calendar_date_helper() -> None:
+    """Plan validation may pin a time but must not re-derive the boundary."""
+    from pathlib import Path
+
+    text = Path("app/day/plan_validate.py").read_text(encoding="utf-8")
+
+    assert "calendar_date_of" in text
+    assert "at.hour >= boundary.day_start_hour" not in text
 
 
 # Раньше здесь стоял `test_a_zero_length_window_is_pushed_a_full_day_rather_than_refused`:

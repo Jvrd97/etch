@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121
-# summary: every acceptance case of the quick mark — five taps that stay one entry, the answer that already carries the new sum, the replayed Idempotency-Key, the relapse that appends, the four ways the directory refuses a button, the tap at 00:30 landing where `local_date()` says, and the migration whose downgrade actually drops what it made
+# [review:need-review] PHASE-03/121, PHASE-03/185
+# summary: every acceptance case of the quick mark, including the endpoint's use of today_local() rather than a duplicate clock
 """
 Tests for the quick mark, from the button to the row it writes.
 
@@ -16,7 +16,7 @@ from appearing.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 from io import StringIO
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -28,8 +28,10 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.daytime import local_date
+from app.core import daytime
+from app.core.daytime import DayBoundary, local_date
 from app.crud import quick_mark as quick_mark_crud
+from app.day.plan_validate import resolve_window
 from app.models import Entry, EntryValue
 from app.models.quick_mark import QuickMark, QuickMarkEvent
 
@@ -348,6 +350,27 @@ async def test_a_tap_at_half_past_midnight_lands_where_local_date_says(
 
 
 @pytest.mark.asyncio
+async def test_default_directory_and_plan_window_share_a_changed_boundary(
+    client: AsyncClient, water: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At 00:30, the real list endpoint and plan resolver choose one logical day."""
+    on = date(2026, 8, 29)
+    boundary = DayBoundary(timezone="Europe/Berlin", day_start_hour=1)
+    moment = datetime(2026, 8, 30, 0, 30, tzinfo=BERLIN)
+    daytime.use_boundary(boundary)
+    monkeypatch.setattr(daytime, "now_utc", lambda: moment.astimezone(timezone.utc))
+
+    window = resolve_window(on, time(0, 30), time(0, 30), boundary)
+    await make_mark(client, water)
+    response = await client.get(QUICK_MARKS_URL)
+
+    assert window.starts_at == moment.astimezone(timezone.utc)
+    assert local_date(window.starts_at) == on
+    assert response.status_code == 200
+    assert response.json()[0]["entry_date"] == on.isoformat()
+
+
+@pytest.mark.asyncio
 async def test_a_client_that_disagrees_about_the_day_is_refused(
     client: AsyncClient, water: dict[str, Any]
 ) -> None:
@@ -560,3 +583,13 @@ def test_no_second_answer_to_which_day_it_is() -> None:
     crud_text = Path("app/crud/quick_mark.py").read_text(encoding="utf-8")
     assert "datetime.now" not in crud_text
     assert "local_date(" in crud_text
+
+
+def test_list_endpoint_asks_today_local_instead_of_repeating_the_clock() -> None:
+    """The endpoint must use the wrapper that owns the current-day clock."""
+    from pathlib import Path
+
+    text = Path("app/api/quick_marks.py").read_text(encoding="utf-8")
+
+    assert "today_local" in text
+    assert "local_date(datetime.now" not in text

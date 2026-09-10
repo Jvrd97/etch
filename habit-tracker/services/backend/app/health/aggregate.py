@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
-# summary: Health arithmetic, including canonical units for the complete 24-metric catalog
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185
+# summary: Health arithmetic, including canonical units for the complete 24-metric catalog and the shared minutes-per-hour constant
 """
 Aggregation of raw HealthKit samples into local hourly buckets.
 
@@ -28,8 +28,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
+from app.core.humanize import MINUTES_PER_HOUR
+
 SECONDS_PER_HOUR = 3600
-MINUTES_PER_HOUR = 60
 
 
 class MetricKind(str, Enum):
@@ -125,7 +126,7 @@ _UNITS: dict[str, tuple[str, float]] = {
     "min": ("duration", 1.0),
     "s": ("duration", 1.0 / 60.0),
     "ms": ("duration", 1.0 / 60_000.0),
-    "hr": ("duration", 60.0),
+    "hr": ("duration", float(MINUTES_PER_HOUR)),
     "d": ("duration", 1440.0),
     # rate, base count per minute
     "count/min": ("rate", 1.0),

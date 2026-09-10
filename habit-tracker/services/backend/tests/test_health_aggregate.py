@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
-# summary: pure aggregation tests — weighted daily fold, local hour buckets, DST merge, and every catalog unit
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185
+# summary: pure aggregation tests — weighted daily fold, local hour buckets, DST merge, catalog units, and the shared minutes-per-hour constant
 """
 Unit tests for `app.health.aggregate`. No database, no HTTP: these cover the one
 place in the Health contour where an error is invisible after the fact — a daily
@@ -19,6 +19,16 @@ from app.health.aggregate import (
     fold_daily,
 )
 from app.health.catalog import SEED_METRICS
+
+
+def test_minutes_per_hour_is_imported_from_the_single_humanize_module() -> None:
+    """Health arithmetic does not carry a second definition of the duration unit."""
+    from pathlib import Path
+
+    text = Path("app/health/aggregate.py").read_text(encoding="utf-8")
+
+    assert "from app.core.humanize import MINUTES_PER_HOUR" in text
+    assert "MINUTES_PER_HOUR =" not in text
 
 
 def utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:

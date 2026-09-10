@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/142
-# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges (which kinds those are is read from `day_rule_set.hard_edge_kinds`), a link to a goal of the quarter that exists (the set of ids arrives as an argument, the session stays out), windows unrolled across midnight, markdown flattened to the text search reads
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/142, PHASE-03/185
+# summary: the plan document validated as a whole, without a database — the task bar from the rule row, hardness only for the day's edges, windows pinned through the central day boundary, markdown flattened to the text search reads
 """
 What a plan is allowed to be, decided without a database.
 
@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
-from app.core.daytime import DayBoundary
+from app.core.daytime import DayBoundary, calendar_date_of
 from app.models.day import DayRuleSet
 
 __all__ = [
@@ -205,7 +205,7 @@ def resolve_window(on: date, start: time, end: time, boundary: DayBoundary) -> W
 
 def _pin(on: date, at: time, boundary: DayBoundary, zone: ZoneInfo) -> datetime:
     """The moment `at` happens during the day `on`, in UTC."""
-    calendar_date = on if at.hour >= boundary.day_start_hour else on + timedelta(days=1)
+    calendar_date = calendar_date_of(on, at, boundary)
     return datetime.combine(calendar_date, at, tzinfo=zone).astimezone(timezone.utc)
 
 
