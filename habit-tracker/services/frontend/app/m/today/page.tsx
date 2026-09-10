@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-03/123
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 
@@ -152,8 +152,10 @@ export default function MobileTodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
+                    entries={entries}
                     streak={streaks[category.id] ?? null}
                     onRelapse={reloadStreak}
+                    onEntriesChanged={reload}
                     onError={setError}
                   />
                 ))}

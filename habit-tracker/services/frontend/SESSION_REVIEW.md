@@ -2026,3 +2026,14 @@ Feedback loops (frontend): `bun test` — **1403 pass, 0 fail**; `tsc --noEmit`
 - `lib/api.ts` — mod: DTO и клиент `GET /health/metrics`.
 - `app/m/health/page.tsx` — new: четыре серверные группы, значения и точный текст «Нет данных».
 - `app/m/health/page.test.tsx` — new: группировка, пустые значения и ссылка на инструкцию Apple.
+
+## 2026-09-10 — PHASE-01/201: быстрая отметка срыва для булевой категории
+
+Изменено 5 файлов кода: 1 `new`, 4 `mod`.
+
+- `components/AvoidStreakCard.tsx` — mod: единственное булево поле сохраняется как `true` одним нажатием с `Idempotency-Key`; повтор использует тот же ключ, отмена удаляет только созданную этой карточкой запись и скрывает её до прихода свежего снимка. Числовая и составная категории сохраняют форму.
+- `components/AvoidStreakCard.test.tsx` — new: true, false, отсутствие значения, двойное нажатие, повтор с тем же ключом, ошибка, отмена и восстановление из истории.
+- `lib/api.ts` — mod: `entriesAPI.create()` принимает необязательный ключ идемпотентности и передаёт его серверу.
+- `app/today/page.tsx`, `app/m/today/page.tsx` — mod: после записи и отмены карточка просит `useToday` заново получить список записей, чтобы обе оболочки не держали устаревшее состояние.
+
+Feedback loops (frontend): `bun test components/AvoidStreakCard.test.tsx app/today/page.test.tsx app/m/today/page.test.tsx` — **21 pass, 0 fail**; `tsc --noEmit` чисто; `eslint` изменённых файлов завершился с 0 errors.

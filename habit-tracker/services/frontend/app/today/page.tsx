@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
@@ -160,8 +160,10 @@ export default function TodayPage() {
                     key={category.id}
                     category={category}
                     numberField={numberField}
+                    entries={entries}
                     streak={streaks[category.id] ?? null}
                     onRelapse={reloadStreak}
+                    onEntriesChanged={reload}
                     onError={setError}
                   />
                 ))}
