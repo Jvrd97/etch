@@ -1,13 +1,9 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
-// summary: unit tests for computeDashboardStats (real total + recent feed) and for computeDashboardHero — today's ring, the last written entry and the tip
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #76
+// summary: unit tests for computeDashboardStats (real totals) and for computeDashboardHero — today's ring, the last written entry and the tip
 
 import { describe, expect, it } from 'bun:test';
 import type { Category, Entry, Field } from './api';
-import {
-  computeDashboardHero,
-  computeDashboardStats,
-  RECENT_ENTRIES_LIMIT,
-} from './dashboard-stats';
+import { computeDashboardHero, computeDashboardStats } from './dashboard-stats';
 
 function makeEntry(id: number, entryDate: string): Entry {
   return {
@@ -101,35 +97,9 @@ describe('computeDashboardStats', () => {
     expect(stats.journalCount).toBe(7);
   });
 
-  it('caps the recent feed at RECENT_ENTRIES_LIMIT, newest first (date desc, id desc on ties)', () => {
-    const entries = [
-      makeEntry(3, '2026-07-18'),
-      makeEntry(6, '2026-07-21'),
-      makeEntry(1, '2026-07-20'),
-      makeEntry(2, '2026-07-20'),
-      makeEntry(4, '2026-07-19'),
-      makeEntry(5, '2026-07-17'),
-    ];
-
-    const stats = computeDashboardStats(0, entries, 0);
-
-    expect(stats.recentEntries.map((e) => e.id)).toEqual([6, 2, 1, 4, 3]);
-    expect(stats.recentEntries.length).toBe(RECENT_ENTRIES_LIMIT);
-  });
-
-  it('does not mutate the input entries array', () => {
-    const entries = [makeEntry(1, '2026-07-18'), makeEntry(2, '2026-07-20')];
-    const snapshot = entries.map((e) => e.id);
-
-    computeDashboardStats(0, entries, 0);
-
-    expect(entries.map((e) => e.id)).toEqual(snapshot);
-  });
-
   it('handles an empty entries list', () => {
     const stats = computeDashboardStats(0, [], 0);
     expect(stats.entriesCount).toBe(0);
-    expect(stats.recentEntries).toEqual([]);
   });
 });
 

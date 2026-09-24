@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #176
-// summary: desktop /entries page — data, filter and reload now come from useEntries, shared with /m/entries; markup unchanged apart from a label on the filter
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #176, #76
+// summary: desktop /entries page renders the merged feed with grouped dates and a category filter
 
 import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -11,6 +11,7 @@ import EntryForm from '@/components/EntryForm';
 import { useEntries } from '@/hooks/useEntries';
 import { newEntryCategoryId, wantsNewEntry } from '@/lib/routes';
 import { Plus, Filter, Calendar } from 'lucide-react';
+import ActivityFeed from '@/components/ActivityFeed';
 
 export default function EntriesPage() {
   // useSearchParams needs a Suspense boundary for static prerendering
@@ -25,8 +26,7 @@ function EntriesPageContent() {
   const searchParams = useSearchParams();
   const {
     categories,
-    entries,
-    grouped,
+    activityItems,
     loading,
     error,
     filterCategory,
@@ -96,7 +96,7 @@ function EntriesPageContent() {
       )}
 
       {/* Entries List grouped by date */}
-      {entries.length === 0 ? (
+      {activityItems.length === 0 ? (
         <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">
           <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
             <Calendar className="w-8 h-8 text-text-disabled" strokeWidth={2} />
@@ -111,29 +111,19 @@ function EntriesPageContent() {
           </button>
         </div>
       ) : (
-        <div className="space-y-8">
-          {grouped.map(([date, dateEntries]) => (
-            <div key={date}>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-[13px] font-medium uppercase tracking-widest text-lime">
-                  {date}
-                </span>
-                <div className="flex-1 h-px bg-white/5" />
-              </div>
-              <div className="space-y-4">
-                {dateEntries.map((entry) => (
-                  <EntryCard
-                    key={entry.id}
-                    entry={entry}
-                    category={categoryOf(entry)}
-                    onMutated={() => void reload()}
-                    onError={setError}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <ActivityFeed
+          items={activityItems}
+          categories={categories}
+          grouped
+          renderEntry={(entry) => (
+            <EntryCard
+              entry={entry}
+              category={categoryOf(entry)}
+              onMutated={() => void reload()}
+              onError={setError}
+            />
+          )}
+        />
       )}
 
       {/* Floating action button: always reachable without scrolling */}

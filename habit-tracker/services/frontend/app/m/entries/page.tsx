@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, #176
-// summary: mobile Entries screen — same data as the desktop page via useEntries, creation and editing done in the shared EntryEditorSheet, ?new=1 opening the editor on mount, with a dedicated empty state when no category exists yet
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, #176, #76
+// summary: mobile Entries renders the grouped merged feed with category chips, creation and editing sheets
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
@@ -14,7 +14,8 @@ import { useEntries } from '@/hooks/useEntries';
 import { entriesAPI, type Category, type Entry } from '@/lib/api';
 import { labelledValues } from '@/lib/entry-values';
 import { MOBILE_PATH_PREFIX, newEntryCategoryId, wantsNewEntry } from '@/lib/routes';
-import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
+import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import ActivityFeed from '@/components/ActivityFeed';
 
 /** What the editor sheet is currently doing; closed when null. */
 type SheetState = { kind: 'create' } | { kind: 'edit'; entry: Entry };
@@ -51,8 +52,7 @@ function MobileEntriesPageContent() {
   const searchParams = useSearchParams();
   const {
     categories,
-    entries,
-    grouped,
+    activityItems,
     loading,
     error,
     filterCategory,
@@ -114,22 +114,35 @@ function MobileEntriesPageContent() {
     <div className="space-y-5 animate-fade-rise">
       {listError}
 
-      <select
+      <div
+        role="group"
         aria-label="Filter by category"
-        value={filterCategory ?? ''}
-        onChange={(e) => setFilterCategory(e.target.value ? Number(e.target.value) : null)}
-        style={{ minHeight: TAP_TARGET_PX }}
-        className={entryInputClass}
+        className="flex gap-2 overflow-x-auto pb-1"
       >
-        <option value="">All categories</option>
+        <button
+          type="button"
+          aria-pressed={filterCategory === null}
+          onClick={() => setFilterCategory(null)}
+          style={{ minHeight: TAP_TARGET_PX }}
+          className={`shrink-0 rounded-full px-4 text-sm font-medium ${filterCategory === null ? 'bg-lime text-background' : 'bg-card text-text-secondary'}`}
+        >
+          All
+        </button>
         {categories.map((category) => (
-          <option key={category.id} value={category.id}>
+          <button
+            key={category.id}
+            type="button"
+            aria-pressed={filterCategory === category.id}
+            onClick={() => setFilterCategory(category.id)}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className={`shrink-0 rounded-full px-4 text-sm font-medium ${filterCategory === category.id ? 'bg-lime text-background' : 'bg-card text-text-secondary'}`}
+          >
             {category.name}
-          </option>
+          </button>
         ))}
-      </select>
+      </div>
 
-      {entries.length === 0 ? (
+      {activityItems.length === 0 ? (
         <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
           <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
             <Calendar className="w-7 h-7 text-text-disabled" strokeWidth={2} />
@@ -140,27 +153,20 @@ function MobileEntriesPageContent() {
           </p>
         </div>
       ) : (
-        grouped.map(([date, dateEntries]) => (
-          <section key={date}>
-            <div className="flex items-center gap-3 mb-3">
-              <span className="text-[12px] font-medium uppercase tracking-widest text-lime truncate">
-                {date}
-              </span>
-              <div className="flex-1 h-px bg-white/5" />
-            </div>
-            <div className="space-y-3">
-              {dateEntries.map((entry) => (
-                <EntryRow
-                  key={entry.id}
-                  entry={entry}
-                  category={categoryOf(entry)}
-                  onEdit={() => setSheet({ kind: 'edit', entry })}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </div>
-          </section>
-        ))
+        <ActivityFeed
+          items={activityItems}
+          categories={categories}
+          grouped
+          mobile
+          renderEntry={(entry) => (
+            <EntryRow
+              entry={entry}
+              category={categoryOf(entry)}
+              onEdit={() => setSheet({ kind: 'edit', entry })}
+              onDelete={handleDelete}
+            />
+          )}
+        />
       )}
 
       <MobileHeaderAction

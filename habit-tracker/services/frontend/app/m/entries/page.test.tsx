@@ -1,8 +1,8 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176
-// summary: integration tests for /m/entries — create, edit, cancel and delete driven through the shared EntryEditorSheet, plus the ?new=1 deep link that opens the editor on mount
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176, #76
+// summary: mobile Entries tests cover the merged feed, category chips and editor sheet flows
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Category, Entry, Field } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
@@ -175,10 +175,20 @@ mock.module('@/lib/api', () => ({
     update: (id: number, data: unknown) => updateEntry(id, data),
     delete: (id: number) => deleteEntry(id),
   },
+  // The Entries feed merges journal notes (#76); declared here so the page does
+  // not depend on another file having linked the export first.
+  journalAPI: {
+    getAll: () => Promise.resolve({ items: [], total: 0 }),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+// Copied before mocking: bun rewrites a mocked module's namespace in place, and
+// the feed reads the rest of `@/lib/date` (fromISODate) through the same mock.
+const realDate = { ...(await import('@/lib/date')) };
+mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => TODAY }));
 
 const { default: MobileEntriesPage } = await import('./page');
 const { NEW_ENTRY_SHEET_TITLE } = await import('@/lib/ui-constants');
@@ -333,11 +343,18 @@ describe('/m/entries', () => {
   it('narrows the list to one category through the filter', async () => {
     await renderPage();
 
-    fireEvent.change(screen.getByLabelText('Filter by category'), { target: { value: '1' } });
+    fireEvent.click(within(screen.getByRole('group', { name: 'Filter by category' })).getByRole('button', { name: 'Sleep' }));
 
     await waitFor(() =>
       expect(getAllEntries).toHaveBeenLastCalledWith(
         expect.objectContaining({ categoryId: 1 })
+      )
+    );
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'Filter by category' })).getByRole('button', { name: 'All' }));
+    await waitFor(() =>
+      expect(getAllEntries).toHaveBeenLastCalledWith(
+        expect.objectContaining({ categoryId: undefined })
       )
     );
   });

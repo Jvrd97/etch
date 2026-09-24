@@ -2067,3 +2067,37 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `components/TodayDayEntriesList.tsx` и тест — числовые значения используют единицу из `Field.unit`.
 - `lib/chart-data.ts` и тест — серия графика берёт единицу из `Field.unit`, а не из имени поля.
 - `hooks/useDashboard.ts` и тест — Continue tracking запрашивает только последнюю запись каждой подходящей категории через `limit: 1` и `sort: created_at_desc`.
+
+## 2026-09-24 — PHASE-01/76: объединённая лента активности
+
+Изменено 15 файлов кода: 4 `new`, 11 `mod`.
+
+- `lib/activity-feed.ts` и тест — new: чистое слияние записей и дневника по `created_at`, группировка по Today / Yesterday / локальной дате.
+- `components/ActivityFeed.tsx` и тест — new: строки показывают категорию, значения с единицами, время сохранения и отдельную подпись дневника.
+- `hooks/useDashboard.ts` и тест, `app/dashboard/page.tsx`, `app/m/dashboard/page.tsx`, `app/dashboard/page.test.tsx` — mod: ограниченный запрос ленты и общий блок недавней активности для двух оболочек.
+- `hooks/useEntries.ts` и тест, `app/entries/page.tsx`, `app/entries/page.test.tsx`, `app/m/entries/page.tsx`, `app/m/entries/page.test.tsx` — mod: записи и дневник объединены в списке с группировкой; категория фильтрует записи, мобильный экран использует чипы с кнопкой сброса.
+
+Проверки: целевые тесты ленты, двух страниц, двух хуков и dashboard — **40 passed**; `bunx tsc --noEmit` и ESLint изменённых файлов прошли. Полный набор: **1438 passed, 2 errors** (`POLL_LABEL` в `SourceCard.test.tsx` и `healthAPI` в `app/m/health/page.test.tsx`); те же два сбоя воспроизводятся на чистой базе `77a9695`.
+
+## 2026-09-24 — PHASE-01/76, раунд 2: правки по REQUEST_CHANGES на a3188e5
+
+Изменено 13 файлов кода, все `mod`.
+
+- `lib/activity-feed.ts` и тест — mod: у строки ленты появилось поле `entryDate`. История группируется по дню записи (`entry_date`), дни идут от нового к старому. `localDateKey` и `dateLabel` удалены, вместо них `todayISO`/`fromISODate` из `lib/date.ts` и `previousDay`. Новая функция `activityWhen` показывает время для записи сегодняшнего дня и день для записи любого другого. Тест не зависит от часового пояса: проверен в `Pacific/Honolulu` и `Pacific/Kiritimati`.
+- `components/ActivityFeed.tsx` и тест — mod: на дашборде строка записи не из сегодняшнего дня показывает день, а не только «9:15 AM». Две копии разметки строки свёрнуты в одну. Тест теперь вызывает `cleanup`: раньше он оставлял DOM следующему файлу.
+- `hooks/useEntries.ts` и тест — mod: при выбранной категории дневник не запрашивается и не показывается, потому что у записи дневника нет категории; после сброса фильтра он возвращается. Записи запрашиваются в порядке бэкенда по умолчанию (`entry_date`), а не по `created_at_desc`. Поля `entries` и `grouped` убраны из контракта хука: страницы их не читали.
+- `hooks/useDashboard.ts` и тест — mod: один запрос `journalAPI.getAll({ limit: 5 })` вместо двух одинаковых. Константы `JOURNAL_TOTAL_LIMIT` и `RECENT_ACTIVITY_SOURCE_LIMIT` удалены.
+- `lib/dashboard-stats.ts` и тест, `app/dashboard/page.test.tsx` — mod: поле `stats.recentEntries` и `RECENT_ENTRIES_LIMIT` удалены, их не читает ни одна страница.
+- `app/entries/page.test.tsx`, `app/m/entries/page.test.tsx` — mod: в моки добавлен `journalAPI`, а мок `@/lib/date` дополнен реальным модулем. Без этого оба файла падали в изоляции ещё на a3188e5. Тест группировки на десктопе проверяет порядок дней «Today», затем «Jul 20, 2026».
+
+Проверки: `bunx tsc --noEmit` проходит; ESLint — 0 ошибок, предупреждений в изменённых файлах нет. Тесты тикета (8 файлов) — **58 passed** в трёх часовых поясах. Полный набор — **1441 passed, 2 fail**: это известные `POLL_LABEL` и `healthAPI`, по отдельности оба файла проходят.
+
+## 2026-09-24 — PHASE-01/76, перенос на main (`379e60d`)
+
+Одобренный коммит `e997aa3` перенесён на squash-коммит `379e60d` без смысловых правок. Изменено 17 файлов кода: 5 `new`, 12 `mod`.
+
+- 13 файлов совпадают с `e997aa3` побайтно: `lib/activity-feed.ts` и тест, `components/ActivityFeed.tsx` и тест, `hooks/useEntries.ts` и тест, `lib/dashboard-stats.ts` и тест, обе страницы `entries` и их тесты, `app/dashboard/page.test.tsx`.
+- `app/dashboard/page.test.tsx` — new: в `379e60d` этого файла нет, взят из `e997aa3`, проверяет `CurrentStreaks` внутри обеих hero-карточек.
+- `hooks/useDashboard.ts` и тест, `app/dashboard/page.tsx`, `app/m/dashboard/page.tsx` — mod: конфликты только в review-шапках и импортах; версия из main (#174, #176) сохранена, лента #76 добавлена поверх.
+
+Проверки: `bunx tsc --noEmit` проходит; ESLint — 0 ошибок. Целевые тесты (10 файлов, включая `ContinueTracking` и `CurrentStreaks`) — **60 passed**. Полный набор — **1454 passed, 1 fail**: известный `healthAPI` в `app/m/health/page.test.tsx`, в изоляции проходит.

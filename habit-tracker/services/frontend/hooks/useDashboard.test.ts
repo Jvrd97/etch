@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176
-// summary: tests for useDashboard's hero load — the day window and the last-written lookup are targeted queries, and the hero never reads the history list
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76
+// summary: tests for useDashboard's hero load and bounded recent-activity feed — targeted day-window, last-written and recent queries; the hero never reads the history list
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry, Field } from '@/lib/api';
+import type { Category, Entry, Field, JournalEntry } from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
 
@@ -57,6 +57,10 @@ let entriesCalls: EntriesQuery[];
 /** Answer for the day-window query, keyed by nothing — the suite sets it per test. */
 let dayWindow: Entry[];
 let lastWritten: Entry[];
+let recentEntries: Entry[];
+let journalItems: JournalEntry[];
+/** Every `GET /journal` the hook issued, in call order. */
+let journalCalls: unknown[];
 /** The unbounded history list, which the hero must never read. */
 let history: Entry[];
 let categoryHistory: Entry[];
@@ -177,7 +181,8 @@ mock.module('@/lib/api', () => ({
         const skip = params.skip ?? 0;
         return Promise.resolve(categoryHistory.slice(skip, skip + (params.limit ?? 100)));
       }
-      if (params?.sort !== undefined) return Promise.resolve(lastWritten);
+      if (params?.sort !== undefined && params.limit === 1) return Promise.resolve(lastWritten);
+      if (params?.sort !== undefined) return Promise.resolve(recentEntries);
       if (params?.startDate !== undefined) return Promise.resolve(dayWindow);
       return Promise.resolve(history);
     },
@@ -187,7 +192,10 @@ mock.module('@/lib/api', () => ({
     upsertChecklist: () => Promise.resolve({}),
   },
   journalAPI: {
-    getAll: () => Promise.resolve({ items: [], total: 4 }),
+    getAll: (params?: unknown) => {
+      journalCalls.push(params);
+      return Promise.resolve({ items: journalItems, total: 4 });
+    },
     getById: () => Promise.resolve(null),
     create: () => Promise.resolve(null),
   },
@@ -202,6 +210,9 @@ beforeEach(() => {
   entriesCalls = [];
   dayWindow = [];
   lastWritten = [];
+  recentEntries = [];
+  journalItems = [];
+  journalCalls = [];
   history = [];
   categoryHistory = [];
 });
@@ -211,6 +222,26 @@ afterEach(() => {
 });
 
 describe('useDashboard hero', () => {
+  it('loads a bounded recent feed and merges journal entries by creation time', async () => {
+    recentEntries = [entry(2, TODAY, '250')];
+    journalItems = [{
+      id: 7,
+      title: 'Day reflection',
+      content: 'A note',
+      entry_date: TODAY,
+      created_at: '2026-07-24T10:00:00Z',
+      updated_at: TIMESTAMP,
+    }];
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.recentActivity.map(({ kind }) => kind)).toEqual(['journal', 'entry']);
+    expect(entriesCalls).toContainEqual({ sort: 'created_at_desc', limit: 5 });
+    // One page of notes serves the total, the hero's journal date and the feed.
+    expect(journalCalls).toEqual([{ limit: 5 }]);
+  });
+
   it('counts the ring from the day window, ignoring the history list', async () => {
     dayWindow = [entry(1, TODAY, '2'), entry(2, TODAY, '3')];
     history = Array.from({ length: 40 }, (_, i) => entry(100 + i, '2026-01-01', '1'));
@@ -229,7 +260,7 @@ describe('useDashboard hero', () => {
     const { result } = renderHook(() => useDashboard());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    const lastWrittenCall = entriesCalls.find((call) => call.sort !== undefined);
+    const lastWrittenCall = entriesCalls.find((call) => call.sort !== undefined && call.limit === 1);
     expect(lastWrittenCall?.sort).toBe('created_at_desc');
     expect(lastWrittenCall?.limit).toBe(1);
     expect(result.current.hero.lastEntry?.entryId).toBe(9);
