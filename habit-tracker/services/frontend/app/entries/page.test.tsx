@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176
-// summary: characterization tests for the desktop /entries page, pinning its behaviour across the move onto useEntries
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176, #76
+// summary: desktop Entries tests cover grouping by the day an entry belongs to, filtering and creation
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -161,6 +161,13 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(),
     upsertChecklist: () => Promise.resolve({}),
   },
+  // The Entries feed merges journal notes (#76); declared here so the page does
+  // not depend on another file having linked the export first.
+  journalAPI: {
+    getAll: () => Promise.resolve({ items: [], total: 0 }),
+    getById: () => Promise.resolve(null),
+    create: () => Promise.resolve(null),
+  },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
@@ -173,7 +180,10 @@ mock.module('next/navigation', () => ({
   useRouter: () => ({ push: () => {}, replace: () => {} }),
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+// Copied before mocking: bun rewrites a mocked module's namespace in place, and
+// the feed reads the rest of `@/lib/date` (fromISODate) through the same mock.
+const realDate = { ...(await import('@/lib/date')) };
+mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => TODAY }));
 
 const { default: EntriesPage } = await import('./page');
 
@@ -188,11 +198,16 @@ afterEach(() => {
 });
 
 describe('/entries (desktop)', () => {
-  it('lists the entries grouped by date', async () => {
+  it('lists the entries grouped under the day they belong to, newest day first', async () => {
+    getAllEntries = mock(() =>
+      Promise.resolve([ENTRY, { ...ENTRY, id: ENTRY.id + 1, entry_date: '2026-07-20' }])
+    );
     render(<EntriesPage />);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Sleep' })).toBeDefined());
-    expect(screen.getByText(TODAY)).toBeDefined();
+    await waitFor(() => expect(screen.getAllByRole('heading', { name: 'Sleep' })).toHaveLength(2));
+    expect(
+      screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)
+    ).toEqual(['Today', 'Jul 20, 2026']);
   });
 
   it('opens the form straight away with ?new=1', async () => {

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176
-// summary: mobile Dashboard includes avoid-category streaks and Continue tracking alongside the hero
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76
+// summary: mobile Dashboard includes avoid-category streaks, Continue tracking and merged recent activity alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -23,6 +23,7 @@ import {
 import Link from 'next/link';
 import { ContinueTracking } from '@/components/ContinueTracking';
 import { CurrentStreaks } from '@/components/CurrentStreaks';
+import ActivityFeed from '@/components/ActivityFeed';
 
 const MOBILE_RING_SIZE_PX = 128;
 
@@ -33,6 +34,7 @@ export default function MobileDashboardPage() {
     avoidStreaks,
     categories,
     continueEntries,
+    recentActivity,
     loading,
     error,
     insight,
@@ -212,7 +214,7 @@ export default function MobileDashboardPage() {
           </Link>
         </div>
         <div className="px-4 py-2">
-          {stats.recentEntries.length === 0 ? (
+          {recentActivity.length === 0 ? (
             <div className="text-center py-10">
               <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
                 <Calendar className="w-7 h-7 text-text-disabled" strokeWidth={2} />
@@ -227,31 +229,7 @@ export default function MobileDashboardPage() {
               </Link>
             </div>
           ) : (
-            <div className="divide-y divide-white/5">
-              {stats.recentEntries.map((entry) => (
-                <Link
-                  key={entry.id}
-                  href={`/entries/${entry.id}`}
-                  style={{ minHeight: TAP_TARGET_PX }}
-                  className="flex items-center justify-between gap-3 py-3"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="p-2 rounded-xl bg-surface flex-shrink-0">
-                      <Calendar className="w-4 h-4 text-lime" strokeWidth={2} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-text-primary truncate">
-                        Entry #{entry.id}
-                      </p>
-                      <p className="text-[12px] text-text-secondary mt-0.5">{entry.entry_date}</p>
-                    </div>
-                  </div>
-                  <span className="text-[12px] text-text-disabled flex-shrink-0">
-                    {entry.values.length} values
-                  </span>
-                </Link>
-              ))}
-            </div>
+            <ActivityFeed items={recentActivity} categories={categories} mobile />
           )}
         </div>
       </section>

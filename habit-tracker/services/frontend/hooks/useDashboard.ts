@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176
-// summary: Dashboard state exposes loaded categories and Continue tracking alongside the hero load
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76
+// summary: Dashboard state exposes loaded categories, Continue tracking and the merged recent-activity feed alongside the hero load
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -19,6 +19,7 @@ import {
   type DashboardStats,
 } from '@/lib/dashboard-stats';
 import { todayISO } from '@/lib/date';
+import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 import { partitionTodayCategories } from '@/lib/today-categories';
 import {
   INSIGHT_PERIOD_OPTIONS,
@@ -40,15 +41,18 @@ export interface AvoidStreak {
   streak: CategoryStreak;
 }
 
-/** How many journal notes the dashboard total is computed from. */
-const JOURNAL_TOTAL_LIMIT = 5;
-
 /**
  * Ceiling on the two-day window fetch. Explicit, so the ring and `entriesToday`
  * count every entry of the day instead of silently inheriting whatever page
  * size the server defaults to.
  */
 const DAY_WINDOW_LIMIT = 1000;
+
+/**
+ * Rows in the recent-activity feed. Each source is fetched with the same bound
+ * before the merge, so the newest rows of the two together are always present.
+ */
+const RECENT_ACTIVITY_LIMIT = 5;
 
 async function loadLatestCategoryEntry(categoryId: number): Promise<Entry[]> {
   return entriesAPI.getAll({
@@ -66,6 +70,7 @@ export interface UseDashboardResult {
   avoidStreaks: AvoidStreak[];
   categories: Category[];
   continueEntries: Entry[];
+  recentActivity: ActivityFeedItem[];
   loading: boolean;
   error: string | null;
   insight: InsightState;
@@ -80,7 +85,6 @@ const EMPTY_STATS: DashboardStats = {
   categoriesCount: 0,
   entriesCount: 0,
   journalCount: 0,
-  recentEntries: [],
 };
 
 /**
@@ -106,6 +110,7 @@ export function useDashboard(): UseDashboardResult {
   const [avoidStreaks, setAvoidStreaks] = useState<AvoidStreak[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [continueEntries, setContinueEntries] = useState<Entry[]>([]);
+  const [recentActivity, setRecentActivity] = useState<ActivityFeedItem[]>([]);
 
   // No onReady handler: the panel renders the fresh report inline, so the run
   // parks on `ready` rather than being consumed elsewhere.
@@ -131,14 +136,27 @@ export function useDashboard(): UseDashboardResult {
       // The hero asks two narrow questions instead of scanning the history:
       // the two-day window it counts today from (and reads yesterday off, to
       // know whether a run is at stake), and the single last-written record.
-      // The unbounded list below still feeds the Entries KPI and the
-      // recent-activity feed, which #76 replaces — the hero no longer reads it.
-      const [categories, entries, dayWindow, lastWritten, journal, streaks] = await Promise.all([
+      // The unbounded list is still needed for the exact Entries KPI. The
+      // activity feed uses its own bounded created_at query below.
+      const [
+        categories,
+        entries,
+        recentEntries,
+        dayWindow,
+        lastWritten,
+        journal,
+        streaks,
+      ] = await Promise.all([
         categoriesAPI.getAll(),
         entriesAPI.getAll(),
+        entriesAPI.getAll({
+          sort: 'created_at_desc',
+          limit: RECENT_ACTIVITY_LIMIT,
+        }),
         entriesAPI.getAll({ startDate: yesterday, endDate: today, limit: DAY_WINDOW_LIMIT }),
         entriesAPI.getAll({ sort: 'created_at_desc', limit: 1 }),
-        journalAPI.getAll({ limit: JOURNAL_TOTAL_LIMIT }),
+        // One page serves the total, the newest note's date and the feed.
+        journalAPI.getAll({ limit: RECENT_ACTIVITY_LIMIT }),
         categoriesAPI.getStreaks('avoid'),
       ]);
 
@@ -165,6 +183,9 @@ export function useDashboard(): UseDashboardResult {
       setStats(computeDashboardStats(categories.length, entries, journal.total));
       setCategories(categories);
       setContinueEntries(latestCategoryEntries.flat());
+      setRecentActivity(
+        mergeActivityFeed(recentEntries, journal.items).slice(0, RECENT_ACTIVITY_LIMIT)
+      );
       setHero(
         computeDashboardHero({
           categories,
@@ -194,6 +215,7 @@ export function useDashboard(): UseDashboardResult {
     avoidStreaks,
     categories,
     continueEntries,
+    recentActivity,
     loading,
     error,
     insight,

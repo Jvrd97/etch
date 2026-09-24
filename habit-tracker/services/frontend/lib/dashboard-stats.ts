@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
-// summary: pure dashboard aggregation — the recent-activity feed (unchanged) plus computeDashboardHero: today's ring, the last written entry and the tip of the day
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #76
+// summary: pure dashboard aggregation — the KPI counts plus computeDashboardHero: today's ring, the last written entry and the tip of the day
 
 import type { Category, Entry } from './api';
 import { pickDailyTip, type DailyTip, type TrackedCategory } from './daily-tip';
@@ -7,44 +7,27 @@ import { todayISO } from './date';
 import { formatLoggedAgo } from './relative-time';
 import { firstNumberField, partitionTodayCategories } from './today-categories';
 
-/** How many entries the recent-activity feed surfaces (parity with the iOS dashboard). */
-export const RECENT_ENTRIES_LIMIT = 5;
-
 export interface DashboardStats {
   categoriesCount: number;
   entriesCount: number;
   journalCount: number;
-  recentEntries: Entry[];
 }
 
 /**
  * Pure aggregation of the fetched dashboard data.
  *
  * `entriesCount` is the real length of the entries list (not a limit-capped
- * slice), matching the iOS dashboard. The recent-activity feed is newest first
- * (entry_date desc, id desc on ties) and capped at {@link RECENT_ENTRIES_LIMIT};
- * the explicit sort makes the feed order identical to iOS regardless of the
- * backend tie order.
+ * slice), matching the iOS dashboard.
  */
 export function computeDashboardStats(
   categoriesCount: number,
   entries: Entry[],
   journalTotal: number,
 ): DashboardStats {
-  const recentEntries = [...entries]
-    .sort((a, b) => {
-      if (a.entry_date !== b.entry_date) {
-        return a.entry_date < b.entry_date ? 1 : -1;
-      }
-      return b.id - a.id;
-    })
-    .slice(0, RECENT_ENTRIES_LIMIT);
-
   return {
     categoriesCount,
     entriesCount: entries.length,
     journalCount: journalTotal,
-    recentEntries,
   };
 }
 

@@ -1,11 +1,18 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
-// summary: Entries-screen state extracted from app/entries/page.tsx so the desktop page and /m/entries render the same data, filter, visibility refresh and reload behaviour; a successful load retires only the load error, never one the screen reported
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #76
+// summary: Entries state loads tracker entries and, without a category filter, journal notes into one feed ordered by the day they belong to; shares filtering, visibility refresh and reload across shells
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
-import { categoriesAPI, entriesAPI, type Category, type Entry } from '@/lib/api';
-import { groupEntriesByDate } from '@/lib/entry-groups';
+import {
+  categoriesAPI,
+  entriesAPI,
+  journalAPI,
+  type Category,
+  type Entry,
+  type JournalEntry,
+} from '@/lib/api';
+import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 
 /** How many entries one screenful of the list asks for. */
 const ENTRY_PAGE_SIZE = 50;
@@ -24,10 +31,12 @@ interface EntriesError {
 
 /** Everything an Entries screen needs; the two shells differ only in markup. */
 export interface UseEntriesResult {
-  entries: Entry[];
+  /**
+   * Tracker entries and journal notes as one feed. Journal notes belong to no
+   * category, so they are left out while a category filter is on.
+   */
+  activityItems: ActivityFeedItem[];
   categories: Category[];
-  /** Entries bucketed by `entry_date`, in first-seen order — the list's render shape. */
-  grouped: Array<[string, Entry[]]>;
   loading: boolean;
   error: string | null;
   /** Category the list is narrowed to, or null for "all categories". */
@@ -42,6 +51,7 @@ export interface UseEntriesResult {
 
 export function useEntries(): UseEntriesResult {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [journals, setJournals] = useState<JournalEntry[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState<EntriesError | null>(null);
@@ -64,14 +74,21 @@ export function useEntries(): UseEntriesResult {
     async ({ showSpinner = false } = {}) => {
       try {
         if (showSpinner) setLoading(true);
-        const [entriesData, categoriesData] = await Promise.all([
+        // Both sources come back newest day first (the backend default), so one
+        // page covers the most recent days of the history rather than the most
+        // recently typed records.
+        const [entriesData, journalData, categoriesData] = await Promise.all([
           entriesAPI.getAll({
             categoryId: filterCategory ?? undefined,
             limit: ENTRY_PAGE_SIZE,
           }),
+          filterCategory === null
+            ? journalAPI.getAll({ limit: ENTRY_PAGE_SIZE }).then(({ items }) => items)
+            : Promise.resolve<JournalEntry[]>([]),
           categoriesAPI.getAll(),
         ]);
         setEntries(entriesData);
+        setJournals(journalData);
         setCategories(categoriesData);
         // A reload that succeeds must retire the previous *load* failure, or the
         // error banner outlives the outage that caused it. Anything the screen
@@ -114,12 +131,14 @@ export function useEntries(): UseEntriesResult {
 
   // Memoised, so the hook's public contract does not hand out a new array on
   // every render and invalidate whatever the screens memoise off it.
-  const grouped = useMemo(() => groupEntriesByDate(entries), [entries]);
+  const activityItems = useMemo(
+    () => mergeActivityFeed(entries, journals),
+    [entries, journals]
+  );
 
   return {
-    entries,
+    activityItems,
     categories,
-    grouped,
     loading,
     error: errorState?.message ?? null,
     filterCategory,

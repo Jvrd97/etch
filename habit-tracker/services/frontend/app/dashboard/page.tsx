@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176
-// summary: desktop Dashboard includes avoid-category streaks and Continue tracking alongside the hero
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76
+// summary: desktop Dashboard includes avoid-category streaks, Continue tracking and merged recent activity alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -23,6 +23,7 @@ import { NEW_ENTRY_QUERY } from '@/lib/routes';
 import { ENTRIES_TODAY_LABEL, heroLastEntryLine } from '@/lib/ui-constants';
 import { ContinueTracking } from '@/components/ContinueTracking';
 import { CurrentStreaks } from '@/components/CurrentStreaks';
+import ActivityFeed from '@/components/ActivityFeed';
 
 export default function Dashboard() {
   const {
@@ -31,6 +32,7 @@ export default function Dashboard() {
     avoidStreaks,
     categories,
     continueEntries,
+    recentActivity,
     loading,
     error,
     insight,
@@ -245,7 +247,7 @@ export default function Dashboard() {
           </Link>
         </div>
         <div className="px-6 py-4">
-          {stats.recentEntries.length === 0 ? (
+          {recentActivity.length === 0 ? (
             <div className="text-center py-14">
               <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
                 <Calendar className="w-8 h-8 text-text-disabled" strokeWidth={2} />
@@ -259,34 +261,7 @@ export default function Dashboard() {
               </Link>
             </div>
           ) : (
-            <div className="divide-y divide-white/5">
-              {stats.recentEntries.map((entry) => (
-                <div key={entry.id} className="flex items-center justify-between py-4">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="p-2.5 rounded-2xl bg-surface flex-shrink-0">
-                      <Calendar className="w-4 h-4 text-lime" strokeWidth={2} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-base font-medium text-text-primary">
-                        Entry #{entry.id}
-                      </p>
-                      <p className="text-[13px] text-text-secondary mt-0.5">{entry.entry_date}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4 flex-shrink-0">
-                    <span className="text-[13px] text-text-disabled">
-                      {entry.values.length} values
-                    </span>
-                    <Link
-                      href={`/entries/${entry.id}`}
-                      className="text-sm font-medium text-lime hover:text-green-secondary transition-colors duration-200"
-                    >
-                      View
-                    </Link>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <ActivityFeed items={recentActivity} categories={categories} />
           )}
         </div>
       </div>

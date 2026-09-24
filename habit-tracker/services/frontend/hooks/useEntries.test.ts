@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
-// summary: tests for useEntries — initial load, date grouping (memoised), category filter refetch, error surfacing, silent refetch when the app becomes visible again and reload after a mutation
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #76
+// summary: useEntries tests cover the merged tracker and journal feed, the category filter leaving the journal out, refresh and errors
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry } from '@/lib/api';
+import type { Category, Entry, JournalEntry } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 
@@ -35,7 +35,20 @@ const TODAY_ENTRY = entry(10, '2026-07-24');
 const SAME_DAY_ENTRY = entry(11, '2026-07-24');
 const YESTERDAY_ENTRY = entry(12, '2026-07-23');
 
+const JOURNAL: JournalEntry = {
+  id: 3,
+  title: 'Day reflection',
+  content: 'A note',
+  entry_date: '2026-07-24',
+  created_at: TIMESTAMP,
+  updated_at: TIMESTAMP,
+};
+
+/** The feed as the screens render it, reduced to the row keys. */
+const keysOf = (items: { key: string }[]) => items.map(({ key }) => key);
+
 let getAllEntries: ReturnType<typeof mock>;
+let getAllJournal: ReturnType<typeof mock>;
 let getAllCategories: ReturnType<typeof mock>;
 
 // The export *names* of a mocked module are fixed the first time any test file
@@ -158,7 +171,7 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(undefined),
   },
   journalAPI: {
-    getAll: () => Promise.resolve({ items: [], total: 0 }),
+    getAll: (...args: unknown[]) => getAllJournal(...args),
     getById: () => Promise.resolve(null),
     create: () => Promise.resolve(null),
   },
@@ -172,6 +185,7 @@ beforeEach(() => {
   getAllEntries = mock(() =>
     Promise.resolve([TODAY_ENTRY, SAME_DAY_ENTRY, YESTERDAY_ENTRY])
   );
+  getAllJournal = mock(() => Promise.resolve({ items: [], total: 0 }));
 });
 
 afterEach(() => {
@@ -185,30 +199,61 @@ describe('useEntries', () => {
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.entries).toHaveLength(3);
+    expect(keysOf(result.current.activityItems)).toEqual(['entry-10', 'entry-11', 'entry-12']);
     expect(result.current.categories).toEqual([CATEGORY, OTHER_CATEGORY]);
   });
 
-  it('groups entries by date for rendering', async () => {
+  it('asks for the newest days of the history, not the most recently written records', async () => {
     const { result } = renderHook(() => useEntries());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.grouped).toEqual([
-      ['2026-07-24', [TODAY_ENTRY, SAME_DAY_ENTRY]],
-      ['2026-07-23', [YESTERDAY_ENTRY]],
-    ]);
+    // No `sort`: the backend default orders by entry_date, the same day the
+    // history screens file every record under.
+    expect(getAllEntries).toHaveBeenLastCalledWith({ categoryId: undefined, limit: 50 });
   });
 
-  it('keeps the grouping identity stable while the entries do not change', async () => {
+  it('merges journal notes into the same feed and loads them with a page limit', async () => {
+    getAllJournal = mock(() => Promise.resolve({ items: [JOURNAL], total: 1 }));
+
+    const { result } = renderHook(() => useEntries());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(keysOf(result.current.activityItems)).toContain('journal-3');
+    expect(getAllJournal).toHaveBeenCalledWith({ limit: 50 });
+  });
+
+  it('leaves journal notes out while a category is chosen and brings them back on reset', async () => {
+    getAllJournal = mock(() => Promise.resolve({ items: [JOURNAL], total: 1 }));
+    const { result } = renderHook(() => useEntries());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    getAllEntries = mock(() => Promise.resolve([entry(20, '2026-07-24', 2)]));
+    act(() => {
+      result.current.setFilterCategory(2);
+    });
+    // A journal note belongs to no category, so it can never match one.
+    await waitFor(() => expect(keysOf(result.current.activityItems)).toEqual(['entry-20']));
+    expect(getAllJournal).toHaveBeenCalledTimes(1);
+
+    getAllEntries = mock(() => Promise.resolve([TODAY_ENTRY]));
+    act(() => {
+      result.current.setFilterCategory(null);
+    });
+    await waitFor(() =>
+      expect(keysOf(result.current.activityItems)).toEqual(['entry-10', 'journal-3'])
+    );
+  });
+
+  it('keeps the feed identity stable while the sources do not change', async () => {
     const { result, rerender } = renderHook(() => useEntries());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    const grouped = result.current.grouped;
+    const items = result.current.activityItems;
     rerender();
 
     // A fresh array on every render turns the hook's public contract into a
     // permanent change for any memo or effect a screen hangs off it.
-    expect(result.current.grouped).toBe(grouped);
+    expect(result.current.activityItems).toBe(items);
   });
 
   it('resolves the category behind an entry', async () => {
@@ -267,7 +312,7 @@ describe('useEntries', () => {
 
     // Installed as a PWA the document is never reloaded, so without this the
     // list keeps showing whatever was fetched when the app was launched.
-    await waitFor(() => expect(result.current.entries).toEqual([TODAY_ENTRY]));
+    await waitFor(() => expect(keysOf(result.current.activityItems)).toEqual(['entry-10']));
     expect(getAllEntries.mock.calls.length).toBeGreaterThan(0);
     expect(loadsBefore).toBeGreaterThan(0);
     // Silent: the list stays on screen instead of collapsing into a spinner.
@@ -290,7 +335,7 @@ describe('useEntries', () => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    await waitFor(() => expect(result.current.entries).toEqual([TODAY_ENTRY]));
+    await waitFor(() => expect(keysOf(result.current.activityItems)).toEqual(['entry-10']));
     expect(result.current.error).toBe('Failed to delete entry');
   });
 
@@ -317,6 +362,6 @@ describe('useEntries', () => {
     });
 
     expect(result.current.loading).toBe(false);
-    expect(result.current.entries).toEqual([TODAY_ENTRY]);
+    expect(keysOf(result.current.activityItems)).toEqual(['entry-10']);
   });
 });
