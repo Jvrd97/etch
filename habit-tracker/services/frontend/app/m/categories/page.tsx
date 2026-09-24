@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175
-// summary: Mobile category editor with explicit, clearable selection of the field shown in the table
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
+// summary: Mobile category editor persists field units and quick-step lists
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -391,6 +391,7 @@ function CategoryEditorSheet({ state, onCancel, onSaved }: CategoryEditorSheetPr
               canMoveDown={index < draft.fields.length - 1}
               primaryFieldId={draft.primaryFieldId}
               onChange={(updates) => draft.updateField(index, updates)}
+              onQuickStepsTextChange={(text) => draft.updateQuickStepsText(index, text)}
               onPrimaryFieldChange={draft.setPrimaryFieldId}
               onRemove={() => draft.removeField(index)}
               onMove={(direction) => draft.moveField(index, direction)}
@@ -438,6 +439,7 @@ interface FieldCardProps {
   canMoveDown: boolean;
   primaryFieldId: number | null;
   onChange: (updates: Partial<FieldCreate>) => void;
+  onQuickStepsTextChange: (text: string) => void;
   onPrimaryFieldChange: (fieldId: number | null) => void;
   onRemove: () => void;
   onMove: (direction: FieldMoveDirection) => void;
@@ -451,6 +453,7 @@ function FieldCard({
   canMoveDown,
   primaryFieldId,
   onChange,
+  onQuickStepsTextChange,
   onPrimaryFieldChange,
   onRemove,
   onMove,
@@ -490,6 +493,29 @@ function FieldCard({
           style={{ minHeight: TAP_TARGET_PX }}
           className={entryInputClass}
         />
+      )}
+
+      {field.field_type === 'number' && (
+        <>
+          <input
+            type="text"
+            aria-label={`Field ${position} unit`}
+            placeholder="Unit (optional)"
+            value={field.unit ?? ''}
+            onChange={(e) => onChange({ unit: e.target.value || null })}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className={entryInputClass}
+          />
+          <input
+            type="text"
+            aria-label={`Field ${position} quick steps`}
+            placeholder="Quick steps: -5, -1, 1, 5"
+            value={field.quickStepsText}
+            onChange={(e) => onQuickStepsTextChange(e.target.value)}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className={entryInputClass}
+          />
+        </>
       )}
 
       {/* Wraps rather than squeezes: the row carries the Required checkbox plus

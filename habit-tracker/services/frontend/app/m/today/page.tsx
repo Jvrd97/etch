@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 
@@ -10,14 +10,16 @@ import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
 import QuickMarkRow from '@/components/QuickMarkRow';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import TodayDayEntriesList from '@/components/TodayDayEntriesList';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
+import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import VoiceDaySheet from '@/components/mobile/VoiceDaySheet';
 import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
-import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
-import type { Category } from '@/lib/api';
-import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { dayEntriesForCategory, isFieldChecked, numberFieldSum } from '@/lib/today-entries';
+import type { Category, Entry } from '@/lib/api';
+import { TAP_TARGET_PX, TELL_DAY_LABEL } from '@/lib/ui-constants';
 import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { Check, Mic, Sun } from 'lucide-react';
@@ -28,7 +30,6 @@ import { Check, Mic, Sun } from 'lucide-react';
  * Exported because the test asserts on it, and named exports out of an App
  * Router `page.tsx` are otherwise a contract Next does not promise to keep.
  */
-export const TELL_DAY_LABEL = 'Рассказать день голосом';
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -56,6 +57,8 @@ export default function MobileTodayPage() {
     setError,
     toggleField,
     addNumber,
+    updateEntry,
+    deleteEntry,
     reloadStreak,
     reload,
   } = useToday();
@@ -64,7 +67,8 @@ export default function MobileTodayPage() {
   const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one sheet can ever be up.
-  const [editing, setEditing] = useState<Category | null>(null);
+  const [listCategory, setListCategory] = useState<Category | null>(null);
+  const [editing, setEditing] = useState<{ category: Category; entry: Entry | null } | null>(null);
   const [dictating, setDictating] = useState(false);
 
   // Каркас, а не спиннер (#123): спиннер закрывает кнопки на всё время
@@ -157,6 +161,7 @@ export default function MobileTodayPage() {
                     onRelapse={reloadStreak}
                     onEntriesChanged={reload}
                     onError={setError}
+                    onOpenEntries={() => setListCategory(category)}
                   />
                 ))}
               </div>
@@ -165,7 +170,10 @@ export default function MobileTodayPage() {
 
           {checklistCategories.map((category) => (
             <section key={category.id}>
-              <SectionLabel>{category.name}</SectionLabel>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <SectionLabel>{category.name}</SectionLabel>
+                <button type="button" onClick={() => setListCategory(category)} className="text-sm text-text-secondary">Записи</button>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 {booleanFields(category).map((field) => {
                   const isChecked = isFieldChecked(checked, category.id, field.id);
@@ -207,7 +215,7 @@ export default function MobileTodayPage() {
                         ? addNumber(category.id, numberField.id, amount)
                         : Promise.resolve(false)
                     }
-                    onOpenEditor={() => setEditing(category)}
+                    onOpenEditor={() => setListCategory(category)}
                   />
                 ))}
               </div>
@@ -229,13 +237,38 @@ export default function MobileTodayPage() {
         />
       )}
 
+      {listCategory && (
+        <FullScreenSheet
+          title={`${listCategory.name} — сегодня`}
+          onCancel={() => setListCategory(null)}
+          onDone={() => {
+            setEditing({ category: listCategory, entry: null });
+            setListCategory(null);
+          }}
+          doneLabel="Добавить"
+        >
+          <TodayDayEntriesList
+            category={listCategory}
+            entries={dayEntriesForCategory(entries, listCategory.id)}
+            onEdit={(entry) => {
+              setEditing({ category: listCategory, entry });
+              setListCategory(null);
+            }}
+            onDelete={deleteEntry}
+            onAdd={() => {
+              setEditing({ category: listCategory, entry: null });
+              setListCategory(null);
+            }}
+          />
+        </FullScreenSheet>
+      )}
+
       {editing && (
         <EntryEditorSheet
-          // Editing today's entry when there is one, creating otherwise: a day
-          // of taps should deepen one record, not scatter a dozen.
-          entry={todayEntryForCategory(entries, editing.id) ?? null}
-          categories={[editing]}
-          lockedCategory={editing}
+          entry={editing.entry}
+          categories={[editing.category]}
+          lockedCategory={editing.category}
+          onUpdateExisting={updateEntry}
           onCancel={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

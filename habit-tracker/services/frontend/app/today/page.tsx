@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 
@@ -10,13 +10,14 @@ import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
 import QuickMarkRow from '@/components/QuickMarkRow';
 import QuickNumberRow from '@/components/QuickNumberRow';
+import TodayDayEntriesList from '@/components/TodayDayEntriesList';
 import HotkeyLegend from '@/components/HotkeyLegend';
 import EntryForm from '@/components/EntryForm';
 import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
-import { isFieldChecked, numberFieldSum, todayEntryForCategory } from '@/lib/today-entries';
-import type { Category } from '@/lib/api';
+import { dayEntriesForCategory, isFieldChecked, numberFieldSum } from '@/lib/today-entries';
+import type { Category, Entry } from '@/lib/api';
 import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { useQuickMarkHotkeys } from '@/hooks/useQuickMarkHotkeys';
@@ -37,6 +38,8 @@ export default function TodayPage() {
     setError,
     toggleField,
     addNumber,
+    updateEntry,
+    deleteEntry,
     reloadStreak,
     reload,
   } = useToday();
@@ -45,7 +48,8 @@ export default function TodayPage() {
   const quickMarks = useQuickMarks();
   // The category whose full editor is open, or null. Held here rather than in
   // the card so only one editor can ever be up.
-  const [editing, setEditing] = useState<Category | null>(null);
+  const [listCategory, setListCategory] = useState<Category | null>(null);
+  const [editing, setEditing] = useState<{ category: Category; entry: Entry | null } | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
 
   const markByKey = useCallback((id: number) => void quickMarks.tap(id), [quickMarks]);
@@ -58,7 +62,7 @@ export default function TodayPage() {
   // editor is being typed into.
   useQuickMarkHotkeys({
     marks: quickMarks.marks,
-    dialogOpen: legendOpen || editing !== null,
+    dialogOpen: legendOpen || editing !== null || listCategory !== null,
     onMark: markByKey,
     onLegend: openLegend,
   });
@@ -165,6 +169,7 @@ export default function TodayPage() {
                     onRelapse={reloadStreak}
                     onEntriesChanged={reload}
                     onError={setError}
+                    onOpenEntries={() => setListCategory(category)}
                   />
                 ))}
               </div>
@@ -178,6 +183,7 @@ export default function TodayPage() {
                   {category.name}
                 </span>
                 <div className="flex-1 h-px bg-white/5" />
+                <button type="button" onClick={() => setListCategory(category)} className="text-sm text-text-secondary hover:text-text-primary">Записи</button>
               </div>
               <div className="flex flex-wrap gap-3">
                 {booleanFields(category).map((field) => {
@@ -224,7 +230,7 @@ export default function TodayPage() {
                         ? addNumber(category.id, numberField.id, amount)
                         : Promise.resolve(false)
                     }
-                    onOpenEditor={() => setEditing(category)}
+                    onOpenEditor={() => setListCategory(category)}
                   />
                 ))}
               </div>
@@ -235,14 +241,37 @@ export default function TodayPage() {
 
       {legendOpen && <HotkeyLegend marks={quickMarks.marks} onClose={closeLegend} />}
 
+      {listCategory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <section aria-label={`${listCategory.name} — today`} className="w-full max-w-xl rounded-3xl border border-white/10 bg-card p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold text-text-primary">{listCategory.name} — сегодня</h2>
+              <button type="button" onClick={() => setListCategory(null)} aria-label="Close" className="rounded-xl px-3 py-2 text-text-secondary hover:text-text-primary">Закрыть</button>
+            </div>
+            <TodayDayEntriesList
+              category={listCategory}
+              entries={dayEntriesForCategory(entries, listCategory.id)}
+              onEdit={(entry) => {
+                setListCategory(null);
+                setEditing({ category: listCategory, entry });
+              }}
+              onDelete={deleteEntry}
+              onAdd={() => {
+                setListCategory(null);
+                setEditing({ category: listCategory, entry: null });
+              }}
+            />
+          </section>
+        </div>
+      )}
+
       {editing && (
         <EntryForm
-          // Editing today's entry when there is one, creating otherwise: a day
-          // of taps should deepen one record, not scatter a dozen.
-          entry={todayEntryForCategory(entries, editing.id) ?? null}
-          categories={[editing]}
-          lockedCategoryId={editing.id}
+          entry={editing.entry}
+          categories={[editing.category]}
+          lockedCategoryId={editing.category.id}
           date={date}
+          onUpdateExisting={updateEntry}
           onClose={() => setEditing(null)}
           onSuccess={() => {
             setEditing(null);

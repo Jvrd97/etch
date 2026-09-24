@@ -1,5 +1,5 @@
-# [review:need-review] 175
-# summary: category updates validate and safely clear the explicit primary table field
+# [review:need-review] 175, #176
+# summary: category CRUD preserves primary fields plus units and quick-step lists
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +61,8 @@ def _apply_field(current: Field, item: FieldUpsert) -> None:
     current.default_value = item.default_value
     current.options = item.options
     current.order = item.order
+    current.unit = item.unit
+    current.quick_steps = item.quick_steps
 
 
 async def _sync_category_fields(
@@ -94,6 +96,8 @@ async def _sync_category_fields(
                     default_value=item.default_value,
                     options=item.options,
                     order=item.order,
+                    unit=item.unit,
+                    quick_steps=item.quick_steps,
                 )
             )
             continue
@@ -181,6 +185,8 @@ async def create_category(db: AsyncSession, category: CategoryCreate) -> Categor
                 default_value=field_data.default_value,
                 options=field_data.options,
                 order=field_data.order,
+                unit=field_data.unit,
+                quick_steps=field_data.quick_steps,
             )
             db.add(db_field)
 
@@ -277,6 +283,8 @@ def _build_field(category_id: int, field: FieldCreate) -> Field:
         default_value=field.default_value,
         options=field.options,
         order=field.order,
+        unit=field.unit,
+        quick_steps=field.quick_steps,
     )
 
 
@@ -391,6 +399,8 @@ async def add_field_to_category(
         default_value=field.default_value,
         options=field.options,
         order=field.order,
+        unit=field.unit,
+        quick_steps=field.quick_steps,
     )
     db.add(db_field)
     await db.commit()

@@ -2037,3 +2037,34 @@ Feedback loops (frontend): `bun test` — **1403 pass, 0 fail**; `tsc --noEmit`
 - `app/today/page.tsx`, `app/m/today/page.tsx` — mod: после записи и отмены карточка просит `useToday` заново получить список записей, чтобы обе оболочки не держали устаревшее состояние.
 
 Feedback loops (frontend): `bun test components/AvoidStreakCard.test.tsx app/today/page.test.tsx app/m/today/page.test.tsx` — **21 pass, 0 fail**; `tsc --noEmit` чисто; `eslint` изменённых файлов завершился с 0 errors.
+
+## 2026-09-05 — #176
+
+Изменено 25 файлов: `lib/api.ts` (mod), `lib/format-value.ts` (new), `lib/format-value.test.ts` (new), `lib/entry-values.ts` (mod), `lib/entry-values.test.ts` (mod), `lib/routes.ts` (mod), `lib/routes.test.ts` (mod), `components/QuickNumberRow.tsx` (mod), `components/QuickNumberRow.test.tsx` (mod), `components/EntryForm.tsx` (mod), `components/mobile/EntryEditorSheet.tsx` (mod), `components/ContinueTracking.tsx` (new), `components/ContinueTracking.test.tsx` (new), `hooks/useCategories.ts` (mod), `hooks/useCategories.test.ts` (mod), `hooks/useDashboard.ts` (mod), `hooks/useDashboard.test.ts` (mod), `app/categories/page.tsx` (mod), `app/m/categories/page.tsx` (mod), `app/dashboard/page.tsx` (mod), `app/m/dashboard/page.tsx` (mod), `app/entries/page.tsx` (mod), `app/entries/page.test.tsx` (mod), `app/m/entries/page.tsx` (mod), `app/m/entries/page.test.tsx` (mod).
+
+## 2026-09-24 — PHASE-01/177: список записей дня в Today
+
+Изменено 15 файлов кода: 2 `new`, 13 `mod`.
+
+- `components/TodayDayEntriesList.tsx` и тест — new: общий список записей с временем, значениями, открытием формы, удалением и добавлением.
+- `hooks/useToday.ts`, `lib/today-entries.ts` и тесты — mod: хук оптимистично обновляет или удаляет запись; после удаления записи Avoid обновляет streak; helper исключает временные отрицательные id.
+- `app/today/page.tsx`, `app/m/today/page.tsx` и тесты — mod: карточка открывает список; на телефоне используется `FullScreenSheet` и существующий `EntryEditorSheet`.
+- `components/AvoidStreakCard.tsx`, `components/EntryForm.tsx`, `components/mobile/EntryEditorSheet.tsx`, `hooks/useEntryDraft.ts` — mod: открытие истории для Avoid и checklist; формы передают изменения владельцу Today для PATCH с откатом.
+
+Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**; `bunx tsc --noEmit` чисто; ESLint — 0 errors и 17 прежних warnings; `git diff --check` чисто. Независимое ревью APPROVE.
+
+## 2026-09-24 — PHASE-01/174: массовые стрики и блок на дашборде
+
+- `lib/api.ts`, `hooks/useToday.ts`, `lib/today-entries.ts` — Today запрашивает все avoid-стрики одной ручкой.
+- `hooks/useDashboard.ts`, `components/CurrentStreaks.tsx`, `app/dashboard/page.tsx`, `app/m/dashboard/page.tsx` — данные загружаются bulk-запросом, карточка показывает стрики внутри hero на обоих шеллах.
+- Добавлены unit-тесты bulk map и `CurrentStreaks`; существующие тесты Today проверяют один API вызов.
+
+Проверки: target dashboard tests — 11 passed; Today и helper — 48 passed; backend API — 23 passed. Полный совместный Bun-набор имеет прежнюю ошибку общего mock registry (`ISO_DATE_PAD`); `tsc` в общем checkout сообщает только о старых `.next/types` для `EMPTY_FEED` и `TELL_DAY_LABEL`. Независимое ревью APPROVE.
+
+## 2026-09-24 — #176: исправления после ревью
+
+Изменено 6 файлов кода: 2 `new`, 4 `mod`.
+
+- `components/TodayDayEntriesList.tsx` и тест — числовые значения используют единицу из `Field.unit`.
+- `lib/chart-data.ts` и тест — серия графика берёт единицу из `Field.unit`, а не из имени поля.
+- `hooks/useDashboard.ts` и тест — Continue tracking запрашивает только последнюю запись каждой подходящей категории через `limit: 1` и `sort: created_at_desc`.

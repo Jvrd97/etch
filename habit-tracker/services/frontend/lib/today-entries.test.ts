@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/177
 // summary: unit tests for Today entry state — number totals, optimistic merge, today's entry lookup for the card-tap editor, checked map, optimistic flip + rollback, streak degradation to null
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import type { Category, CategoryStreak, Entry, Field } from './api';
 import {
   buildCheckedMap,
+  dayEntriesForCategory,
   isFieldChecked,
   loadStreakMap,
   numberFieldSum,
@@ -127,6 +128,30 @@ describe('todayEntryForCategory', () => {
   });
 });
 
+describe('dayEntriesForCategory', () => {
+  /** A saved (positive id) or optimistic (negative id) entry of `categoryId`. */
+  function withId(id: number, categoryId: number, createdAt: string): Entry {
+    return { ...entry(categoryId, []), id, created_at: createdAt };
+  }
+
+  it('returns every saved entry in the order it was written', () => {
+    const entries = [
+      withId(8, 1, '2026-07-24T18:40:00Z'),
+      withId(3, 1, '2026-07-24T09:12:00Z'),
+      withId(4, 2, '2026-07-24T10:00:00Z'),
+    ];
+
+    expect(dayEntriesForCategory(entries, 1).map(({ id }) => id)).toEqual([3, 8]);
+  });
+
+  it('does not offer an optimistic entry for editing or deletion', () => {
+    expect(dayEntriesForCategory([
+      withId(-1, 1, '2026-07-24T09:00:00Z'),
+      withId(8, 1, '2026-07-24T10:00:00Z'),
+    ], 1).map(({ id }) => id)).toEqual([8]);
+  });
+});
+
 describe('buildCheckedMap', () => {
   const checklist = category({
     id: 5,
@@ -184,22 +209,23 @@ describe('setFieldChecked / isFieldChecked', () => {
 });
 
 describe('loadStreakMap', () => {
-  it('keys the loaded streaks by category id', async () => {
-    const map = await loadStreakMap([1, 2], async (id) => streak(id));
+  it('keys one bulk response by category id', async () => {
+    const fetchStreaks = mock(() => Promise.resolve([streak(1), streak(2)]));
+    const map = await loadStreakMap([1, 2], fetchStreaks);
     expect(map[1]?.category_id).toBe(1);
     expect(map[2]?.category_id).toBe(2);
+    expect(fetchStreaks).toHaveBeenCalledTimes(1);
   });
 
-  it('degrades a failing category to null and keeps the others', async () => {
-    const map = await loadStreakMap([1, 2], async (id) => {
-      if (id === 1) throw new Error('boom');
-      return streak(id);
-    });
+  it('degrades all categories to null when the bulk request fails', async () => {
+    const map = await loadStreakMap([1, 2], () => Promise.reject(new Error('boom')));
     expect(map[1]).toBeNull();
-    expect(map[2]?.current_streak).toBe(3);
+    expect(map[2]).toBeNull();
   });
 
   it('is an empty map when there are no avoid categories', async () => {
-    expect(await loadStreakMap([], async (id) => streak(id))).toEqual({});
+    const fetchStreaks = mock(() => Promise.resolve([streak(1)]));
+    expect(await loadStreakMap([], fetchStreaks)).toEqual({});
+    expect(fetchStreaks).toHaveBeenCalledTimes(0);
   });
 });

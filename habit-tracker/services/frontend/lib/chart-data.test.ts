@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/20-category-page-chart
-// summary: unit tests for chart-data pure helpers (series/axes/units, value parsing, per-day points, period slicing)
+// [review:need-review] PHASE-01/20-category-page-chart, #176
+// summary: unit tests for chart-data helpers, including units stored on fields
 
 import { describe, expect, it } from 'bun:test';
 import type { Field, TableDay } from './api';
@@ -23,7 +23,13 @@ function makeField(overrides: Partial<Field> & Pick<Field, 'id' | 'name' | 'fiel
   };
 }
 
-const kmField = makeField({ id: 10, name: 'Distance (km)', field_type: 'number', order: 0 });
+const kmField = makeField({
+  id: 10,
+  name: 'Distance',
+  field_type: 'number',
+  order: 0,
+  unit: 'km',
+});
 const timeField = makeField({ id: 11, name: 'Duration', field_type: 'time', order: 1 });
 const notesField = makeField({ id: 12, name: 'Notes', field_type: 'text', order: 2 });
 const stepsField = makeField({ id: 13, name: 'Steps', field_type: 'number', order: 3 });
@@ -36,6 +42,17 @@ describe('chartableFields', () => {
 });
 
 describe('buildSeries', () => {
+  it('uses the field unit instead of guessing it from the field name', () => {
+    const field = makeField({
+      id: 14,
+      name: 'Distance (legacy label)',
+      field_type: 'number',
+      unit: 'km',
+    });
+
+    expect(buildSeries([field])[0]?.unit).toBe('km');
+  });
+
   it('puts km and time on different axes with proper units', () => {
     const series = buildSeries([kmField, timeField]);
     expect(series).toHaveLength(2);
@@ -44,8 +61,8 @@ describe('buildSeries', () => {
   });
 
   it('keeps same-unit series on the left axis', () => {
-    const a = makeField({ id: 1, name: 'Work (h)', field_type: 'number', order: 0 });
-    const b = makeField({ id: 2, name: 'Rest (h)', field_type: 'number', order: 1 });
+    const a = makeField({ id: 1, name: 'Work', field_type: 'number', order: 0, unit: 'h' });
+    const b = makeField({ id: 2, name: 'Rest', field_type: 'number', order: 1, unit: 'h' });
     const series = buildSeries([a, b]);
     expect(series.map((s) => s.axis)).toEqual(['left', 'left']);
   });

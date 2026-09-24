@@ -1,12 +1,13 @@
-# [review:need-review] 175
-# summary: Field.category explicitly uses category_id now that Category also references Field
 from __future__ import annotations
+
+# [review:need-review] 175, #176
+# summary: Field stores optional display units and ordered quick numeric increments
 
 import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -55,6 +56,8 @@ class Field(Base):
     is_required: Mapped[bool] = mapped_column(default=False)
     default_value: Mapped[str | None] = mapped_column(String(255))
     options: Mapped[str | None] = mapped_column(String(500))  # JSON string for select
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    quick_steps: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
 
     order: Mapped[int] = mapped_column(default=0)  # Display order
 

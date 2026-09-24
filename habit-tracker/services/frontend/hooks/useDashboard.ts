@@ -1,9 +1,16 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
-// summary: Dashboard state — adds the hero load (a two-day entry window, the last written entry, the newest journal date) which the ring, the last-activity line and the tip are derived from
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176
+// summary: Dashboard state exposes loaded categories and Continue tracking alongside the hero load
 
 import { useCallback, useEffect, useState } from 'react';
-import { categoriesAPI, entriesAPI, journalAPI } from '@/lib/api';
+import {
+  categoriesAPI,
+  entriesAPI,
+  journalAPI,
+  type Category,
+  type CategoryStreak,
+  type Entry,
+} from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import {
   computeDashboardHero,
@@ -12,6 +19,7 @@ import {
   type DashboardStats,
 } from '@/lib/dashboard-stats';
 import { todayISO } from '@/lib/date';
+import { partitionTodayCategories } from '@/lib/today-categories';
 import {
   INSIGHT_PERIOD_OPTIONS,
   useInsightRun,
@@ -27,6 +35,11 @@ export type { InsightPeriod };
 /** Discriminated state of the on-demand AI insight panel. */
 export type InsightState = InsightRunState;
 
+export interface AvoidStreak {
+  category: Category;
+  streak: CategoryStreak;
+}
+
 /** How many journal notes the dashboard total is computed from. */
 const JOURNAL_TOTAL_LIMIT = 5;
 
@@ -37,11 +50,22 @@ const JOURNAL_TOTAL_LIMIT = 5;
  */
 const DAY_WINDOW_LIMIT = 1000;
 
+async function loadLatestCategoryEntry(categoryId: number): Promise<Entry[]> {
+  return entriesAPI.getAll({
+    categoryId,
+    limit: 1,
+    sort: 'created_at_desc',
+  });
+}
+
 /** Everything a Dashboard screen needs; the two shells differ only in markup. */
 export interface UseDashboardResult {
   stats: DashboardStats;
   /** Today's ring, the last thing written, and the tip of the day. */
   hero: DashboardHero;
+  avoidStreaks: AvoidStreak[];
+  categories: Category[];
+  continueEntries: Entry[];
   loading: boolean;
   error: string | null;
   insight: InsightState;
@@ -79,6 +103,9 @@ export function useDashboard(): UseDashboardResult {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
   const [hero, setHero] = useState<DashboardHero>(EMPTY_HERO);
+  const [avoidStreaks, setAvoidStreaks] = useState<AvoidStreak[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [continueEntries, setContinueEntries] = useState<Entry[]>([]);
 
   // No onReady handler: the panel renders the fresh report inline, so the run
   // parks on `ready` rather than being consumed elsewhere.
@@ -106,15 +133,38 @@ export function useDashboard(): UseDashboardResult {
       // know whether a run is at stake), and the single last-written record.
       // The unbounded list below still feeds the Entries KPI and the
       // recent-activity feed, which #76 replaces — the hero no longer reads it.
-      const [categories, entries, dayWindow, lastWritten, journal] = await Promise.all([
+      const [categories, entries, dayWindow, lastWritten, journal, streaks] = await Promise.all([
         categoriesAPI.getAll(),
         entriesAPI.getAll(),
         entriesAPI.getAll({ startDate: yesterday, endDate: today, limit: DAY_WINDOW_LIMIT }),
         entriesAPI.getAll({ sort: 'created_at_desc', limit: 1 }),
         journalAPI.getAll({ limit: JOURNAL_TOTAL_LIMIT }),
+        categoriesAPI.getStreaks('avoid'),
       ]);
 
+      const categoriesById = new Map(categories.map((category) => [category.id, category]));
+      setAvoidStreaks(
+        streaks.flatMap((streak) => {
+          const category = categoriesById.get(streak.category_id);
+          return category !== undefined && category.is_active ? [{ category, streak }] : [];
+        })
+      );
+
+      const groups = partitionTodayCategories(
+        categories.filter((category) => category.is_active)
+      );
+      const continueCategoryIds = [
+        ...groups.quickForm.map((item) => item.category.id),
+        ...groups.checklist.map((category) => category.id),
+        ...groups.avoid.map((item) => item.category.id),
+      ];
+      const latestCategoryEntries = await Promise.all(
+        continueCategoryIds.map(loadLatestCategoryEntry)
+      );
+
       setStats(computeDashboardStats(categories.length, entries, journal.total));
+      setCategories(categories);
+      setContinueEntries(latestCategoryEntries.flat());
       setHero(
         computeDashboardHero({
           categories,
@@ -141,6 +191,9 @@ export function useDashboard(): UseDashboardResult {
   return {
     stats,
     hero,
+    avoidStreaks,
+    categories,
+    continueEntries,
     loading,
     error,
     insight,

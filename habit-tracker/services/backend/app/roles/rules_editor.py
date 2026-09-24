@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/139
+# [review:need-review] PHASE-03/139, PHASE-03/180
 # summary: the dry run of one rule over history without a single write, and the re-markup of a period that recomputes only what an importer wrote and never what a person confirmed, with a before/after of the shares
 """
 Сухой прогон правила и переразметка периода.
@@ -39,7 +39,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import role as role_crud
 from app.models.role import RoleAct, RoleTimeBlock
 from app.roles.matcher import RuleCandidate, resolve_rule
-from app.roles.samples import KIND_ACT, HistoricalSample, historical_samples
+from app.roles.samples import (
+    KIND_ACT,
+    HistoricalSample,
+    historical_samples,
+    is_confirmed_by_person,
+)
 
 # Сколько примеров совпадения показывается человеку. Пять: список, который
 # читают глазами перед сохранением, а не выгрузка.
@@ -245,7 +250,7 @@ async def reclassify(
             minutes = block.minutes if block is not None else 0
         before_minutes[one.role_id] = before_minutes.get(one.role_id, 0) + minutes
 
-        if one.confirmed:
+        if is_confirmed_by_person(confirmed=one.confirmed):
             protected += 1
             after_minutes[one.role_id] = after_minutes.get(one.role_id, 0) + minutes
             continue

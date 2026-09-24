@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177
 // summary: Today-screen state for both shells — the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -10,6 +10,7 @@ import {
   quickMarksAPI,
   type Category,
   type Entry,
+  type EntryCreate,
   type QuickMark,
   type QuickMarkEvent,
 } from '@/lib/api';
@@ -86,6 +87,10 @@ export interface UseTodayResult {
    * on failure, so the caller can keep whatever it would have to retype.
    */
   addNumber: (categoryId: number, fieldId: number, amount: number) => Promise<boolean>;
+  /** Optimistically patch one confirmed entry, restoring it if PATCH fails. */
+  updateEntry: (entry: Entry, data: Partial<EntryCreate>) => Promise<Entry>;
+  /** Optimistically remove one confirmed row, restoring it if DELETE fails. */
+  deleteEntry: (entry: Entry) => Promise<boolean>;
   /**
    * Tap one quick mark. What the button means is the server's answer, so the
    * id is all that is sent; the response carries the new total and the screen
@@ -158,7 +163,7 @@ export function useToday(): UseTodayResult {
     setStreaksLoading(true);
     setStreaksError(null);
     try {
-      const loaded = await loadStreaks(avoidIds, (id) => categoriesAPI.getStreak(id));
+      const loaded = await loadStreaks(avoidIds, () => categoriesAPI.getStreaks('avoid'));
       setStreaks(loaded.streaks);
       // Упавший запрос раньше был молчаливым «—» в карточке. Секция обязана
       // сказать, что цифры нет потому, что запрос не дошёл, а не потому, что
@@ -282,10 +287,16 @@ export function useToday(): UseTodayResult {
       setChecked((prev) => setFieldChecked(prev, categoryId, fieldId, next));
 
       try {
-        await entriesAPI.upsertChecklist({
+        const saved = await entriesAPI.upsertChecklist({
           category_id: categoryId,
           entry_date: todayISO(),
           values: { [fieldId]: next },
+        });
+        setEntries((previous) => {
+          const hasSaved = previous.some((entry) => entry.id === saved.id);
+          return hasSaved
+            ? previous.map((entry) => entry.id === saved.id ? saved : entry)
+            : [...previous, saved];
         });
       } catch (err) {
         setChecked((prev) => setFieldChecked(prev, categoryId, fieldId, current));
@@ -332,6 +343,99 @@ export function useToday(): UseTodayResult {
     []
   );
 
+  const updateEntry = useCallback(
+    async (entry: Entry, data: Partial<EntryCreate>): Promise<Entry> => {
+      const optimistic: Entry = {
+        ...entry,
+        entry_date: data.entry_date ?? entry.entry_date,
+        notes: data.notes ?? entry.notes,
+        values: data.values?.map((value, index) => {
+          const previous = entry.values.find((candidate) => candidate.field_id === value.field_id);
+          return {
+            id: previous?.id ?? -(index + 1),
+            entry_id: entry.id,
+            field_id: value.field_id,
+            value: value.value,
+          };
+        }) ?? entry.values,
+      };
+      const wasFetched = entries.some((candidate) => candidate.id === entry.id);
+      const wasOptimistic = optimisticEntries.some((candidate) => candidate.id === entry.id);
+      const replace = (candidate: Entry) => candidate.id === entry.id ? optimistic : candidate;
+      setEntries((previous) => previous.map(replace));
+      setOptimisticEntries((previous) => previous.map(replace));
+
+      try {
+        const saved = await entriesAPI.update(entry.id, data);
+        const persist = (candidate: Entry) => candidate.id === entry.id ? saved : candidate;
+        setEntries((previous) => previous.map(persist));
+        setOptimisticEntries((previous) => previous.map(persist));
+        return saved;
+      } catch (err) {
+        if (wasFetched) {
+          setEntries((previous) =>
+            previous.map((candidate) => candidate.id === entry.id ? entry : candidate)
+          );
+        }
+        if (wasOptimistic) {
+          setOptimisticEntries((previous) =>
+            previous.map((candidate) => candidate.id === entry.id ? entry : candidate)
+          );
+        }
+        setError(err instanceof Error ? err.message : 'Failed to update entry');
+        throw err;
+      }
+    },
+    [entries, optimisticEntries]
+  );
+
+  /**
+   * Delete only a server-owned entry. A quick add begins with a negative local
+   * id, and offering DELETE for that placeholder would make the list promise
+   * an operation the server cannot possibly perform.
+   */
+  const deleteEntry = useCallback(
+    async (entry: Entry): Promise<boolean> => {
+      if (entry.id <= 0) return false;
+
+      const wasFetched = entries.some((candidate) => candidate.id === entry.id);
+      const wasOptimistic = optimisticEntries.some((candidate) => candidate.id === entry.id);
+      setEntries((previous) => previous.filter((candidate) => candidate.id !== entry.id));
+      setOptimisticEntries((previous) =>
+        previous.filter((candidate) => candidate.id !== entry.id)
+      );
+
+      try {
+        await entriesAPI.delete(entry.id);
+        if (
+          categories.find((category) => category.id === entry.category_id)
+            ?.streak_mode === "avoid"
+        ) {
+          await reloadStreak(entry.category_id);
+        }
+        return true;
+      } catch (err) {
+        if (wasFetched) {
+          setEntries((previous) =>
+            previous.some((candidate) => candidate.id === entry.id)
+              ? previous
+              : [...previous, entry]
+          );
+        }
+        if (wasOptimistic) {
+          setOptimisticEntries((previous) =>
+            previous.some((candidate) => candidate.id === entry.id)
+              ? previous
+              : [...previous, entry]
+          );
+        }
+        setError(err instanceof Error ? err.message : 'Failed to delete entry');
+        return false;
+      }
+    },
+    [categories, entries, optimisticEntries, reloadStreak]
+  );
+
   const groups = partitionTodayCategories(categories);
   const nothingToTrack =
     quickMarks.length === 0 &&
@@ -355,6 +459,8 @@ export function useToday(): UseTodayResult {
     setError,
     toggleField,
     addNumber,
+    updateEntry,
+    deleteEntry,
     tapQuickMark,
     lastQuickMarkEvent,
     undoLastQuickMark,

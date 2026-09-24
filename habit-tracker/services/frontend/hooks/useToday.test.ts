@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177
 // summary: tests for useToday — silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type {
   Category,
@@ -93,8 +93,11 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
+let deleteEntry: ReturnType<typeof mock>;
+let upsertChecklist: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
 let getStreakApi: ReturnType<typeof mock>;
+let getStreaksApi: ReturnType<typeof mock>;
 let tapQuickMarkApi: ReturnType<typeof mock>;
 let undoQuickMarkApi: ReturnType<typeof mock>;
 
@@ -251,6 +254,7 @@ mock.module('@/lib/api', () => ({
     getAll: () => getAllCategories(),
     getById: () => Promise.resolve(null),
     getStreak: (id: number) => getStreakApi(id),
+    getStreaks: (mode: 'avoid' | 'build') => getStreaksApi(mode),
     create: () => Promise.resolve(null),
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
@@ -259,8 +263,8 @@ mock.module('@/lib/api', () => ({
     getAll: () => getAllEntries(),
     create: (data: unknown) => createEntry(data),
     update: () => Promise.resolve(null),
-    delete: () => Promise.resolve(undefined),
-    upsertChecklist: () => Promise.resolve({}),
+    delete: (id: number) => deleteEntry(id),
+    upsertChecklist: (data: unknown) => upsertChecklist(data),
   },
   journalAPI: {
     getAll: () => Promise.resolve({ items: [], total: 0 }),
@@ -273,13 +277,17 @@ mock.module('@/lib/api', () => ({
 mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
 
 const { useToday, STREAKS_FAILED } = await import('./useToday');
+const { entriesAPI } = await import('@/lib/api');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
+  deleteEntry = mock(() => Promise.resolve(undefined));
+  upsertChecklist = mock(() => Promise.resolve(ENTRY));
   listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
   getStreakApi = mock(() => Promise.resolve(null));
+  getStreaksApi = mock(() => Promise.resolve([]));
   tapQuickMarkApi = mock(() => Promise.resolve(tapAnswer(250)));
   undoQuickMarkApi = mock(() => Promise.resolve(undoAnswer(0)));
 });
@@ -290,9 +298,9 @@ afterEach(() => {
 
 describe('the two rounds of the cold path', () => {
   it('hands over the screen after the first round, with the streaks still in flight', async () => {
-    const pendingStreak = deferred<null>();
+    const pendingStreak = deferred<[]>();
     getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
-    getStreakApi = mock(() => pendingStreak.promise);
+    getStreaksApi = mock(() => pendingStreak.promise);
 
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -302,18 +310,19 @@ describe('the two rounds of the cold path', () => {
     expect(result.current.streaksLoading).toBe(true);
     expect(result.current.entries).toEqual([ENTRY]);
     expect(result.current.quickMarks).toEqual([WATER_MARK]);
+    expect(getStreaksApi).toHaveBeenCalledWith('avoid');
 
     await act(async () => {
-      pendingStreak.resolve(null);
+      pendingStreak.resolve([]);
       await Promise.resolve();
     });
     await waitFor(() => expect(result.current.streaksLoading).toBe(false));
   });
 
   it('records a tap while the streaks are still loading', async () => {
-    const pendingStreak = deferred<null>();
+    const pendingStreak = deferred<[]>();
     getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
-    getStreakApi = mock(() => pendingStreak.promise);
+    getStreaksApi = mock(() => pendingStreak.promise);
 
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -327,14 +336,14 @@ describe('the two rounds of the cold path', () => {
     expect(result.current.quickMarks[0].today_total).toBe(250);
 
     await act(async () => {
-      pendingStreak.resolve(null);
+      pendingStreak.resolve([]);
       await Promise.resolve();
     });
   });
 
   it('keeps a failed streak inside its own section rather than on the screen', async () => {
     getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
-    getStreakApi = mock(() => Promise.reject(new Error('streaks are down')));
+    getStreaksApi = mock(() => Promise.reject(new Error('streaks are down')));
 
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.streaksLoading).toBe(false));
@@ -348,11 +357,19 @@ describe('the two rounds of the cold path', () => {
 
   it('says nothing about streaks when every one of them arrived', async () => {
     getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    getStreaksApi = mock(() => Promise.resolve([{
+      category_id: SMOKING.id,
+      streak_mode: 'avoid' as const,
+      current_streak: 3,
+      best_streak: 7,
+      last_relapse_date: null,
+    }]));
 
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.streaksLoading).toBe(false));
 
     expect(result.current.streaksError).toBeNull();
+    expect(getStreaksApi).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -501,6 +518,124 @@ describe('useToday.addNumber', () => {
     });
 
     await waitFor(() => expect(totalOf(result.current.entries)).toBe(3));
+  });
+});
+
+describe('useToday.deleteEntry', () => {
+  it('withdraws the row before the delete reply arrives', async () => {
+    const pendingDelete = deferred<void>();
+    deleteEntry = mock(() => pendingDelete.promise);
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      void result.current.deleteEntry(ENTRY);
+    });
+
+    expect(result.current.entries).toEqual([]);
+    expect(deleteEntry).toHaveBeenCalledWith(ENTRY.id);
+    await act(async () => {
+      pendingDelete.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it('restores exactly the deleted row when the server rejects it', async () => {
+    deleteEntry = mock(() => Promise.reject(new Error('delete failed')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await expect(result.current.deleteEntry(ENTRY)).resolves.toBe(false);
+    });
+
+    expect(result.current.entries).toEqual([ENTRY]);
+    expect(result.current.error).toBe('delete failed');
+  });
+
+  it('refuses to delete the local negative id of an in-flight quick add', async () => {
+    const localEntry = { ...ENTRY, id: -1 };
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await expect(result.current.deleteEntry(localEntry)).resolves.toBe(false);
+    });
+
+    expect(deleteEntry).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the avoid streak after its relapse entry is deleted', async () => {
+    const avoidEntry: Entry = { ...ENTRY, category_id: SMOKING.id };
+    const refreshed = {
+      category_id: SMOKING.id,
+      streak_mode: 'avoid' as const,
+      current_streak: 4,
+      best_streak: 9,
+      last_relapse_date: null,
+    };
+    getAllCategories = mock(() => Promise.resolve([SMOKING]));
+    getAllEntries = mock(() => Promise.resolve([avoidEntry]));
+    getStreakApi = mock(() => Promise.resolve(refreshed));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+    getStreakApi.mockClear();
+
+    await act(async () => {
+      await expect(result.current.deleteEntry(avoidEntry)).resolves.toBe(true);
+    });
+
+    expect(getStreakApi).toHaveBeenCalledWith(SMOKING.id);
+    expect(result.current.streaks[SMOKING.id]).toEqual(refreshed);
+  });
+});
+
+describe('useToday.toggleField', () => {
+  it('replaces the day entry with the checklist response, so the list sees the new tick', async () => {
+    const checklist: Category = {
+      ...CATEGORY,
+      id: 3,
+      display_mode: 'checklist',
+      fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+    };
+    const saved: Entry = {
+      ...ENTRY,
+      id: 30,
+      category_id: checklist.id,
+      values: [{ id: 31, entry_id: 30, field_id: 8, value: 'true' }],
+    };
+    getAllCategories = mock(() => Promise.resolve([checklist]));
+    getAllEntries = mock(() => Promise.resolve([]));
+    upsertChecklist = mock(() => Promise.resolve(saved));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.toggleField(checklist.id, 8);
+    });
+
+    expect(result.current.entries).toEqual([saved]);
+  });
+});
+
+describe('useToday.updateEntry', () => {
+  it('restores the old row when the optimistic PATCH is rejected', async () => {
+    const updateSpy = spyOn(entriesAPI, 'update').mockRejectedValue(new Error('update failed'));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    try {
+      await act(async () => {
+        await expect(result.current.updateEntry(ENTRY, {
+          entry_date: TODAY,
+          values: [{ field_id: GLASSES_FIELD.id, value: '2' }],
+        })).rejects.toThrow('update failed');
+      });
+      expect(result.current.entries).toEqual([ENTRY]);
+      expect(result.current.error).toBe('update failed');
+    } finally {
+      updateSpy.mockRestore();
+    }
   });
 });
 

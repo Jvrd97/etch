@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/135, PHASE-03/138, PHASE-03/139, PHASE-03/140
+# [review:need-review] PHASE-03/134, PHASE-03/135, PHASE-03/138, PHASE-03/139, PHASE-03/140, PHASE-03/180
 # summary: the roles endpoints — directory and rules CRUD, minutes and acts written/corrected/deleted by hand, and GET /roles/day[/{date}] returning the distribution of the day's minutes together with its acts; a request naming an unknown role or asking for zero minutes comes back 422 (the second because the table refused it, not because a check here did)
 """
 HTTP surface of the roles.
@@ -455,6 +455,8 @@ async def reclassify_period(
     автоматика, а невозможность её починить задним числом.
 
     Записи, подтверждённые человеком, не трогаются, и их число названо в ответе.
+    Эта ручка обновляет существующие блоки и акты автоматических источников по
+    истории, но не создаёт и не удаляет `RoleTimeBlock`.
     """
     if body.date_to < body.date_from:
         raise HTTPException(
@@ -810,7 +812,9 @@ async def post_classify(
 
     Прогон **переписывает** день, а не дополняет его: строки идемпотентны по
     `(source, external_ref)`, а то, что человек подтвердил, разметка не трогает
-    вовсе — и это видно числом `kept_confirmed` в ответе.
+    вовсе — и это видно числом `kept_confirmed` в ответе. Эта ручка создаёт и
+    удаляет только блоки `app_usage` из интервалов активности; акты и другие
+    источники она не переразмечает.
     """
     if body.date_to < body.date_from:
         raise HTTPException(

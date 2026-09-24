@@ -2417,3 +2417,26 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - `tests/test_health_aggregate.py` — mod: параметризованный тест всех единиц каталога.
 - `tests/test_health.py` — mod: точный каталог, динамически добавленная строка и 422 для неизвестной единицы проверены через API.
 - `tests/test_health_catalog_migration.py` — new: снимок миграции сверяется с runtime-каталогом по всем пяти полям, а SQL — на отсутствие `ON CONFLICT` и исходных строк #64.
+
+## 2026-09-05 — #176
+
+Изменено 5 файлов: `app/models/field.py` (mod), `app/schemas/category.py` (mod), `app/crud/category.py` (mod), `tests/test_categories.py` (mod), `alembic/versions/2026_09_05_1300-a9c1e3f5b7d0_field_units_quick_steps.py` (new).
+
+## 2026-09-24 — PHASE-03/180: общий предикат ручного подтверждения
+
+Обе ручки переразметки защищают ручные решения через один предикат и описывают свои разные обещания.
+
+- `app/roles/samples.py` — mod: общий `is_confirmed_by_person` принимает хранимую уверенность и булев признак образца; история использует его при загрузке строк.
+- `app/roles/classify.py`, `app/roles/rules_editor.py`, `app/roles/plan_source.py` — mod: классификатор, переразметка, план и приоритет источников используют общий предикат.
+- `app/api/roles.py` — mod: докстринги различают пересчёт интервалов `app_usage` и переразметку истории блоков и актов.
+- `tests/test_roles_confirmed_guard.py` — new: обе ручки сохраняют строки с `confidence='confirmed'`; `/reclassify` также сохраняет строку с `confidence='auto'`, когда образец отмечен `confirmed=True`; проверка запрещает дублирующие сравнения в сервисах ролей.
+- `docs/PHASE-03/ADRs/in-review/ADR-0020-healthkit-and-cto-metrics.md` — mod: записана разница обещаний двух ручек.
+
+Проверки: 88 тестов ролей прошли на отдельной PostgreSQL базе; guard suite — 4 теста; `ruff check`, `ruff format --check`, `mypy --strict app` и `git diff --check` зелёные.
+
+## 2026-09-24 — PHASE-01/174: массовая загрузка стриков
+
+- `app/api/streaks.py`, `app/crud/streak.py`, `app/main.py` — bulk `GET /streaks` считает выбранные стрики одним проходом и подключён под API-key perimeter.
+- `tests/test_streak.py` — сравнение bulk ответа с одиночным маршрутом, фильтр режима и пустой результат.
+
+Проверки: `tests/test_streak.py` — 23 passed на временной PostgreSQL 5434; Ruff, формат, `mypy --strict` и одна Alembic head зелёные.

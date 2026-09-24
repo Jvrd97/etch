@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/23-checklist-bar-streaks, PHASE-01/73-category-field-reorder
-// summary: pure helpers for the category chart - series/axis/unit assignment, cell parsing, per-day points; sliceByPeriod made generic for checklist bar points
+// [review:need-review] PHASE-01/23-checklist-bar-streaks, PHASE-01/73-category-field-reorder, #176
+// summary: category chart helpers use stored field units for series and axes
 
 import type { Field, TableDay } from './api';
 import { toISODate } from './date';
@@ -60,11 +60,10 @@ export function chartableFields(fields: Field[]): Field[] {
   );
 }
 
-/** Unit label: time fields are minutes; number fields use "(unit)" from the name if present. */
+/** Unit label: time fields are minutes; number fields use their stored unit. */
 function fieldUnit(field: Field): string {
   if (field.field_type === 'time') return TIME_UNIT;
-  const match = field.name.match(/\(([^)]+)\)\s*$/);
-  return match ? match[1].trim() : field.name;
+  return field.unit ?? '';
 }
 
 /**

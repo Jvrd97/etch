@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152, PHASE-03/nav-drawer
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152, PHASE-03/nav-drawer, #176
 // summary: plus the desktop grouping — every screen filed under exactly one Russian-named section, the header anchors, and the active-route rule that also lights a screen on its detail routes
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens), and the chat's own registration: a mobile twin under "More" that leaves the five tab slots alone
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
@@ -18,7 +18,22 @@ import {
   TAB_BAR_ROUTES,
   isActiveRoute,
   mobileScreenTitle,
+  newEntryCategoryId,
+  newEntryHref,
 } from './routes';
+
+describe('entry deep links', () => {
+  it('carries and parses a positive category id', () => {
+    expect(newEntryHref(42)).toBe('/entries?new=1&category=42');
+    expect(newEntryCategoryId(new URLSearchParams('new=1&category=42'))).toBe(42);
+    expect(newEntryCategoryId(new URLSearchParams('category=0'))).toBeNull();
+    expect(
+      newEntryCategoryId(
+        new URLSearchParams(`category=${Number.MAX_SAFE_INTEGER + 1}`)
+      )
+    ).toBeNull();
+  });
+});
 
 describe('APP_ROUTES', () => {
   it('has unique ids', () => {

@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, #176
 // summary: mobile Entries screen — same data as the desktop page via useEntries, creation and editing done in the shared EntryEditorSheet, ?new=1 opening the editor on mount, with a dedicated empty state when no category exists yet
 
 import { Suspense, useState } from 'react';
@@ -13,7 +13,7 @@ import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useEntries } from '@/hooks/useEntries';
 import { entriesAPI, type Category, type Entry } from '@/lib/api';
 import { labelledValues } from '@/lib/entry-values';
-import { MOBILE_PATH_PREFIX, wantsNewEntry } from '@/lib/routes';
+import { MOBILE_PATH_PREFIX, newEntryCategoryId, wantsNewEntry } from '@/lib/routes';
 import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 
 /** What the editor sheet is currently doing; closed when null. */
@@ -174,6 +174,7 @@ function MobileEntriesPageContent() {
           // freshly opened sheet never inherits the previous entry's values.
           key={sheet.kind === 'edit' ? sheet.entry.id : 'new'}
           categories={categories}
+          initialCategoryId={newEntryCategoryId(searchParams) ?? undefined}
           entry={sheet.kind === 'edit' ? sheet.entry : null}
           onCancel={() => setSheet(null)}
           onSaved={async () => {

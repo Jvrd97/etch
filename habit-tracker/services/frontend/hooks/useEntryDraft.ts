@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
-// summary: single owner of an entry draft (category, date, notes, values) and of its save — create or update, chosen by whether an entry is being edited; shared by EntryForm, EntryCard's inline editor and the mobile sheet
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/177
+// summary: entry draft can delegate an existing Today entry update to the optimistic screen owner while retaining its default persistence
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { entriesAPI, type Category, type Entry } from '@/lib/api';
+import { entriesAPI, type Category, type Entry, type EntryCreate } from '@/lib/api';
 import { todayISO } from '@/lib/date';
 import { draftValuesFromEntry, toEntryValues, type EntryDraftValues } from '@/lib/entry-values';
 
@@ -31,6 +31,8 @@ export interface UseEntryDraftOptions {
   date?: string;
   /** Called once, after the entry has been persisted. */
   onSaved: () => void;
+  /** Optional owner for an optimistic update of an existing entry. */
+  onUpdateExisting?: (entry: Entry, data: Partial<EntryCreate>) => Promise<Entry>;
 }
 
 export interface UseEntryDraftResult {
@@ -68,6 +70,7 @@ export function useEntryDraft({
   categoryId: initialCategoryId,
   date,
   onSaved,
+  onUpdateExisting,
 }: UseEntryDraftOptions): UseEntryDraftResult {
   const [editing] = useState<Entry | null>(entry);
   const [categoryId, setCategoryIdState] = useState<number>(
@@ -120,7 +123,11 @@ export function useEntryDraft({
     };
     try {
       if (editing) {
-        await entriesAPI.update(editing.id, payload);
+        if (onUpdateExisting) {
+          await onUpdateExisting(editing, { category_id: category.id, ...payload });
+        } else {
+          await entriesAPI.update(editing.id, payload);
+        }
       } else {
         await entriesAPI.create({ category_id: category.id, ...payload });
       }
@@ -135,7 +142,7 @@ export function useEntryDraft({
     savingRef.current = false;
     setSaving(false);
     onSaved();
-  }, [category, editing, entryDate, notes, onSaved, values]);
+  }, [category, editing, entryDate, notes, onSaved, onUpdateExisting, values]);
 
   return {
     categoryId,

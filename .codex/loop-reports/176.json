@@ -1,0 +1,32 @@
+{
+  "issue": "176",
+  "verdict": "PASS",
+  "rounds": 3,
+  "commit": null,
+  "lifecycle": "issues/PHASE-01/backlog/176-field-unit-quick-steps-continue-tracking.md",
+  "architecture": "skipped",
+  "changes": [
+    "Field.unit и Field.quick_steps добавлены в модель, схемы, CRUD и API",
+    "Добавлена обратимая миграция a9c1e3f5b7d0 от f8b0d2e4a6c9",
+    "Оба редактора сохраняют единицу и список быстрых шагов",
+    "QuickNumberRow и мобильная шторка используют шаги поля с fallback при null",
+    "Continue tracking работает на desktop и mobile с точной категорией и последним числовым значением",
+    "Общий форматтер добавляет единицу без хвоста при unit=null"
+  ],
+  "tests": {
+    "backend": "54 category tests + 2 API/migration tests; ruff, format, mypy strict passed",
+    "frontend": "129 focused tests; tsc passed; lint 0 errors, 17 pre-existing warnings",
+    "migration": "upgrade/downgrade passed; sole head a9c1e3f5b7d0",
+    "integration": "git apply --check and git diff --check passed"
+  },
+  "reviews": {
+    "standards": "APPROVE",
+    "alignment": "APPROVE",
+    "antivibe": "PASS",
+    "verdict": "APPROVE"
+  },
+  "files_changed": 32,
+  "excluded": ["#76 Recent activity", "unit conversions", "automatic unit backfill"],
+  "unblocked": ["76"],
+  "blockers": []
+}

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/139
+# [review:need-review] PHASE-03/139, PHASE-03/180
 # summary: the seam between «что размечаем» and «чем размечаем» — historical samples of the automatic sources rebuilt from the rows those sources wrote, so a rule can be tried against real history before it is saved and a period can be marked up again after it is
 """
 Что правило разметки видит, когда его прогоняют по истории.
@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.role import (
+    CONFIDENCE_CONFIRMED,
     SOURCE_APP_USAGE,
     SOURCE_CLICKUP,
     SOURCE_GIT,
@@ -53,6 +54,13 @@ AUTOMATIC_SOURCES: tuple[str, ...] = (SOURCE_APP_USAGE, SOURCE_GIT, SOURCE_CLICK
 # «сколько интервалов и актов зацепило правило» это два числа, а не одно.
 KIND_TIME_BLOCK = "time_block"
 KIND_ACT = "act"
+
+
+def is_confirmed_by_person(
+    *, confidence: str | None = None, confirmed: bool = False
+) -> bool:
+    """Treat persisted confidence and the sample flag as one human decision."""
+    return confirmed or confidence == CONFIDENCE_CONFIRMED
 
 
 @dataclass(frozen=True)
@@ -123,7 +131,7 @@ async def historical_samples(
                 work_day=block.work_day,
                 role_id=block.role_id,
                 rule_id=block.rule_id,
-                confirmed=block.confidence == "confirmed",
+                confirmed=is_confirmed_by_person(confidence=block.confidence),
                 label=text,
                 sample=_sample_of(block.source, text),
             )
@@ -148,7 +156,7 @@ async def historical_samples(
                 # Акт `rule_id` не носит: у таблицы такой колонки нет, и
                 # «каким правилом размечен» у него читается только через роль.
                 rule_id=None,
-                confirmed=act.confidence == "confirmed",
+                confirmed=is_confirmed_by_person(confidence=act.confidence),
                 label=act.title,
                 sample=_sample_of(act.source, act.title),
             )
@@ -163,4 +171,5 @@ __all__ = [
     "KIND_TIME_BLOCK",
     "HistoricalSample",
     "historical_samples",
+    "is_confirmed_by_person",
 ]

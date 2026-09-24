@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201
+// [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201, PHASE-01/177
 // summary: Today avoid streak card saves a sole boolean fact in one tap with exact undo, while numeric and composite categories retain their form
 
 import { useRef, useState } from 'react';
@@ -22,6 +22,8 @@ interface AvoidStreakCardProps {
   /** Replaces the day's entry snapshot after a quick mark or its undo. */
   onEntriesChanged: () => Promise<void>;
   onError: (message: string) => void;
+  /** Opens the day list without treating it as a relapse. */
+  onOpenEntries?: () => void;
 }
 
 export default function AvoidStreakCard({
@@ -32,6 +34,7 @@ export default function AvoidStreakCard({
   onRelapse,
   onEntriesChanged,
   onError,
+  onOpenEntries,
 }: AvoidStreakCardProps) {
   const [showForm, setShowForm] = useState(false);
   const [amount, setAmount] = useState('');
@@ -181,6 +184,15 @@ export default function AvoidStreakCard({
           >
             <AlertCircle className="w-4 h-4" strokeWidth={2} />
             Случилось
+          </button>
+        )}
+        {onOpenEntries && (
+          <button
+            type="button"
+            onClick={onOpenEntries}
+            className="rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
+          >
+            Записи
           </button>
         )}
         {!isQuickBoolean && !showForm && (

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/140
+# [review:need-review] PHASE-03/140, PHASE-03/180
 # summary: the plan as a source of roles — a tick on an item that names an act closes `role_act` with `source='plan'` and `external_ref = plan_item.id`, un-ticking takes it back unless a person confirmed it, the windows under a section that names a role become `role_time_block` minutes, and every weaker source loses the hours the plan already owns
 """
 The plan of the day, read as a statement about roles.
@@ -51,12 +51,12 @@ from app.models.mark import MARK_DONE
 from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.models.role import (
     CONFIDENCE_AUTO,
-    CONFIDENCE_CONFIRMED,
     SOURCE_PLAN,
     RoleAct,
     RoleTimeBlock,
 )
 from app.roles.precedence import Span, is_weaker, merge, minutes_of, subtract
+from app.roles.samples import is_confirmed_by_person
 
 __all__ = [
     "apply_precedence",
@@ -154,7 +154,7 @@ async def sync_plan_minutes(db: AsyncSession, on: date) -> None:
     for block in await _plan_blocks(db, on):
         if block.external_ref in alive:
             continue
-        if block.confidence == CONFIDENCE_CONFIRMED:
+        if is_confirmed_by_person(confidence=block.confidence):
             continue
         await db.delete(block)
     await db.flush()
@@ -203,7 +203,7 @@ async def apply_precedence(
     spans_by_block = _spans_by_block(blocks, plan_spans)
 
     for block in blocks:
-        if block.confidence == CONFIDENCE_CONFIRMED:
+        if is_confirmed_by_person(confidence=block.confidence):
             continue
         own = spans_by_block.get(block.id)
         if not own:
@@ -309,7 +309,7 @@ async def sync_act_for_item(
     existing = await _plan_act(db, item.id)
     if existing is None:
         return None
-    if existing.confidence == CONFIDENCE_CONFIRMED:
+    if is_confirmed_by_person(confidence=existing.confidence):
         return existing
     await db.delete(existing)
     await db.flush()
@@ -338,7 +338,7 @@ async def sync_plan_roles(db: AsyncSession, on: date) -> None:
     for act in await role_crud.day_acts(db, on):
         if act.source != SOURCE_PLAN or act.external_ref in wanted:
             continue
-        if act.confidence == CONFIDENCE_CONFIRMED:
+        if is_confirmed_by_person(confidence=act.confidence):
             continue
         await db.delete(act)
     await db.flush()

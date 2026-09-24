@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #176
 // summary: desktop /entries page — data, filter and reload now come from useEntries, shared with /m/entries; markup unchanged apart from a label on the filter
 
 import { Suspense, useState } from 'react';
@@ -9,7 +9,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import EntryCard from '@/components/EntryCard';
 import EntryForm from '@/components/EntryForm';
 import { useEntries } from '@/hooks/useEntries';
-import { wantsNewEntry } from '@/lib/routes';
+import { newEntryCategoryId, wantsNewEntry } from '@/lib/routes';
 import { Plus, Filter, Calendar } from 'lucide-react';
 
 export default function EntriesPage() {
@@ -86,6 +86,7 @@ function EntriesPageContent() {
       {showForm && (
         <EntryForm
           categories={categories}
+          initialCategoryId={newEntryCategoryId(searchParams) ?? undefined}
           onClose={() => setShowForm(false)}
           onSuccess={() => {
             setShowForm(false);

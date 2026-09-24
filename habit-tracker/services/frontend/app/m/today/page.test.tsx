@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177
 // summary: tests for the two entry points on the mobile Today screen — dictation (the button opens the sheet, cancelling leaves the day untouched, a written day closes the sheet and reloads what Today shows) and the chat, whose conversation is started on the very date this screen is displaying
 // summary: tests for the mobile Today screen — the dictation entry point (sheet opens, cancel leaves the day alone, a written day reloads it) and the quick-mark section, which is drawn from the directory and absent entirely when the directory is empty
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Category, Entry, QuickMark } from '@/lib/api';
+import { TELL_DAY_LABEL } from '@/lib/ui-constants';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -224,7 +225,6 @@ mock.module('next/navigation', () => ({
 }));
 
 const { default: MobileTodayPage } = await import('./page');
-const { TELL_DAY_LABEL } = await import('./page');
 const { ASK_ABOUT_DAY_LABEL } = await import('@/components/chat/AskAboutDayButton');
 const { START_DICTATION_LABEL, VOICE_SHEET_TITLE } = await import(
   '@/components/mobile/VoiceDaySheet'
@@ -409,6 +409,21 @@ describe('the quick marks of /m/today', () => {
     await renderToday();
 
     expect(screen.getByLabelText('Питание: add Калории')).toBeDefined();
+  });
+
+  it('opens the confirmed entries of a category in a full-screen sheet', async () => {
+    getEntries = mock(() => Promise.resolve([
+      {
+        id: 12, category_id: NUTRITION.id, entry_date: '2026-07-30',
+        created_at: '2026-07-30T09:12:00Z', updated_at: TIMESTAMP,
+        values: [{ id: 13, entry_id: 12, field_id: 9, value: '300' }],
+      },
+    ]));
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
+    expect(screen.getByRole('dialog', { name: 'Питание — сегодня' })).toBeDefined();
+    expect(screen.getByText('Калории 300')).toBeDefined();
   });
 });
 

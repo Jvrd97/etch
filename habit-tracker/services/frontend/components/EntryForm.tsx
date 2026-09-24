@@ -1,9 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/73-category-field-reorder
-// summary: desktop entry modal — markup over useEntryDraft; now edits an existing entry as well as creating one, which is what a Today card tap opens
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/73-category-field-reorder, #176, PHASE-01/177
+// summary: desktop entry modal supports an initial category and delegates Today-list edits to its optimistic owner
 
 import { X } from 'lucide-react';
-import { Category, Entry } from '@/lib/api';
+import { Category, Entry, EntryCreate } from '@/lib/api';
 import { FieldValueInput } from '@/components/FieldValueInput';
 import ErrorAlert from '@/components/ErrorAlert';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
@@ -21,8 +21,11 @@ export interface EntryFormProps {
   onSuccess: () => void;
   /** Pin the form to one category and hide the picker (quick-add from a category page). */
   lockedCategoryId?: number;
+  initialCategoryId?: number;
   /** Prefill the entry date (e.g. the table cell's day); defaults to today. */
   date?: string;
+  /** Lets Today update its visible day list before the PATCH reply arrives. */
+  onUpdateExisting?: (entry: Entry, data: Partial<EntryCreate>) => Promise<Entry>;
 }
 
 export default function EntryForm({
@@ -31,14 +34,17 @@ export default function EntryForm({
   onClose,
   onSuccess,
   lockedCategoryId,
+  initialCategoryId,
   date,
+  onUpdateExisting,
 }: EntryFormProps) {
   const draft = useEntryDraft({
     categories,
     entry,
-    categoryId: lockedCategoryId,
+    categoryId: lockedCategoryId ?? initialCategoryId,
     date,
     onSaved: onSuccess,
+    onUpdateExisting,
   });
   const selectedCategory = draft.category;
   const categoryLocked = lockedCategoryId !== undefined;

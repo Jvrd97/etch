@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/73-category-field-reorder
+// [review:need-review] PHASE-01/73-category-field-reorder, #176
 // summary: tests for useCategories and useCategoryDraft — list load, layout preference, delete, the field reorder with its stable row keys and its screen-reader announcement, the draft seeded in field order rather than in arrival order, and the field ids carried into the update payload so the backend diff-syncs instead of replacing
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -181,8 +181,19 @@ const UNORDERED_CATEGORY: Category = {
   fields: [field(8, 'Quality', 1), field(7, 'Hours', 0)],
 };
 
-const { useCategories, useCategoryDraft, CATEGORY_LAYOUT_STORAGE_KEY, fieldMovedMessage } =
+const { useCategories, useCategoryDraft, CATEGORY_LAYOUT_STORAGE_KEY, fieldMovedMessage, parseQuickSteps } =
   await import('./useCategories');
+
+describe('parseQuickSteps', () => {
+  it('accepts decimal signed comma-separated values and nullable empty text', () => {
+    expect(parseQuickSteps('-0.5, 1, 2.25')).toEqual([-0.5, 1, 2.25]);
+    expect(parseQuickSteps('')).toBeNull();
+  });
+
+  it.each(['0', 'Infinity', 'wat', '1,'])('rejects invalid element %s', (raw) => {
+    expect(() => parseQuickSteps(raw)).toThrow(/quick steps/i);
+  });
+});
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY, OTHER_CATEGORY]));
@@ -332,6 +343,34 @@ describe('useCategoryDraft', () => {
     expect(result.current.name).toBe('Sleep');
     expect(result.current.group).toBe('Health');
     expect(result.current.fields.map((f) => f.id)).toEqual([7, 8]);
+  });
+
+  it('round-trips an existing field unit and quick steps through save', async () => {
+    const configured: Category = {
+      ...CATEGORY,
+      fields: [{ ...HOURS_FIELD, field_type: 'number', unit: 'h', quick_steps: [-0.5, 0.5] }],
+    };
+    const { result } = renderHook(() => useCategoryDraft({ category: configured, onSaved: noop }));
+    expect(result.current.fields[0]).toMatchObject({ unit: 'h', quick_steps: [-0.5, 0.5] });
+    await act(async () => result.current.save());
+    expect(updateCategory).toHaveBeenCalledWith(
+      configured.id,
+      expect.objectContaining({ fields: [expect.objectContaining({ unit: 'h', quick_steps: [-0.5, 0.5] })] })
+    );
+  });
+
+  it('keeps raw quick-step text while typing and reports invalid input only on save', async () => {
+    const configured: Category = {
+      ...CATEGORY,
+      fields: [{ ...HOURS_FIELD, field_type: 'number', quick_steps: null }],
+    };
+    const { result } = renderHook(() => useCategoryDraft({ category: configured, onSaved: noop }));
+    act(() => result.current.updateQuickStepsText(0, '-0.5,'));
+    expect(result.current.fields[0].quickStepsText).toBe('-0.5,');
+    expect(result.current.error).toBeNull();
+    await act(async () => result.current.save());
+    expect(result.current.error).toMatch(/quick steps/i);
+    expect(updateCategory).not.toHaveBeenCalled();
   });
 
   it('seeds the draft in field order, not in the order the API listed them', () => {

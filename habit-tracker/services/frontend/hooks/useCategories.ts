@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175
-// summary: Shared category draft state, including explicit selection and clearing of the table field in both editors
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
+// summary: Shared category drafts preserve unit, quick_steps, and raw quick-step text until save
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -156,6 +156,7 @@ export interface UseCategoryDraftResult {
   addField: () => void;
   removeField: (index: number) => void;
   updateField: (index: number, updates: Partial<FieldCreate>) => void;
+  updateQuickStepsText: (index: number, text: string) => void;
   /**
    * Swap a field with its neighbour; `order` follows from the new position at
    * save time. A move off either end is a no-op, so the screens can wire the
@@ -192,6 +193,23 @@ export type FieldMoveDirection = 'up' | 'down';
  */
 export interface DraftField extends FieldCreate {
   key: string;
+  quickStepsText: string;
+}
+
+export const QUICK_STEPS_ERROR =
+  'Quick steps must be comma-separated finite non-zero numbers';
+
+export function parseQuickSteps(text: string): number[] | null {
+  if (text.trim() === '') return null;
+  const parts = text.split(',').map((part) => part.trim());
+  const steps = parts.map(Number);
+  if (
+    parts.some((part) => part === '') ||
+    steps.some((step) => !Number.isFinite(step) || step === 0)
+  ) {
+    throw new Error(QUICK_STEPS_ERROR);
+  }
+  return steps;
 }
 
 /** Distinct across a draft's lifetime, which is all a React key has to be. */
@@ -213,8 +231,12 @@ function toFieldPayload(field: DraftField, index: number): FieldCreate {
   // `ignoreRestSiblings`. Listing the payload's keys by hand instead would drop
   // any field later added to `FieldCreate` without a word.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { key, ...rest } = field;
-  return { ...rest, order: index };
+  const { key, quickStepsText, ...rest } = field;
+  return {
+    ...rest,
+    quick_steps: field.field_type === 'number' ? parseQuickSteps(quickStepsText) : rest.quick_steps,
+    order: index,
+  };
 }
 
 /**
@@ -231,7 +253,14 @@ export function fieldMovedMessage(position: number): string {
 
 /** A brand-new category starts on one blank field, so there is nothing to add first. */
 function blankField(order: number): DraftField {
-  return { key: mintFieldKey(), name: '', field_type: 'text', is_required: false, order };
+  return {
+    key: mintFieldKey(),
+    quickStepsText: '',
+    name: '',
+    field_type: 'text',
+    is_required: false,
+    order,
+  };
 }
 
 /**
@@ -286,6 +315,9 @@ export function useCategoryDraft({
           is_required: f.is_required,
           options: f.options,
           order: f.order,
+          unit: f.unit ?? null,
+          quick_steps: f.quick_steps ?? null,
+          quickStepsText: f.quick_steps?.join(', ') ?? '',
         }))
       : [blankField(0)]
   );
@@ -317,6 +349,14 @@ export function useCategoryDraft({
   const updateField = useCallback((index: number, updates: Partial<FieldCreate>) => {
     setFields((prev) =>
       prev.map((field, i) => (i === index ? { ...field, ...updates } : field))
+    );
+  }, []);
+
+  const updateQuickStepsText = useCallback((index: number, text: string) => {
+    setFields((prev) =>
+      prev.map((field, i) =>
+        i === index ? { ...field, quickStepsText: text } : field
+      )
     );
   }, []);
 
@@ -357,23 +397,22 @@ export function useCategoryDraft({
     setSaving(true);
     setError(null);
 
-    const payload: CategoryCreate = {
-      name,
-      description,
-      color,
-      display_mode: displayMode,
-      streak_mode: streakMode,
-      group: group.trim() || null,
-      show_in_today: showInToday,
-      primary_field_id: primaryFieldId,
-      is_active: isActive,
-      // Unnamed rows are the placeholder the editor hands out, not fields the
-      // user filled in; `order` is re-derived from position so add, remove and
-      // reorder leave no gaps behind.
-      fields: fields.filter((f) => f.name.trim()).map(toFieldPayload),
-    };
-
     try {
+      const payload: CategoryCreate = {
+        name,
+        description,
+        color,
+        display_mode: displayMode,
+        streak_mode: streakMode,
+        group: group.trim() || null,
+        show_in_today: showInToday,
+        primary_field_id: primaryFieldId,
+        is_active: isActive,
+        // Unnamed rows are the placeholder the editor hands out, not fields the
+        // user filled in; `order` is re-derived from position so add, remove and
+        // reorder leave no gaps behind.
+        fields: fields.filter((f) => f.name.trim()).map(toFieldPayload),
+      };
       if (editing) {
         await categoriesAPI.update(editing.id, payload);
       } else {
@@ -428,6 +467,7 @@ export function useCategoryDraft({
     addField,
     removeField,
     updateField,
+    updateQuickStepsText,
     moveField,
     moveAnnouncement,
     checklistNeedsBoolean,

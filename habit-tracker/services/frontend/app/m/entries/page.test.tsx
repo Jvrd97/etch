@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176
 // summary: integration tests for /m/entries — create, edit, cancel and delete driven through the shared EntryEditorSheet, plus the ?new=1 deep link that opens the editor on mount
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -29,6 +29,7 @@ const CATEGORY: Category = {
   updated_at: TIMESTAMP,
   fields: [HOURS_FIELD],
 };
+const WATER: Category = { ...CATEGORY, id: 2, name: 'Water', fields: [] };
 
 const ENTRY: Entry = {
   id: 10,
@@ -190,7 +191,7 @@ async function renderPage() {
 
 beforeEach(() => {
   searchParams = new URLSearchParams();
-  getAllCategories = mock(() => Promise.resolve([CATEGORY]));
+  getAllCategories = mock(() => Promise.resolve([CATEGORY, WATER]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(ENTRY));
   updateEntry = mock(() => Promise.resolve(ENTRY));
@@ -199,6 +200,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+});
+
+it('prefills the category carried by a new-entry deep link', async () => {
+  searchParams = new URLSearchParams('new=1&category=2');
+  await renderPage();
+  expect((screen.getByLabelText('Category') as HTMLSelectElement).value).toBe('2');
 });
 
 describe('/m/entries', () => {

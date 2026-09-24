@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #176
 // summary: unit tests for the entry draft <-> payload helpers shared by the desktop forms and the mobile sheet
 
 import { describe, expect, it } from 'bun:test';
@@ -76,6 +76,14 @@ describe('toEntryValues', () => {
 });
 
 describe('labelledValues', () => {
+  it('formats a resolved field value with its optional unit', () => {
+    const withUnit: Category = {
+      ...CATEGORY,
+      fields: [{ ...CATEGORY.fields[0], unit: 'h' }, CATEGORY.fields[1]],
+    };
+    expect(labelledValues(withUnit, ENTRY)[0].value).toBe('8 h');
+    expect(labelledValues(CATEGORY, ENTRY)[0].value).toBe('8');
+  });
   it('names every stored value after its field, in stored order', () => {
     expect(labelledValues(CATEGORY, ENTRY)).toEqual([
       { id: 1, label: 'Hours', value: '8' },

@@ -1,7 +1,8 @@
-# [review:need-review] 175
-# summary: category schemas expose the optional explicit primary table field
-from pydantic import BaseModel, Field
+# [review:need-review] 175, #176
+# summary: category schemas expose primary fields plus validated field units and quick steps
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
+import math
 from typing import Annotated, Literal, Union
 
 CategoryDisplayMode = Literal["form", "checklist"]
@@ -26,6 +27,17 @@ class FieldBase(BaseModel):
     default_value: str | None = None
     options: str | None = None  # JSON строка для select типа
     order: int = 0
+    unit: str | None = Field(None, max_length=50)
+    quick_steps: list[float] | None = None
+
+    @field_validator("quick_steps")
+    @classmethod
+    def validate_quick_steps(cls, value: list[float] | None) -> list[float] | None:
+        if value is not None and any(
+            step == 0 or not math.isfinite(step) for step in value
+        ):
+            raise ValueError("quick_steps must contain only finite non-zero numbers")
+        return value
 
 
 class FieldCreate(FieldBase):
@@ -56,6 +68,8 @@ class FieldUpdate(BaseModel):
     default_value: str | None = None
     options: str | None = None
     order: int | None = None
+    unit: str | None = Field(None, max_length=50)
+    quick_steps: list[float] | None = None
 
 
 class FieldResponse(FieldBase):

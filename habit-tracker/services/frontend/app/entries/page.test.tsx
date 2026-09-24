@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176
 // summary: characterization tests for the desktop /entries page, pinning its behaviour across the move onto useEntries
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -29,6 +29,7 @@ const CATEGORY: Category = {
   updated_at: TIMESTAMP,
   fields: [HOURS_FIELD],
 };
+const WATER: Category = { ...CATEGORY, id: 2, name: 'Water', fields: [] };
 
 const ENTRY: Entry = {
   id: 10,
@@ -146,7 +147,7 @@ mock.module('@/lib/api', () => ({
     create: () => Promise.resolve(null),
   },
   categoriesAPI: {
-    getAll: () => Promise.resolve([CATEGORY]),
+    getAll: () => Promise.resolve([CATEGORY, WATER]),
     getById: () => Promise.resolve(CATEGORY),
     getStreak: () => Promise.resolve(null),
     create: () => Promise.resolve(CATEGORY),
@@ -201,6 +202,13 @@ describe('/entries (desktop)', () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'New entry' })).toBeDefined()
     );
+  });
+
+  it('prefills the category carried by a new-entry deep link', async () => {
+    searchParams = new URLSearchParams('new=1&category=2');
+    render(<EntriesPage />);
+    const categorySelect = await waitFor(() => screen.getByDisplayValue('Water'));
+    expect((categorySelect as HTMLSelectElement).value).toBe('2');
   });
 
   it('creates an entry from the form and reloads the list', async () => {

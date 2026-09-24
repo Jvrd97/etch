@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/177
 // summary: tests for useEntryDraft — seeding, category switching, create vs update dispatch and the single save-failure text shared by all three editors
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -298,6 +298,21 @@ describe('useEntryDraft (edit)', () => {
       },
     ]);
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates a Today edit to its optimistic owner and reports a rejected update', async () => {
+    const onUpdateExisting = mock(() => Promise.reject(new Error('update failed')));
+    const { result } = renderHook(() =>
+      useEntryDraft({ categories: [CATEGORY], entry: ENTRY, onSaved: () => {}, onUpdateExisting })
+    );
+
+    await act(async () => {
+      await result.current.save();
+    });
+
+    expect(onUpdateExisting).toHaveBeenCalledTimes(1);
+    expect(updateEntry).not.toHaveBeenCalled();
+    expect(result.current.error).toBe('update failed');
   });
 
   it('sends no notes at all once the user clears them', async () => {

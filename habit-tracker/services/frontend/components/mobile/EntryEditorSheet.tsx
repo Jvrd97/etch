@@ -1,13 +1,14 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder
-// summary: the mobile shell's single entry editor — the full-screen sheet around useEntryDraft, shared by /m/entries (create and edit) and /m/categories/[id] (quick-add locked to one category)
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder, #176, PHASE-01/177
+// summary: mobile entry editor combines unit-aware quick steps with optimistic Today-list edits
 
 import { FieldValueInput } from '@/components/FieldValueInput';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import { useEntryDraft } from '@/hooks/useEntryDraft';
-import type { Category, Entry } from '@/lib/api';
+import type { Category, Entry, EntryCreate } from '@/lib/api';
 import { orderedFields } from '@/lib/today-categories';
 import { NEW_ENTRY_SHEET_TITLE, TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
+import { formatStep, quickStepsForField } from '@/lib/format-value';
 
 /** Shown as the sheet's title when the edited entry points at a category that is gone. */
 export const UNKNOWN_CATEGORY_NAME = 'Unknown category';
@@ -22,6 +23,9 @@ export interface EntryEditorSheetProps {
    * `/m/categories/[id]` knows which category the user is looking at.
    */
   lockedCategory?: Category | null;
+  initialCategoryId?: number;
+  /** Lets the Today screen own optimistic PATCH and rollback. */
+  onUpdateExisting?: (entry: Entry, data: Partial<EntryCreate>) => Promise<Entry>;
   onCancel: () => void;
   onSaved: () => void;
 }
@@ -40,6 +44,8 @@ export default function EntryEditorSheet({
   categories,
   entry = null,
   lockedCategory = null,
+  initialCategoryId,
+  onUpdateExisting,
   onCancel,
   onSaved,
 }: EntryEditorSheetProps) {
@@ -50,8 +56,9 @@ export default function EntryEditorSheet({
   const draft = useEntryDraft({
     categories: draftCategories,
     entry,
-    categoryId: lockedCategory?.id,
+    categoryId: lockedCategory?.id ?? initialCategoryId,
     onSaved,
+    onUpdateExisting,
   });
   const category = draft.category;
   const canPickCategory = !entry && !lockedCategory;
@@ -122,6 +129,20 @@ export default function EntryEditorSheet({
               value={draft.values[field.id] || ''}
               onChange={(value) => draft.setValue(field.id, value)}
             />
+            {field.field_type === 'number' && (
+              <div className="grid grid-cols-4 gap-2 mt-2">
+                {quickStepsForField(field.quick_steps).map((step) => (
+                  <button
+                    key={step}
+                    type="button"
+                    onClick={() => draft.setValue(field.id, String((Number(draft.values[field.id]) || 0) + step))}
+                    className="min-h-11 rounded-xl bg-surface border border-white/10 text-sm text-text-primary"
+                  >
+                    {formatStep(step, field.unit)}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ))}
 

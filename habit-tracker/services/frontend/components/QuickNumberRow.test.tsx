@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility
-// summary: tests for QuickNumberRow — the amount it reports, the total it is given, the card tap that opens the editor while the quick controls do not, and the no-number-field card
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, #176
+// summary: QuickNumberRow tests include field-specific unit-labelled draft adjustments
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -67,6 +67,24 @@ afterEach(() => {
 });
 
 describe('QuickNumberRow', () => {
+  it('wraps its controls on narrow screens', () => {
+    const { view } = renderRow();
+    expect(view.container.querySelector('form')?.className).toContain('flex-wrap');
+  });
+  it('configured quick step adjusts the draft and includes its unit', async () => {
+    render(
+      <QuickNumberRow
+        category={CATEGORY}
+        numberField={{ ...GLASSES_FIELD, unit: 'ml', quick_steps: [250] }}
+        total={0}
+        onAdd={(amount: number) => onAdd(amount)}
+        onOpenEditor={() => onOpenEditor()}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust Water by +250 ml' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Water' }));
+    await waitFor(() => expect(onAdd).toHaveBeenCalledWith(250));
+  });
   it('adds 1 when the field is empty, no keyboard involved', async () => {
     const { plus } = renderRow();
 

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/135
+# [review:need-review] PHASE-03/135, PHASE-03/180
 # summary: intervals of activity become minutes of a role — the day's intervals cut at the day boundary of `core/daytime`, dropped whole on a non-working mode, resolved through `roles/matcher` (an interval with no title is matched on `bundle_id` alone), written as `role_time_block` with `source='app_usage'`, the id of the interval and the id of the rule that fired, and then cut down by every stronger source through `roles/precedence`
 """
 Which role the day's measured activity belongs to.
@@ -49,13 +49,13 @@ from app.crud import role as role_crud
 from app.models.activity import WORKING_MODES, ActivityInterval, TrackedApp
 from app.models.role import (
     CONFIDENCE_AUTO,
-    CONFIDENCE_CONFIRMED,
     SOURCE_APP_USAGE,
     RoleTimeBlock,
 )
 from app.roles import plan_source
 from app.roles.matcher import MatchSample
 from app.roles.precedence import Span, minutes_of
+from app.roles.samples import is_confirmed_by_person
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,7 @@ async def _drop_automatic(
     for block in await _automatic_blocks(db, work_day):
         if keep is not None and block.external_ref in keep:
             continue
-        if block.confidence == CONFIDENCE_CONFIRMED:
+        if is_confirmed_by_person(confidence=block.confidence):
             kept += 1
             continue
         await db.delete(block)

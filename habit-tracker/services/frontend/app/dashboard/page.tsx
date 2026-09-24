@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/123
-// summary: desktop Dashboard at /dashboard — hero card shows today's ring, the last written entry with its time of writing, and the tip of the day; moved off the root address in #123, where the root became the redirect into Today
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176
+// summary: desktop Dashboard includes avoid-category streaks and Continue tracking alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -21,11 +21,16 @@ import {
 import Link from 'next/link';
 import { NEW_ENTRY_QUERY } from '@/lib/routes';
 import { ENTRIES_TODAY_LABEL, heroLastEntryLine } from '@/lib/ui-constants';
+import { ContinueTracking } from '@/components/ContinueTracking';
+import { CurrentStreaks } from '@/components/CurrentStreaks';
 
 export default function Dashboard() {
   const {
     stats,
     hero,
+    avoidStreaks,
+    categories,
+    continueEntries,
     loading,
     error,
     insight,
@@ -76,7 +81,7 @@ export default function Dashboard() {
       </div>
 
       {/* Hero score card */}
-      <div className="bg-card border border-white/5 rounded-3xl p-8 flex flex-col sm:flex-row items-center gap-8">
+      <div data-testid="dashboard-hero" className="bg-card border border-white/5 rounded-3xl p-8 flex flex-col sm:flex-row items-center gap-8">
         <div className="relative flex-shrink-0">
           <ProgressRing progress={hero.ringProgress} />
           <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -105,7 +110,10 @@ export default function Dashboard() {
             Log entry
           </Link>
         </div>
+        <CurrentStreaks streaks={avoidStreaks} compact />
       </div>
+
+      <ContinueTracking categories={categories} entries={continueEntries} />
 
       {/* AI insights */}
       <div className="bg-card border border-white/5 rounded-3xl overflow-hidden">

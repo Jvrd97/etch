@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176
 // summary: tests for useDashboard's hero load — the day window and the last-written lookup are targeted queries, and the hero never reads the history list
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -44,6 +44,8 @@ function entry(id: number, entryDate: string, amount: string): Entry {
 }
 
 interface EntriesQuery {
+  categoryId?: number;
+  skip?: number;
   startDate?: string;
   endDate?: string;
   limit?: number;
@@ -57,6 +59,7 @@ let dayWindow: Entry[];
 let lastWritten: Entry[];
 /** The unbounded history list, which the hero must never read. */
 let history: Entry[];
+let categoryHistory: Entry[];
 
 mock.module('@/lib/api', () => ({
   // Профили потолка и долг за переработку (#179): экран дня читает предложение,
@@ -162,6 +165,7 @@ mock.module('@/lib/api', () => ({
     getAll: () => Promise.resolve([WATER]),
     getById: () => Promise.resolve(null),
     getStreak: () => Promise.resolve(null),
+    getStreaks: () => Promise.resolve([]),
     create: () => Promise.resolve(null),
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
@@ -169,6 +173,10 @@ mock.module('@/lib/api', () => ({
   entriesAPI: {
     getAll: (params?: EntriesQuery) => {
       entriesCalls.push(params ?? {});
+      if (params?.categoryId !== undefined) {
+        const skip = params.skip ?? 0;
+        return Promise.resolve(categoryHistory.slice(skip, skip + (params.limit ?? 100)));
+      }
       if (params?.sort !== undefined) return Promise.resolve(lastWritten);
       if (params?.startDate !== undefined) return Promise.resolve(dayWindow);
       return Promise.resolve(history);
@@ -183,7 +191,6 @@ mock.module('@/lib/api', () => ({
     getById: () => Promise.resolve(null),
     create: () => Promise.resolve(null),
   },
-  tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
 const { useDashboard } = await import('./useDashboard');
@@ -196,6 +203,7 @@ beforeEach(() => {
   dayWindow = [];
   lastWritten = [];
   history = [];
+  categoryHistory = [];
 });
 
 afterEach(() => {
@@ -262,4 +270,17 @@ describe('useDashboard hero', () => {
     expect(result.current.hero.lastEntry).toBeNull();
     expect(result.current.hero.tip.text.length).toBeGreaterThan(0);
   });
+
+  it('loads only the last written entry per Continue tracking category', async () => {
+    categoryHistory = Array.from({ length: 101 }, (_, i) => entry(i + 1, TODAY, String(i)));
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.continueEntries).toEqual([categoryHistory[0]]);
+    const categoryCalls = entriesCalls.filter((call) => call.categoryId === WATER.id);
+    expect(categoryCalls).toHaveLength(1);
+    expect(categoryCalls[0].limit).toBe(1);
+    expect(categoryCalls[0].skip).toBeUndefined();
+    expect(categoryCalls[0].sort).toBe('created_at_desc');
+  });
+
 });

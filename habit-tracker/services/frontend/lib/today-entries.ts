@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/123
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/123, PHASE-01/174, PHASE-01/177
 // summary: pure Today-screen entry state — number totals, optimistic number entries merged over the fetched snapshot, checklist map with flip/rollback, streak loading that degrades to null
 
 import type { Category, CategoryStreak, Entry } from './api';
@@ -90,6 +90,20 @@ export function todayEntryForCategory(
     );
 }
 
+/**
+ * Confirmed records of one category for the current Today snapshot.
+ *
+ * A negative id is an in-flight quick increment. It has no server row yet, so
+ * showing it as a list item would advertise edit and delete actions that must
+ * fail. The list is chronological: the time beside each row describes the
+ * order the person actually wrote the day.
+ */
+export function dayEntriesForCategory(entries: Entry[], categoryId: number): Entry[] {
+  return entries
+    .filter((entry) => entry.category_id === categoryId && entry.id > 0)
+    .toSorted((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
 /** Checked-state for every boolean field of every checklist category. */
 export function buildCheckedMap(categories: Category[], entries: Entry[]): CheckedMap {
   const map: CheckedMap = {};
@@ -150,28 +164,29 @@ export interface LoadedStreaks {
  */
 export async function loadStreaks(
   categoryIds: readonly number[],
-  fetchStreak: (categoryId: number) => Promise<CategoryStreak>
+  fetchStreaks: () => Promise<CategoryStreak[]>
 ): Promise<LoadedStreaks> {
-  const failed: number[] = [];
-  const loaded = await Promise.all(
-    categoryIds.map(
-      async (id) =>
-        [
-          id,
-          await fetchStreak(id).catch(() => {
-            failed.push(id);
-            return null;
-          }),
-        ] as const
-    )
-  );
-  return { streaks: Object.fromEntries(loaded), failed };
+  if (categoryIds.length === 0) return { streaks: {}, failed: [] };
+  try {
+    const loaded = await fetchStreaks();
+    const byCategory = new Map(loaded.map((streak) => [streak.category_id, streak]));
+    const missing = categoryIds.filter((id) => !byCategory.has(id));
+    return {
+      streaks: Object.fromEntries(categoryIds.map((id) => [id, byCategory.get(id) ?? null])),
+      failed: missing,
+    };
+  } catch {
+    return {
+      streaks: Object.fromEntries(categoryIds.map((id) => [id, null])),
+      failed: [...categoryIds],
+    };
+  }
 }
 
 /** The streaks alone, for callers that have nowhere to put a failure. */
 export async function loadStreakMap(
   categoryIds: readonly number[],
-  fetchStreak: (categoryId: number) => Promise<CategoryStreak>
+  fetchStreaks: () => Promise<CategoryStreak[]>
 ): Promise<StreakMap> {
-  return (await loadStreaks(categoryIds, fetchStreak)).streaks;
+  return (await loadStreaks(categoryIds, fetchStreaks)).streaks;
 }

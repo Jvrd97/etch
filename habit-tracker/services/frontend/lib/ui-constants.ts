@@ -183,3 +183,10 @@ export const NEW_ENTRY_SHEET_TITLE = 'Log an entry';
  * test needs a name it can import from somewhere other than a `page.tsx`.
  */
 export const NEW_CATEGORY_SHEET_TITLE = 'Set up a category';
+
+/**
+ * Accessible name of the mobile "tell your day by voice" button — same
+ * page.tsx-export restriction as `NEW_ENTRY_SHEET_TITLE`: the test needs to
+ * import it from somewhere other than the App Router page.
+ */
+export const TELL_DAY_LABEL = 'Рассказать день голосом';

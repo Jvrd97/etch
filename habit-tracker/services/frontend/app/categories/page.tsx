@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175
-// summary: Desktop category editor with explicit, clearable selection of the field shown in the table
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
+// summary: Desktop category editor persists field units and quick-step lists
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -488,6 +488,7 @@ function CategoryForm({ category, onClose, onSuccess }: CategoryFormProps) {
                   canMoveDown={index < draft.fields.length - 1}
                   primaryFieldId={draft.primaryFieldId}
                   onChange={(updates) => draft.updateField(index, updates)}
+                  onQuickStepsTextChange={(text) => draft.updateQuickStepsText(index, text)}
                   onPrimaryFieldChange={draft.setPrimaryFieldId}
                   onRemove={() => draft.removeField(index)}
                   onMove={(direction) => draft.moveField(index, direction)}
@@ -554,6 +555,7 @@ interface FieldRowProps {
   canMoveDown: boolean;
   primaryFieldId: number | null;
   onChange: (updates: Partial<FieldCreate>) => void;
+  onQuickStepsTextChange: (text: string) => void;
   onPrimaryFieldChange: (fieldId: number | null) => void;
   onRemove: () => void;
   onMove: (direction: FieldMoveDirection) => void;
@@ -567,6 +569,7 @@ function FieldRow({
   canMoveDown,
   primaryFieldId,
   onChange,
+  onQuickStepsTextChange,
   onPrimaryFieldChange,
   onRemove,
   onMove,
@@ -605,6 +608,27 @@ function FieldRow({
           onChange={(e) => onChange({ options: e.target.value })}
           className={`${compactInputClass} mb-3`}
         />
+      )}
+
+      {field.field_type === 'number' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          <input
+            type="text"
+            aria-label={`Field ${position} unit`}
+            placeholder="Unit (optional)"
+            value={field.unit ?? ''}
+            onChange={(e) => onChange({ unit: e.target.value || null })}
+            className={compactInputClass}
+          />
+          <input
+            type="text"
+            aria-label={`Field ${position} quick steps`}
+            placeholder="Quick steps: -5, -1, 1, 5"
+            value={field.quickStepsText}
+            onChange={(e) => onQuickStepsTextChange(e.target.value)}
+            className={compactInputClass}
+          />
+        </div>
       )}
 
       <div className="flex justify-between items-center">

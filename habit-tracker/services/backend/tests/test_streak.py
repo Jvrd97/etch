@@ -2,8 +2,8 @@
 Tests for category streak_mode and the streak endpoint.
 """
 
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/90
-# summary: tests for streak_mode create/patch/422, the streak calculation matrix, and the day boundary the streak now counts by — `today_local()`, the same one the plan uses
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/90, PHASE-01/174
+# summary: tests for streak_mode create/patch/422, individual and bulk streak responses, the calculation matrix, and the day boundary the streak now counts by — `today_local()`, the same one the plan uses
 
 import logging
 from datetime import date, timedelta
@@ -146,12 +146,14 @@ class TestIsRelapseValue:
 class TestStreakEndpoint:
     """GET /categories/{id}/streak over real entries."""
 
-    async def _create_rmo(self, client: AsyncClient) -> tuple[int, int, int]:
+    async def _create_rmo(
+        self, client: AsyncClient, name: str = "RMO"
+    ) -> tuple[int, int, int]:
         """Create an avoid category with a number and a boolean field."""
         response = await client.post(
             "/api/v1/categories",
             json={
-                "name": "RMO",
+                "name": name,
                 "streak_mode": "avoid",
                 "fields": [
                     {"name": "Quantity", "field_type": "number", "order": 1},
@@ -240,6 +242,70 @@ class TestStreakEndpoint:
 
         response = await client.get(f"/api/v1/categories/{category_id}/streak")
         assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+class TestBulkStreakEndpoint:
+    """GET /streaks lists one selected mode without per-category requests."""
+
+    async def _create_category(
+        self, client: AsyncClient, name: str, streak_mode: str
+    ) -> int:
+        response = await client.post(
+            "/api/v1/categories",
+            json={"name": name, "streak_mode": streak_mode},
+        )
+        assert response.status_code == 201
+        return int(response.json()["id"])
+
+    async def test_avoid_results_match_the_individual_endpoint(
+        self, client: AsyncClient
+    ) -> None:
+        streak_test = TestStreakEndpoint()
+        first_id, first_quantity_id, _ = await streak_test._create_rmo(
+            client, "No Smoking"
+        )
+        second_id, _, second_relapse_id = await streak_test._create_rmo(
+            client, "No Sugar"
+        )
+        today = today_local()
+        await streak_test._add_entry(
+            client, first_id, today - timedelta(days=3), {first_quantity_id: "2"}
+        )
+        await streak_test._add_entry(
+            client, second_id, today - timedelta(days=1), {second_relapse_id: "true"}
+        )
+        await self._create_category(client, "Water", "build")
+
+        bulk = await client.get("/api/v1/streaks?streak_mode=avoid")
+        assert bulk.status_code == 200
+        results = {item["category_id"]: item for item in bulk.json()}
+        assert set(results) == {first_id, second_id}
+
+        for category_id in (first_id, second_id):
+            individual = await client.get(f"/api/v1/categories/{category_id}/streak")
+            assert individual.status_code == 200
+            assert results[category_id] == individual.json()
+
+    async def test_returns_an_empty_list_when_the_mode_has_no_categories(
+        self, client: AsyncClient
+    ) -> None:
+        await self._create_category(client, "Water", "build")
+
+        response = await client.get("/api/v1/streaks?streak_mode=avoid")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_filters_by_the_requested_mode(self, client: AsyncClient) -> None:
+        avoid_id = await self._create_category(client, "No Smoking", "avoid")
+        build_id = await self._create_category(client, "Water", "build")
+
+        response = await client.get("/api/v1/streaks?streak_mode=build")
+
+        assert response.status_code == 200
+        assert [item["category_id"] for item in response.json()] == [build_id]
+        assert avoid_id != build_id
 
 
 class TestOneDayBoundary:

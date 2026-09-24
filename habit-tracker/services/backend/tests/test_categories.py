@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] 175
-# summary: category CRUD coverage includes explicit primary table field validation and deletion behavior
+# [review:need-review] 175, #176
+# summary: category CRUD coverage includes primary field validation and unit/quick-step persistence
 
 import logging
 from io import StringIO
@@ -20,6 +20,7 @@ from app.models import Category, Field
 
 PRIMARY_FIELD_REVISION = "e7a9c1b3d5f8"
 PRIMARY_FIELD_PREVIOUS_REVISION = "d6f8a0c2e4b7"
+FIELD_OPTIONS_REVISION = "a9c1e3f5b7d0"
 
 
 @pytest.mark.asyncio
@@ -79,6 +80,34 @@ class TestCategoryCreate:
         assert data["fields"][1]["name"] == "Quality"
         assert data["fields"][1]["field_type"] == "select"
         assert data["fields"][1]["options"] == "poor,average,excellent"
+
+    async def test_field_unit_and_quick_steps_round_trip(self, client: AsyncClient):
+        response = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Water",
+                "fields": [
+                    {
+                        "name": "Amount",
+                        "field_type": "number",
+                        "unit": "ml",
+                        "quick_steps": [-250, 250, 500],
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201
+        category = response.json()
+        field = category["fields"][0]
+        assert field["unit"] == "ml"
+        assert field["quick_steps"] == [-250, 250, 500]
+        patched = await client.patch(
+            f"/api/v1/categories/{category['id']}",
+            json={"fields": [{**field, "unit": "L", "quick_steps": [0.25, 0.5]}]},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["fields"][0]["unit"] == "L"
+        assert patched.json()["fields"][0]["quick_steps"] == [0.25, 0.5]
 
     async def test_create_category_defaults_display_mode_and_group(
         self, client: AsyncClient
@@ -950,6 +979,22 @@ def test_primary_field_migration_is_reversible_and_keeps_one_head() -> None:
     )
     assert "drop constraint fk_categories_primary_field_id_fields" in downgrade_sql
     assert "drop column primary_field_id" in downgrade_sql
+
+
+def test_field_options_migration_is_reversible_and_is_the_only_head() -> None:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    assert ScriptDirectory.from_config(config).get_heads() == [FIELD_OPTIONS_REVISION]
+    upgrade_sql = _primary_field_migration_sql(
+        f"f8b0d2e4a6c9:{FIELD_OPTIONS_REVISION}", downgrade=False
+    )
+    assert "add column unit varchar(50)" in upgrade_sql
+    assert "add column quick_steps json" in upgrade_sql
+    downgrade_sql = _primary_field_migration_sql(
+        f"{FIELD_OPTIONS_REVISION}:f8b0d2e4a6c9", downgrade=True
+    )
+    assert "drop column quick_steps" in downgrade_sql
+    assert "drop column unit" in downgrade_sql
 
 
 @pytest.mark.asyncio

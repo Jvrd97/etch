@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import today_local
 from app.crud.values import is_true_value, parse_number
-from app.models import Entry, EntryValue, Field
+from app.models import Category, Entry, EntryValue, Field
 from app.models.field import FieldType
 
 # `is_relapse_value` is exported deliberately: «что такое сорвавшееся значение»
@@ -16,7 +16,13 @@ from app.models.field import FieldType
 # challenge (`app.challenge.rules`) — and one definition. `compute_streak` is
 # *not* shared with them: a day with no entries is clean for a streak and a miss
 # for an obligation, and that difference is the point of the second module.
-__all__ = ["StreakStats", "compute_streak", "get_category_streak", "is_relapse_value"]
+__all__ = [
+    "StreakStats",
+    "compute_streak",
+    "get_category_streak",
+    "get_category_streaks",
+    "is_relapse_value",
+]
 
 
 @dataclass(frozen=True)
@@ -125,3 +131,41 @@ async def get_category_streak(
             relapse_dates.add(entry_date)
 
     return compute_streak(entry_dates, relapse_dates, today or today_local())
+
+
+async def get_category_streaks(
+    db: AsyncSession, streak_mode: str, today: date | None = None
+) -> list[tuple[int, StreakStats]]:
+    """Compute every category of one mode from one joined history query."""
+    result = await db.execute(
+        select(
+            Category.id,
+            Entry.id,
+            Entry.entry_date,
+            EntryValue.value,
+            Field.id,
+            Field.field_type,
+        )
+        .join(Entry, Entry.category_id == Category.id, isouter=True)
+        .join(EntryValue, EntryValue.entry_id == Entry.id, isouter=True)
+        .join(Field, Field.id == EntryValue.field_id, isouter=True)
+        .where(Category.streak_mode == streak_mode)
+        .order_by(Category.name, Category.id)
+    )
+
+    histories: dict[int, tuple[set[date], set[date]]] = {}
+    for category_id, entry_id, entry_date, value, field_id, field_type in result.all():
+        entry_dates, relapse_dates = histories.setdefault(category_id, (set(), set()))
+        if entry_id is None or entry_date is None:
+            continue
+        entry_dates.add(entry_date)
+        if field_type is not None and is_relapse_value(
+            field_type, value, field_id=field_id, entry_id=entry_id
+        ):
+            relapse_dates.add(entry_date)
+
+    reference_day = today or today_local()
+    return [
+        (category_id, compute_streak(entry_dates, relapse_dates, reference_day))
+        for category_id, (entry_dates, relapse_dates) in histories.items()
+    ]

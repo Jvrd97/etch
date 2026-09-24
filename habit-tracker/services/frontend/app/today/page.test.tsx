@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/121
+// [review:need-review] PHASE-03/121, PHASE-01/177
 // summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -256,5 +256,20 @@ describe('the quick marks of /today', () => {
     await renderToday();
 
     expect(screen.getByLabelText('Питание: add Калории')).toBeDefined();
+  });
+
+  it('opens the category day list from the card without treating a plus as a card tap', async () => {
+    getEntries = mock(() => Promise.resolve([
+      {
+        id: 12, category_id: NUTRITION.id, entry_date: '2026-07-30',
+        created_at: '2026-07-30T09:12:00Z', updated_at: TIMESTAMP,
+        values: [{ id: 13, entry_id: 12, field_id: 9, value: '300' }],
+      },
+    ]));
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
+    expect(screen.getByRole('heading', { name: 'Питание — сегодня' })).toBeDefined();
+    expect(screen.getByText('Калории 300')).toBeDefined();
   });
 });

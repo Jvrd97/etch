@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-03/123
-// summary: mobile Dashboard at /m/dashboard — hero card shows today's ring, the last written entry with its time of writing and the tip of the day, in the same wording as the desktop shell; moved off the bare /m in #123, which became the redirect into Today
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176
+// summary: mobile Dashboard includes avoid-category streaks and Continue tracking alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -21,6 +21,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import Link from 'next/link';
+import { ContinueTracking } from '@/components/ContinueTracking';
+import { CurrentStreaks } from '@/components/CurrentStreaks';
 
 const MOBILE_RING_SIZE_PX = 128;
 
@@ -28,6 +30,9 @@ export default function MobileDashboardPage() {
   const {
     stats,
     hero,
+    avoidStreaks,
+    categories,
+    continueEntries,
     loading,
     error,
     insight,
@@ -55,7 +60,7 @@ export default function MobileDashboardPage() {
   return (
     <div className="space-y-6 animate-fade-rise">
       {/* Hero score card */}
-      <div className="bg-card border border-white/5 rounded-3xl p-6 flex flex-col items-center gap-5 text-center">
+      <div data-testid="mobile-dashboard-hero" className="bg-card border border-white/5 rounded-3xl p-6 flex flex-col items-center gap-5 text-center">
         <div className="relative flex-shrink-0">
           <ProgressRing progress={hero.ringProgress} size={MOBILE_RING_SIZE_PX} />
           <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -84,7 +89,10 @@ export default function MobileDashboardPage() {
           <Plus className="w-4 h-4" strokeWidth={2} />
           Log entry
         </Link>
+        <CurrentStreaks streaks={avoidStreaks} compact />
       </div>
+
+      <ContinueTracking categories={categories} entries={continueEntries} mobile />
 
       {/* KPI row */}
       <div className="grid grid-cols-3 gap-3">

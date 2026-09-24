@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123, PHASE-03/nav-drawer
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123, PHASE-03/nav-drawer, #176
 // summary: screens now carry `section` (День/Данные/Настройка) and `inHeader`, from which the desktop drawer and its two header anchors are derived; `isActiveRoute` marks a screen on its detail routes too
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
@@ -454,6 +454,18 @@ export const MOBILE_TABS: readonly MobileTab[] = [
 export const NEW_ENTRY_PARAM = 'new';
 export const NEW_ENTRY_VALUE = '1';
 export const NEW_ENTRY_QUERY = `?${NEW_ENTRY_PARAM}=${NEW_ENTRY_VALUE}`;
+export const ENTRY_CATEGORY_PARAM = 'category';
+
+export function newEntryHref(categoryId: number): string {
+  return `/entries${NEW_ENTRY_QUERY}&${ENTRY_CATEGORY_PARAM}=${categoryId}`;
+}
+
+export function newEntryCategoryId(params: { get(name: string): string | null }): number | null {
+  const raw = params.get(ENTRY_CATEGORY_PARAM);
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  const categoryId = Number(raw);
+  return Number.isSafeInteger(categoryId) && categoryId > 0 ? categoryId : null;
+}
 
 /** Whether a screen's query string asks for the editor to open on mount. */
 export function wantsNewEntry(params: { get(name: string): string | null }): boolean {
