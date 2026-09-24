@@ -1,17 +1,20 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/203
+// summary: PHASE-03/203 puts the history button left of the message field and opens the history panel from it; the sheet now stays up while a conversation loads or fails, so the button and the panel's focus target survive a switch
 // summary: /m/chat screen — the same feed, message field and state as the desktop chat, wrapped in the mobile shell's FullScreenSheet so the bar and the field follow the visual viewport instead of disappearing under the on-screen keyboard
 
-import { Suspense } from 'react';
+import { Suspense, useCallback, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import ErrorAlert from '@/components/ErrorAlert';
+import { History } from 'lucide-react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import ChatComposer, { SEND_LABEL } from '@/components/chat/ChatComposer';
 import ChatFeed from '@/components/chat/ChatFeed';
+import ChatHistorySheet, { HISTORY_SHEET_TITLE } from '@/components/chat/ChatHistorySheet';
 import { useChat } from '@/hooks/useChat';
 import { conversationIdFrom } from '@/lib/chat-nav';
 import { MORE_PATH } from '@/lib/routes';
+import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
 const SHEET_TITLE = 'Chat';
 
@@ -20,6 +23,8 @@ const EMPTY_HINT = 'Напиши сообщение — ответ придёт 
 
 /** Поле в одну строку в покое: экрана мало, и лента важнее пустого поля. */
 const MOBILE_COMPOSER_ROWS = 1;
+
+const HISTORY_PANEL_ID = 'chat-history-panel';
 
 /**
  * Чат на телефоне.
@@ -35,6 +40,13 @@ const MOBILE_COMPOSER_ROWS = 1;
  * Отправка есть и в шапке листа, и рядом с полем. Это одно и то же действие:
  * кнопка у поля — привычная для переписки, кнопка в шапке видна всегда, даже
  * когда палец стоит в конце длинной реплики.
+ *
+ * История разговоров открывается кнопкой слева от поля (`#203`): она едет над
+ * клавиатурой вместе с полем и не заперта на время хода — открыть другой
+ * разговор посреди ответа можно. Лист при этом стоит всегда, и пока разговор
+ * читается, и когда чтение провалилось: иначе переключение разговора снимало бы
+ * вместе с листом и кнопку, в которую должен вернуться фокус, а из разговора,
+ * который не открылся, некуда было бы уйти в другой.
  */
 function MobileChatScreen() {
   const router = useRouter();
@@ -51,43 +63,84 @@ function MobileChatScreen() {
     reset,
     dismissError,
   } = useChat({ conversationId });
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyButton = useRef<HTMLButtonElement>(null);
 
   // Выход из листа — в «More», а не `router.back()`: по ссылке из чужого
   // сообщения истории у вкладки нет, и «назад» в ней никуда не ведёт.
   const close = () => router.push(MORE_PATH);
 
-  if (screen.status === 'loading') return <LoadingSpinner size="lg" />;
-  if (screen.status === 'failed') {
-    return <ErrorAlert message={screen.message} onDismiss={dismissError} />;
-  }
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    historyButton.current?.focus();
+  }, []);
+
+  const ready = screen.status === 'ready';
 
   return (
-    <FullScreenSheet
-      title={SHEET_TITLE}
-      onCancel={close}
-      onDone={send}
-      doneLabel={SEND_LABEL}
-      // `busy` в листе переименовывает действие в «Saving...» — неправда про
-      // идущий ход. Пока ход идёт, `canSend` и так ложь, и кнопка выключена
-      // без вранья в подписи.
-      doneDisabled={!canSend}
-    >
-      <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} onReset={reset} />
-      {/* Прилипает ко дну прокручиваемой области листа, а сама область
-          повторяет визуальный viewport — поэтому поле стоит прямо над
-          клавиатурой, а не под ней. Фон непрозрачный: иначе лента проезжает
-          сквозь поле. */}
-      <div className="sticky bottom-0 -mx-4 px-4 pb-1 pt-2 bg-background">
-        <ChatComposer
-          value={draft}
-          onChange={setDraft}
-          onSend={send}
-          busy={busy}
-          canSend={canSend}
-          rows={MOBILE_COMPOSER_ROWS}
+    <>
+      <FullScreenSheet
+        title={SHEET_TITLE}
+        onCancel={close}
+        onDone={send}
+        doneLabel={SEND_LABEL}
+        // `busy` в листе переименовывает действие в «Saving...» — неправда про
+        // идущий ход. Пока ход идёт, `canSend` и так ложь, и кнопка выключена
+        // без вранья в подписи.
+        doneDisabled={!canSend}
+        error={screen.status === 'failed' ? screen.message : null}
+        onDismissError={dismissError}
+      >
+        {/* Колонка не ниже листа: при короткой ленте поле и кнопка истории
+            стоят внизу экрана, а не сразу под последним сообщением. */}
+        <div className="flex min-h-full flex-col gap-5">
+          <div className="flex-1">
+            {screen.status === 'loading' && <LoadingSpinner size="lg" />}
+            {ready && (
+              <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} onReset={reset} />
+            )}
+          </div>
+          {/* Прилипает ко дну прокручиваемой области листа, а сама область
+              повторяет визуальный viewport — поэтому поле стоит прямо над
+              клавиатурой, а не под ней. Фон непрозрачный: иначе лента проезжает
+              сквозь поле. */}
+          <div className="sticky bottom-0 -mx-4 px-4 pb-1 pt-2 bg-background">
+            <ChatComposer
+              value={draft}
+              onChange={setDraft}
+              onSend={send}
+              // Набирать, пока разговор не открыт, некуда: черновик пишется под
+              // id разговора, и набранное до его ответа затёр бы прочитанный.
+              busy={busy || !ready}
+              canSend={canSend}
+              rows={MOBILE_COMPOSER_ROWS}
+              leading={
+                <button
+                  ref={historyButton}
+                  type="button"
+                  onClick={() => setHistoryOpen(true)}
+                  aria-label={HISTORY_SHEET_TITLE}
+                  aria-haspopup="dialog"
+                  aria-expanded={historyOpen}
+                  aria-controls={historyOpen ? HISTORY_PANEL_ID : undefined}
+                  style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
+                  className="inline-flex shrink-0 items-center justify-center rounded-3xl bg-surface text-text-secondary transition-colors duration-200 hover:text-text-primary"
+                >
+                  <History className="w-5 h-5" strokeWidth={2} />
+                </button>
+              }
+            />
+          </div>
+        </div>
+      </FullScreenSheet>
+      {historyOpen && (
+        <ChatHistorySheet
+          id={HISTORY_PANEL_ID}
+          activeId={ready ? screen.conversationId : conversationId}
+          onClose={closeHistory}
         />
-      </div>
-    </FullScreenSheet>
+      )}
+    </>
   );
 }
 

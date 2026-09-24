@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/189
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/189, PHASE-03/203
+// summary: PHASE-03/203 switches the conversation mid-turn and checks that neither the turn nor its re-read feed leaks into the next one
 // summary: PHASE-03/116 adds the refusals — a busy dialogue answered 409 keeps the feed readable, an exhausted slot ceiling carries its machine code, a stored turn left `streaming` locks the field until reset clears it; tests for the chat state both shells share — a half-written reply survives the screen being torn down and mounted again (the app backgrounded on a phone), a successful send leaves the draft empty on screen and in storage, the link's conversation wins over "the latest one", and a turn is not startable twice
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -468,5 +469,57 @@ describe('useChat: a turn nobody will close', () => {
     await waitFor(() => expect(view.result.current.stuck).toBe(false));
     expect(resetConversation).toHaveBeenCalledTimes(1);
     expect(view.result.current.messages[0]?.status).toBe('interrupted');
+  });
+});
+
+describe('useChat: switching conversations while a turn is in flight', () => {
+  it('neither carries the turn over nor lets its answer overwrite the next feed', async () => {
+    // Список истории открывают посреди ответа (#203). Ход первого разговора
+    // продолжает идти на сервере, но лента второго обязана остаться его лентой:
+    // ни вопрос в полёте, ни перечитанные после хода строки первого разговора в
+    // неё не попадают.
+    const release: { resolve: () => void } = { resolve: () => {} };
+    const events: { emit: (event: unknown) => void } = { emit: () => {} };
+    streamMessage = mock(
+      (_id: number, _content: string, onEvent: (event: unknown) => void) => {
+        events.emit = onEvent;
+        return new Promise<void>((resolve) => {
+          release.resolve = resolve;
+        });
+      }
+    );
+    getConversation = mock((id: number) =>
+      Promise.resolve(detail(id, [storedMessage({ id, content: `лента ${id}` })]))
+    );
+    const storage = fakeStorage();
+    const view = renderHook(
+      ({ conversationId }: { conversationId: number }) => useChat({ conversationId, storage }),
+      { initialProps: { conversationId: CONVERSATION } }
+    );
+    await waitFor(() => expect(view.result.current.screen.status).toBe('ready'));
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+    act(() => view.result.current.send());
+    await waitFor(() => expect(view.result.current.turn.phase).toBe('streaming'));
+
+    view.rerender({ conversationId: LATEST_CONVERSATION });
+
+    await waitFor(() =>
+      expect(view.result.current.screen).toEqual({
+        status: 'ready',
+        conversationId: LATEST_CONVERSATION,
+      })
+    );
+    expect(view.result.current.turn.phase).toBe('idle');
+    expect(view.result.current.busy).toBe(false);
+
+    act(() => events.emit({ kind: 'delta', text: 'ответ первому' }));
+    await act(async () => {
+      release.resolve();
+    });
+
+    expect(view.result.current.turn.phase).toBe('idle');
+    expect(view.result.current.messages.map((one) => one.content)).toEqual([
+      `лента ${LATEST_CONVERSATION}`,
+    ]);
   });
 });

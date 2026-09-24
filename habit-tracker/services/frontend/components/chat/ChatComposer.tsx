@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/192, PHASE-03/193
+// [review:need-review] PHASE-03/118, PHASE-03/192, PHASE-03/193, PHASE-03/203
+// summary: PHASE-03/203 gives the field a leading slot, so the phone's history button stands left of the field in the same row and never over the field, the attachment or the send button
 // summary: the message field both shells use — a textarea whose every keystroke goes to the caller (which mirrors it into the draft) and a send button that is a plain button, not a submit, so the field can sit inside the mobile sheet's own form without nesting one form in another
 // summary: PHASE-03/192 makes Enter send and Shift+Enter break the line, and keeps the Enter that closes an IME composition out of it
 
@@ -19,6 +20,11 @@ export interface ChatComposerProps {
   canSend: boolean;
   /** Сколько строк занимает поле в покое. На узком экране их меньше. */
   rows?: number;
+  /**
+   * Управление слева от поля, в одной строке с ним. Живёт своей жизнью: поле
+   * заперто на время хода, а то, что стоит здесь, — нет.
+   */
+  leading?: React.ReactNode;
 }
 
 export const MESSAGE_FIELD_LABEL = 'Сообщение';
@@ -59,6 +65,7 @@ export default function ChatComposer({
   busy,
   canSend,
   rows = DEFAULT_ROWS,
+  leading,
 }: ChatComposerProps) {
   const picker = useRef<HTMLInputElement>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -89,6 +96,7 @@ export default function ChatComposer({
       }}
     >
       <div className="flex items-end gap-3">
+      {leading}
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
