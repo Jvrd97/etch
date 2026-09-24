@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, Entry, Field, JournalEntry } from '@/lib/api';
+import type { Category, CategoryStreak, Entry, Field, JournalEntry } from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
 
@@ -29,6 +29,21 @@ const WATER: Category = {
   created_at: TIMESTAMP,
   updated_at: TIMESTAMP,
   fields: [GLASSES],
+};
+
+const NO_SMOKING: Category = {
+  ...WATER,
+  id: 2,
+  name: 'No Smoking',
+  streak_mode: 'avoid',
+};
+
+const SMOKING_STREAK: CategoryStreak = {
+  category_id: NO_SMOKING.id,
+  streak_mode: 'avoid',
+  current_streak: 12,
+  best_streak: 12,
+  last_relapse_date: null,
 };
 
 /** An entry as the API echoes it back. */
@@ -64,6 +79,8 @@ let journalCalls: unknown[];
 /** The unbounded history list, which the hero must never read. */
 let history: Entry[];
 let categoryHistory: Entry[];
+let getAllCategories: ReturnType<typeof mock>;
+let getStreaksApi: ReturnType<typeof mock>;
 
 mock.module('@/lib/api', () => ({
   // Профили потолка и долг за переработку (#179): экран дня читает предложение,
@@ -166,10 +183,10 @@ mock.module('@/lib/api', () => ({
     create: () => Promise.resolve(null),
   },
   categoriesAPI: {
-    getAll: () => Promise.resolve([WATER]),
+    getAll: () => getAllCategories(),
     getById: () => Promise.resolve(null),
     getStreak: () => Promise.resolve(null),
-    getStreaks: () => Promise.resolve([]),
+    getStreaks: (mode: 'avoid' | 'build') => getStreaksApi(mode),
     create: () => Promise.resolve(null),
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
@@ -215,6 +232,8 @@ beforeEach(() => {
   journalCalls = [];
   history = [];
   categoryHistory = [];
+  getAllCategories = mock(() => Promise.resolve([WATER]));
+  getStreaksApi = mock(() => Promise.resolve([]));
 });
 
 afterEach(() => {
@@ -314,4 +333,16 @@ describe('useDashboard hero', () => {
     expect(categoryCalls[0].sort).toBe('created_at_desc');
   });
 
+  it('loads avoid streaks once and pairs them with active categories', async () => {
+    getAllCategories = mock(() => Promise.resolve([WATER, NO_SMOKING]));
+    getStreaksApi = mock(() => Promise.resolve([SMOKING_STREAK]));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getStreaksApi).toHaveBeenCalledWith('avoid');
+    expect(result.current.avoidStreaks).toEqual([
+      { category: NO_SMOKING, streak: SMOKING_STREAK },
+    ]);
+  });
 });
