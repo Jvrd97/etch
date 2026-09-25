@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/118, PHASE-03/120
+// [review:need-review] PHASE-03/118, PHASE-03/120, PHASE-03/203
+// summary: PHASE-03/203 covers the history panel on the phone — opened from the button beside the field, a picked row opening its conversation by address, «Новый разговор» creating exactly one, the draft kept across the panel and across a switch and back, a failed list retried, Escape closing only the panel, and a switch mid-answer that keeps the two feeds apart
 // summary: PHASE-03/120 holds the live turn on both shells at once — the model's thought named on screen while it happens, and the caret that follows the text — because the phone and the wide screen draw one feed and a regression on one of them is a regression on both
 // summary: tests for the mobile chat screen — it draws the very same feed and message field the desktop screen draws (one text, one place to change it), the field lives inside the sheet whose bar and height follow the visual viewport, and the sheet's confirm is the send action rather than a "Done" that saves nothing
 
@@ -13,6 +14,9 @@ import { THINKING_LABEL } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
 
 let getConversation: ReturnType<typeof mock>;
+let listConversations: ReturnType<typeof mock>;
+let createConversation: ReturnType<typeof mock>;
+let pushed: string[];
 let streamTurn: (onEvent: (event: ChatStreamEvent) => void) => Promise<void>;
 let searchParams: URLSearchParams;
 
@@ -98,8 +102,8 @@ mock.module('@/lib/api', () => ({
     tap: () => Promise.resolve(null),
   },
   chatAPI: {
-    list: () => Promise.resolve([{ id: CONVERSATION }]),
-    create: () => Promise.resolve({ id: CONVERSATION }),
+    list: (limit?: number) => listConversations(limit),
+    create: () => createConversation(),
     get: (id: number) => getConversation(id),
     reset: () => Promise.resolve({ reset: 0 }),
     context: () => Promise.resolve(null),
@@ -147,19 +151,66 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => searchParams,
   useParams: () => ({}),
   usePathname: () => '/m/chat',
-  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  useRouter: () => ({
+    push: (href: string) => {
+      pushed.push(href);
+    },
+    replace: () => {},
+  }),
 }));
 
 const { default: MobileChatPage } = await import('./page');
 const { default: DesktopChatPage } = await import('@/app/chat/page');
 const { MESSAGE_FIELD_LABEL, SEND_LABEL } = await import('@/components/chat/ChatComposer');
+const { HISTORY_LOADING, HISTORY_RETRY, NEW_CONVERSATION } = await import(
+  '@/components/chat/ChatHistory'
+);
+const { HISTORY_SHEET_CLOSE_LABEL, HISTORY_SHEET_TITLE } = await import(
+  '@/components/chat/ChatHistorySheet'
+);
+
+/** A conversation of the history feed, shaped as the server lists it. */
+function listed(id: number, title: string) {
+  return {
+    id,
+    title,
+    started_on: '2026-08-03',
+    kind: 'general',
+    llm_backend: 'cli',
+    context_version: 1,
+    last_message_at: '2026-08-03T10:00:00Z',
+    archived: false,
+    created_at: '2026-08-03T09:00:00Z',
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      message_count: 1,
+      latency_ms_median: null,
+    },
+  };
+}
+
+const OPEN_TITLE = 'почему не добежал';
+const OTHER = 7;
+const OTHER_TITLE = 'план на завтра';
+const OTHER_MESSAGE = 'сделай план на завтра';
+const STARTED = 11;
 
 beforeEach(() => {
   searchParams = new URLSearchParams(`conversation=${CONVERSATION}`);
+  pushed = [];
+  window.localStorage.clear();
+  listConversations = mock(() =>
+    Promise.resolve([listed(CONVERSATION, OPEN_TITLE), listed(OTHER, OTHER_TITLE)])
+  );
+  createConversation = mock(() => Promise.resolve(listed(STARTED, '')));
   getConversation = mock((id: number) =>
     Promise.resolve({
       id,
-      messages: [message(1, 'user', STORED_MESSAGE)],
+      messages: [
+        id === OTHER ? message(2, 'user', OTHER_MESSAGE) : message(1, 'user', STORED_MESSAGE),
+      ],
       // Расход (#117) и признак продолжения (#112) приехали в детальный ответ
       // после того, как этот тест был написан; десктопная оболочка читает оба.
       usage: {
@@ -295,5 +346,198 @@ describe('the two shells', () => {
 
     expect(await desktop.findByLabelText(MESSAGE_FIELD_LABEL)).toBeDefined();
     expect(await desktop.findByText(STORED_MESSAGE)).toBeDefined();
+  });
+});
+
+/** Открыть панель истории нижней кнопкой и дождаться прочитанного списка. */
+async function openHistory() {
+  fireEvent.click(screen.getByRole('button', { name: HISTORY_SHEET_TITLE }));
+  const panel = screen.getByRole('dialog', { name: HISTORY_SHEET_TITLE });
+  await waitFor(() => expect(within(panel).queryByText(HISTORY_LOADING) === null).toBe(true));
+  return panel;
+}
+
+function historyIsOpen(): boolean {
+  return screen.queryByRole('dialog', { name: HISTORY_SHEET_TITLE }) !== null;
+}
+
+/** Переход, который сделал бы роутер: адрес сменился, экран перерисован. */
+function navigate(view: ReturnType<typeof render>, conversationId: number) {
+  searchParams = new URLSearchParams(`conversation=${conversationId}`);
+  view.rerender(<MobileChatPage />);
+}
+
+function field(): HTMLTextAreaElement {
+  return screen.getByLabelText(MESSAGE_FIELD_LABEL) as HTMLTextAreaElement;
+}
+
+describe('the history panel on the phone', () => {
+  it('opens from the button beside the message field, without writing anything', async () => {
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+
+    // Кнопка живёт в том же нижнем блоке, что и поле: лист следит за
+    // клавиатурой, и кнопка поднимается над ней вместе с полем.
+    const button = screen.getByRole('button', { name: HISTORY_SHEET_TITLE });
+    const chat = screen.getByRole('dialog', { name: 'Chat' });
+    expect(chat.contains(button)).toBe(true);
+    expect(button.closest('.sticky')?.contains(field())).toBe(true);
+
+    const panel = await openHistory();
+
+    expect(await within(panel).findByText(OTHER_TITLE)).toBeDefined();
+    expect(within(panel).getByRole('link', { current: 'page' }).textContent).toContain(
+      OPEN_TITLE
+    );
+    expect(createConversation).not.toHaveBeenCalled();
+  });
+
+  it('opens a picked conversation by its address and closes', async () => {
+    const view = render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    const panel = await openHistory();
+
+    const row = await within(panel).findByRole('link', { name: new RegExp(OTHER_TITLE) });
+    expect(row.getAttribute('href')).toBe(`/m/chat?conversation=${OTHER}`);
+    fireEvent.click(row);
+    expect(historyIsOpen()).toBe(false);
+
+    navigate(view, OTHER);
+
+    expect(await screen.findByText(OTHER_MESSAGE)).toBeDefined();
+    expect(screen.queryByText(STORED_MESSAGE) === null).toBe(true);
+  });
+
+  it('starts exactly one conversation from «Новый разговор» and goes there', async () => {
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    const panel = await openHistory();
+    await within(panel).findByText(OTHER_TITLE);
+
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole('button', { name: NEW_CONVERSATION }));
+    });
+
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(pushed).toEqual([`/m/chat?conversation=${STARTED}`]);
+    expect(historyIsOpen()).toBe(false);
+  });
+
+  it('keeps the draft while the panel opens and closes, and hands focus back', async () => {
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    fireEvent.change(field(), { target: { value: 'недописанное' } });
+
+    await openHistory();
+    fireEvent.click(screen.getByRole('button', { name: HISTORY_SHEET_CLOSE_LABEL }));
+
+    expect(historyIsOpen()).toBe(false);
+    expect(field().value).toBe('недописанное');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(HISTORY_SHEET_TITLE);
+  });
+
+  it('keeps the draft of the conversation left for another and gives it back on return', async () => {
+    const view = render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    fireEvent.change(field(), { target: { value: 'недописанное' } });
+
+    navigate(view, OTHER);
+    await screen.findByText(OTHER_MESSAGE);
+    expect(field().value).toBe('');
+
+    // «Назад» в браузере — тот же адрес первого разговора.
+    navigate(view, CONVERSATION);
+    await screen.findByText(STORED_MESSAGE);
+
+    await waitFor(() => expect(field().value).toBe('недописанное'));
+  });
+
+  it('says an empty history is empty rather than broken', async () => {
+    listConversations = mock(() => Promise.resolve([]));
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+
+    const panel = await openHistory();
+
+    expect(await within(panel).findByRole('button', { name: NEW_CONVERSATION })).toBeDefined();
+    expect(within(panel).queryAllByRole('link')).toHaveLength(0);
+  });
+
+  it('retries a list that failed to load', async () => {
+    let reads = 0;
+    listConversations = mock(() => {
+      reads += 1;
+      return reads === 1
+        ? Promise.reject(new Error('502: бэкенд молчит'))
+        : Promise.resolve([listed(OTHER, OTHER_TITLE)]);
+    });
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    const panel = await openHistory();
+
+    fireEvent.click(await within(panel).findByRole('button', { name: HISTORY_RETRY }));
+
+    expect(await within(panel).findByText(OTHER_TITLE)).toBeDefined();
+    expect(within(panel).queryByText(/502/) === null).toBe(true);
+  });
+
+  it('holds a long history inside its own scrolling list', async () => {
+    const LONG = 40;
+    listConversations = mock(() =>
+      Promise.resolve(Array.from({ length: LONG }, (_, i) => listed(100 + i, `разговор ${i}`)))
+    );
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    const panel = await openHistory();
+
+    await within(panel).findByText('разговор 39');
+    expect(within(panel).getAllByRole('link')).toHaveLength(LONG);
+    // «Новый разговор» не уезжает вместе со списком.
+    const start = within(panel).getByRole('button', { name: NEW_CONVERSATION });
+    const list = within(panel).getAllByRole('link')[0].closest('.overflow-y-auto');
+    expect(list !== null).toBe(true);
+    expect(list?.contains(start)).toBe(false);
+  });
+
+  it('closes only itself on Escape, not the chat underneath', async () => {
+    render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    await openHistory();
+
+    fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' });
+
+    expect(historyIsOpen()).toBe(false);
+    expect(screen.getByRole('dialog', { name: 'Chat' })).toBeDefined();
+    expect(pushed).toEqual([]);
+  });
+
+  it('stays reachable while an answer is streaming, and the switch keeps the feeds apart', async () => {
+    const release: { resolve: () => void } = { resolve: () => {} };
+    streamTurn = (onEvent) => {
+      onEvent({ kind: 'delta', text: 'ответ первому разговору' });
+      return new Promise<void>((resolve) => {
+        release.resolve = resolve;
+      });
+    };
+    const view = render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    await ask(view.container);
+    expect(field().disabled).toBe(true);
+
+    const button = screen.getByRole('button', { name: HISTORY_SHEET_TITLE }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    const panel = await openHistory();
+    fireEvent.click(await within(panel).findByRole('link', { name: new RegExp(OTHER_TITLE) }));
+    navigate(view, OTHER);
+    await screen.findByText(OTHER_MESSAGE);
+
+    await act(async () => {
+      release.resolve();
+    });
+
+    expect(screen.getByText(OTHER_MESSAGE)).toBeDefined();
+    expect(screen.queryByText('как я спал?') === null).toBe(true);
+    expect(screen.queryByText(/ответ первому разговору/) === null).toBe(true);
+    expect(screen.queryByText(STORED_MESSAGE) === null).toBe(true);
   });
 });

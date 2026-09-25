@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/203
+// summary: PHASE-03/203 adds the states the phone panel needs — a list still being read is not an empty one, a failed read offers a retry, a picked row reports itself so the panel can close
 // summary: history tests — conversations stand under the day they started, the open one is marked for a screen reader too, the row links into the shell the reader is already in, «Новый разговор» is one click that cannot fire twice, and an unread history says so instead of looking empty
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
@@ -6,6 +7,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ChatConversation } from '@/lib/api';
 import ChatHistory, {
   EMPTY_HISTORY,
+  HISTORY_LOADING,
+  HISTORY_RETRY,
   NEW_CONVERSATION,
 } from '@/components/chat/ChatHistory';
 
@@ -118,5 +121,34 @@ describe('ChatHistory', () => {
 
     expect(screen.getByText(/502/)).toBeDefined();
     expect(screen.queryByText(EMPTY_HISTORY)).toBeNull();
+  });
+
+  it('does not call a list still being read empty', () => {
+    // Пустая история до первого ответа сервера — ложь про разговоры, которые
+    // есть: человек успевает прочитать «ещё нет» и закрыть панель.
+    renderHistory({ conversations: [], activeId: null, loading: true });
+
+    expect(screen.getByText(HISTORY_LOADING)).toBeDefined();
+    expect(screen.queryByText(EMPTY_HISTORY)).toBeNull();
+  });
+
+  it('offers to read a failed list again', () => {
+    const onRetry = mock(() => {});
+    renderHistory({ conversations: [], activeId: null, error: '502', onRetry });
+
+    fireEvent.click(screen.getByRole('button', { name: HISTORY_RETRY }));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the caller which row was picked', () => {
+    // Панель на телефоне закрывается выбором строки — и тогда, когда выбран
+    // уже открытый разговор и адрес не меняется.
+    const onPick = mock(() => {});
+    renderHistory({ onPick });
+
+    fireEvent.click(screen.getByRole('link', { name: /Вопрос 2/ }));
+
+    expect(onPick).toHaveBeenCalledWith(2);
   });
 });

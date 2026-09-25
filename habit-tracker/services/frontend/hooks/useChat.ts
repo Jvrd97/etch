@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/203
+// summary: PHASE-03/203 lets the screen switch conversations mid-turn — the turn is dropped on the switch, and a turn that outlives its conversation no longer writes its events or its re-read feed into the next one
 // summary: PHASE-03/120 folds the turn's step events into `turn.progress` — what the model is busy with and the thought behind it, kept apart from `turn.text` so a thought can never end up inside the answer
 // summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { chatAPI, type ChatMessage } from '@/lib/api';
 import { applyProgress, NO_PROGRESS, type TurnProgress } from '@/lib/chat-progress';
 import type { ChatStreamEvent } from '@/lib/chat-stream';
@@ -200,11 +201,19 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
     setShown(conversationId);
     setScreen({ status: 'loading' });
     setMessages([]);
+    setTurn({ phase: 'idle' });
     setDraftState('');
   }
+  // Разговор, в который ещё можно писать ответ сервера. Ход живёт дольше
+  // экрана: его начали в одном разговоре, а человек уже открыл из истории
+  // другой. Всё, что ход приносит после этого, адресовано ленте, которой на
+  // экране больше нет.
+  const openId = useRef<number | null>(null);
+  const isOpen = useCallback((id: number) => openId.current === id, []);
 
   useEffect(() => {
     let cancelled = false;
+    openId.current = null;
     (async () => {
       try {
         // Разговор, названный ссылкой, — если он есть. Иначе одна лента на
@@ -219,6 +228,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
         // Черновик восстанавливается вместе с разговором, а не при монтировании:
         // до ответа сервера неизвестно, черновик какого разговора показывать.
         setDraftState(readChatDraft(storage, id));
+        openId.current = id;
         setScreen({ status: 'ready', conversationId: id });
       } catch (error) {
         if (!cancelled) setScreen({ status: 'failed', message: errorText(error) });
@@ -250,6 +260,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
             outcome.errorCode = event.code;
             return;
           }
+          if (!isOpen(id)) return;
           setTurn((current) => {
             if (current.phase !== 'streaming') return current;
             // Разбор по видам, а не «текст или всё остальное»: с шагами хода
@@ -287,6 +298,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
         // Отказ ручки — не поломка экрана. 409, 429 и 502 говорят о ходе, а
         // разговор при этом цел и читается; ронять всю ленту в «ошибка» значило
         // бы прятать за ней и уже написанное.
+        if (!isOpen(id)) return;
         const code = refusalCode(error);
         if (code === null) {
           setTurn({ phase: 'idle' });
@@ -300,11 +312,12 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
         // после перечитывания, и она же запирает разговор.
         if (code === TURN_IN_FLIGHT) {
           const detail = await chatAPI.get(id);
-          setMessages(detail.messages);
+          if (isOpen(id)) setMessages(detail.messages);
         }
         return;
       }
 
+      if (!isOpen(id)) return;
       const errorCode = outcome.errorCode;
       if (errorCode !== null) {
         setTurn((current) =>
@@ -316,10 +329,11 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
       // Перечитывание вместо склейки в памяти: строки таблицы и есть разговор,
       // и именно они переживут перезагрузку.
       const detail = await chatAPI.get(id);
+      if (!isOpen(id)) return;
       setMessages(detail.messages);
       setTurn({ phase: 'idle' });
     },
-    []
+    [isOpen]
   );
 
   // Незакрытый ход, приехавший из базы: воркер умер вместе с процессом CLI, и

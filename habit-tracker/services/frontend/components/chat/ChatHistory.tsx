@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/203
+// summary: PHASE-03/203 lets the same list live in the phone's history panel — a `panel` layout that scrolls inside its container at every width, a list still being read, a retry for a failed read, and a picked row reported to the caller
 // summary: the list of conversations beside the chat — «Новый разговор», the feed broken into the days the conversations started, the open one marked with aria-current, an unread history told apart from an empty one, and the whole column pinned so it stays in place while the conversation scrolls
 
 import Link from 'next/link';
@@ -14,6 +15,30 @@ import {
 export const HISTORY_TITLE = 'История';
 export const NEW_CONVERSATION = 'Новый разговор';
 export const EMPTY_HISTORY = 'Разговоров ещё нет. Первый начнётся с первого вопроса.';
+export const HISTORY_LOADING = 'Читаю разговоры…';
+export const HISTORY_RETRY = 'Повторить';
+
+/**
+ * Где стоит список.
+ *
+ * `column` — колонка рядом с разговором на `/chat`: на широком экране она
+ * закреплена во всю высоту окна, на узком становится блоком сверху. `panel` —
+ * мобильная панель истории: высоту задаёт панель, и список прокручивается
+ * внутри неё при любой ширине окна, а заголовок несёт сама панель.
+ */
+export type ChatHistoryLayout = 'column' | 'panel';
+
+const FRAME_CLASS: Record<ChatHistoryLayout, string> = {
+  column:
+    'bg-card border border-white/5 rounded-3xl p-4 lg:sticky lg:top-4 lg:flex lg:flex-col lg:h-[calc(100vh-2rem)]',
+  panel: 'flex flex-1 min-h-0 flex-col px-4 pt-1',
+};
+
+const LIST_CLASS: Record<ChatHistoryLayout, string> = {
+  column: 'lg:flex-1 lg:min-h-0 lg:overflow-y-auto lg:-mr-2 lg:pr-2',
+  panel:
+    'flex-1 min-h-0 overflow-y-auto -mr-2 pr-2 pb-[calc(env(safe-area-inset-bottom)+1rem)]',
+};
 
 export interface ChatHistoryProps {
   /** Лента, свежие сверху, в порядке сервера. */
@@ -29,6 +54,13 @@ export interface ChatHistoryProps {
   starting?: boolean;
   /** Почему список пуст, если он пуст не потому, что разговоров нет. */
   error?: string | null;
+  /** True, пока лента не прочитана ни разу: пустой список ещё не значит «нет». */
+  loading?: boolean;
+  /** Прочитать ленту заново. Без него у ошибки нет кнопки повтора. */
+  onRetry?: () => void;
+  /** Строку выбрали. Панель закрывается и тогда, когда адрес не меняется. */
+  onPick?: (id: number) => void;
+  layout?: ChatHistoryLayout;
 }
 
 /**
@@ -59,14 +91,21 @@ export default function ChatHistory({
   onStart,
   starting = false,
   error = null,
+  loading = false,
+  onRetry,
+  onPick,
+  layout = 'column',
 }: ChatHistoryProps) {
   const groups = groupByDay(conversations, today);
+  const unread = error === null && conversations.length === 0;
 
   return (
-    <aside className="bg-card border border-white/5 rounded-3xl p-4 lg:sticky lg:top-4 lg:flex lg:flex-col lg:h-[calc(100vh-2rem)]">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-medium text-text-secondary">{HISTORY_TITLE}</h2>
-      </div>
+    <aside className={FRAME_CLASS[layout]}>
+      {layout === 'column' && (
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-medium text-text-secondary">{HISTORY_TITLE}</h2>
+        </div>
+      )}
 
       <button
         type="button"
@@ -81,10 +120,29 @@ export default function ChatHistory({
       {/* Прокручивается только список: кнопка «Новый разговор» и заголовок
           стоят на месте, потому что действие, до которого надо доскроллить,
           на экране отсутствует. */}
-      <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto lg:-mr-2 lg:pr-2">
-      {error !== null && <p className="mt-4 text-sm text-danger">{error}</p>}
+      <div className={LIST_CLASS[layout]}>
+      {error !== null && (
+        <div className="mt-4 space-y-2">
+          <p className="text-sm text-danger">{error}</p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="text-sm font-medium text-lime underline-offset-4 hover:underline"
+            >
+              {HISTORY_RETRY}
+            </button>
+          )}
+        </div>
+      )}
 
-      {error === null && conversations.length === 0 && (
+      {unread && loading && (
+        <p role="status" className="mt-6 text-center text-sm text-text-disabled">
+          {HISTORY_LOADING}
+        </p>
+      )}
+
+      {unread && !loading && (
         <div className="mt-6 text-center px-2 pb-2">
           <div className="inline-flex p-3 rounded-3xl bg-surface mb-3">
             <MessagesSquare className="w-5 h-5 text-text-disabled" strokeWidth={2} />
@@ -105,6 +163,7 @@ export default function ChatHistory({
                 <li key={one.id}>
                   <Link
                     href={hrefFor(one.id)}
+                    onClick={onPick && (() => onPick(one.id))}
                     aria-current={open ? 'page' : undefined}
                     className={`block px-3 py-2 rounded-2xl transition-colors ${
                       open
