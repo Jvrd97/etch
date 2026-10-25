@@ -1,12 +1,18 @@
 'use client';
 // [review:need-review] PHASE-03/nav-drawer
 // summary: desktop navigation drawer — every screen of the registry grouped under День/Данные/Настройка, the active one marked on its detail routes too, and the modal contract its role promises: Escape, focus trap, frozen page behind, click on the scrim closes
+// [review:need-review] 205
+// summary: plus the «Passkey» row at the end of «Настройка», drawn only while the server has passkey on; the row markup is one DrawerRow for both
 
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ChevronRight, X } from 'lucide-react';
+import { ChevronRight, Fingerprint, X, type LucideIcon } from 'lucide-react';
 import { NAV_SECTIONS, isActiveRoute } from '@/lib/routes';
 import { routeIcon } from '@/components/route-icons';
+import {
+  DESKTOP_PASSKEYS_PATH,
+  usePasskeyEnabled,
+} from '@/components/settings/PasskeyMoreLink';
 import { focusablesIn, trapTab } from '@/lib/focus-trap';
 import {
   NAV_DRAWER_CLOSE_LABEL,
@@ -52,8 +58,40 @@ const ACTIVE_ROW = 'bg-lime/10 border-lime/40 text-text-primary';
  * panel's own padding puts focus on `body` — after which Escape would stop
  * working with the drawer still open on screen.
  */
+interface DrawerRowProps {
+  href: string;
+  name: string;
+  Icon: LucideIcon;
+  active: boolean;
+  onClose: () => void;
+}
+
+function DrawerRow({ href, name, Icon, active, onClose }: DrawerRowProps) {
+  return (
+    <li>
+      <Link
+        href={href}
+        onClick={onClose}
+        aria-current={active ? 'page' : undefined}
+        style={{ minHeight: TAP_TARGET_PX }}
+        className={`${navRowClass} ${active ? ACTIVE_ROW : IDLE_ROW}`}
+      >
+        <Icon
+          className={`w-5 h-5 ${active ? 'text-lime' : 'text-text-secondary'}`}
+          strokeWidth={2}
+        />
+        <span className="flex-1 text-sm font-medium">{name}</span>
+        <ChevronRight className="w-4 h-4 text-text-disabled" strokeWidth={2} />
+      </Link>
+    </li>
+  );
+}
+
 export default function NavDrawer({ id, pathname, onClose }: NavDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // The passkey screen is outside the route registry: it exists only while the
+  // server has passkey on, so its row is asked for rather than listed.
+  const passkeyOn = usePasskeyEnabled();
 
   // Scrolling the page behind an open drawer is the classic modal bug: the
   // panel stays put while the screen underneath drifts away.
@@ -130,28 +168,25 @@ export default function NavDrawer({ id, pathname, onClose }: NavDrawerProps) {
                 {section.name}
               </h3>
               <ul className="space-y-2">
-                {section.routes.map((route) => {
-                  const Icon = routeIcon(route.id);
-                  const active = isActiveRoute(pathname, route);
-                  return (
-                    <li key={route.id}>
-                      <Link
-                        href={route.href}
-                        onClick={onClose}
-                        aria-current={active ? 'page' : undefined}
-                        style={{ minHeight: TAP_TARGET_PX }}
-                        className={`${navRowClass} ${active ? ACTIVE_ROW : IDLE_ROW}`}
-                      >
-                        <Icon
-                          className={`w-5 h-5 ${active ? 'text-lime' : 'text-text-secondary'}`}
-                          strokeWidth={2}
-                        />
-                        <span className="flex-1 text-sm font-medium">{route.name}</span>
-                        <ChevronRight className="w-4 h-4 text-text-disabled" strokeWidth={2} />
-                      </Link>
-                    </li>
-                  );
-                })}
+                {section.routes.map((route) => (
+                  <DrawerRow
+                    key={route.id}
+                    href={route.href}
+                    name={route.name}
+                    Icon={routeIcon(route.id)}
+                    active={isActiveRoute(pathname, route)}
+                    onClose={onClose}
+                  />
+                ))}
+                {section.id === 'setup' && passkeyOn && (
+                  <DrawerRow
+                    href={DESKTOP_PASSKEYS_PATH}
+                    name="Passkey"
+                    Icon={Fingerprint}
+                    active={pathname === DESKTOP_PASSKEYS_PATH}
+                    onClose={onClose}
+                  />
+                )}
               </ul>
             </section>
           ))}

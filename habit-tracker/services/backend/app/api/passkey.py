@@ -131,6 +131,8 @@ async def register_passkey(
             challenge_token=challenge_token,
             now=time.time(),
         )
+        # Committed before 201: a key the answer reports as added must exist.
+        await db.commit()
     except PasskeyAlreadyRegistered as error:
         passkey_service.log_rejection("register", error)
         raise HTTPException(
@@ -201,6 +203,10 @@ async def login_with_passkey(
             challenge_token=challenge_token,
             now=time.time(),
         )
+        # The new last_used_at is what refuses a replay of this answer, so it is
+        # committed before the cookie leaves — a commit that fails after the
+        # response would leave the replay window open for the whole challenge.
+        await db.commit()
     except PasskeyRejected as error:
         passkey_service.log_rejection("login", error)
         raise HTTPException(

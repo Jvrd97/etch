@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] 205
-// summary: the «Passkey» row of the mobile "More" screen — leads to /m/settings/passkeys and is drawn only while the server has passkey on
+// summary: the «Passkey» row of the mobile "More" screen — leads to /m/settings/passkeys and is drawn only while the server has passkey on; `usePasskeyEnabled` is the same check for the desktop drawer row
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -8,10 +8,12 @@ import { ChevronRight, Fingerprint } from 'lucide-react';
 import { passkeyAPI } from '@/lib/passkey';
 import { TAP_TARGET_PX, navRowClass } from '@/lib/ui-constants';
 
-/** Мобильный экран ключей. Вне реестра экранов: его показывают, только если passkey включён. */
+/** Экраны ключей. Вне реестра экранов: их показывают, только если passkey включён. */
 export const MOBILE_PASSKEYS_PATH = '/m/settings/passkeys';
+export const DESKTOP_PASSKEYS_PATH = '/settings/passkeys';
 
-export default function PasskeyMoreLink() {
+/** Включён ли passkey на сервере; до ответа и без ответа — нет. */
+export function usePasskeyEnabled(): boolean {
   const [enabled, setEnabled] = useState(false);
 
   useEffect(() => {
@@ -21,14 +23,20 @@ export default function PasskeyMoreLink() {
       .then((status) => {
         if (alive) setEnabled(status.enabled);
       })
-      // No answer means no row: the rest of "More" does not depend on it.
-      .catch(() => setEnabled(false));
+      // No answer means no row: the rest of the list does not depend on it.
+      .catch(() => {
+        if (alive) setEnabled(false);
+      });
     return () => {
       alive = false;
     };
   }, []);
 
-  if (!enabled) return null;
+  return enabled;
+}
+
+export default function PasskeyMoreLink() {
+  if (!usePasskeyEnabled()) return null;
 
   return (
     <Link href={MOBILE_PASSKEYS_PATH} style={{ minHeight: TAP_TARGET_PX }} className={navRowClass}>

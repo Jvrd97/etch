@@ -1,5 +1,5 @@
 # [review:need-review] 205
-# summary: the four reads and writes of the passkey table — list in the order added, find by credential id, add, delete
+# summary: the four reads and writes of the passkey table — list in the order added, find by credential id (optionally locking the row), add inside a savepoint, delete
 """
 Доступ к таблице passkey.
 
@@ -25,14 +25,21 @@ async def list_credentials(db: AsyncSession) -> list[WebAuthnCredential]:
 
 
 async def get_by_credential_id(
-    db: AsyncSession, credential_id: bytes
+    db: AsyncSession, credential_id: bytes, *, lock: bool = False
 ) -> WebAuthnCredential | None:
-    """Ключ по идентификатору, который прислал аутентификатор."""
-    row: WebAuthnCredential | None = await db.scalar(
-        select(WebAuthnCredential).where(
-            WebAuthnCredential.credential_id == credential_id
-        )
+    """
+    Ключ по идентификатору, который прислал аутентификатор.
+
+    `lock=True` держит строку (`FOR UPDATE`) до конца транзакции: вход читает
+    `last_used_at` и тут же его сдвигает, и второй такой же запрос обязан
+    дождаться первого, а не прочитать старое значение рядом с ним.
+    """
+    query = select(WebAuthnCredential).where(
+        WebAuthnCredential.credential_id == credential_id
     )
+    if lock:
+        query = query.with_for_update()
+    row: WebAuthnCredential | None = await db.scalar(query)
     return row
 
 
@@ -45,7 +52,12 @@ async def add_credential(
     transports: list[str],
     name: str,
 ) -> WebAuthnCredential:
-    """Записать новый ключ и вернуть строку с выданными базой `id` и `created_at`."""
+    """
+    Записать новый ключ и вернуть строку с выданными базой `id` и `created_at`.
+
+    Вставка — в savepoint: повтор того же `credential_id` упирается в уникальный
+    индекс, и `IntegrityError` откатывает только её, а не всю сессию запроса.
+    """
     row = WebAuthnCredential(
         credential_id=credential_id,
         public_key=public_key,
@@ -53,8 +65,8 @@ async def add_credential(
         transports=transports,
         name=name,
     )
-    db.add(row)
-    await db.flush()
+    async with db.begin_nested():
+        db.add(row)
     await db.refresh(row)
     return row
 

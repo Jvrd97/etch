@@ -1,5 +1,5 @@
 # [review:need-review] 205
-# summary: the two WebAuthn ceremonies behind passkey sign-in — options with a challenge carried in a signed short-lived token, verification of the browser's answer against RP ID, origins, signature, user verification and the signature counter, and a replay guard that needs no table
+# summary: the two WebAuthn ceremonies behind passkey sign-in — options with a challenge carried in a signed short-lived token, verification of the browser's answer against RP ID, origins, signature, user verification and the signature counter, and a replay guard that needs no table (the key row is read FOR UPDATE, so a parallel replay waits and is refused)
 """
 Вход по passkey: регистрация ключа и вход им (ADR-0022).
 
@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from itsdangerous import BadSignature, URLSafeSerializer
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from webauthn import (
     generate_authentication_options,
@@ -206,16 +207,19 @@ async def finish_registration(
         )
     except (WebAuthnException, ValueError) as error:
         raise PasskeyRejected(f"registration: {error}") from error
-    if await passkey_crud.get_by_credential_id(db, verified.credential_id) is not None:
-        raise PasskeyAlreadyRegistered("credential id is already registered")
-    return await passkey_crud.add_credential(
-        db,
-        credential_id=verified.credential_id,
-        public_key=verified.credential_public_key,
-        sign_count=verified.sign_count,
-        transports=[item.value for item in parsed.response.transports or []],
-        name=name,
-    )
+    try:
+        return await passkey_crud.add_credential(
+            db,
+            credential_id=verified.credential_id,
+            public_key=verified.credential_public_key,
+            sign_count=verified.sign_count,
+            transports=[item.value for item in parsed.response.transports or []],
+            name=name,
+        )
+    except IntegrityError as error:
+        # The unique index is the one judge of "already registered": a check
+        # before the insert would let two parallel requests both pass it.
+        raise PasskeyAlreadyRegistered("credential id is already registered") from error
 
 
 def begin_login(config: Settings, *, now: float) -> Ceremony:
@@ -240,7 +244,13 @@ async def finish_login(
     challenge_token: str | None,
     now: float,
 ) -> WebAuthnCredential:
-    """Проверить ответ на вход; на успехе сдвинуть счётчик и время использования."""
+    """
+    Проверить ответ на вход; на успехе сдвинуть счётчик и время использования.
+
+    Строка ключа читается под блокировкой: параллельный повтор того же ответа
+    ждёт, пока этот вход закоммитит новый `last_used_at`, и после этого
+    отклоняется. Коммитит вызывающий — до того, как отдать куку сессии.
+    """
     challenge = _read_challenge(
         challenge_token, "login", secret=config.session_signing_secret, now=now
     )
@@ -248,7 +258,7 @@ async def finish_login(
         parsed = parse_authentication_credential_json(credential)
     except (WebAuthnException, ValueError) as error:
         raise PasskeyRejected(f"login: {error}") from error
-    row = await passkey_crud.get_by_credential_id(db, parsed.raw_id)
+    row = await passkey_crud.get_by_credential_id(db, parsed.raw_id, lock=True)
     if row is None:
         raise PasskeyRejected("unknown credential")
     if (

@@ -2127,3 +2127,13 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `app/login/page.tsx`, `app/m/more/page.tsx` — mod: кнопка под формой ключа; строка под списком «More».
 
 Проверки: `bunx tsc --noEmit` чисто; ESLint по изменённым файлам без замечаний; `bun test` — 1487 pass, 1 fail — известная ошибка общего mock registry в `app/m/health/page.test.tsx`. Страницы `/login`, `/settings/passkeys`, `/m/settings/passkeys`, `/m/more` отдаются dev-сервером (200); глазами в браузере не смотрел — браузера у исполнителя нет. Ссылки в десктопном меню нет: реестр `lib/routes.ts` сверяется точными списками в `routes.test.ts`.
+
+### Круг 2
+
+Изменено 3 файла кода: 3 `mod`.
+
+- `components/NavDrawer.tsx` — mod: строка «Passkey» в конце раздела «Настройка», только пока сервер включил passkey. Реестр `lib/routes.ts` не тронут. Разметка строки вынесена в `DrawerRow`, одну для экранов реестра и для passkey.
+- `components/settings/PasskeyMoreLink.tsx` — mod: проверка `usePasskeyEnabled()` вынесена в хук для мобильной строки и меню; `DESKTOP_PASSKEYS_PATH`.
+- `components/settings/Passkey.test.tsx` — mod: меню ведёт на `/settings/passkeys` из «Настройка», пока passkey включён; при выключенном строки нет.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint без ошибок (17 старых предупреждений не в этих файлах); `bun test` — 1489 pass, 1 fail — тот же `app/m/health/page.test.tsx` (`healthAPI`). Глазами: headless Chrome 1440 px на `:3805` с бэкендом `:8805` (база `habit_test_205`) — в «Настройка» есть «Passkey» → `/settings/passkeys`, заголовок «Passkey»; Safari и iPhone не проверял.

@@ -9,8 +9,10 @@ ECDSA собираются тут по спецификации, без подм
 """
 
 # [review:need-review] 205
-# summary: passkey ceremonies end to end — register under a session, list, delete, log back in by passkey; rejected on foreign origin / RP ID, replay, expired challenge, sign_count rollback, unknown or deleted key, no session on the registration endpoints, passkey switched off
+# summary: passkey ceremonies end to end — register under a session, list, delete, log back in by passkey; rejected on foreign origin / RP ID, replay, expired challenge, sign_count rollback, unknown or deleted key, no session on the registration endpoints, passkey switched off, no user verification; two parallel replays of one answer let one in, two parallel registrations of one key give 201 and 409
+import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -29,9 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.session import SESSION_COOKIE_NAME
+from app.crud import passkey as passkey_crud
 from app.main import app
 from app.models.webauthn_credential import WebAuthnCredential
 from app.services.passkey import CHALLENGE_COOKIE_NAME, issue_challenge
+from tests.conftest import TestSessionLocal
 
 RP_ID = "localhost"
 ORIGIN = "http://localhost:3805"
@@ -63,6 +67,11 @@ def b64url_decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
+def _flags(user_verified: bool) -> int:
+    """UP всегда; UV — только если аутентификатор проверил человека (Face ID)."""
+    return FLAG_USER_PRESENT | (FLAG_USER_VERIFIED if user_verified else 0)
+
+
 class SoftAuthenticator:
     """
     Платформенный аутентификатор в памяти: то, что делает Face ID, без Face ID.
@@ -90,7 +99,12 @@ class SoftAuthenticator:
         )
 
     def create(
-        self, options: dict[str, Any], *, origin: str = ORIGIN, rp_id: str = RP_ID
+        self,
+        options: dict[str, Any],
+        *,
+        origin: str = ORIGIN,
+        rp_id: str = RP_ID,
+        user_verified: bool = True,
     ) -> dict[str, Any]:
         """Ответ `navigator.credentials.create()` в JSON-форме браузера."""
         self.user_handle = b64url_decode(options["user"]["id"])
@@ -104,7 +118,7 @@ class SoftAuthenticator:
         ).encode()
         auth_data = (
             hashlib.sha256(rp_id.encode()).digest()
-            + bytes([FLAG_USER_PRESENT | FLAG_USER_VERIFIED | FLAG_ATTESTED_DATA])
+            + bytes([_flags(user_verified) | FLAG_ATTESTED_DATA])
             + self.sign_count.to_bytes(4, "big")
             + bytes(16)  # AAGUID: zeros, as for attestation "none"
             + len(self.credential_id).to_bytes(2, "big")
@@ -132,6 +146,7 @@ class SoftAuthenticator:
         origin: str = ORIGIN,
         rp_id: str = RP_ID,
         sign_count: int | None = None,
+        user_verified: bool = True,
     ) -> dict[str, Any]:
         """Ответ `navigator.credentials.get()`; счётчик растёт, если не задан явно."""
         if sign_count is None:
@@ -147,7 +162,7 @@ class SoftAuthenticator:
         ).encode()
         auth_data = (
             hashlib.sha256(rp_id.encode()).digest()
-            + bytes([FLAG_USER_PRESENT | FLAG_USER_VERIFIED])
+            + bytes([_flags(user_verified)])
             + sign_count.to_bytes(4, "big")
         )
         signature = self.key.sign(
@@ -166,6 +181,17 @@ class SoftAuthenticator:
                 "userHandle": b64url(self.user_handle),
             },
         }
+
+
+async def _own_session_per_request() -> AsyncGenerator[AsyncSession, None]:
+    """Как `get_db` в проде: своя сессия и соединение на запрос, commit на выходе."""
+    async with TestSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @pytest.fixture
@@ -537,3 +563,99 @@ async def test_login_rejects_malformed_credential(
     await login_options(anonymous)
     response = await anonymous.post(LOGIN_VERIFY_URL, json={"credential": credential})
     assert response.status_code in (401, 422)
+
+
+async def test_login_without_user_verification_is_refused(
+    signed_in: AsyncClient, anonymous: AsyncClient, passkey_on: None
+) -> None:
+    """Присутствие без Face ID — не вход: флаг UV обязателен."""
+    authenticator = SoftAuthenticator()
+    await register(signed_in, authenticator)
+    options = await login_options(anonymous)
+    response = await anonymous.post(
+        LOGIN_VERIFY_URL,
+        json={"credential": authenticator.get(options, user_verified=False)},
+    )
+    assert response.status_code == 401
+    assert not session_cookie_set(response)
+
+
+async def test_registration_without_user_verification_is_refused(
+    signed_in: AsyncClient, passkey_on: None
+) -> None:
+    options = (await signed_in.post(REGISTER_OPTIONS_URL)).json()["options"]
+    credential = SoftAuthenticator().create(options, user_verified=False)
+    response = await signed_in.post(
+        REGISTER_VERIFY_URL, json={"name": "iPhone", "credential": credential}
+    )
+    assert response.status_code == 400
+
+
+# --- гонки: каждый запрос со своим соединением, как в проде ----------------------
+
+
+# How long a request that has read the key row waits for the other one to read
+# it too. Long enough for two local reads, short enough not to slow the suite.
+RACE_WINDOW_S = 0.5
+
+
+async def test_parallel_replays_of_one_answer_let_exactly_one_in(
+    signed_in: AsyncClient,
+    anonymous: AsyncClient,
+    passkey_on: None,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Тот же ответ, присланный дважды одновременно, пускает один раз.
+
+    Без блокировки строки ключа оба запроса читают `last_used_at` до того, как
+    первый его сдвинет, и оба получают сессию. Чередование задано явно: каждый
+    запрос, прочитав строку, ждёт, пока её прочитает второй (не дольше
+    `RACE_WINDOW_S`). С блокировкой второй не дочитает, пока первый не закоммитит.
+    """
+    original_read = passkey_crud.get_by_credential_id
+    reads: list[None] = []
+    both_read = asyncio.Event()
+
+    async def read_then_wait_for_the_other(*args: Any, **kwargs: Any) -> Any:
+        row = await original_read(*args, **kwargs)
+        reads.append(None)
+        if len(reads) == 2:
+            both_read.set()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(both_read.wait(), timeout=RACE_WINDOW_S)
+        return row
+
+    authenticator = SoftAuthenticator(sign_count=0)
+    await register(signed_in, authenticator)
+    # The key must be visible to the two connections below.
+    await db_session.commit()
+    options = await login_options(anonymous)
+    body = {"credential": authenticator.get(options)}
+
+    app.dependency_overrides[get_db] = _own_session_per_request
+    monkeypatch.setattr(
+        passkey_crud, "get_by_credential_id", read_then_wait_for_the_other
+    )
+    first, second = await asyncio.gather(
+        anonymous.post(LOGIN_VERIFY_URL, json=body),
+        anonymous.post(LOGIN_VERIFY_URL, json=body),
+    )
+    assert sorted([first.status_code, second.status_code]) == [200, 401]
+
+
+async def test_parallel_registrations_of_one_key_give_201_and_409(
+    signed_in: AsyncClient, passkey_on: None
+) -> None:
+    """Два одновременных `register/verify` одного ключа — 201 и 409, а не 500."""
+    options = (await signed_in.post(REGISTER_OPTIONS_URL)).json()["options"]
+    body = {"name": "iPhone", "credential": SoftAuthenticator().create(options)}
+
+    app.dependency_overrides[get_db] = _own_session_per_request
+    first, second = await asyncio.gather(
+        signed_in.post(REGISTER_VERIFY_URL, json=body),
+        signed_in.post(REGISTER_VERIFY_URL, json=body),
+    )
+    assert sorted([first.status_code, second.status_code]) == [201, 409]
+    assert len((await signed_in.get(LIST_URL)).json()) == 1

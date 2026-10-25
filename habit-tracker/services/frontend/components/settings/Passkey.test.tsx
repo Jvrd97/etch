@@ -1,8 +1,9 @@
 // [review:need-review] 205
-// summary: the passkey button on /login stays hidden without WebAuthn or with passkey off on the server, and a dismissed sheet is not an error; the settings screen shows no buttons while off, and adds a key through a stubbed navigator.credentials, then lists it
+// summary: the passkey button on /login stays hidden without WebAuthn or with passkey off on the server, and a dismissed sheet is not an error; the settings screen shows no buttons while off, and adds a key through a stubbed navigator.credentials, then lists it; the desktop drawer leads to it from «Настройка» only while passkey is on
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import NavDrawer from '@/components/NavDrawer';
 import PasskeyLoginButton from './PasskeyLoginButton';
 import PasskeyManager from './PasskeyManager';
 
@@ -162,5 +163,26 @@ describe('PasskeyManager', () => {
     expect(created).toHaveLength(1);
     expect(created[0].publicKey?.rp.id).toBe('localhost');
     expect(calls).toContain('POST /api/v1/auth/passkey/register/verify');
+  });
+});
+
+describe('the desktop drawer', () => {
+  function setupSection(): HTMLElement {
+    return screen.getByRole('heading', { name: 'Настройка' }).closest('section')!;
+  }
+
+  it('leads to the passkey screen from «Настройка» while passkey is on', async () => {
+    answer(STATUS_URL, { status: 200, body: { enabled: true } });
+    render(<NavDrawer id="drawer" pathname="/today" onClose={() => {}} />);
+    const link = await within(setupSection()).findByRole('link', { name: 'Passkey' });
+    expect(link.getAttribute('href')).toBe('/settings/passkeys');
+  });
+
+  it('has no passkey row while passkey is off', async () => {
+    answer(STATUS_URL, { status: 200, body: { enabled: false } });
+    render(<NavDrawer id="drawer" pathname="/today" onClose={() => {}} />);
+    await settle();
+    expect(calls).toEqual([`GET ${STATUS_URL}`]);
+    expect(screen.queryByRole('link', { name: 'Passkey' })).toBeNull();
   });
 });
