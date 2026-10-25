@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/214
-// summary: lock state machine — locked at launch, locked again after a long stay in the background, unlocked by Face ID; settings keys in UserDefaults
+// summary: lock state machine — locked at launch, locked again after a long stay in the background, unlocked by Face ID, one automatic prompt per lock episode; settings keys in UserDefaults
 import Foundation
 import SwiftUI
 
@@ -45,6 +45,10 @@ final class AppLockController: ObservableObject {
     private let session: BiometricSession
     private let now: () -> Date
     private var backgroundedAt: Date?
+    /// True until the automatic Face ID prompt has been shown for the current lock episode.
+    /// A cancelled prompt leaves the "Открыть" button instead of raising the prompt again
+    /// every time the scene goes inactive and active.
+    private var promptsOnActivation: Bool
 
     init(
         settings: LockSettings = LockSettings(),
@@ -57,10 +61,22 @@ final class AppLockController: ObservableObject {
         self.session = session
         self.now = now
         self.isLocked = settings.isEnabled
+        self.promptsOnActivation = settings.isEnabled
     }
 
     func sceneDidEnterBackground() {
         backgroundedAt = now()
+        if isLocked {
+            promptsOnActivation = true
+        }
+    }
+
+    /// True once per launch or return from the background while locked: the caller then
+    /// raises Face ID itself. Coming back from `.inactive` (a cancelled prompt, Control
+    /// Center) never asks again.
+    func takeActivationPrompt() -> Bool {
+        defer { promptsOnActivation = false }
+        return isLocked && promptsOnActivation
     }
 
     func sceneDidBecomeActive() {
@@ -95,5 +111,6 @@ final class AppLockController: ObservableObject {
         session.end()
         message = nil
         isLocked = true
+        promptsOnActivation = true
     }
 }

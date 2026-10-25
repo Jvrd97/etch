@@ -46,7 +46,7 @@ struct SettingsView: View {
                     Text(message)
                         .foregroundStyle(DS.Palette.danger)
                 } else {
-                    Text("Ключ API открывается только после Face ID. Если набор Face ID изменится, введите ключ заново.")
+                    Text("Ключ API открывается только после Face ID. Если набор Face ID изменится, введите ключ заново. Пока приложение заперто, фоновая отправка данных Здоровья может не пройти: ключ закрыт. Несохранённый ввод пропадает, когда приложение запирается снова.")
                 }
             }
             .listRowBackground(DS.Palette.card)

@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/208, PHASE-01/214
 // summary: Settings state — server address in UserDefaults, API key in Keychain (Face ID protected on request); connection check through the production factory APIClient.live
 import Foundation
+import LocalAuthentication
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
@@ -70,20 +71,31 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// Re-saves the stored key under the new protection. The plain text is held in memory
-    /// only for the length of the swap; if the re-save fails the old protection is restored.
+    /// only for the length of the swap. `KeychainStore.save` keeps the old item until the
+    /// new one is stored, so a failure needs no restore; it only checks that the key is
+    /// still readable and, if not, hands the plain key back to the field.
     private func changeProtection(enabled: Bool, passcode: Bool) async {
         lockMessage = nil
-        let previous = lockSettings.keyProtection
         let target: KeyProtection = enabled ? (passcode ? .biometryOrPasscode : .biometry) : .none
+        var storedKey: String?
+        var confirmedContext: LAContext?
         do {
-            let context = try await authenticator.authenticate(reason: "Изменить защиту ключа API", allowPasscode: passcode)
-            if let key = try keychain.read(Self.apiKeyKeychainKey, context: context) {
-                do {
-                    try keychain.save(key, for: Self.apiKeyKeychainKey, protection: target)
-                } catch {
-                    try? keychain.save(key, for: Self.apiKeyKeychainKey, protection: previous)
-                    throw error
-                }
+            // The confirmation uses the policy in force now, never the one being switched to.
+            let context = try await authenticator.authenticate(
+                reason: "Изменить защиту ключа API",
+                allowPasscode: lockSettings.allowsPasscode
+            )
+            confirmedContext = context
+            var keyIsReadable = true
+            do {
+                storedKey = try keychain.read(Self.apiKeyKeychainKey, context: context)
+            } catch {
+                // An unreadable key cannot be re-wrapped, but the lock itself may still be turned off.
+                guard storedKeyUnreadable, !enabled else { throw error }
+                keyIsReadable = false
+            }
+            if let key = storedKey {
+                try keychain.save(key, for: Self.apiKeyKeychainKey, protection: target)
             }
             lockSettings.isEnabled = enabled
             lockSettings.allowsPasscode = passcode
@@ -94,11 +106,31 @@ final class SettingsViewModel: ObservableObject {
             } else {
                 biometricSession.end()
             }
-            storedKeyUnreadable = false
+            if keyIsReadable {
+                storedKeyUnreadable = false
+            } else {
+                lockMessage = "Защита выключена, но сохранённый ключ API не читается. Введите его заново и нажмите «Сохранить»."
+            }
         } catch let failure as BiometricFailure {
             lockMessage = failure.userMessage
         } catch {
+            reportFailedProtectionChange(storedKey: storedKey, context: confirmedContext)
+        }
+    }
+
+    private func reportFailedProtectionChange(storedKey: String?, context: LAContext?) {
+        guard let key = storedKey, let context else {
+            lockMessage = "Не удалось сменить защиту ключа API."
+            return
+        }
+        // A read error counts as "not confirmed": the plain key then goes back to the field.
+        let stillStored = (try? keychain.read(Self.apiKeyKeychainKey, context: context)) == key
+        if stillStored {
             lockMessage = "Не удалось сменить защиту ключа API. Ключ остался прежним."
+        } else {
+            apiKey = key
+            storedKeyUnreadable = false
+            lockMessage = "Ключ API не сохранён. Он показан в поле: нажмите «Сохранить»."
         }
     }
 

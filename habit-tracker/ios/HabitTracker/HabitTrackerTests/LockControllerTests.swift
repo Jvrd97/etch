@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/214
-// summary: unit tests for the app lock — launch state, timeout after background, failed and cancelled Face ID, one prompt at a time; the authenticator is a fake
+// summary: unit tests for the app lock — launch state, timeout after background, failed and cancelled Face ID, one prompt at a time, automatic prompt only on launch and return from the background, the cover window sits above alerts; the authenticator is a fake
 import LocalAuthentication
+import UIKit
 import XCTest
 @testable import HabitTracker
 
@@ -190,5 +191,66 @@ final class LockControllerTests: XCTestCase {
         XCTAssertEqual(settings.keyProtection, .biometryOrPasscode)
         settings.isEnabled = false
         XCTAssertEqual(settings.keyProtection, .none)
+    }
+
+    func testLaunchPromptsAutomaticallyOnlyOnce() {
+        let controller = makeController()
+
+        XCTAssertTrue(controller.takeActivationPrompt())
+        XCTAssertFalse(controller.takeActivationPrompt())
+    }
+
+    func testCancelledPromptIsNotRaisedAgainWhenTheSceneBecomesActiveFromInactive() async {
+        authenticator.result = .failure(.cancelled)
+        let controller = makeController()
+        XCTAssertTrue(controller.takeActivationPrompt())
+        await controller.unlock()
+
+        controller.sceneDidBecomeActive()
+
+        XCTAssertFalse(controller.takeActivationPrompt())
+        XCTAssertTrue(controller.isLocked)
+    }
+
+    func testReturnFromBackgroundWhileStillLockedPromptsAgain() async {
+        authenticator.result = .failure(.cancelled)
+        let controller = makeController()
+        XCTAssertTrue(controller.takeActivationPrompt())
+        await controller.unlock()
+
+        controller.sceneDidEnterBackground()
+        controller.sceneDidBecomeActive()
+
+        XCTAssertTrue(controller.takeActivationPrompt())
+    }
+
+    func testRelockAfterLongBackgroundPromptsOnReturn() async {
+        let controller = makeController()
+        await controller.unlock()
+        XCTAssertFalse(controller.takeActivationPrompt())
+
+        controller.sceneDidEnterBackground()
+        clock = clock.addingTimeInterval(AppLockController.lockTimeout + 1)
+        controller.sceneDidBecomeActive()
+
+        XCTAssertTrue(controller.takeActivationPrompt())
+    }
+
+    func testDisabledLockNeverPrompts() {
+        XCTAssertFalse(makeController(enabled: false).takeActivationPrompt())
+    }
+
+    func testPrivacyCoverWindowSitsAboveAlertsAndHides() throws {
+        let cover = PrivacyCoverWindow()
+        try XCTSkipIf(PrivacyCoverWindow.firstWindowScene() == nil, "the test host has no window scene")
+
+        cover.setVisible(true)
+
+        XCTAssertTrue(cover.isVisible)
+        XCTAssertGreaterThan(try XCTUnwrap(cover.windowLevel), UIWindow.Level.alert)
+
+        cover.setVisible(false)
+
+        XCTAssertFalse(cover.isVisible)
     }
 }
