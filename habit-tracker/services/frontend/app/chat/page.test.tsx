@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/197
-// summary: tests for deleting from the history on the wide /chat screen — another conversation goes and the open one stays, the open one goes (from the row or from the header, by the same path) and the screen is left on «nothing selected» with a clean address and no new conversation, an unnamed one, the date group going with its last row, cancel sending nothing, one request on a double click, a failure kept and retried, and a running answer explained instead of offered for deletion
+// summary: tests for deleting from the history on the wide /chat screen — also that the header's question and its error stay with the conversation they were asked in, a late answer to a delete never reaches the conversation opened meanwhile, and the running-answer notice goes when the answer ends; — another conversation goes and the open one stays, the open one goes (from the row or from the header, by the same path) and the screen is left on «nothing selected» with a clean address and no new conversation, an unnamed one, the date group going with its last row, cancel sending nothing, one request on a double click, a failure kept and retried, and a running answer explained instead of offered for deletion
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -149,7 +149,9 @@ mock.module('next/navigation', () => ({
 const { default: ChatPage } = await import('./page');
 const { MESSAGE_FIELD_LABEL, SEND_LABEL } = await import('@/components/chat/ChatComposer');
 const { NOTHING_SELECTED } = await import('@/components/chat/ChatHistory');
-const { REMOVE_RUNNING_ANSWER } = await import('@/hooks/useChatHistory');
+const { REMOVE_RUNNING_ANSWER_WITHOUT_RESET: RUNNING_NOTICE } = await import(
+  '@/hooks/useChatHistory'
+);
 
 function listed(id: number, title: string, startedOn = '2026-08-03') {
   return {
@@ -429,13 +431,16 @@ describe('deleting from the history on the wide screen', () => {
 
     const running = rowDelete(OPEN_TITLE);
     expect(running.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByText(REMOVE_RUNNING_ANSWER)).toBeDefined();
+    expect(screen.getByText(RUNNING_NOTICE)).toBeDefined();
     fireEvent.click(running);
     expect(screen.queryByRole('group') === null).toBe(true);
     // Шапка называет ту же причину, а не открывает вопрос, на который нельзя ответить «да».
     fireEvent.click(headerDelete());
-    expect(screen.getAllByText(REMOVE_RUNNING_ANSWER).length).toBeGreaterThan(1);
-    expect(screen.queryByRole('group') === null).toBe(true);
+    expect(screen.getByRole('alert').textContent).toBe(RUNNING_NOTICE);
+    expect(screen.queryByRole('button', { name: 'Удалить' }) === null).toBe(true);
+    // На `/chat` кнопки сброса нет, и совет её нажать здесь не даётся.
+    expect(RUNNING_NOTICE).not.toMatch(/сбросьте/);
+    expect(RUNNING_NOTICE).toContain('мобильном чате');
     expect(removeConversation).not.toHaveBeenCalled();
     expect(rowDelete(OTHER_TITLE).getAttribute('aria-disabled')).toBeNull();
   });
@@ -449,9 +454,39 @@ describe('deleting from the history on the wide screen', () => {
     await confirmRow(OTHER_TITLE);
 
     expect(within(confirmation(OTHER_TITLE)).getByRole('alert').textContent).toBe(
-      REMOVE_RUNNING_ANSWER
+      RUNNING_NOTICE
     );
     expect(screen.getByText(OTHER_TITLE)).toBeDefined();
+  });
+
+  it('keeps the conversation opened while the delete request was running', async () => {
+    // Человек нажал «Удалить» у открытого разговора и, не дожидаясь ответа,
+    // открыл другой. Решает тот, что открыт в момент ответа сервера.
+    let release: () => void = () => {};
+    removeConversation = mock(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({});
+        })
+    );
+    const view = await openScreen();
+    fireEvent.click(rowDelete(OPEN_TITLE));
+    await act(async () => {
+      fireEvent.click(within(confirmation(OPEN_TITLE)).getByRole('button', { name: 'Удалить' }));
+    });
+
+    searchParams = new URLSearchParams(`conversation=${OTHER}`);
+    view.rerender(<ChatPage />);
+    await screen.findByText(OTHER_MESSAGE);
+    await act(async () => {
+      release();
+    });
+
+    expect(screen.getByText(OTHER_MESSAGE)).toBeDefined();
+    expect(screen.queryByText(NOTHING_SELECTED) === null).toBe(true);
+    expect(screen.queryByText(OPEN_TITLE) === null).toBe(true);
+    expect(replaced).toEqual([]);
+    expect(createConversation).not.toHaveBeenCalled();
   });
 
   it('puts the delete within reach of a finger and of the keyboard', async () => {
@@ -501,5 +536,80 @@ describe('deleting from the header of the wide screen', () => {
     });
     expect(removeConversation).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(NOTHING_SELECTED)).toBeDefined();
+  });
+
+  it('does not carry the open question or its error to another conversation', async () => {
+    removeConversation = mock(() => Promise.reject(new Error('500: база недоступна')));
+    const view = await openScreen();
+    fireEvent.click(headerDelete());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+    });
+    expect(screen.getByRole('alert').textContent).toContain('500');
+
+    searchParams = new URLSearchParams(`conversation=${OTHER}`);
+    view.rerender(<ChatPage />);
+    await screen.findByText(OTHER_MESSAGE);
+
+    // Шапка нового разговора чистая: ни открытого вопроса, ни чужой ошибки, и
+    // одно нажатие не удаляет разговор, о котором никто не спрашивал.
+    expect(screen.queryByRole('alert') === null).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Удалить' }) === null).toBe(true);
+    expect(removeConversation).toHaveBeenCalledTimes(1);
+    expect(removeConversation).toHaveBeenCalledWith(OPEN);
+  });
+
+  it('ignores a late refusal once another conversation is open', async () => {
+    let refuse: (reason: Error) => void = () => {};
+    removeConversation = mock(
+      () =>
+        new Promise((_, reject) => {
+          refuse = reject;
+        })
+    );
+    const view = await openScreen();
+    fireEvent.click(headerDelete());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+    });
+    expect(screen.getByText('Удаляю…')).toBeDefined();
+
+    searchParams = new URLSearchParams(`conversation=${OTHER}`);
+    view.rerender(<ChatPage />);
+    await screen.findByText(OTHER_MESSAGE);
+    await act(async () => {
+      refuse(new Error('500: база недоступна'));
+    });
+
+    expect(screen.queryByRole('alert') === null).toBe(true);
+    expect(screen.queryByText('Удаляю…') === null).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Удалить' }) === null).toBe(true);
+  });
+
+  it('takes the running-answer notice away when the answer ends', async () => {
+    let finish: () => void = () => {};
+    streamTurn = (onEvent) => {
+      onEvent({ kind: 'delta', text: 'ответ' });
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    };
+    const view = await openScreen();
+    fireEvent.change(within(view.container).getByLabelText(MESSAGE_FIELD_LABEL), {
+      target: { value: 'как я спал?' },
+    });
+    await act(async () => {
+      fireEvent.click(within(view.container).getAllByRole('button', { name: SEND_LABEL })[0]);
+    });
+    fireEvent.click(headerDelete());
+    expect(screen.getByRole('alert').textContent).toBe(RUNNING_NOTICE);
+
+    await act(async () => {
+      finish();
+    });
+
+    // «Идёт ответ» — про сейчас, а не про тот миг, когда нажали.
+    expect(screen.queryByRole('alert') === null).toBe(true);
+    expect(headerDelete()).toBeDefined();
   });
 });

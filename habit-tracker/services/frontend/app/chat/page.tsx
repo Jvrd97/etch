@@ -1,7 +1,7 @@
 'use client';
 // [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117, PHASE-03/120, PHASE-03/197
 // summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end, and a badge saying whether the next turn continues the CLI session or rebuilds the dialogue
-// summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header — after it the screen starts the next conversation instead of showing the one that is gone
+// summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header; since PHASE-03/197 that delete goes the same way as the history rows' (see the 197 summary below)
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 // summary: PHASE-03/120 gives the wide screen the same live turn as the phone — the model's thought collapsed above the answer, a sign of life before the first word, a caret while it arrives, and a copy button on every message
 // summary: PHASE-03/197 lets every history row delete in place and sends the header's delete down the same path — the open conversation going leaves the screen on «nothing selected» with its address cleared and no new conversation made, a refusal keeps the conversation and offers a retry, and a running answer is explained instead of offered for deletion
@@ -34,7 +34,7 @@ import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
 import { todayISO } from '@/lib/date';
 import { useDeletedConversation } from '@/hooks/useDeletedConversation';
 import {
-  REMOVE_RUNNING_ANSWER,
+  REMOVE_RUNNING_ANSWER_WITHOUT_RESET,
   useChatHistory,
   type RemoveOutcome,
 } from '@/hooks/useChatHistory';
@@ -75,6 +75,22 @@ type Screen =
   | { status: 'ready'; conversationId: number; resumeReady: boolean };
 
 const EMPTY_SCREEN: Screen = { status: 'empty' };
+
+/**
+ * Вопрос шапки про удаление, привязанный к разговору, в котором его задали.
+ *
+ * Привязка нужна затем, что состояние шапки живёт дольше разговора: открытый
+ * вопрос или ошибка отказа, переехавшие в другой разговор, превратили бы одно
+ * нажатие «Удалить» в удаление того, о чём никто не спрашивал.
+ */
+interface HeaderRemoval {
+  conversationId: number;
+  state: DeleteState;
+  /** Отказ сервера. «Идёт ответ» сюда не пишется: это про сейчас, а не про нажатие. */
+  error: string | null;
+  /** Нажали «Удалить», пока шёл ответ; причина показывается, пока ответ идёт. */
+  askedWhileRunning: boolean;
+}
 
 /**
  * The turn in flight, if any. `text` grows delta by delta.
@@ -130,14 +146,13 @@ function ChatScreen() {
     stayEmpty,
     markDeleted,
   } = useDeletedConversation(conversationIdFrom(useSearchParams()));
-  const history = useChatHistory();
+  const history = useChatHistory({ runningAnswerMessage: REMOVE_RUNNING_ANSWER_WITHOUT_RESET });
   const [loaded, setScreen] = useState<Screen>({ status: 'loading' });
   const screen = stayEmpty ? EMPTY_SCREEN : loaded;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [usage, setUsage] = useState<ChatUsage>(EMPTY_USAGE);
   const [turn, setTurn] = useState<Turn>({ phase: 'idle' });
-  const [removal, setRemoval] = useState<DeleteState>('idle');
-  const [removalError, setRemovalError] = useState<string | null>(null);
+  const [headerRemoval, setHeaderRemoval] = useState<HeaderRemoval | null>(null);
   const [draft, setDraft] = useState('');
   // Планы лентой, по `plan_id` сообщения. Держатся отдельно от сообщений,
   // потому что применение меняет план, а не реплику, под которой он висит.
@@ -154,6 +169,7 @@ function ChatScreen() {
     setMessages([]);
     setUsage(EMPTY_USAGE);
     setTurn({ phase: 'idle' });
+    setHeaderRemoval(null);
   }
 
   /**
@@ -228,6 +244,7 @@ function ChatScreen() {
         setUsage(EMPTY_USAGE);
         setTurn({ phase: 'idle' });
         setDraft('');
+        setHeaderRemoval(null);
         markDeleted(conversationId);
         router.replace(chatPathFor(pathname));
       }
@@ -238,16 +255,21 @@ function ChatScreen() {
 
   const removeFromHeader = useCallback(
     async (conversationId: number) => {
-      setRemoval('deleting');
-      setRemovalError(null);
+      const ask = (state: DeleteState, error: string | null): HeaderRemoval => ({
+        conversationId,
+        state,
+        error,
+        askedWhileRunning: false,
+      });
+      setHeaderRemoval(ask('deleting', null));
       const outcome = await removeConversation(conversationId);
-      if (outcome.ok) {
-        setRemoval('idle');
-        return;
-      }
-      // Разговор цел и читается: вопрос остаётся открытым, чтобы повторить.
-      setRemoval('confirming');
-      setRemovalError(outcome.message);
+      // За время запроса человек мог открыть другой разговор: ответ про старый
+      // не имеет права тронуть шапку нового.
+      setHeaderRemoval((current) => {
+        if (current?.conversationId !== conversationId) return current;
+        // Отказ оставляет разговор целым: вопрос открыт, чтобы повторить.
+        return outcome.ok ? null : ask('confirming', outcome.message);
+      });
     },
     [removeConversation]
   );
@@ -347,7 +369,14 @@ function ChatScreen() {
   const answerRunning =
     busy || messages.some((message) => message.status === 'streaming');
   const deleteBlockedReason = (id: number) =>
-    id === openId && answerRunning ? REMOVE_RUNNING_ANSWER : null;
+    id === openId && answerRunning ? REMOVE_RUNNING_ANSWER_WITHOUT_RESET : null;
+  const openRemoval = headerRemoval?.conversationId === openId ? headerRemoval : null;
+  // «Идёт ответ» выводится из того, что ответ идёт сейчас, а не хранится как
+  // ошибка: после конца ответа подсказка уходит сама.
+  const removalNotice =
+    openRemoval?.askedWhileRunning && answerRunning
+      ? REMOVE_RUNNING_ANSWER_WITHOUT_RESET
+      : (openRemoval?.error ?? null);
   const cached = lastCacheRead(messages);
   // История стоит рядом всегда, в том числе пока лента читается: блок,
   // исчезающий на время запроса, читается как перезагрузка страницы.
@@ -396,26 +425,23 @@ function ChatScreen() {
       <div className="space-y-6 min-w-0 animate-fade-rise">
       <ChatHeader
         usage={usage}
-        state={removal}
-        onAsk={() => {
+        state={openRemoval?.state ?? 'idle'}
+        onAsk={() =>
           // Вопрос, на который нельзя ответить «да», не задаётся: причина
-          // называется сразу.
-          if (answerRunning) {
-            setRemovalError(REMOVE_RUNNING_ANSWER);
-            return;
-          }
-          setRemovalError(null);
-          setRemoval('confirming');
-        }}
-        onCancel={() => {
-          setRemovalError(null);
-          setRemoval('idle');
-        }}
+          // называется сразу, и держится, пока ответ идёт.
+          setHeaderRemoval({
+            conversationId: screen.conversationId,
+            state: answerRunning ? 'idle' : 'confirming',
+            error: null,
+            askedWhileRunning: answerRunning,
+          })
+        }
+        onCancel={() => setHeaderRemoval(null)}
         onConfirm={() => void removeFromHeader(screen.conversationId)}
       />
-      {removalError !== null && (
+      {removalNotice !== null && (
         <p role="alert" className="text-sm text-danger">
-          {removalError}
+          {removalNotice}
         </p>
       )}
 

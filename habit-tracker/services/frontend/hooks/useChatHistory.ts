@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/111, PHASE-03/197
-// summary: PHASE-03/197 adds `remove` — the one deletion both shells share: a row leaves the list only after the server answered, one deletion at a time, a refusal comes back as words for the row instead of an error for the whole list, and a conversation already gone counts as deleted
+// summary: PHASE-03/197 adds `remove` — the one deletion both shells share: a row leaves the list only after the server answered, one deletion at a time, a refusal comes back as words for the row instead of an error for the whole list, and a conversation already gone counts as deleted; `runningAnswerMessage` lets a screen without a reset button say the 409 in its own words instead of pointing at a button it does not have
 // summary: the list of conversations behind the chat screen — one read of the feed, a new conversation that lands on top before the re-read, a failed read named rather than shown as an empty history, and a re-read the screen asks for after every turn
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,9 +12,17 @@ const HISTORY_LIMIT = 50;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
-/** Сервер не удаляет разговор, пока в нём пишется ответ: 409 на DELETE. */
+/**
+ * Сервер не удаляет разговор, пока в нём пишется ответ: 409 на DELETE.
+ *
+ * Два текста, потому что зависший ход сбрасывается не везде: в мобильной ленте
+ * есть кнопка сброса, на `/chat` её нет, и совет нажать то, чего на экране
+ * нет, — не совет.
+ */
 export const REMOVE_RUNNING_ANSWER =
   'В разговоре ещё идёт ответ. Дождитесь его конца или сбросьте зависший ход, потом удалите.';
+export const REMOVE_RUNNING_ANSWER_WITHOUT_RESET =
+  'В разговоре ещё идёт ответ. Дождитесь его конца; зависший ход сбрасывается в мобильном чате.';
 export const REMOVE_BUSY = 'Другой разговор уже удаляется. Дождитесь конца.';
 
 /**
@@ -22,6 +30,11 @@ export const REMOVE_BUSY = 'Другой разговор уже удаляет�
  * строка списка показывает словами, а не обрывает экран.
  */
 export type RemoveOutcome = { ok: true } | { ok: false; message: string };
+
+export interface UseChatHistoryOptions {
+  /** Чем экран объясняет 409: по умолчанию советом сбросить зависший ход. */
+  runningAnswerMessage?: string;
+}
 
 export interface UseChatHistoryResult {
   /** Лента, свежие сверху — в порядке, который прислал сервер. */
@@ -76,7 +89,8 @@ function statusOf(error: unknown): number | null {
  * на него сразу — и строка, на которую человек смотрит, обязана уже быть в
  * списке, а не появиться через круг до сервера.
  */
-export function useChatHistory(): UseChatHistoryResult {
+export function useChatHistory(options: UseChatHistoryOptions = {}): UseChatHistoryResult {
+  const { runningAnswerMessage = REMOVE_RUNNING_ANSWER } = options;
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -144,7 +158,7 @@ export function useChatHistory(): UseChatHistoryResult {
       if (status !== HTTP_NOT_FOUND) {
         const message =
           status === HTTP_CONFLICT
-            ? REMOVE_RUNNING_ANSWER
+            ? runningAnswerMessage
             : `Не удалось удалить разговор: ${errorText(failure)}. Попробуйте ещё раз.`;
         return { ok: false, message };
       }
@@ -154,7 +168,7 @@ export function useChatHistory(): UseChatHistoryResult {
     }
     setConversations((current) => current.filter((one) => one.id !== id));
     return { ok: true };
-  }, []);
+  }, [runningAnswerMessage]);
 
   const reload = useCallback(() => {
     setAttempt((current) => current + 1);

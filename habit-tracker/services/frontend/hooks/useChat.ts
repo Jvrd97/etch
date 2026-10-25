@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/203
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/203, PHASE-03/197
+// summary: PHASE-03/197 lets a screen stay deliberately empty (`startWhenMissing: false`, screen `empty`) so deleting the open conversation does not quietly open or create another one, and drops the feed and the draft of the deleted conversation when it was shown without an address
 // summary: PHASE-03/203 lets the screen switch conversations mid-turn — the turn is dropped on the switch, and a turn that outlives its conversation no longer writes its events or its re-read feed into the next one
 // summary: PHASE-03/120 folds the turn's step events into `turn.progress` — what the model is busy with and the thought behind it, kept apart from `turn.text` so a thought can never end up inside the answer
 // summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away

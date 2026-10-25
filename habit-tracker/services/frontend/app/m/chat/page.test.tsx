@@ -688,6 +688,41 @@ describe('deleting from the history panel on the phone', () => {
     expect(createConversation).not.toHaveBeenCalled();
   });
 
+  it('keeps the conversation opened while the delete request was running', async () => {
+    // Человек нажал «Удалить» у открытого разговора и, не дожидаясь ответа,
+    // открыл другой. Решает тот, что открыт в момент ответа сервера.
+    let release: () => void = () => {};
+    removeConversation = mock(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({});
+        })
+    );
+    const view = render(<MobileChatPage />);
+    await screen.findByText(STORED_MESSAGE);
+    const panel = await openHistory();
+    await within(panel).findByText(OTHER_TITLE);
+    fireEvent.click(within(panel).getByRole('button', { name: deleteLabel(OPEN_TITLE) }));
+    await act(async () => {
+      fireEvent.click(
+        within(confirmationIn(panel, OPEN_TITLE)).getByRole('button', { name: 'Удалить' })
+      );
+    });
+
+    navigate(view, OTHER);
+    await screen.findByText(OTHER_MESSAGE);
+    await act(async () => {
+      release();
+    });
+
+    expect(screen.getByText(OTHER_MESSAGE)).toBeDefined();
+    expect(screen.queryByText(NOTHING_SELECTED) === null).toBe(true);
+    expect(within(panel).queryByText(OPEN_TITLE) === null).toBe(true);
+    expect(field().disabled).toBe(false);
+    expect(replaced).toEqual([]);
+    expect(createConversation).not.toHaveBeenCalled();
+  });
+
   it('deletes a conversation nobody asked anything under its display name', async () => {
     listConversations = mock(() =>
       Promise.resolve([listed(CONVERSATION, OPEN_TITLE), listed(UNNAMED, '')])

@@ -326,6 +326,23 @@ describe('useChatHistory: deleting a conversation', () => {
     expect(result.current.conversations.map((one) => one.id)).toEqual([2, 1]);
   });
 
+  it('says the running answer in the screen\'s own words when the screen has them', async () => {
+    // На `/chat` нет кнопки сброса зависшего хода, и совет «сбросьте» там был
+    // бы советом нажать то, чего на экране нет.
+    removeConversation = mock(() =>
+      Promise.reject(new FakeAPIError(409, 'turn 2 of conversation 2 is still running'))
+    );
+    const { result } = renderHook(() => useChatHistory({ runningAnswerMessage: 'свои слова' }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const outcome: { value: unknown } = { value: null };
+    await act(async () => {
+      outcome.value = await result.current.remove(2);
+    });
+
+    expect(outcome.value).toEqual({ ok: false, message: 'свои слова' });
+  });
+
   it('counts a conversation that is already gone as deleted', async () => {
     // Её удалили в другой вкладке: строка, которой уже нет на сервере, не должна
     // висеть в списке с кнопкой, которая будет отвечать 404 вечно.
