@@ -173,6 +173,25 @@ export const categoriesAPI = {
     return fetcher<CategoryStreak[]>(`/streaks?streak_mode=${streakMode}`);
   },
 
+  // #207: inside this object, not a new export at the end of the file — the
+  // Today screen tests mock '@/lib/api' with a fixed set of exports, and the
+  // avoid card they render would not link against a name the mock lacks.
+  /** The streak with every relapse day — the history on the category page. */
+  getRelapses: async (id: number) => {
+    return fetcher<RelapseHistory>(`/categories/${id}/relapses`);
+  },
+
+  /**
+   * One tap of «Случилось»: the server picks what to write for this category's
+   * fields. A repeat under the same key, or within a minute, returns the same entry.
+   */
+  recordRelapse: async (id: number, idempotencyKey?: string) => {
+    return fetcher<Entry>(`/categories/${id}/relapses`, {
+      method: 'POST',
+      headers: idempotency(idempotencyKey),
+    });
+  },
+
   addField: async (categoryId: number, field: FieldCreate) => {
     return fetcher<Field>(`/categories/${categoryId}/fields`, {
       method: 'POST',
@@ -3690,3 +3709,13 @@ export const healthAPI = {
     return fetcher<HealthMetricsResponse>(`/health/metrics?${query.toString()}`);
   },
 };
+
+// #207: the relapse history of an avoid category.
+
+/** GET /categories/{id}/relapses — the streak plus the days it broke on. */
+export interface RelapseHistory extends CategoryStreak {
+  /** First tracked day (`YYYY-MM-DD`), or null for a category without entries. */
+  tracked_since: string | null;
+  /** Every day that held a relapse, ascending (`YYYY-MM-DD`). */
+  relapse_dates: string[];
+}

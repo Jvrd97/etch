@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist
-// summary: mobile category detail — same data as the desktop page via useCategoryDetail, links kept inside the /m shell, the category strip scrolling inside itself instead of widening the page, and quick-add through the shared EntryEditorSheet locked to this category
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, PHASE-01/207
+// summary: mobile category detail — same data as the desktop page via useCategoryDetail, links kept inside the /m shell, the category strip scrolling inside itself instead of widening the page, quick-add through the shared EntryEditorSheet locked to this category, and the relapse block of an avoid category
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -10,7 +10,7 @@ import CategoryChart from '@/components/CategoryChart';
 import EntryCard from '@/components/EntryCard';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import StreakCard from '@/components/StreakCard';
+import RelapseHistoryCard from '@/components/RelapseHistoryCard';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useCategoryDetail } from '@/hooks/useCategoryDetail';
@@ -111,7 +111,7 @@ export default function MobileCategoryDetailPage() {
         !error && <LoadingSpinner size="lg" />
       ) : (
         <>
-          {category.streak_mode === 'avoid' && streak !== null && <StreakCard streak={streak} />}
+          {category.streak_mode === 'avoid' && streak !== null && <RelapseHistoryCard history={streak} />}
 
           <CategoryChart category={category} days={days} />
 

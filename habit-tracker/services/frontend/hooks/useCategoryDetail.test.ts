@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: tests for useCategoryDetail — batched load, entry grouping, sibling pager, invalid id guard, streak degrading on its own, and reload after a mutation
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
+// summary: tests for useCategoryDetail — batched load (the streak now with its relapse days), entry grouping, sibling pager, invalid id guard, streak degrading on its own, and reload after a mutation
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, CategoryStreak, Entry, TableDay } from '@/lib/api';
+import type { Category, Entry, RelapseHistory, TableDay } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 
@@ -23,12 +23,14 @@ const THIRD_CATEGORY: Category = { ...CATEGORY, id: 3, name: 'Reading' };
 
 const DAYS: TableDay[] = [];
 
-const STREAK: CategoryStreak = {
+const STREAK: RelapseHistory = {
   category_id: 1,
   streak_mode: 'build',
   current_streak: 3,
   best_streak: 9,
   last_relapse_date: null,
+  tracked_since: '2026-07-20',
+  relapse_dates: [],
 };
 
 function entry(id: number, date: string): Entry {
@@ -48,7 +50,7 @@ const YESTERDAY_ENTRY = entry(12, '2026-07-23');
 
 let getCategory: ReturnType<typeof mock>;
 let getAllCategories: ReturnType<typeof mock>;
-let getStreak: ReturnType<typeof mock>;
+let getRelapses: ReturnType<typeof mock>;
 let getTable: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 
@@ -158,7 +160,9 @@ mock.module('@/lib/api', () => ({
   categoriesAPI: {
     getById: (id: number) => getCategory(id),
     getAll: (activeOnly?: boolean) => getAllCategories(activeOnly),
-    getStreak: (id: number) => getStreak(id),
+    getStreak: () => Promise.resolve(null),
+    getRelapses: (id: number) => getRelapses(id),
+    recordRelapse: () => Promise.resolve(null),
     create: () => Promise.resolve(CATEGORY),
     update: () => Promise.resolve(CATEGORY),
     delete: () => Promise.resolve(undefined),
@@ -185,7 +189,7 @@ beforeEach(() => {
   getAllCategories = mock(() =>
     Promise.resolve([CATEGORY, OTHER_CATEGORY, THIRD_CATEGORY])
   );
-  getStreak = mock(() => Promise.resolve(STREAK));
+  getRelapses = mock(() => Promise.resolve(STREAK));
   getTable = mock(() => Promise.resolve({ days: DAYS }));
   getAllEntries = mock(() =>
     Promise.resolve([TODAY_ENTRY, SAME_DAY_ENTRY, YESTERDAY_ENTRY])
@@ -208,6 +212,7 @@ describe('useCategoryDetail', () => {
     expect(result.current.entries).toHaveLength(3);
     expect(result.current.streak).toEqual(STREAK);
     expect(getCategory).toHaveBeenCalledWith(1);
+    expect(getRelapses).toHaveBeenCalledWith(1);
   });
 
   it('groups the entries by date for rendering', async () => {
@@ -238,7 +243,7 @@ describe('useCategoryDetail', () => {
   });
 
   it('degrades to no streak block instead of blanking the page', async () => {
-    getStreak = mock(() => Promise.reject(new Error('streak service down')));
+    getRelapses = mock(() => Promise.reject(new Error('streak service down')));
     const { result } = renderHook(() => useCategoryDetail(1));
 
     await waitFor(() => expect(result.current.loaded).toBe(true));

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: category-detail state extracted from app/categories/[id]/page.tsx — one batched load of category, siblings, chart days, entries and streak, so the desktop page and /m/categories/[id] render the same screen
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
+// summary: category-detail state extracted from app/categories/[id]/page.tsx — one batched load of category, siblings, chart days, entries and the streak with its relapse days, so the desktop page and /m/categories/[id] render the same screen
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -8,8 +8,8 @@ import {
   entriesAPI,
   tableAPI,
   type Category,
-  type CategoryStreak,
   type Entry,
+  type RelapseHistory,
   type TableDay,
 } from '@/lib/api';
 import { categorySiblings } from '@/lib/category-nav';
@@ -25,8 +25,11 @@ export const LOAD_CATEGORY_ERROR = 'Failed to load category';
 interface CategoryDetailCommon {
   /** Every category, for the pager and the tab strip. */
   categories: Category[];
-  /** Streak summary, or null when the category tracks none — or the call failed. */
-  streak: CategoryStreak | null;
+  /**
+   * Streak summary with every relapse day, or null when the call failed. Only
+   * meaningful for an avoid category; the screens hide it for the rest.
+   */
+  streak: RelapseHistory | null;
   /** Entries bucketed by `entry_date`, in first-seen order — the history's render shape. */
   entryGroups: Array<[string, Entry[]]>;
   /** True when the route carries something that is not a category id. */
@@ -73,7 +76,7 @@ export function useCategoryDetail(categoryId: number): UseCategoryDetailResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [days, setDays] = useState<TableDay[] | null>(null);
   const [entries, setEntries] = useState<Entry[] | null>(null);
-  const [streak, setStreak] = useState<CategoryStreak | null>(null);
+  const [streak, setStreak] = useState<RelapseHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
 
@@ -102,7 +105,7 @@ export function useCategoryDetail(categoryId: number): UseCategoryDetailResult {
             entriesAPI.getAll({ categoryId, limit: ENTRIES_FETCH_LIMIT }),
             // Secondary widget: a failure here must not blank the whole page,
             // so it degrades to "no streak block" instead of rejecting the batch.
-            categoriesAPI.getStreak(categoryId).catch(() => null),
+            categoriesAPI.getRelapses(categoryId).catch(() => null),
           ]);
         if (cancelled) return;
         setCategory(categoryResult);

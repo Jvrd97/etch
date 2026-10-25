@@ -1,14 +1,14 @@
-# [review:need-review] 175
-# summary: category update maps invalid explicit primary fields to HTTP 422
+# [review:need-review] 175, PHASE-01/207
+# summary: category update maps invalid explicit primary fields to HTTP 422; POST /{id}/relapses records a one-tap relapse of an avoid category and GET /{id}/relapses returns its relapse days
 from typing import cast, get_args
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.crud import category as category_crud
 from app.crud import streak as streak_crud
-from app.models import Category, Field
+from app.models import Category, Entry, Field
 from app.crud.category import (
     CHECKLIST_DISPLAY_MODE,
     CHECKLIST_NEEDS_BOOLEAN_DETAIL,
@@ -29,6 +29,8 @@ from app.schemas.category import (
     CategoryBatchResponse,
     CategoryStreakMode,
 )
+from app.schemas.entry import EntryResponse
+from app.schemas.streak import RelapseHistoryResponse
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 
@@ -297,3 +299,83 @@ async def add_field_to_category(
             detail=f"Category with id {category_id} not found",
         )
     return db_field
+
+
+AVOID_STREAK_MODE: CategoryStreakMode = "avoid"
+
+
+@router.get("/{category_id}/relapses", response_model=RelapseHistoryResponse)
+async def get_category_relapses(
+    category_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> RelapseHistoryResponse:
+    """
+    Стрик категории вместе с днями срывов — для графика на странице категории.
+
+    `relapse_dates` — все дни со срывом по возрастанию, `tracked_since` — первый
+    день с записью. Срыв считается тем же правилом, что и стрик
+    (`app.crud.streak.is_relapse_entry`).
+    """
+    category = await category_crud.get_category(db, category_id)
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Category with id {category_id} not found",
+        )
+    if category.streak_mode not in STREAK_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Category {category_id} has an unknown streak_mode",
+        )
+
+    stats = await streak_crud.get_category_streak(db, category_id)
+    return RelapseHistoryResponse(
+        category_id=category.id,
+        streak_mode=cast(CategoryStreakMode, category.streak_mode),
+        current_streak=stats.current_streak,
+        best_streak=stats.best_streak,
+        last_relapse_date=stats.last_relapse_date,
+        tracked_since=stats.tracked_since,
+        relapse_dates=list(stats.relapse_dates),
+    )
+
+
+@router.post(
+    "/{category_id}/relapses",
+    response_model=EntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_category_relapse(
+    category_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Entry:
+    """
+    Записать срыв avoid-категории одним нажатием, при любом наборе полей.
+
+    Сервер сам выбирает, что записать: галочку в основное или первое
+    boolean-поле, иначе 1 в первое число или длительность, иначе запись без
+    значений. Сколько и заметку клиент дописывает потом через
+    `PATCH /entries/{id}`.
+
+    Повтор с тем же `Idempotency-Key` и повторное нажатие в течение минуты
+    возвращают уже записанный срыв (HTTP 200) вместо второго. Первое создание
+    отвечает 201. Не avoid-категория — 409.
+    """
+    category = await category_crud.get_category(db, category_id)
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Category with id {category_id} not found",
+        )
+    if category.streak_mode != AVOID_STREAK_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Category {category_id} is not an avoid category",
+        )
+
+    entry, created = await streak_crud.record_relapse(db, category, idempotency_key)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return entry

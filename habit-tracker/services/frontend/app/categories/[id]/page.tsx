@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: desktop category detail — chart, entry history, category pager, quick-add and the avoid-streak block unchanged, with the whole batched load now owned by hooks/useCategoryDetail and shared with /m/categories/[id]
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
+// summary: desktop category detail — chart, entry history, category pager, quick-add and, for an avoid category, the relapse block (streak, analysis, history chart) in place of the bare streak numbers; the whole batched load is owned by hooks/useCategoryDetail and shared with /m/categories/[id]
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -13,7 +13,7 @@ import EntryCard from '@/components/EntryCard';
 import EntryForm from '@/components/EntryForm';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import StreakCard from '@/components/StreakCard';
+import RelapseHistoryCard from '@/components/RelapseHistoryCard';
 
 export default function CategoryDetailPage() {
   const params = useParams<{ id: string }>();
@@ -111,7 +111,7 @@ export default function CategoryDetailPage() {
         !error && <LoadingSpinner size="lg" />
       ) : (
         <>
-          {category.streak_mode === 'avoid' && streak !== null && <StreakCard streak={streak} />}
+          {category.streak_mode === 'avoid' && streak !== null && <RelapseHistoryCard history={streak} />}
 
           <CategoryChart category={category} days={days} />
 

@@ -1,254 +1,312 @@
 'use client';
-// [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201, PHASE-01/177
-// summary: Today avoid streak card saves a sole boolean fact in one tap with exact undo, while numeric and composite categories retain their form
+// [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201, PHASE-01/177, PHASE-01/207
+// summary: Today avoid streak card — «Случилось» records a relapse of any avoid category in one tap through the relapse endpoint (the server decides what to write), refreshes the streak and the day list, offers an exact undo and optional details (how many, a note) afterwards, and the card itself links to the category page of the current shell
 
-import { useRef, useState } from 'react';
-import { AlertCircle, Flame } from 'lucide-react';
-import { Category, CategoryStreak, Entry, Field, entriesAPI } from '@/lib/api';
+import { useId, useRef, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { AlertCircle, ChevronRight, Flame } from 'lucide-react';
+import {
+  categoriesAPI,
+  entriesAPI,
+  type Category,
+  type CategoryStreak,
+  type Entry,
+  type EntryCreate,
+  type Field,
+} from '@/lib/api';
+import { FieldValueInput } from '@/components/FieldValueInput';
 import { formatCleanDays, formatDays } from '@/lib/streak-format';
-import { todayISO } from '@/lib/date';
 import { newTapKey } from '@/lib/quick-marks';
+import { orderedFields } from '@/lib/today-categories';
+import { isMobilePath, toMobilePath } from '@/lib/view-mode';
+import { entryInputClass } from '@/lib/ui-constants';
 
 interface AvoidStreakCardProps {
   category: Category;
-  /** Optional "how much" field the relapse amount is recorded into. */
-  numberField: Field | undefined;
-  /** Today's entries let the card restore a previously saved boolean fact. */
-  entries: Entry[];
+  /** The "how much" number field the details step records the amount into. */
+  numberField?: Field;
+  /**
+   * Not read since #207: whether today broke the streak is the server's answer
+   * (`streak`), not a rule re-derived here from the day's entries. Optional so
+   * the Today screens can stop passing it.
+   */
+  entries?: Entry[];
   /** Streak data, or null while loading / when the endpoint failed. */
   streak: CategoryStreak | null;
-  /** Called after a relapse is saved so the parent can refetch the streak. */
-  onRelapse: (categoryId: number) => void;
-  /** Replaces the day's entry snapshot after a quick mark or its undo. */
+  /** Called after a relapse is recorded, undone or edited so the parent refetches the streak. */
+  onRelapse: (categoryId: number) => void | Promise<void>;
+  /** Replaces the day's entry snapshot after any of those. */
   onEntriesChanged: () => Promise<void>;
   onError: (message: string) => void;
   /** Opens the day list without treating it as a relapse. */
   onOpenEntries?: () => void;
 }
 
+/**
+ * Where the card is in its one job: record a relapse, then optionally undo it
+ * or add details to it. The entry is the one this card recorded, so undo and
+ * details never touch an entry somebody else wrote.
+ */
+type RelapseState =
+  | { phase: 'idle' }
+  | { phase: 'recording' }
+  | { phase: 'recorded'; entry: Entry }
+  | { phase: 'details'; entry: Entry }
+  | { phase: 'undoing'; entry: Entry }
+  | { phase: 'saving-details'; entry: Entry };
+
+const RECORD_FAILED = 'Не удалось записать срыв';
+const UNDO_FAILED = 'Не удалось отменить срыв';
+const DETAILS_FAILED = 'Не удалось сохранить подробности';
+const ENTRIES_REFRESH_FAILED = 'Список записей не обновился';
+
+const BUTTON_CLASS =
+  'inline-flex min-h-11 items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium bg-surface border border-white/10 text-text-secondary transition-all duration-200 hover:text-text-primary hover:border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime disabled:opacity-50';
+
+/** The details step's "how much": the number field, else the first duration. */
+function amountFieldOf(category: Category, numberField: Field | undefined): Field | undefined {
+  return numberField ?? orderedFields(category).find((field) => field.field_type === 'duration');
+}
+
+/** The category page in the shell the card is shown in, so /m/today stays inside /m. */
+function categoryHref(pathname: string, categoryId: number): string {
+  const desktop = `/categories/${categoryId}`;
+  return isMobilePath(pathname) ? (toMobilePath(desktop) ?? desktop) : desktop;
+}
+
 export default function AvoidStreakCard({
   category,
   numberField,
-  entries,
   streak,
   onRelapse,
   onEntriesChanged,
   onError,
   onOpenEntries,
 }: AvoidStreakCardProps) {
-  const [showForm, setShowForm] = useState(false);
+  const pathname = usePathname();
+  const [state, setState] = useState<RelapseState>({ phase: 'idle' });
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [quickBooleanEntryId, setQuickBooleanEntryId] = useState<number | null>(null);
-  const [ignoredBooleanEntryId, setIgnoredBooleanEntryId] = useState<number | null>(null);
-  const quickBooleanKey = useRef<string | null>(null);
+  // State lags a render behind a click; the ref stops the second click of a
+  // double tap synchronously, before the button has re-rendered as disabled.
+  const busy = useRef(false);
+  // Kept across a failed attempt, so the retry is the same request to the
+  // server and not a second relapse.
+  const tapKey = useRef<string | null>(null);
+  const amountId = useId();
+  const noteId = useId();
 
-  const booleanFields = category.fields.filter((field) => field.field_type === 'boolean');
-  const booleanField = booleanFields.length === 1 ? booleanFields[0] : undefined;
-  const isQuickBoolean = category.fields.length === 1 && booleanField !== undefined;
-  const hasSavedBooleanMark =
-    booleanField !== undefined &&
-    entries.some(
-      (entry) =>
-        entry.category_id === category.id &&
-        entry.id !== ignoredBooleanEntryId &&
-        entry.values.some(
-          (value) => value.field_id === booleanField.id && value.value === 'true'
-        )
-    );
-  const isBooleanMarked = quickBooleanEntryId !== null || hasSavedBooleanMark;
+  const amountField = amountFieldOf(category, numberField);
+  const working =
+    state.phase === 'recording' || state.phase === 'undoing' || state.phase === 'saving-details';
 
-  const resetForm = () => {
-    setAmount('');
-    setNote('');
-    setShowForm(false);
-  };
-
-  const refreshEntries = async () => {
+  /** Streak first: the counter is what the tap is for, the day list follows. */
+  const refresh = async () => {
+    await onRelapse(category.id);
     try {
       await onEntriesChanged();
     } catch {
-      onError('Список записей не обновился');
+      onError(ENTRIES_REFRESH_FAILED);
     }
   };
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (saving) return;
-
-    const values =
-      numberField && amount && Number.isFinite(Number(amount))
-        ? [{ field_id: numberField.id, value: amount }]
-        : [];
-
-    setSaving(true);
+  const run = async (action: () => Promise<void>) => {
+    if (busy.current) return;
+    busy.current = true;
     try {
-      await entriesAPI.create({
-        category_id: category.id,
-        entry_date: todayISO(),
-        notes: note.trim() || undefined,
-        values,
-      });
-      resetForm();
-      onRelapse(category.id);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to record relapse');
+      await action();
     } finally {
-      setSaving(false);
+      busy.current = false;
     }
   };
 
-  const markBoolean = async () => {
-    if (saving || booleanField === undefined) return;
+  const recordRelapse = () =>
+    run(async () => {
+      const key = tapKey.current ?? newTapKey();
+      tapKey.current = key;
+      const previous = state;
+      setState({ phase: 'recording' });
+      let entry: Entry;
+      try {
+        entry = await categoriesAPI.recordRelapse(category.id, key);
+      } catch {
+        setState(previous);
+        onError(RECORD_FAILED);
+        return;
+      }
+      tapKey.current = null;
+      setState({ phase: 'recorded', entry });
+      await refresh();
+    });
 
-    const idempotencyKey = quickBooleanKey.current ?? newTapKey();
-    quickBooleanKey.current = idempotencyKey;
-    setSaving(true);
-    try {
-      const entry = await entriesAPI.create({
-        category_id: category.id,
-        entry_date: todayISO(),
-        values: [{ field_id: booleanField.id, value: 'true' }],
-      }, idempotencyKey);
-      setQuickBooleanEntryId(entry.id);
-      setIgnoredBooleanEntryId(null);
-      quickBooleanKey.current = null;
-      await refreshEntries();
-      onRelapse(category.id);
-    } catch {
-      onError('Не удалось сохранить отметку');
-    } finally {
-      setSaving(false);
-    }
+  const undo = (entry: Entry) =>
+    run(async () => {
+      setState({ phase: 'undoing', entry });
+      try {
+        await entriesAPI.delete(entry.id);
+      } catch {
+        setState({ phase: 'recorded', entry });
+        onError(UNDO_FAILED);
+        return;
+      }
+      setState({ phase: 'idle' });
+      await refresh();
+    });
+
+  const openDetails = (entry: Entry) => {
+    const stored = amountField && entry.values.find((value) => value.field_id === amountField.id);
+    setAmount(stored ? stored.value : '');
+    setNote(entry.notes ?? '');
+    setState({ phase: 'details', entry });
   };
 
-  const undoBooleanMark = async () => {
-    if (saving || quickBooleanEntryId === null) return;
+  const saveDetails = (entry: Entry) =>
+    run(async () => {
+      const payload: Partial<EntryCreate> = {};
+      const trimmedNote = note.trim();
+      if (trimmedNote !== '') payload.notes = trimmedNote;
+      const trimmedAmount = amount.trim();
+      if (amountField && trimmedAmount !== '') {
+        // PATCH replaces the whole value list, so what the server wrote for the
+        // tap (the ticked box) goes back along with the amount.
+        payload.values = [
+          ...entry.values
+            .filter((value) => value.field_id !== amountField.id)
+            .map((value) => ({ field_id: value.field_id, value: value.value })),
+          { field_id: amountField.id, value: trimmedAmount },
+        ];
+      }
+      if (Object.keys(payload).length === 0) {
+        setState({ phase: 'recorded', entry });
+        return;
+      }
 
-    setSaving(true);
-    try {
-      await entriesAPI.delete(quickBooleanEntryId);
-      setQuickBooleanEntryId(null);
-      setIgnoredBooleanEntryId(quickBooleanEntryId);
-      await refreshEntries();
-      onRelapse(category.id);
-    } catch {
-      onError('Не удалось отменить отметку');
-    } finally {
-      setSaving(false);
-    }
-  };
+      setState({ phase: 'saving-details', entry });
+      let updated: Entry;
+      try {
+        updated = await entriesAPI.update(entry.id, payload);
+      } catch {
+        setState({ phase: 'details', entry });
+        onError(DETAILS_FAILED);
+        return;
+      }
+      setState({ phase: 'recorded', entry: updated });
+      await refresh();
+    });
+
+  const recordedEntry = state.phase === 'idle' || state.phase === 'recording' ? null : state.entry;
 
   return (
-    <div className="bg-card border border-white/5 rounded-3xl p-6">
+    <div className="relative bg-card border border-white/5 rounded-3xl p-6">
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-2">
-            <Flame className="w-4 h-4 text-lime" strokeWidth={2} />
-            <span className="text-[13px] font-medium uppercase tracking-widest text-lime truncate">
-              {category.name}
-            </span>
+            <Flame className="w-4 h-4 shrink-0 text-lime" strokeWidth={2} aria-hidden="true" />
+            {/* The link stretches over the whole card (`after:inset-0`), so a tap
+                anywhere but on a button opens the history; the buttons sit above
+                it on their own layer. */}
+            <Link
+              href={categoryHref(pathname, category.id)}
+              aria-label={`${category.name}: история срывов`}
+              className="inline-flex min-w-0 items-center gap-1 text-[13px] font-medium uppercase tracking-widest text-lime after:absolute after:inset-0 after:rounded-3xl focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-lime"
+            >
+              <span className="truncate">{category.name}</span>
+              <ChevronRight className="w-4 h-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+            </Link>
           </div>
           <p className="text-4xl font-bold text-lime tracking-tight tabular-nums">
             {streak ? formatCleanDays(streak.current_streak) : '—'}
           </p>
           {streak && (
-            <p className="mt-1 text-xs text-text-disabled">
-              Best {formatDays(streak.best_streak)}
-            </p>
+            <p className="mt-1 text-xs text-text-secondary">Best {formatDays(streak.best_streak)}</p>
           )}
         </div>
 
-        {isQuickBoolean && isBooleanMarked && quickBooleanEntryId === null && (
-          <span role="status" className="text-sm font-medium text-text-secondary">
+        <div className="relative z-10 flex flex-wrap items-center justify-end gap-2">
+          <button type="button" onClick={() => void recordRelapse()} disabled={working} className={BUTTON_CLASS}>
+            <AlertCircle className="w-4 h-4" strokeWidth={2} aria-hidden="true" />
             Случилось
+          </button>
+          {onOpenEntries && (
+            <button
+              type="button"
+              onClick={onOpenEntries}
+              className="min-h-11 rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime"
+            >
+              Записи
+            </button>
+          )}
+        </div>
+      </div>
+
+      {recordedEntry !== null && state.phase !== 'details' && state.phase !== 'saving-details' && (
+        <div className="relative z-10 mt-4 flex flex-wrap items-center gap-2">
+          <span role="status" className="basis-full text-sm font-medium text-text-primary sm:basis-auto sm:mr-auto">
+            Срыв записан
           </span>
-        )}
-        {isQuickBoolean && quickBooleanEntryId !== null && (
           <button
             type="button"
-            onClick={undoBooleanMark}
-            disabled={saving}
-            className="px-4 py-2.5 rounded-full text-sm font-medium bg-surface border border-white/10 text-text-secondary transition-all duration-200 hover:text-text-primary hover:border-white/20 disabled:opacity-50"
+            onClick={() => openDetails(recordedEntry)}
+            disabled={working}
+            className={BUTTON_CLASS}
+          >
+            Подробнее
+          </button>
+          <button
+            type="button"
+            onClick={() => void undo(recordedEntry)}
+            disabled={working}
+            className={BUTTON_CLASS}
           >
             Отменить
           </button>
-        )}
-        {isQuickBoolean && !isBooleanMarked && (
-          <button
-            type="button"
-            onClick={markBoolean}
-            disabled={saving}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium bg-surface border border-white/10 text-text-secondary transition-all duration-200 hover:text-text-primary hover:border-white/20 disabled:opacity-50"
-          >
-            <AlertCircle className="w-4 h-4" strokeWidth={2} />
-            Случилось
-          </button>
-        )}
-        {onOpenEntries && (
-          <button
-            type="button"
-            onClick={onOpenEntries}
-            className="rounded-full px-3 py-2 text-sm text-text-secondary hover:text-text-primary"
-          >
-            Записи
-          </button>
-        )}
-        {!isQuickBoolean && !showForm && (
-          <button
-            type="button"
-            onClick={() => setShowForm(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium bg-surface border border-white/10 text-text-secondary transition-all duration-200 hover:text-text-primary hover:border-white/20"
-          >
-            <AlertCircle className="w-4 h-4" strokeWidth={2} />
-            Случилось
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {showForm && (
-        <form onSubmit={handleSave} className="mt-5 space-y-3">
-          {numberField && (
+      {recordedEntry !== null && (state.phase === 'details' || state.phase === 'saving-details') && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveDetails(recordedEntry);
+          }}
+          aria-label={`${category.name}: подробности срыва`}
+          className="relative z-10 mt-5 space-y-3"
+        >
+          {amountField && (
             <div>
-              <label className="block text-xs text-text-disabled mb-1">
-                {numberField.name}
+              <label htmlFor={amountId} className="block text-xs text-text-secondary mb-1">
+                {amountField.name}
               </label>
-              <input
-                type="number"
-                step="any"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="0"
-                aria-label={`${category.name}: ${numberField.name}`}
-                className="w-full px-4 py-2.5 bg-surface border border-white/10 rounded-2xl text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25"
-              />
+              <FieldValueInput id={amountId} field={amountField} value={amount} onChange={setAmount} />
             </div>
           )}
           <div>
-            <label className="block text-xs text-text-disabled mb-1">Заметка</label>
+            <label htmlFor={noteId} className="block text-xs text-text-secondary mb-1">
+              Заметка
+            </label>
             <input
+              id={noteId}
               type="text"
               value={note}
-              onChange={(e) => setNote(e.target.value)}
+              onChange={(event) => setNote(event.target.value)}
               placeholder="Что случилось?"
-              aria-label={`${category.name}: note`}
-              className="w-full px-4 py-2.5 bg-surface border border-white/10 rounded-2xl text-text-primary placeholder:text-text-disabled outline-none transition-all duration-200 focus:border-lime focus:ring-2 focus:ring-lime/25"
+              className={entryInputClass}
             />
           </div>
           <div className="flex items-center gap-3 pt-1">
             <button
               type="submit"
-              disabled={saving}
-              className="px-5 py-2.5 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_18px_rgba(184,255,54,0.35)] disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
+              disabled={working}
+              className="min-h-11 px-5 py-2.5 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:opacity-50 disabled:hover:translate-y-0"
             >
-              {saving ? 'Сохранение…' : 'Сохранить'}
+              {state.phase === 'saving-details' ? 'Сохранение…' : 'Сохранить'}
             </button>
             <button
               type="button"
-              onClick={resetForm}
-              disabled={saving}
-              className="px-5 py-2.5 rounded-3xl font-medium text-text-secondary transition-colors duration-200 hover:text-text-primary disabled:opacity-50"
+              onClick={() => setState({ phase: 'recorded', entry: recordedEntry })}
+              disabled={working}
+              className="min-h-11 px-5 py-2.5 rounded-3xl font-medium text-text-secondary transition-colors duration-200 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime disabled:opacity-50"
             >
               Отмена
             </button>

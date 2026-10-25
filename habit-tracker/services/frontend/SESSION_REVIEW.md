@@ -2113,3 +2113,18 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `hooks/useChat.ts` и тест — mod: при смене разговора ход сбрасывается. Ход прежнего разговора больше не пишет в новую ленту ни события, ни перечитанные сообщения.
 
 Проверки: `bunx tsc --noEmit` чисто. ESLint по изменённым файлам без замечаний. `bun test` — 1458 pass; единственный fail — известная ошибка общего mock registry в `app/m/health/page.test.tsx`, в изоляции файл проходит. Вёрстка проверена в dev-сервере без бэкенда на 375×812 и 1400×800; живой список и клавиатура iOS не проверялись.
+
+## 2026-10-25 — PHASE-01/207: «Случилось» без формы и страница срывов
+
+Изменено 14 файлов кода: 5 `new`, 8 `mod`, 1 удалён.
+
+- `components/AvoidStreakCard.tsx` и тест — mod: «Случилось» у любой avoid-категории — один `POST /categories/{id}/relapses`, без формы. Сначала перечитывается серия, потом список дня. Ошибка видна и счётчик не трогает, повтор идёт с тем же ключом. После срыва — «Отменить» и «Подробнее» (сколько и заметка через PATCH той же записи). Вся карточка — ссылка на страницу категории текущей оболочки (`/categories/N` или `/m/categories/N`). Проп `entries` больше не читается.
+- `lib/relapse-analysis.ts` и тест — new: срывы за 7 и 30 дней, средний промежуток, дни недели, тренд к прошлому месяцу, столбцы графика по дням или неделям.
+- `components/RelapseChart.tsx` — new: график recharts с переключателем периода.
+- `components/RelapseHistoryCard.tsx` и тест — new: блок «Срывы» на странице категории.
+- `hooks/useCategoryDetail.ts` и тест — mod: вместо `getStreak` читается `getRelapses`.
+- `app/categories/[id]/page.tsx`, `app/m/categories/[id]/page.tsx` и тест — mod: блок «Срывы» вместо `StreakCard`.
+- `components/StreakCard.tsx` — удалён, его заменил блок «Срывы».
+- `lib/api.ts` — mod: `categoriesAPI.getRelapses`, `categoriesAPI.recordRelapse`, тип `RelapseHistory` в конце файла.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, в изменённых файлах предупреждений нет. Полный `bun test` — 1497 pass, 1 fail: известный `healthAPI` в `app/m/health/page.test.tsx`, он падает и на baseline. Вживую в headless Chrome (390×844 и 1280×900) на бэкенде 8807: 8 avoid-категорий, нажатие сбивает серию в 0 на `/m/today` и `/today`, отмена возвращает. Даты в списке и на графике совпадают с записями в базе. iOS Safari и реальный телефон не проверялись.
