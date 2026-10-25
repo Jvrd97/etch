@@ -452,6 +452,17 @@ final class PanelAPIClientTests: XCTestCase {
         XCTAssertEqual(PanelAPIClient.error(status: 502), .http(status: 502))
     }
 
+    /// A wrong key gets rotated, an old server gets a route it did not have: none of
+    /// these configuration mistakes are the caller's — retrying after they are fixed
+    /// must still work, so dropping the interval here would be the bug `#159`'s circle
+    /// 1 review caught (every 4xx but 408/429 was `.rejected` and dropped for good).
+    func testAConfigurationRefusalIsNotFinal() {
+        XCTAssertEqual(PanelAPIClient.error(status: 401), .http(status: 401))
+        XCTAssertEqual(PanelAPIClient.error(status: 403), .http(status: 403))
+        XCTAssertEqual(PanelAPIClient.error(status: 404), .http(status: 404))
+        XCTAssertEqual(PanelAPIClient.error(status: 405), .http(status: 405))
+    }
+
     func testTheDayPageIsOnTheOriginTheAgentTalksTo() {
         XCTAssertEqual(
             PanelAPIClient.dayPageURL(serverAddress: "https://habit.example", dayPath: "/day/2026-10-25"),
@@ -553,6 +564,21 @@ final class ManualIntervalOutboxTests: XCTestCase {
         XCTAssertEqual(sent, [next])
         XCTAssertEqual(outbox.droppedCount, 1)
         XCTAssertTrue(outbox.pending.isEmpty)
+    }
+
+    func testA401Or404LeavesTheIntervalOnDiskInsteadOfDroppingIt() async {
+        for status in [401, 404] {
+            let outbox = ManualIntervalOutbox(fileURL: file) { _ in throw PanelAPIError.http(status: status) }
+            let queued = interval()
+            outbox.enqueue(queued)
+
+            await outbox.flush()
+
+            XCTAssertEqual(outbox.pending, [queued], "status \(status) must retry, not drop")
+            XCTAssertEqual(outbox.droppedCount, 0)
+            XCTAssertEqual(ManualIntervalOutbox(fileURL: file) { _ in }.pending, [queued], "survives on disk too")
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     func testAnUnreadableFileIsSetAsideNotOverwritten() throws {

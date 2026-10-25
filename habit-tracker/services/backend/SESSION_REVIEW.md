@@ -2466,3 +2466,18 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - `habit-tracker/mac/HabitAgent/HabitAgent/Panel/*.swift` (8 файлов), `App/PanelHost.swift` — new; `App/HabitAgentApp.swift` — mod; `HabitAgentTests/PanelTests.swift` — new.
 
 Проверки: см. сдачу исполнителя в тикете #159. Не проверено вживую: окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
+
+## 2026-10-25 — PHASE-03/159, круг 2: три замечания ревью + перевес `down_revision`
+
+- `app/crud/plan.py` — mod: `replace_plan` снимает и восстанавливает привязку `activity_interval.plan_item_id` (`snapshot_task_links`/`restore_task_links`) вокруг удаления-и-пересоздания плана тем же способом, что уже делают отметки (`snapshot_marks`/`restore_marks`) — FK `ON DELETE SET NULL` стирал связь при каждой пересборке плана с тем же набором id пунктов.
+- `app/crud/activity.py` — mod: новые `CarriedTaskLink`, `snapshot_task_links`, `restore_task_links`; сюда же перенесён запрос текущей задачи дня (`CurrentTaskCandidate`, `current_task_candidate`) из `api/agent.py`.
+- `app/api/agent.py` — mod: `_current_task` зовёт `activity_crud.current_task_candidate` и только собирает DTO; прямой `select`/`join` по `PlanItem`/`PlanSection`/`DayPlan`/`PlanMark` убран из роута.
+- `tests/test_agent_plan_item_link.py` — new: `test_replacing_the_plan_under_the_same_id_keeps_the_link` — таймер на пункте, `POST /day/{date}/plan` с тем же `id` пункта, связь на месте.
+- `alembic/versions/2026_10_25_1700-c3e5a7b9d1f4_activity_interval_plan_item.py` — mod: `down_revision` переставлен на новую голову main `351c4562b15c` (была `a9c1e3f5b7d0`, сама стала промежуточной после merge-ревизии #105+#205).
+- `alembic/versions/2026_10_25_1200-h0d2f4a6c8e1_...py`, `2026_10_25_1700-b1d3f5a7c9e2_...py`, `2026_10_25_2019-351c4562b15c_...py` — скопированы из `main` без изменений (чужие ревизии #105/#205 и их merge-ревизия), нужны, чтобы цепочка `alembic heads` у этой ветки доходила до новой головы; авторство и маркер ревью не трогал.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/PanelAPIClient.swift` — mod: `error(status:)` финальным (`.rejected`, без повтора) считает только 422 и 409; весь прочий 4xx (401/403/404/405 включительно) уходит в `.http` и повторяется через `Backoff` очереди — раньше финальным считался весь `400..<500` кроме 408/429, и неверный ключ или старый сервер без ручки безвозвратно роняли остановленный интервал.
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/PanelTests.swift` — mod: `testAConfigurationRefusalIsNotFinal` (401/403/404/405 → `.http`), `testA401Or404LeavesTheIntervalOnDiskInsteadOfDroppingIt` (интервал остаётся в очереди и на диске, не дропается).
+
+Не сделано: необязательное замечание про `PanelHost.swift` (новая эфемерная `URLSession` на каждый опрос/отправку без reuse) — отложено до ребейза на `main`, где `AgentAPIClient.diskFreeSession` уже есть (после #163); сейчас в этой ветке его не было, трогать чужой `AgentAPIClient.swift` без ребейза не стал.
+
+Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.

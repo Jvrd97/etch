@@ -29,16 +29,12 @@ from hashlib import sha256
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import local_date, now_utc, today_local
 from app.crud import activity as activity_crud
-from app.day.skeleton import KIND_TASK
 from app.models.activity import ACTIVITY_SOURCE_MANUAL, ActivityInterval
-from app.models.mark import PlanMark
-from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.roles import classify
 from app.schemas.activity import (
     ActivityAppSlice,
@@ -564,37 +560,19 @@ async def _current_task(
     db: AsyncSession, on: date_type, now: datetime
 ) -> AgentCurrentTask | None:
     """
-    The task the day is on at `now`: the running one, else the next one.
+    The task the day is on at `now`, as `AgentCurrentTask`.
 
-    A task is a candidate while it carries no mark — `done`, `failed` and
-    `skipped` all take it off the window — and while its own window has not
-    ended. Among candidates the one that is running goes first, then the one
-    that starts soonest. A task whose window is behind and never ticked is not
-    shown: the panel names what is happening, and the day screen is where an
-    unfinished morning is dealt with.
+    The row and the ordering rule live in `app.crud.activity.current_task_candidate`
+    — this route only shapes the DTO, same as every other handler here.
     """
-    # False sorts before True: a window that already opened goes before one that has not.
-    not_started = PlanItem.starts_at > now
-    row = (
-        await db.execute(
-            select(PlanItem)
-            .join(PlanSection, PlanItem.section_id == PlanSection.id)
-            .join(DayPlan, PlanSection.plan_id == DayPlan.id)
-            .outerjoin(PlanMark, PlanMark.item_id == PlanItem.id)
-            .where(
-                DayPlan.day_date == on,
-                PlanItem.kind == KIND_TASK,
-                PlanMark.item_id.is_(None),
-                PlanItem.ends_at > now,
-            )
-            .order_by(not_started, PlanItem.starts_at, PlanItem.ord)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if row is None or row.starts_at is None or row.ends_at is None:
+    candidate = await activity_crud.current_task_candidate(db, on, now)
+    if candidate is None:
         return None
     return AgentCurrentTask(
-        id=row.id, title=row.text_plain, starts_at=row.starts_at, ends_at=row.ends_at
+        id=candidate.id,
+        title=candidate.title,
+        starts_at=candidate.starts_at,
+        ends_at=candidate.ends_at,
     )
 
 

@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/159
-# summary: tests of the link between a timed interval and the plan item it was spent on — a manual record names the item by uuid, the day's time per task counts it (once, as the union of ranges) instead of calling it work outside the plan, an unknown item is a 422 and not a 500, a correction can move or remove the link, and deleting the item leaves the interval standing with no link
+# summary: tests of the link between a timed interval and the plan item it was spent on — a manual record names the item by uuid, the day's time per task counts it (once, as the union of ranges) instead of calling it work outside the plan, an unknown item is a 422 and not a 500, a correction can move or remove the link, deleting the item leaves the interval standing with no link, and replacing the plan under the same item id (`replace_plan`) does not sever the link the way a genuine delete does
 """
 Intervals linked to a plan item by uuid.
 
@@ -185,6 +185,51 @@ class TestLink:
         row = (await db_session.execute(select(ActivityInterval))).scalar_one()
         assert row.plan_item_id is None
         assert row.duration_seconds == 3600
+
+    async def test_replacing_the_plan_under_the_same_id_keeps_the_link(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        `replace_plan` tears the day's items down and reinserts the ones the
+        document kept under their old uuid (`#150`) — the same DELETE a genuine
+        removal of the item uses, and the FK's `ON DELETE SET NULL` cannot tell
+        the two apart on its own. A timer running on a task of the day must
+        survive the rewrite, the way the task's own mark already does.
+        """
+        item = await plan_item_id(client)
+        created = (
+            await post_manual(client, manual_body(at(10), at(11), plan_item_id=item))
+        ).json()
+
+        rewrite = await client.post(
+            f"{DAY_URL}/{TODAY.isoformat()}/plan",
+            json={
+                "title": "План",
+                "sections": [
+                    {
+                        "kind": "work",
+                        "title": "Работа",
+                        "items": [
+                            {
+                                "id": item,
+                                "kind": "task",
+                                "code": "W1",
+                                "text_md": "Задача W1, поправленная формулировка",
+                                "window": "09:00-18:00",
+                                "done_criterion": "готово",
+                                "quarter_goal_id": 1,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        assert rewrite.status_code == 201, rewrite.text
+        assert rewrite.json()["sections"][0]["items"][0]["id"] == item
+
+        row = await db_session.get(ActivityInterval, created["id"])
+        assert row is not None
+        assert str(row.plan_item_id) == item
 
 
 class TestTimePerTask:

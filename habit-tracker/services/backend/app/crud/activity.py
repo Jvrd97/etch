@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160
-# summary: database access for the agent's tables — the catalogue lookup that refuses an unknown bundle, the batch upsert of intervals on `(source, started_at, app_id)`, the intervals of one work day read through `day_bounds()`, and the mode of a date, where a manual row overrides the schedule and nothing else does, and (since #159) the link of an interval to a plan item by uuid, which the day's time per task counts and which is refused when the item does not exist
+# summary: database access for the agent's tables — the catalogue lookup that refuses an unknown bundle, the batch upsert of intervals on `(source, started_at, app_id)`, the intervals of one work day read through `day_bounds()`, and the mode of a date, where a manual row overrides the schedule and nothing else does, and (since #159) the link of an interval to a plan item by uuid, which the day's time per task counts, which is refused when the item does not exist, which survives `replace_plan` rewriting the plan under the same ids, and the query for the task the floating panel shows as running or next
 """
 Database access for the activity the macOS agent records.
 
@@ -29,11 +29,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import day_bounds
+from app.day.skeleton import KIND_TASK
 from app.models.activity import (
     ACTIVITY_SOURCE_AGENT,
     ACTIVITY_SOURCE_MANUAL,
@@ -50,7 +51,8 @@ from app.models.activity import (
     TitleRule,
     TrackedApp,
 )
-from app.models.plan import PlanItem
+from app.models.mark import PlanMark
+from app.models.plan import DayPlan, PlanItem, PlanSection
 
 # Шаг нумерации правил при перестановке. Не единица: между двумя правилами
 # должно оставаться место, чтобы вставить третье, не перенумеровывая список.
@@ -60,6 +62,8 @@ __all__ = [
     "ORDER_STEP",
     "BackwardInterval",
     "BadPattern",
+    "CarriedTaskLink",
+    "CurrentTaskCandidate",
     "DayModeAnswer",
     "IntervalDraft",
     "UnknownApp",
@@ -69,6 +73,7 @@ __all__ = [
     "app_names",
     "create_manual_interval",
     "create_title_rule",
+    "current_task_candidate",
     "day_intervals",
     "day_mode",
     "get_interval",
@@ -78,10 +83,12 @@ __all__ = [
     "plan_item_exists",
     "list_title_rules",
     "reorder_title_rules",
+    "restore_task_links",
     "rule_hits",
     "patch_interval",
     "rule_matches",
     "seed_settings",
+    "snapshot_task_links",
     "task_time_seconds",
     "upsert_intervals",
     "validate_pattern",
@@ -518,6 +525,109 @@ async def plan_item_exists(db: AsyncSession, item_id: uuid.UUID) -> bool:
     """Whether a plan item with this uuid is stored, in any day's plan."""
     found = await db.execute(select(PlanItem.id).where(PlanItem.id == item_id))
     return found.first() is not None
+
+
+@dataclass(frozen=True)
+class CarriedTaskLink:
+    """
+    One interval's link to a plan item, read before that item's row is torn down.
+
+    `plan_item_id`'s `ON DELETE SET NULL` is the right answer when a task is
+    genuinely removed (`#159`'s own test: the hour was worked whatever happened
+    to the plan after). `replace_plan` (`#150`) is a different event wearing the
+    same DELETE — it tears every item of the day down and reinserts the ones the
+    document kept under their old uuid, and postgres severs the link the instant
+    the old row dies, before the new one with the same id exists to re-attach to.
+    Carrying the link in python the way `app.crud.mark` already carries ticks is
+    what makes "the document re-sent this id" mean "the timer still names it."
+    """
+
+    interval_id: int
+    plan_item_id: uuid.UUID
+
+
+async def snapshot_task_links(
+    db: AsyncSession, item_ids: set[uuid.UUID]
+) -> list[CarriedTaskLink]:
+    """Every interval linked to one of `item_ids`, before those rows are deleted."""
+    if not item_ids:
+        return []
+    result = await db.execute(
+        select(ActivityInterval.id, ActivityInterval.plan_item_id).where(
+            ActivityInterval.plan_item_id.in_(item_ids)
+        )
+    )
+    return [
+        CarriedTaskLink(interval_id=row.id, plan_item_id=row.plan_item_id)
+        for row in result
+    ]
+
+
+async def restore_task_links(db: AsyncSession, carried: list[CarriedTaskLink]) -> None:
+    """
+    Put carried links back once the plan item they named exists again.
+
+    One `UPDATE` per interval rather than a bulk statement: the carried rows are
+    few — a plan's worth of running timers, not a table's — and a loop reads
+    plainly next to `app.crud.mark.restore_marks`, which this mirrors.
+    """
+    if not carried:
+        return
+    for link in carried:
+        await db.execute(
+            update(ActivityInterval)
+            .where(ActivityInterval.id == link.interval_id)
+            .values(plan_item_id=link.plan_item_id)
+        )
+    await db.flush()
+
+
+@dataclass(frozen=True)
+class CurrentTaskCandidate:
+    """One task row of the day, ready to become the panel's `AgentCurrentTask`."""
+
+    id: uuid.UUID
+    title: str
+    starts_at: datetime
+    ends_at: datetime
+
+
+async def current_task_candidate(
+    db: AsyncSession, on: date, now: datetime
+) -> CurrentTaskCandidate | None:
+    """
+    The task the day is on at `now`: the running one, else the next one.
+
+    A task is a candidate while it carries no mark — `done`, `failed` and
+    `skipped` all take it off the window — and while its own window has not
+    ended. Among candidates the one that is running goes first, then the one
+    that starts soonest. A task whose window is behind and never ticked is not
+    returned: the panel names what is happening, and the day screen is where an
+    unfinished morning is dealt with.
+    """
+    # False sorts before True: a window that already opened goes before one that has not.
+    not_started = PlanItem.starts_at > now
+    row = (
+        await db.execute(
+            select(PlanItem)
+            .join(PlanSection, PlanItem.section_id == PlanSection.id)
+            .join(DayPlan, PlanSection.plan_id == DayPlan.id)
+            .outerjoin(PlanMark, PlanMark.item_id == PlanItem.id)
+            .where(
+                DayPlan.day_date == on,
+                PlanItem.kind == KIND_TASK,
+                PlanMark.item_id.is_(None),
+                PlanItem.ends_at > now,
+            )
+            .order_by(not_started, PlanItem.starts_at, PlanItem.ord)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None or row.starts_at is None or row.ends_at is None:
+        return None
+    return CurrentTaskCandidate(
+        id=row.id, title=row.text_plain, starts_at=row.starts_at, ends_at=row.ends_at
+    )
 
 
 async def patch_interval(

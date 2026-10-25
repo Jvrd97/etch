@@ -1,13 +1,19 @@
 // [review:need-review] PHASE-03/159
-// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client
+// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client; only 422 and 409 are final, every other 4xx (401/403/404 included) goes back to the outbox's Backoff
 import Foundation
 
 enum PanelAPIError: Error, Equatable {
     /// No server address or no key yet: nothing to retry until a person sets them.
     case notConfigured
-    /// A refusal that may pass (5xx, 408, 429) or that this client does not know: try again later.
+    /// A refusal that may pass — 5xx, 408, 429, and every other 4xx this client does not
+    /// name as final, including 401/403/404/405: a wrong key gets rotated, an old server
+    /// gets upgraded, and resending the same interval then succeeds. Try again later.
     case http(status: Int)
     /// A refusal the server will repeat for the same request: retrying cannot help.
+    /// 422 — the plan item the interval named does not exist; 409 — this
+    /// `Idempotency-Key` is already on a record with different bounds, so the server
+    /// read it as somebody else's retry (`#163`'s `AgentAPIClient` treats only its own
+    /// 422 the same way — a manual interval also owns a key, hence the extra case).
     case rejected(status: Int)
 }
 
@@ -16,7 +22,7 @@ struct PanelAPIClient {
     private static let configPath = "/api/v1/agent/config"
     private static let manualPath = "/api/v1/agent/activity/manual"
     private static let notModified = 304
-    private static let retryableClientErrors: Set<Int> = [408, 429]
+    private static let finalClientErrors: Set<Int> = [409, 422]
 
     let serverAddress: String
     let apiKey: String
@@ -78,8 +84,7 @@ struct PanelAPIClient {
     }
 
     static func error(status: Int) -> PanelAPIError {
-        let isRefusal = (400..<500).contains(status) && !retryableClientErrors.contains(status)
-        return isRefusal ? .rejected(status: status) : .http(status: status)
+        finalClientErrors.contains(status) ? .rejected(status: status) : .http(status: status)
     }
 
     private func authorized(_ request: URLRequest) -> URLRequest {

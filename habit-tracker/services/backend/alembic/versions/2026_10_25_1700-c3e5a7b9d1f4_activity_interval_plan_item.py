@@ -15,7 +15,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c3e5a7b9d1f4"
-down_revision: str | None = "a9c1e3f5b7d0"
+down_revision: str | None = "351c4562b15c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
