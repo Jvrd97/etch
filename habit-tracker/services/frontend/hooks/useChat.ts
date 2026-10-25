@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/203
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/114, PHASE-03/120, PHASE-03/203, PHASE-03/197
+// summary: PHASE-03/197 lets a screen stay deliberately empty (`startWhenMissing: false`, screen `empty`) so deleting the open conversation does not quietly open or create another one, and drops the feed and the draft of the deleted conversation when it was shown without an address
 // summary: PHASE-03/203 lets the screen switch conversations mid-turn — the turn is dropped on the switch, and a turn that outlives its conversation no longer writes its events or its re-read feed into the next one
 // summary: PHASE-03/120 folds the turn's step events into `turn.progress` — what the model is busy with and the thought behind it, kept apart from `turn.text` so a thought can never end up inside the answer
 // summary: PHASE-03/116 adds the turn a refusal produces — 409 while a turn is open, 429 out of slots, 502 from a dead backend — the stored turn left `streaming` by a worker that died, and the reset that unsticks it; chat state for both shells — the conversation named by the link (or the latest one, or a new one), its stored messages in `seq` order, one turn read piece by piece, and the unsent draft mirrored into localStorage so backgrounding the app does not throw it away
@@ -26,7 +27,11 @@ import {
 export type ChatScreen =
   | { status: 'loading' }
   | { status: 'failed'; message: string }
+  /** Разговор не выбран намеренно: ни ссылки, ни права завести его самому. */
+  | { status: 'empty' }
   | { status: 'ready'; conversationId: number };
+
+const EMPTY_SCREEN: ChatScreen = { status: 'empty' };
 
 /**
  * Одна выборка, о которой сервер сообщил посреди хода.
@@ -102,6 +107,12 @@ export interface UseChatOptions {
    * день.
    */
   conversationId?: number | null;
+  /**
+   * `false` — без ссылки экран остаётся пустым, а не берёт свежий разговор и
+   * не заводит новый. Нужно после удаления открытого разговора: человек не
+   * просил другого, и молча открытый или созданный им выглядит как подмена.
+   */
+  startWhenMissing?: boolean;
   /** Хранилище черновика. Подменяется в тестах; по умолчанию — localStorage. */
   storage?: DraftStorage | null;
 }
@@ -179,7 +190,8 @@ function errorText(error: unknown): string {
  * секунду» — это ровно та секунда, в которую текст и теряется.
  */
 export function useChat(options: UseChatOptions = {}): UseChatResult {
-  const { conversationId = null } = options;
+  const { conversationId = null, startWhenMissing = true } = options;
+  const stayEmpty = conversationId === null && !startWhenMissing;
   // Хранилище берётся один раз и не пересчитывается: `window` на сервере нет,
   // а после гидратации оно уже не меняется.
   const [storage] = useState<DraftStorage | null>(
@@ -197,8 +209,12 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
   // и предлагает вместо эффекта: иначе ссылка на другой разговор оставила бы на
   // экране ленту предыдущего до самого ответа сервера.
   const [shown, setShown] = useState<number | null>(conversationId);
-  if (shown !== conversationId) {
+  // Пустой экран — тоже «другой вход»: адрес у удалённого свежего разговора не
+  // меняется, и без этого лента и черновик удалённого остались бы в состоянии.
+  const [wasEmpty, setWasEmpty] = useState(stayEmpty);
+  if (shown !== conversationId || wasEmpty !== stayEmpty) {
     setShown(conversationId);
+    setWasEmpty(stayEmpty);
     setScreen({ status: 'loading' });
     setMessages([]);
     setTurn({ phase: 'idle' });
@@ -214,6 +230,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
   useEffect(() => {
     let cancelled = false;
     openId.current = null;
+    if (stayEmpty) return;
     (async () => {
       try {
         // Разговор, названный ссылкой, — если он есть. Иначе одна лента на
@@ -237,7 +254,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, storage, attempt]);
+  }, [conversationId, storage, attempt, stayEmpty]);
 
   const setDraft = useCallback(
     (text: string) => {
@@ -382,7 +399,7 @@ export function useChat(options: UseChatOptions = {}): UseChatResult {
   }, []);
 
   return {
-    screen,
+    screen: stayEmpty ? EMPTY_SCREEN : screen,
     messages,
     turn,
     draft,
