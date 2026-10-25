@@ -1,9 +1,11 @@
 'use client';
-// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/124, PHASE-03/130
-// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, the last tap can be taken back from the same row it was made in, a button the plan of the day names carries a badge (the order already stands it first, and the badge is what makes that visible), and on a shell that has a keyboard the button prints the key that fires it
+// [review:need-review] PHASE-03/121, PHASE-03/122, PHASE-03/124, PHASE-03/130, PHASE-01/206
+// summary: the Today row of quick-mark buttons — one button per row of the directory, one tap sends the button's id and nothing else, the total under the label comes from the tap's own answer, the last tap can be taken back from the same row it was made in, a button the plan of the day names carries a badge (the order already stands it first, and the badge is what makes that visible), on a shell that has a keyboard the button prints the key that fires it, and a card whose screen can show the day's sets splits into the name-and-counter that opens them and the plus that adds one
 
+import { Check, Plus } from 'lucide-react';
 import type { QuickMark, QuickMarkEvent } from '@/lib/api';
 import { PLANNED_BADGE, markActionLabel, markCaption, undoCaption } from '@/lib/quick-marks';
+import { daySetsOpenLabel } from '@/lib/quick-mark-sets';
 import { hotkeyAssignment } from '@/lib/quick-mark-hotkeys';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
@@ -19,6 +21,15 @@ interface QuickMarkRowProps {
   lastEvent?: QuickMarkEvent | null;
   /** Take that tap back. Absent when the screen offers no undo. */
   onUndo?: () => void;
+  /**
+   * Open the list of the day's sets behind a card.
+   *
+   * Absent, a card is the one button it always was and a tap anywhere on it
+   * adds. Present, the card splits: its name and counter open the list, and a
+   * plus on its right edge adds — two targets, because a tap that both added
+   * and opened would add a set every time the reader only wanted to look.
+   */
+  onOpen?: (mark: QuickMark) => void;
   /**
    * Print the key each button answers to. Only the desktop shell asks for it:
    * it is the one that listens for those keys, and a key drawn in the mobile
@@ -49,6 +60,7 @@ export default function QuickMarkRow({
   onTap,
   lastEvent = null,
   onUndo,
+  onOpen,
   showHotkeys = false,
 }: QuickMarkRowProps) {
   if (marks.length === 0) return null;
@@ -61,20 +73,8 @@ export default function QuickMarkRow({
       {marks.map((mark, index) => {
         const caption = markCaption(mark);
         const hotkey = showHotkeys ? hotkeys[index] : null;
-        return (
-          <button
-            key={mark.id}
-            type="button"
-            onClick={() => onTap(mark.id)}
-            aria-label={markActionLabel(mark)}
-            aria-pressed={mark.done}
-            style={{ minHeight: TAP_TARGET_PX }}
-            className={`inline-flex flex-col items-start justify-center gap-0.5 px-5 py-3 rounded-3xl border text-left transition-all duration-200 ${
-              mark.done
-                ? 'bg-lime text-background border-lime shadow-[0_0_18px_rgba(184,255,54,0.25)]'
-                : 'bg-card text-text-secondary border-white/10 hover:text-text-primary hover:bg-white/5'
-            }`}
-          >
+        const face = (
+          <>
             <span className="inline-flex items-center gap-2">
               {hotkey !== null && (
                 // Hidden from assistive tech: the button already announces
@@ -114,6 +114,58 @@ export default function QuickMarkRow({
                 {caption}
               </span>
             )}
+          </>
+        );
+        const cardClass = mark.done
+          ? 'bg-lime text-background border-lime shadow-[0_0_18px_rgba(184,255,54,0.25)]'
+          : 'bg-card text-text-secondary border-white/10 hover:text-text-primary hover:bg-white/5';
+
+        if (onOpen) {
+          return (
+            <div
+              key={mark.id}
+              className={`inline-flex items-stretch rounded-3xl border transition-all duration-200 ${cardClass}`}
+            >
+              <button
+                type="button"
+                onClick={() => onOpen(mark)}
+                aria-label={daySetsOpenLabel(mark)}
+                style={{ minHeight: TAP_TARGET_PX }}
+                className="inline-flex min-w-0 flex-col items-start justify-center gap-0.5 rounded-l-3xl py-3 pl-5 pr-3 text-left"
+              >
+                {face}
+              </button>
+              <button
+                type="button"
+                onClick={() => onTap(mark.id)}
+                aria-label={markActionLabel(mark)}
+                aria-pressed={mark.done}
+                style={{ minHeight: TAP_TARGET_PX, minWidth: TAP_TARGET_PX }}
+                className={`inline-flex items-center justify-center rounded-r-3xl border-l px-4 ${
+                  mark.done ? 'border-background/20' : 'border-white/10'
+                }`}
+              >
+                {mark.kind === 'check' ? (
+                  <Check className="w-5 h-5" strokeWidth={2.5} aria-hidden="true" />
+                ) : (
+                  <Plus className="w-5 h-5" strokeWidth={2.5} aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          );
+        }
+
+        return (
+          <button
+            key={mark.id}
+            type="button"
+            onClick={() => onTap(mark.id)}
+            aria-label={markActionLabel(mark)}
+            aria-pressed={mark.done}
+            style={{ minHeight: TAP_TARGET_PX }}
+            className={`inline-flex flex-col items-start justify-center gap-0.5 px-5 py-3 rounded-3xl border text-left transition-all duration-200 ${cardClass}`}
+          >
+            {face}
           </button>
         );
       })}

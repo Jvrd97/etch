@@ -1,9 +1,10 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176, PHASE-01/206
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — edits one line of the plan at a time, marks the anchors of a day by kind, writes its training, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, resets a stuck dialogue, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it, the button entered, patched, reordered and deleted by hand, one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
+// summary: quickMarksAPI.dayEvents reads the taps of one category's day from the journal, one row per tap, flagged when taken back and when the undo endpoint would accept it
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -3418,6 +3419,31 @@ export interface QuickMarkUndo {
   done: boolean;
 }
 
+/**
+ * One tap of a category's day, read back from the journal.
+ *
+ * An increment folds its taps into one stored number, so this is the only place
+ * the sets of the day are separate. `undoable` is the server's answer to "would
+ * the undo endpoint take this tap" — the screen shows the button where it says
+ * so and does not recompute the rule.
+ */
+export interface QuickMarkDayEvent {
+  event_id: number;
+  quick_mark_id: number;
+  label: string;
+  kind: QuickMarkKind;
+  unit_label: string | null;
+  entry_date: string;
+  occurred_at: string;
+  /** How far the tap moved the number; null for a tick. */
+  delta: number | null;
+  /** What a tick set the box to; null for a number. */
+  bool_value: boolean | null;
+  /** Set when the tap was taken back; the row stays so the total can be explained. */
+  undone_at: string | null;
+  undoable: boolean;
+}
+
 /** How many taps one client contributed over the period, and how many were undone. */
 export interface QuickMarkSourceUsage {
   source: QuickMarkSource;
@@ -3649,6 +3675,16 @@ export const quickMarksAPI = {
     return fetcher<QuickMarkUndo>(`/quick-marks/events/${eventId}/undo`, {
       method: 'POST',
     });
+  },
+
+  /**
+   * The sets of one category today, each tap its own row in the order made.
+   *
+   * No date is sent, for the reason `list` sends none: the running day is the
+   * server's answer.
+   */
+  dayEvents: async (categoryId: number) => {
+    return fetcher<QuickMarkDayEvent[]>(`/quick-marks/events?category_id=${categoryId}`);
   },
 
   /** How the taps of a period split between the clients that made them. */

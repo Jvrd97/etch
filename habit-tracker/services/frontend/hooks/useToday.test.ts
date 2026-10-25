@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177
-// summary: tests for useToday — silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206
+// summary: tests for useToday — the targeted re-read after a quick mark (records, ticks and the one streak that can have moved, nothing else, and never an older answer over a newer one), silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -792,5 +792,158 @@ describe('useToday quick-mark undo and retry', () => {
 
     expect(result.current.lastQuickMarkEvent).toBeNull();
     expect(undoQuickMarkApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('useToday.reloadAfterMark', () => {
+  const AFTER_TAP: Entry = savedEntry(12, 750);
+
+  it('reads today\'s records again and shows them', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.entries).toEqual([ENTRY]);
+    getAllEntries = mock(() => Promise.resolve([ENTRY, AFTER_TAP]));
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(getAllEntries).toHaveBeenCalledTimes(1);
+    expect(result.current.entries).toEqual([ENTRY, AFTER_TAP]);
+    expect(totalOf(result.current.entries)).toBe(750);
+  });
+
+  it('leaves the categories and the directory alone: a tap costs a read of the day, not of the screen', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const categoryReads = getAllCategories.mock.calls.length;
+    const directoryReads = listQuickMarks.mock.calls.length;
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(getAllCategories.mock.calls.length).toBe(categoryReads);
+    expect(listQuickMarks.mock.calls.length).toBe(directoryReads);
+  });
+
+  it('reads the streak of an avoid category the tap belonged to, and shows it', async () => {
+    const afterRelapse = {
+      category_id: SMOKING.id,
+      streak_mode: 'avoid' as const,
+      current_streak: 0,
+      best_streak: 9,
+      last_relapse_date: TODAY,
+    };
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    getStreakApi = mock(() => Promise.resolve(afterRelapse));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+    getStreakApi.mockClear();
+
+    await act(async () => {
+      await result.current.reloadAfterMark(SMOKING.id);
+    });
+
+    expect(getStreakApi).toHaveBeenCalledTimes(1);
+    expect(getStreakApi).toHaveBeenCalledWith(SMOKING.id);
+    expect(result.current.streaks[SMOKING.id]).toEqual(afterRelapse);
+  });
+
+  it('does not touch a streak when the tap belonged to a category without one', async () => {
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, SMOKING]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.streaksLoading).toBe(false));
+    getStreakApi.mockClear();
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(getStreakApi).not.toHaveBeenCalled();
+  });
+
+  it('moves the ticks of a checklist when a tick button flipped one', async () => {
+    const checklist: Category = {
+      ...CATEGORY,
+      id: 3,
+      display_mode: 'checklist',
+      fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+    };
+    const ticked: Entry = {
+      ...ENTRY,
+      id: 20,
+      category_id: checklist.id,
+      values: [{ id: 21, entry_id: 20, field_id: 8, value: 'true' }],
+    };
+    getAllCategories = mock(() => Promise.resolve([checklist]));
+    getAllEntries = mock(() => Promise.resolve([] as Entry[]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.checked[checklist.id][8]).toBe(false);
+    getAllEntries = mock(() => Promise.resolve([ticked]));
+
+    await act(async () => {
+      await result.current.reloadAfterMark(checklist.id);
+    });
+
+    expect(result.current.checked[checklist.id][8]).toBe(true);
+  });
+
+  it('never lets an older answer land over a newer one', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const older = deferred<Entry[]>();
+    const newer = deferred<Entry[]>();
+    getAllEntries = mock()
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = result.current.reloadAfterMark(CATEGORY.id);
+      second = result.current.reloadAfterMark(CATEGORY.id);
+    });
+    await act(async () => {
+      newer.resolve([savedEntry(14, 1000)]);
+      await second;
+    });
+    await act(async () => {
+      older.resolve([savedEntry(13, 500)]);
+      await first;
+    });
+
+    expect(totalOf(result.current.entries)).toBe(1000);
+  });
+
+  it('keeps what was on screen and says so when the read fails', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllEntries = mock(() => Promise.reject(new Error('network down')));
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(result.current.entries).toEqual([ENTRY]);
+    expect(result.current.error).toBe('network down');
+  });
+
+  it('counts a saved increment once when the read returns it', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 1);
+    });
+    const saved = savedEntry(11, 1);
+    getAllEntries = mock(() => Promise.resolve([ENTRY, saved]));
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(result.current.entries.filter((entry) => entry.id === 11)).toHaveLength(1);
+    expect(totalOf(result.current.entries)).toBe(1);
   });
 });

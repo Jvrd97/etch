@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130
-# summary: wire types of the quick mark — the button as it is created, patched and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode; the answer to an undo and the split of taps by source
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-01/206
+# summary: wire types of the quick mark — the button as it is created, patched and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode; the answer to an undo, the split of taps by source and one tap of a day's journal with the flag that says whether undo would take it
 """
 Wire types of the quick mark.
 
@@ -198,6 +198,36 @@ class QuickMarkUndoResponse(BaseModel):
     undone_at: datetime
     today_total: float | None = None
     done: bool
+
+
+class QuickMarkDayEvent(BaseModel):
+    """
+    One tap of a category's day, read back from the journal.
+
+    An increment folds its taps into one stored number, so the sets of the day
+    exist as separate rows only here. `delta` is how far the tap moved the
+    number and `bool_value` what a tick set the box to; exactly one is filled.
+    A tap that was taken back stays in the list with `undone_at` set, because a
+    total that dropped for no visible reason is a total nobody can check.
+    """
+
+    event_id: int
+    quick_mark_id: int
+    label: str
+    kind: str
+    unit_label: str | None = None
+    entry_date: date
+    occurred_at: datetime
+    delta: float | None = None
+    bool_value: bool | None = None
+    undone_at: datetime | None = None
+    undoable: bool = Field(
+        ...,
+        description=(
+            "Отмену этого тапа ручка примет: он не отменён и последний открытый "
+            "у своей кнопки. Правку руками сервер обнаружит только при отмене"
+        ),
+    )
 
 
 class QuickMarkSourceUsage(BaseModel):

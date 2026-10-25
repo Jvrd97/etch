@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/121, PHASE-01/177
-// summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers
+// [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
+// summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers, and the sets behind a quick-mark card — the dialog of every set opened from the card's name and counter, the plus and the key that still add one without opening it, the day's records read again after every tap, and a set taken back from the list lowering the card's counter
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Category, Entry, QuickMark } from '@/lib/api';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { Category, Entry, QuickMark, QuickMarkDayEvent } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-30T00:00:00Z';
 
@@ -57,6 +57,8 @@ let getCategories: ReturnType<typeof mock>;
 let getEntries: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
 let tapQuickMark: ReturnType<typeof mock>;
+let undoQuickMark: ReturnType<typeof mock>;
+let dayEvents: ReturnType<typeof mock>;
 
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
@@ -140,7 +142,8 @@ mock.module('@/lib/api', () => ({
   quickMarksAPI: {
     list: () => listQuickMarks(),
     tap: (id: number) => tapQuickMark(id),
-    undo: () => Promise.resolve(null),
+    undo: (eventId: number) => undoQuickMark(eventId),
+    dayEvents: (categoryId: number) => dayEvents(categoryId),
     sources: () => Promise.resolve([]),
   },
   dayAPI: {
@@ -210,6 +213,8 @@ beforeEach(() => {
       plan_item_id: null,
     })
   );
+  undoQuickMark = mock(() => Promise.resolve(null));
+  dayEvents = mock(() => Promise.resolve([] as QuickMarkDayEvent[]));
 });
 
 afterEach(() => {
@@ -271,5 +276,173 @@ describe('the quick marks of /today', () => {
     fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
     expect(screen.getByRole('heading', { name: 'Питание — сегодня' })).toBeDefined();
     expect(screen.getByText('Калории 300')).toBeDefined();
+  });
+});
+
+/** A set the journal holds for the water button, `undoable` only when it is the last. */
+function waterSet(eventId: number, at: string, undoable = false): QuickMarkDayEvent {
+  return {
+    event_id: eventId,
+    quick_mark_id: WATER_MARK.id,
+    label: WATER_MARK.label,
+    kind: 'increment',
+    unit_label: 'мл',
+    entry_date: WATER_MARK.entry_date,
+    occurred_at: at,
+    delta: 250,
+    bool_value: null,
+    undone_at: null,
+    undoable,
+  };
+}
+
+const OPEN_WATER_SETS = 'Подходы за сегодня — +250 мл';
+
+function fiveSets(): QuickMarkDayEvent[] {
+  return [1, 2, 3, 4, 5].map((n) => waterSet(n, `2026-07-30T0${n}:00:00Z`, n === 5));
+}
+
+describe('the sets behind a quick-mark card on /today', () => {
+  it('opens the dialog with every set from the name and counter of the card', async () => {
+    listQuickMarks = mock(() => Promise.resolve([{ ...WATER_MARK, today_total: 1250, done: true }]));
+    dayEvents = mock(() => Promise.resolve(fiveSets()));
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: OPEN_WATER_SETS }));
+
+    expect(screen.getByRole('heading', { name: 'Питание — сегодня' })).toBeDefined();
+    const sets = await screen.findByRole('list', { name: 'Подходы за сегодня' });
+    await waitFor(() => expect(within(sets).getAllByRole('listitem').length).toBe(5));
+    expect(dayEvents.mock.calls[0][0]).toBe(NUTRITION.id);
+    expect(screen.getByText('Итого за день: 1250 мл')).toBeDefined();
+  });
+
+  it('keeps the plus adding a set without opening anything', async () => {
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: WATER_MARK.label }));
+    });
+
+    expect(tapQuickMark).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('heading', { name: 'Питание — сегодня' })).toBeNull();
+    expect(dayEvents).not.toHaveBeenCalled();
+  });
+
+  it('keeps the card of a category without a quick mark opening the plain list', async () => {
+    getEntries = mock(() =>
+      Promise.resolve([
+        {
+          id: 12, category_id: NUTRITION.id, entry_date: '2026-07-30',
+          created_at: '2026-07-30T09:12:00Z', updated_at: TIMESTAMP,
+          values: [{ id: 13, entry_id: 12, field_id: 9, value: '300' }],
+        },
+      ])
+    );
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
+
+    expect(screen.getByText('Калории 300')).toBeDefined();
+    expect(screen.queryByRole('list', { name: 'Подходы за сегодня' })).toBeNull();
+    expect(dayEvents).not.toHaveBeenCalled();
+  });
+
+  it('lowers the counter of the card when the last set is taken back from the list', async () => {
+    listQuickMarks = mock(() => Promise.resolve([{ ...WATER_MARK, today_total: 1250, done: true }]));
+    dayEvents = mock(() => Promise.resolve(fiveSets()));
+    undoQuickMark = mock(() =>
+      Promise.resolve({
+        event_id: 5,
+        quick_mark_id: WATER_MARK.id,
+        entry_date: WATER_MARK.entry_date,
+        undone_at: TIMESTAMP,
+        today_total: 1000,
+        done: true,
+      })
+    );
+    await renderToday();
+    fireEvent.click(screen.getByRole('button', { name: OPEN_WATER_SETS }));
+    const sets = await screen.findByRole('list', { name: 'Подходы за сегодня' });
+    await waitFor(() => expect(within(sets).getAllByRole('listitem').length).toBe(5));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Отменить:/ }));
+    });
+
+    expect(undoQuickMark.mock.calls[0][0]).toBe(5);
+    await waitFor(() => expect(screen.getByText('1000 мл')).toBeDefined());
+    expect(screen.getByText('Итого за день: 1000 мл')).toBeDefined();
+  });
+
+  it('hands the keyboard back to the dialog while the list is up', async () => {
+    listQuickMarks = mock(() => Promise.resolve([{ ...WATER_MARK, hotkey: 'w' }]));
+    await renderToday();
+    fireEvent.click(screen.getByRole('button', { name: OPEN_WATER_SETS }));
+    await screen.findByRole('heading', { name: 'Питание — сегодня' });
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'w' });
+    });
+
+    expect(tapQuickMark).not.toHaveBeenCalled();
+  });
+});
+
+describe('the day read again after a quick mark on /today', () => {
+  it("reads today's records again after a tap, and nothing else of the screen", async () => {
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+    const entryReads = getEntries.mock.calls.length;
+    const categoryReads = getCategories.mock.calls.length;
+    const directoryReads = listQuickMarks.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: WATER_MARK.label }));
+    });
+
+    expect(getEntries.mock.calls.length).toBe(entryReads + 1);
+    expect(getCategories.mock.calls.length).toBe(categoryReads);
+    expect(listQuickMarks.mock.calls.length).toBe(directoryReads);
+  });
+
+  it('reads them again after a tap made from the keyboard as well', async () => {
+    listQuickMarks = mock(() => Promise.resolve([{ ...WATER_MARK, hotkey: 'w' }]));
+    await renderToday();
+    const entryReads = getEntries.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'w' });
+    });
+
+    expect(tapQuickMark).toHaveBeenCalledTimes(1);
+    expect(getEntries.mock.calls.length).toBe(entryReads + 1);
+  });
+
+  it('reads them again after the quick undo of the last tap', async () => {
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    undoQuickMark = mock(() =>
+      Promise.resolve({
+        event_id: 1,
+        quick_mark_id: WATER_MARK.id,
+        entry_date: WATER_MARK.entry_date,
+        undone_at: TIMESTAMP,
+        today_total: 0,
+        done: false,
+      })
+    );
+    await renderToday();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: WATER_MARK.label }));
+    });
+    const entryReads = getEntries.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Отменить «/ }));
+    });
+
+    expect(undoQuickMark).toHaveBeenCalledTimes(1);
+    expect(getEntries.mock.calls.length).toBe(entryReads + 1);
   });
 });

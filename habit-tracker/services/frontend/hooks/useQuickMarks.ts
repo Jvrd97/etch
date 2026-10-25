@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/130
-// summary: the quick-mark directory as Today reads it — one fetch, the order and the `planned` flag taken from the server rather than recomputed, and a tap that repaints from its own answer instead of asking the directory again
+// [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/130, PHASE-01/206
+// summary: the quick-mark directory as Today reads it — one fetch, the order and the `planned` flag taken from the server rather than recomputed, a tap that repaints from its own answer instead of asking the directory again, and a word to the screen after every tap or undo that went through saying which category's day moved, so the records and streaks beside the buttons can be read again
 
 import { useCallback, useEffect, useState } from 'react';
 import { quickMarksAPI, type QuickMark, type QuickMarkEvent } from '@/lib/api';
@@ -11,6 +11,18 @@ export const TAP_FAILED = 'Отметку записать не удалось.'
 
 /** What the reader sees when taking the tap back did not reach the server. */
 export const UNDO_FAILED = 'Отменить отметку не удалось.';
+
+export interface UseQuickMarksOptions {
+  /**
+   * A tap or an undo went through: the day of this category moved.
+   *
+   * The buttons repaint from the answer on their own, but the records and the
+   * streaks of the same screen are somebody else's state, and a screen that is
+   * not told keeps showing the day as it was before the tap. Only a call that
+   * reached the server says it — a refusal changed nothing to re-read.
+   */
+  onDayChanged?: (categoryId: number) => void;
+}
 
 export interface UseQuickMarksResult {
   /** The directory in the order the server decided: planned buttons first. */
@@ -30,6 +42,16 @@ export interface UseQuickMarksResult {
    * be a button that answers 409 forever.
    */
   undo: () => Promise<void>;
+  /**
+   * Take back one named tap — the row of the day's list, not necessarily the
+   * last tap of the session.
+   *
+   * Resolves with the server's sentence when it refuses, and null once the tap
+   * is gone. The sentence is the caller's to show where the reader is looking:
+   * the list that asked for the undo is on top of the screen, and an error
+   * parked in this hook's `error` would sit under it.
+   */
+  undoEvent: (eventId: number) => Promise<string | null>;
   /** Forget the error and re-read the directory. */
   reload: () => void;
 }
@@ -46,7 +68,7 @@ export interface UseQuickMarksResult {
  * and `done`, so the row repaints from the response; asking the directory again
  * would double the traffic of the one gesture this screen exists for.
  */
-export function useQuickMarks(): UseQuickMarksResult {
+export function useQuickMarks({ onDayChanged }: UseQuickMarksOptions = {}): UseQuickMarksResult {
   const [marks, setMarks] = useState<QuickMark[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,33 +100,52 @@ export function useQuickMarks(): UseQuickMarksResult {
     };
   }, [attempt]);
 
-  const tap = useCallback(async (id: number) => {
-    setError(null);
-    try {
-      const event = await quickMarksAPI.tap(id);
+  const tap = useCallback(
+    async (id: number) => {
+      setError(null);
+      let event: QuickMarkEvent;
+      try {
+        event = await quickMarksAPI.tap(id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : TAP_FAILED);
+        return;
+      }
       setMarks((current) => applyQuickMarkEvent(current, event));
       setLastEvent(event);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : TAP_FAILED);
-    }
-  }, []);
+      const mark = marks.find((candidate) => candidate.id === id);
+      if (mark) onDayChanged?.(mark.category_id);
+    },
+    [marks, onDayChanged]
+  );
+
+  const takeBack = useCallback(
+    async (eventId: number): Promise<string | null> => {
+      try {
+        const undone = await quickMarksAPI.undo(eventId);
+        setMarks((current) => applyQuickMarkUndo(current, undone));
+        const mark = marks.find((candidate) => candidate.id === undone.quick_mark_id);
+        if (mark) onDayChanged?.(mark.category_id);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : UNDO_FAILED;
+      } finally {
+        // The offer to undo is spent for the tap that was just dealt with, in
+        // both outcomes: a success took it back, and a refusal means it is no
+        // longer the last one — a button answering 409 forever is worse than
+        // none. A different tap keeps its offer.
+        setLastEvent((current) => (current?.event_id === eventId ? null : current));
+      }
+    },
+    [marks, onDayChanged]
+  );
 
   const undo = useCallback(async () => {
     if (lastEvent === null) return;
-    try {
-      const undone = await quickMarksAPI.undo(lastEvent.event_id);
-      setMarks((current) => applyQuickMarkUndo(current, undone));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : UNDO_FAILED);
-    } finally {
-      // Отменять нечего в обоих исходах: удачный снял тап, отказ означает, что
-      // этот тап уже не последний, и кнопка, отвечающая 409 навсегда, — хуже её
-      // отсутствия.
-      setLastEvent(null);
-    }
-  }, [lastEvent]);
+    const refusal = await takeBack(lastEvent.event_id);
+    if (refusal !== null) setError(refusal);
+  }, [lastEvent, takeBack]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
-  return { marks, loading, error, tap, lastEvent, undo, reload };
+  return { marks, loading, error, tap, lastEvent, undo, undoEvent: takeBack, reload };
 }

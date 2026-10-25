@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177
-// summary: Today-screen state for both shells — the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206
+// summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
@@ -120,6 +120,18 @@ export interface UseTodayResult {
    * editor calls once it has saved, since its edit can touch any field.
    */
   reload: () => Promise<void>;
+  /**
+   * Re-read what one quick mark can have changed: today's records, the ticks
+   * built from them and — only when the mark's category counts a streak of
+   * days avoided — that category's streak.
+   *
+   * The categories and the button directory are left alone: a tap leaves them
+   * as they were, and re-reading them would turn each of five quick taps into
+   * four requests. Overlapping calls are safe — only the newest answer is
+   * applied, so a slow response to the third tap cannot put back the day as
+   * the second tap left it.
+   */
+  reloadAfterMark: (categoryId: number) => Promise<void>;
 }
 
 export function useToday(): UseTodayResult {
@@ -134,6 +146,8 @@ export function useToday(): UseTodayResult {
   // so a refetch can replace the snapshot without discarding them.
   const [optimisticEntries, setOptimisticEntries] = useState<Entry[]>([]);
   const nextOptimisticId = useRef(-1);
+  // The newest re-read after a mark; an older one still in flight is stale.
+  const markReadSeq = useRef(0);
   const [checked, setChecked] = useState<CheckedMap>({});
   const [streaks, setStreaks] = useState<StreakMap>({});
   const [loading, setLoading] = useState(true);
@@ -176,6 +190,20 @@ export function useToday(): UseTodayResult {
     }
   }, []);
 
+  /**
+   * Take a server snapshot of today's records as the screen's own.
+   *
+   * Whatever the snapshot now carries is no longer this session's to hold;
+   * dropping it from the local copies is what keeps a saved increment from
+   * being counted twice.
+   */
+  const adoptEntries = useCallback((categoriesData: Category[], entriesData: Entry[]) => {
+    setEntries(entriesData);
+    const fetchedIds = new Set(entriesData.map((entry) => entry.id));
+    setOptimisticEntries((prev) => prev.filter((entry) => !fetchedIds.has(entry.id)));
+    setChecked(buildCheckedMap(categoriesData, entriesData));
+  }, []);
+
   const loadData = useCallback(async ({ showSpinner = false } = {}) => {
     try {
       if (showSpinner) setLoading(true);
@@ -189,17 +217,12 @@ export function useToday(): UseTodayResult {
         quickMarksAPI.list(),
       ]);
       setCategories(categoriesData);
-      setEntries(entriesData);
       setQuickMarks(quickMarksData);
       // The snapshot is the server's, not this session's: whatever tap the
       // «Отменить» affordance pointed at is now indistinguishable from the rest
       // of the day, so the offer goes with it.
       setLastQuickMarkEvent(null);
-      // Whatever the snapshot now carries is no longer ours to hold; dropping it
-      // here is what keeps a saved increment from being counted twice.
-      const fetchedIds = new Set(entriesData.map((entry) => entry.id));
-      setOptimisticEntries((prev) => prev.filter((entry) => !fetchedIds.has(entry.id)));
-      setChecked(buildCheckedMap(categoriesData, entriesData));
+      adoptEntries(categoriesData, entriesData);
       // A silent refetch that succeeds must retire the previous failure, or the
       // error banner outlives the outage that caused it.
       setError(null);
@@ -217,7 +240,7 @@ export function useToday(): UseTodayResult {
     } finally {
       setLoading(false);
     }
-  }, [refreshStreaks]);
+  }, [adoptEntries, refreshStreaks]);
 
   const reload = useCallback(async () => {
     await loadData();
@@ -266,6 +289,27 @@ export function useToday(): UseTodayResult {
     const streak = await categoriesAPI.getStreak(categoryId).catch(() => null);
     setStreaks((prev) => ({ ...prev, [categoryId]: streak }));
   }, []);
+
+  const reloadAfterMark = useCallback(
+    async (categoryId: number) => {
+      const category = categories.find((candidate) => candidate.id === categoryId);
+      // Started before the records are awaited, so the two reads run side by
+      // side: the streak does not wait behind the list it will be shown beside.
+      const streak = category?.streak_mode === 'avoid' ? reloadStreak(categoryId) : null;
+
+      markReadSeq.current += 1;
+      const mine = markReadSeq.current;
+      try {
+        const date = todayISO();
+        const fresh = await entriesAPI.getAll({ startDate: date, endDate: date });
+        if (mine === markReadSeq.current) adoptEntries(categories, fresh);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to refresh today');
+      }
+      await streak;
+    },
+    [categories, adoptEntries, reloadStreak]
+  );
 
   useEffect(() => {
     loadData({ showSpinner: true });
@@ -466,5 +510,6 @@ export function useToday(): UseTodayResult {
     undoLastQuickMark,
     reloadStreak,
     reload,
+    reloadAfterMark,
   };
 }
