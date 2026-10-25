@@ -1,8 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/23-checklist-bar-streaks
-// summary: category chart - line chart for form categories; for display_mode=checklist a done-count bar chart plus per-field current-streak badges
+// [review:need-review] PHASE-01/23-checklist-bar-streaks, #78
+// summary: category chart - line chart for form categories; for display_mode=checklist a done-count bar chart plus per-field current-streak badges; both show each number field's daily average for the selected period and open on the period a dashboard trend link carries
 
 import { useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   Bar,
   BarChart,
@@ -31,6 +32,13 @@ import {
   currentStreak,
 } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
+import { orderedFields } from '@/lib/today-categories';
+import {
+  averageDailyValue,
+  chartPeriodFor,
+  formatTrendAverage,
+  parseTrendPeriod,
+} from '@/lib/trends';
 
 type ChartMode = 'perDay' | 'cumulative';
 
@@ -60,11 +68,47 @@ interface CategoryChartProps {
   days: TableDay[];
 }
 
+interface ChartBodyProps extends CategoryChartProps {
+  initialPeriod: ChartPeriod;
+}
+
 export default function CategoryChart({ category, days }: CategoryChartProps) {
+  // A dashboard trend row links here with `?period=`, so the average below the
+  // chart covers the same days as the row the reader tapped.
+  const trendPeriod = parseTrendPeriod(useSearchParams()?.get('period'));
+  const initialPeriod = trendPeriod === null ? DEFAULT_PERIOD : chartPeriodFor(trendPeriod);
   return category.display_mode === 'checklist' ? (
-    <ChecklistCategoryChart category={category} days={days} />
+    <ChecklistCategoryChart category={category} days={days} initialPeriod={initialPeriod} />
   ) : (
-    <FormCategoryChart category={category} days={days} />
+    <FormCategoryChart category={category} days={days} initialPeriod={initialPeriod} />
+  );
+}
+
+/**
+ * Mean of the daily sums per number field over `days`, which are the days of
+ * the selected period. It is the function the dashboard Trends block uses, so
+ * the two screens cannot disagree.
+ */
+function DailyAverages({ category, days }: CategoryChartProps) {
+  const numberFields = orderedFields(category.fields).filter(
+    (field) => field.field_type === 'number'
+  );
+  if (numberFields.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2" role="list" aria-label="Daily averages">
+      {numberFields.map((field) => (
+        <div
+          key={field.id}
+          role="listitem"
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm bg-surface text-text-primary border border-white/10"
+        >
+          {field.name}{' '}
+          <span className="text-text-secondary">
+            avg {formatTrendAverage(averageDailyValue(days, category.id, field.id), field.unit ?? null)}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -94,8 +138,8 @@ function PeriodButtons({ period, onChange }: PeriodButtonsProps) {
   );
 }
 
-function ChecklistCategoryChart({ category, days }: CategoryChartProps) {
-  const [period, setPeriod] = useState<ChartPeriod>(DEFAULT_PERIOD);
+function ChecklistCategoryChart({ category, days, initialPeriod }: ChartBodyProps) {
+  const [period, setPeriod] = useState<ChartPeriod>(initialPeriod);
 
   const boolFields = useMemo(() => booleanFields(category.fields), [category.fields]);
   const data = useMemo(
@@ -113,10 +157,18 @@ function ChecklistCategoryChart({ category, days }: CategoryChartProps) {
     [boolFields, days, category.id, today]
   );
 
+  const selectedDays = useMemo(() => sliceByPeriod(days, period), [days, period]);
+
   const total = boolFields.length;
 
   if (total === 0) {
-    return (
+    const hasNumberField = category.fields.some((field) => field.field_type === 'number');
+    return hasNumberField ? (
+      <div className="bg-card border border-white/5 rounded-3xl p-6 space-y-5">
+        <PeriodButtons period={period} onChange={setPeriod} />
+        <DailyAverages category={category} days={selectedDays} />
+      </div>
+    ) : (
       <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">
         <p className="text-text-secondary">
           No boolean fields to chart in this category
@@ -143,6 +195,8 @@ function ChecklistCategoryChart({ category, days }: CategoryChartProps) {
           </div>
         ))}
       </div>
+
+      <DailyAverages category={category} days={selectedDays} />
 
       <div style={{ height: CHART_HEIGHT_PX }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -177,12 +231,13 @@ function ChecklistCategoryChart({ category, days }: CategoryChartProps) {
   );
 }
 
-function FormCategoryChart({ category, days }: CategoryChartProps) {
-  const [period, setPeriod] = useState<ChartPeriod>(DEFAULT_PERIOD);
+function FormCategoryChart({ category, days, initialPeriod }: ChartBodyProps) {
+  const [period, setPeriod] = useState<ChartPeriod>(initialPeriod);
   const [mode, setMode] = useState<ChartMode>('perDay');
   const [hiddenKeys, setHiddenKeys] = useState<readonly string[]>([]);
 
   const series = useMemo(() => buildSeries(category.fields), [category.fields]);
+  const selectedDays = useMemo(() => sliceByPeriod(days, period), [days, period]);
   const data = useMemo(() => {
     const sliced = sliceByPeriod(
       buildChartData(days, category.id, category.fields),
@@ -257,6 +312,8 @@ function FormCategoryChart({ category, days }: CategoryChartProps) {
           );
         })}
       </div>
+
+      <DailyAverages category={category} days={selectedDays} />
 
       <div style={{ height: CHART_HEIGHT_PX }}>
         <ResponsiveContainer width="100%" height="100%">
