@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93, PHASE-03/147, PHASE-03/200
+# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93, PHASE-03/147, PHASE-03/200, PHASE-03/159
 # summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), overlapping windows found by a self-join on `&&` rather than on render, and every goal of the quarter the document names looked up in one query so a link to a goal that does not exist is a 422 naming the task rather than a 500 naming a foreign key
 # summary: PHASE-03/200 — a line's link to a category, its field and a target is checked before the plan or the line is written, by the same rule the generator and the reader use, and travels through the document, the editor and the answer
+# summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, their marks are carried across the replace, and since #159 so is a timer's link to them), overlapping windows found by a self-join on `&&` rather than on render, and every goal of the quarter the document names looked up in one query so a link to a goal that does not exist is a 422 naming the task rather than a 500 naming a foreign key
 """
 Database access for the plan of a day.
 
@@ -49,6 +50,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.daytime import DayBoundary, current_boundary, local_time
 from app.day.constraints import DraftItem, PlanDraft
+from app.crud import activity as activity_crud
 from app.crud import goal as goal_crud
 from app.crud import mark as mark_crud
 from app.crud import plan_fact as fact_crud
@@ -358,6 +360,12 @@ async def replace_plan(
     new id and no mark — including a line whose text is identical to one that
     was there, because a plan that re-mints its ids is a plan that is being
     rewritten rather than edited.
+
+    A timer's link to one of those kept ids is lifted the same way (`#159`):
+    `plan_item_id`'s `ON DELETE SET NULL` fires the instant the old row dies,
+    before the new row under the same uuid exists to re-attach to, so a floating
+    panel timing a task would otherwise lose that task on every rewrite of the
+    day — including the nightly one nobody asked for.
     """
     resolved_boundary = boundary if boundary is not None else current_boundary()
     keep = await _stored_item_ids(db, on)
@@ -375,9 +383,9 @@ async def replace_plan(
     # field of another category is refused whole, and yesterday's plan stays.
     await fact_crud.check_links(db, [_proposed_link(row) for row in flat])
 
-    carried = await mark_crud.snapshot_marks(
-        db, {row.id for row in flat if row.id in keep}
-    )
+    kept_ids = {row.id for row in flat if row.id in keep}
+    carried = await mark_crud.snapshot_marks(db, kept_ids)
+    carried_links = await activity_crud.snapshot_task_links(db, kept_ids)
     await delete_plan(db, on)
 
     plan = DayPlan(
@@ -412,6 +420,7 @@ async def replace_plan(
 
     await db.flush()
     await mark_crud.restore_marks(db, carried)
+    await activity_crud.restore_task_links(db, carried_links)
     stored = await get_plan(db, on)
     if stored is None:  # pragma: no cover - the insert above just ran
         raise RuntimeError(
