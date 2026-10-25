@@ -2453,3 +2453,19 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 Два раунда, независимое ревью **APPROVE** на обоих (раунд 1 — REQUEST_CHANGES по трём багам: бесконечный повтор на неизвестном приложении, гонка параллельных отправок терявшая интервалы или ронявшая агент, `switch_count` не по контракту ADR; раунд 2 закрыл все три, включая мутационный тест на гонку).
 
 Проверки: XCTest — 22 passed; `tests/test_agent_activity.py` — 4 passed; `-k "agent or activity"` — 41 passed на изолированном postgres; ruff, mypy --strict, `git diff --check` чистые. Живой 20-минутный сбор на реальном маке не запускался — остаётся ручным шагом. Правило HTTPS/tailnet для прод-адреса зафиксировано в тикете как решение пользователя, код его не трогает.
+
+## 2026-10-25 — PHASE-03/105: наблюдаемость источников входящих
+
+Изменено 15 файлов кода и эта запись (бэкенд и фронтенд одной записью); расхождения с тикетом — в конце.
+
+- `app/inbox/errors.py` — new: шесть классов отказа (`auth_expired`, `needs_login`, `rate_limited`, `network`, `remote_error`, `not_implemented`), свёртка кода отказа в класс и неизвестного исключения в `error_<ИмяТипа>` — текст исключения дальше не идёт.
+- `app/crud/inbox.py` — mod: любой сбой прогона (адаптер, разбор JSON, запись) выходит наружу только как `PollRefused` с кодом; отказ пишется кодом и временем; запись сигналов идёт в точке сохранения, чтобы ошибка базы одного источника не ломала сессию следующего; проверка файла учётных данных (Gmail, Telegram) до адаптера; `refresh_stale` идёт по источникам в порядке `id`.
+- `app/models/inbox.py`, `alembic/versions/2026_10_25_1200-h0d2f4a6c8e1_inbox_source_observability.py` — mod/new: колонки `last_error_at` и `last_ingested`; ревизия от головы `a9c1e3f5b7d0`.
+- `app/schemas/inbox.py`, `app/api/inbox.py` — mod: справочник отдаёт `has_adapter`, `cursor_at`, `last_ingested`, `last_error_class`, `last_error_at`; тело 409 у `poll` и `probe` несёт `error_class`.
+- `tests/test_inbox_observability.py` — new: классы, изоляция сбоя (мусорный JSON, исключение адаптера, ошибка базы при записи), удалённый файл сессии, заготовка без адаптера, PII в `last_error_code`, ответе API и логе, число SQL-запросов справочника, обратимость ревизии.
+- `tests/test_categories.py` — mod (вне путей тикета): проверка головы Alembic больше не пришпиливает `a9c1e3f5b7d0`; тот же хунк, что в `codex/inbox-stack-onto-main` (#103).
+- Фронтенд: `components/inbox/SourceCard.tsx`, `components/inbox/source-state.ts` (new), их тесты, `hooks/useInbox.ts`, `app/inbox/page.tsx`, `lib/api.ts` (тип `SignalSource`).
+
+Проверки: `test_inbox_observability.py`, `test_inbox.py`, `test_categories.py` — 120 passed; мутации (убрать точку сохранения, убрать проверку файла, пустить сообщение исключения в код) валят свои тесты; ruff, `mypy --strict app`, `alembic heads` (одна голова) зелёные. Экран проверен живьём в Chrome на своих портах 8815 и 3815 с подставным ClickUp: три состояния различимы, «перечитать» на сломанном источнике показывает класс `auth_expired` и в полосе ошибки, и на карточке, у заготовок кнопки нет, текст подставного ответа на экране не появился. Применение ревизии командой Alembic к `habit_live_105` не запускалось (команду остановила проверка разрешений), живая проверка шла на `habit_test_105` со схемой из моделей; ревизия проверена офлайн-SQL тестом.
+
+Расхождения с тикетом: в baseline `8dc958d` нет #99 (`app/inbox/runner.py`, задание `inbox.poll`) и #103, адаптеров Gmail и Telegram тоже нет (#100, #102), поэтому изоляция проверена на `refresh_stale` и подставных адаптерах. `clickup/alvion` после #98 читается тем же адаптером (тест `test_alvion_is_read_by_the_same_adapter`), и «не подключён» показывают Gmail и Telegram, а не Alvion.

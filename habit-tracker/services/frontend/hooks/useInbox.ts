@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/97
+// [review:need-review] PHASE-03/97, PHASE-03/105
+// summary: PHASE-03/105 reads a refusal by the class the server sends when its code is not on the list, and re-reads the directory after a failed poll so that the card shows the class and the time the server just recorded
 // summary: inbox state — the feed of signals beside the directory of sources, the key of a source saved from the interface and never read back, one manual poll at a time with its refusal read as a machine code rather than as a sentence, and a re-read after anything that changed the server's answer
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -9,6 +10,7 @@ import {
   type ProbeItem,
   type SignalSource,
 } from '@/lib/api';
+import { CLASS_HINT } from '@/components/inbox/source-state';
 
 /** Что показывает экран, когда источник отказал. По машинному коду сервера. */
 export const REFUSAL_TEXT: Record<string, string> = {
@@ -58,13 +60,22 @@ export type ProbeState =
   | { status: 'ok'; count: number; items: ProbeItem[] }
   | { status: 'failed'; message: string };
 
+/** Поле тела 409, если сервер его прислал. */
+function refusalField(error: unknown, field: 'code' | 'error_class'): string | null {
+  if (!(error instanceof Error)) return null;
+  const detail = (error as { detail?: unknown }).detail;
+  if (detail !== null && typeof detail === 'object' && field in detail) {
+    const value = (detail as Record<string, unknown>)[field];
+    return value === null || value === undefined ? null : String(value);
+  }
+  return null;
+}
+
 /** Машинный код отказа из 409, если сервер его прислал. */
 function refusalOf(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
-  const detail = (error as { detail?: unknown }).detail;
-  if (detail !== null && typeof detail === 'object' && 'code' in detail) {
-    return String((detail as { code: unknown }).code);
-  }
+  const sent = refusalField(error, 'code');
+  if (sent !== null) return sent;
   // `fetcher` кладёт тело отказа в сообщение, когда разобрать его не удалось.
   const known = Object.keys(REFUSAL_TEXT).find((code) => error.message.includes(code));
   return known ?? null;
@@ -72,7 +83,16 @@ function refusalOf(error: unknown): string | null {
 
 function errorText(error: unknown): string {
   const code = refusalOf(error);
-  if (code !== null) return REFUSAL_TEXT[code] ?? REFUSAL_FALLBACK;
+  if (code !== null) {
+    // Код, которого в таблице нет (`http_401`, `error_RuntimeError`), читается
+    // по классу: следующий шаг у класса есть всегда.
+    const errorClass = refusalField(error, 'error_class');
+    return (
+      REFUSAL_TEXT[code] ??
+      (errorClass !== null ? CLASS_HINT[errorClass] : undefined) ??
+      REFUSAL_FALLBACK
+    );
+  }
   return error instanceof Error ? error.message : 'Unknown error';
 }
 
@@ -135,6 +155,11 @@ export function useInbox(): UseInboxResult {
       setSources(directory);
     } catch (failure) {
       setError(errorText(failure));
+      // Сервер записал отказ в справочник: карточка показывает тот же класс и
+      // время, что и полоса ошибки. Не вышло перечитать — остаётся прежняя
+      // карточка, а первая ошибка уже на экране.
+      const directory = await inboxAPI.sources().catch(() => null);
+      if (directory !== null) setSources(directory);
     } finally {
       inFlight.current = false;
       setPolling(null);

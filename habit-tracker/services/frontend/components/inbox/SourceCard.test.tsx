@@ -1,9 +1,11 @@
-// [review:need-review] PHASE-03/98, PHASE-03/191
+// [review:need-review] PHASE-03/98, PHASE-03/191, PHASE-03/105
+// summary: PHASE-03/105 adds the three states told apart («не подключён» without a button, «нужен вход», «сломалось»), the time of the last good run and the count it brought, and the class and time of the last failure beside it
 // summary: source card tests — a saved key is reported as set and never rendered back, the field empties after saving, a source without an adapter offers no controls, «перечитать» stays unavailable until the source is on and has a key, and the probe block appears only after a press: the list with a link back, the refusal in words, and «ключ ответил, а задач нет» told apart from a failure
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { SignalSource } from '@/lib/api';
+import { NEVER_POLLED, STATE_LABEL, moment } from '@/components/inbox/source-state';
 import SourceCard, {
   NEEDS_ACTIVE,
   NEEDS_SECRET,
@@ -28,8 +30,13 @@ const source = (overrides: Partial<SignalSource> = {}): SignalSource => ({
   credential_ref: 'CLICKUP_PERSONAL_TOKEN',
   has_secret: false,
   settings: {},
+  has_adapter: true,
   last_polled_at: null,
+  cursor_at: null,
+  last_ingested: null,
   last_error_code: null,
+  last_error_class: null,
+  last_error_at: null,
   ...overrides,
 });
 
@@ -263,5 +270,135 @@ describe('SourceCard', () => {
     });
 
     expect(screen.queryByText(NOT_INGESTED)).toBeNull();
+  });
+});
+
+describe('SourceCard states', () => {
+  it('shows nothing alarming on a source that works', () => {
+    renderCard({ source: source({ has_secret: true, last_ingested: 3 }) });
+
+    expect(screen.queryByTestId('state-1')).toBeNull();
+    expect(screen.queryByTestId('error-1')).toBeNull();
+  });
+
+  it('calls a stub «не подключён» and offers no «перечитать» for it', () => {
+    // Заготовка без адаптера — не пустая и не сломанная. Её нечем читать, и
+    // кнопка, которая ничего не прочтёт, была бы вопросом без ответа.
+    renderCard({
+      source: source({ provider: 'gmail', account: 'personal', has_adapter: false }),
+      readable: false,
+    });
+
+    expect(screen.getByTestId('state-1').textContent).toBe(STATE_LABEL.not_connected);
+    expect(screen.queryByRole('button', { name: POLL_LABEL })).toBeNull();
+  });
+
+  it('does not take a stub for a broken source even when an error is recorded on it', () => {
+    renderCard({
+      source: source({
+        has_adapter: false,
+        last_error_class: 'remote_error',
+        last_error_code: 'error_RuntimeError',
+      }),
+      readable: false,
+    });
+
+    expect(screen.getByTestId('state-1').textContent).toBe(STATE_LABEL.not_connected);
+  });
+
+  it('says «нужен вход» when the key or the session is missing', () => {
+    renderCard({
+      source: source({
+        has_secret: false,
+        last_error_class: 'needs_login',
+        last_error_code: 'no_credentials',
+        last_error_at: '2026-10-25T09:00:00Z',
+      }),
+    });
+
+    expect(screen.getByTestId('state-1').textContent).toBe(STATE_LABEL.needs_login);
+    expect(screen.getByTestId('error-1').textContent).toContain('needs_login');
+  });
+
+  it('says «сломалось» with the class and the time when the provider refused', () => {
+    renderCard({
+      source: source({
+        has_secret: true,
+        last_error_class: 'auth_expired',
+        last_error_code: 'http_401',
+        last_error_at: '2026-10-25T09:00:00Z',
+      }),
+    });
+
+    expect(screen.getByTestId('state-1').textContent).toBe(STATE_LABEL.broken);
+    const line = screen.getByTestId('error-1').textContent ?? '';
+    expect(line).toContain('auth_expired');
+    expect(line).toContain(moment('2026-10-25T09:00:00Z'));
+  });
+
+  it('keeps the button on a broken source so that the same error can be shown again', () => {
+    renderCard({
+      source: source({ has_secret: true, last_error_class: 'network' }),
+    });
+
+    expect(
+      (screen.getByRole('button', { name: POLL_LABEL }) as HTMLButtonElement).disabled
+    ).toBe(false);
+  });
+
+  it('tells the three states apart by their words', () => {
+    expect(new Set(Object.values(STATE_LABEL)).size).toBe(3);
+  });
+});
+
+describe('SourceCard last run', () => {
+  it('shows the time of the last good run and how many signals it brought', () => {
+    renderCard({
+      source: source({
+        has_secret: true,
+        last_polled_at: '2026-10-25T09:00:00Z',
+        last_ingested: 4,
+      }),
+    });
+
+    const line = screen.getByTestId('runs-1').textContent ?? '';
+    expect(line).toContain(moment('2026-10-25T09:00:00Z'));
+    expect(line).toContain('4');
+  });
+
+  it('tells «read, nothing new» from «never read»', () => {
+    // Пустая лента с сегодняшним «опрошен» — тихий день. Пустая лента без него —
+    // источник, которого ещё никто не читал.
+    renderCard({
+      source: source({
+        has_secret: true,
+        last_polled_at: '2026-10-25T09:00:00Z',
+        last_ingested: 0,
+      }),
+    });
+    expect(screen.getByTestId('runs-1').textContent).toContain('0');
+
+    cleanup();
+    renderCard({ source: source({ has_secret: true }) });
+    expect(screen.getByTestId('runs-1').textContent).toContain(NEVER_POLLED);
+  });
+
+  it('keeps the last good time beside a fresh failure', () => {
+    renderCard({
+      source: source({
+        has_secret: true,
+        last_polled_at: '2026-10-23T09:00:00Z',
+        last_ingested: 2,
+        last_error_class: 'auth_expired',
+        last_error_at: '2026-10-25T09:00:00Z',
+      }),
+    });
+
+    expect(screen.getByTestId('runs-1').textContent).toContain(
+      moment('2026-10-23T09:00:00Z')
+    );
+    expect(screen.getByTestId('error-1').textContent).toContain(
+      moment('2026-10-25T09:00:00Z')
+    );
   });
 });
