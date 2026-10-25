@@ -2628,6 +2628,25 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
 
+## 2026-10-25 — PHASE-03/164: heartbeat агента и баннер «агент молчит»
+
+Сервер принимает отчёт агента о себе (`POST /agent/heartbeat`, upsert по `agent_id`, момент отчёта ставит сервер) и отдаёт всех известных агентов с признаком молчания (`GET /agent/status`, порог 30 минут). `last_error` — слово из закрытого словаря (`AgentErrorCode`), путь и текст исключения отвергаются 422. Таблица `agent_heartbeat` заведена миграцией `e1d3f5a7c9b0`, новой ревизии нет. Веб рисует три баннера на экране сегодняшнего дня, мак шлёт отчёт раз в минуту и после каждого флаша.
+
+- `app/schemas/agent_heartbeat.py`, `app/crud/agent_heartbeat.py`, `tests/test_agent_heartbeat.py` — new.
+- `app/api/agent.py` — mod: два обработчика в конце файла, импорты.
+- `habit-tracker/services/frontend/lib/agent-status.ts`, `hooks/useAgentStatus.ts`, `components/agent/AgentStatusBanner.tsx` и три теста к ним — new.
+- `habit-tracker/services/frontend/components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`, `lib/api.ts` (типы и `agentAPI.status`) и их тесты `DayScreen.test.tsx`, `MobileDayScreen.test.tsx` — mod.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Heartbeat.swift`, `HabitAgentTests/HeartbeatTests.swift` — new; `HabitAgent/Activity/ActivitySampler.swift` — mod: запуск отчёта и три поля состояния.
+
+Не проверено вживую: настоящий мак-агент против сервера, снятая галка Accessibility в системных настройках.
+
+### PHASE-03/164, круг 2
+
+- **«Сегодня» по часам сервера.** `GET /agent/status` отдаёт `today` (`daytime.local_date(now)`), баннер сравнивает день на экране с ним, а не с `todayISO()` браузера: с 00:00 до 04:00 они расходились, и баннер пропадал на настоящем текущем дне. Тест на 01:00 локального времени есть на бэкенде (`TestToday`), в `AgentStatusBanner.test.tsx` и в обоих `DayScreen`-тестах (с `setSystemTime`).
+- **Замечания ревью.** `queue_depth` ограничен `QUEUE_DEPTH_MAX = 2**31-1` (422 вместо 500); `last_flush_at` — `AwareDatetime`; строки старше `FORGOTTEN_AFTER` (14 дней без отчёта) не показываются; heartbeat читает `/agent/config` с `If-None-Match` (304 оставляет известное значение); пока рубильник заголовков неизвестен, мак шлёт `titles_enabled: null`; `ActivitySampler.stop()` останавливает reporter всегда, цикл `Heartbeat.start()` выходит, когда reporter освобождён.
+- **Баннер Accessibility скрыт по решению владельца («скрыть сейчас»).** Мак шлёт `accessibility_granted: null` (поле и колонка nullable), веб рисует баннер только на `false`; баннер появится сам, когда агент начнёт слать `true`/`false`. **Рубильник привязан к #156/#157** (заголовки окон ещё не собираются, `AXIsProcessTrusted()` пока у всех false): тогда в `HeartbeatReporter.live` вместо `{ nil }` вернуть `AXIsProcessTrusted()`. Логику самого баннера не менял. Для nullable заведена ревизия Alembic `d6f8a0b2c4e5` (от `3f721bfb0123`; обе колонки `accessibility_granted` и `titles_enabled` — nullable, без default `false`; downgrade превращает null в false).
+- Файлы: `app/schemas/agent_heartbeat.py`, `app/crud/agent_heartbeat.py`, `app/models/activity.py`, `alembic/versions/2026_10_25_2330-d6f8a0b2c4e5_agent_heartbeat_unknown_flags.py`, `tests/test_agent_heartbeat.py` — mod/new; фронт: `lib/agent-status.ts`, `lib/api.ts`, `components/agent/AgentStatusBanner.tsx`, `DayScreen.tsx`, `mobile/MobileDayScreen.tsx` и их тесты — mod; мак: `Queue/Heartbeat.swift`, `Activity/ActivitySampler.swift`, `HeartbeatTests.swift` — mod.
+
 ## 2026-10-25 — PHASE-01/83: ответ draft всегда несёт четыре поля плана
 
 Тронут 1 файл.
