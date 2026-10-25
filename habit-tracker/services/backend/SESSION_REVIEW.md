@@ -2453,3 +2453,16 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 Два раунда, независимое ревью **APPROVE** на обоих (раунд 1 — REQUEST_CHANGES по трём багам: бесконечный повтор на неизвестном приложении, гонка параллельных отправок терявшая интервалы или ронявшая агент, `switch_count` не по контракту ADR; раунд 2 закрыл все три, включая мутационный тест на гонку).
 
 Проверки: XCTest — 22 passed; `tests/test_agent_activity.py` — 4 passed; `-k "agent or activity"` — 41 passed на изолированном postgres; ruff, mypy --strict, `git diff --check` чистые. Живой 20-минутный сбор на реальном маке не запускался — остаётся ручным шагом. Правило HTTPS/tailnet для прод-адреса зафиксировано в тикете как решение пользователя, код его не трогает.
+
+## 2026-10-25 — PHASE-03/159: плавающее окно мака с текущей задачей и таймером
+
+Что поменялось на сервере: `GET /agent/config` называет задачу, на которой сейчас день (`current_task`), и путь страницы дня (`day_path`), отвечает с `ETag` и 304 на совпавший `If-None-Match`; интервал получает ссылку на пункт плана `plan_item_id` (uuid), и время по задаче считает такой интервал. Мак: окно `NSPanel`, таймер, поллер конфига, очередь интервалов таймера.
+
+- `app/api/agent.py` — mod: выбор текущей задачи, `ETag` конфига, проверка `plan_item_id` (422 на пункт, которого нет).
+- `app/schemas/activity.py` — mod: `AgentCurrentTask`, поля конфига, `plan_item_id` в записи, правке и срезе по задаче.
+- `app/crud/activity.py`, `app/models/activity.py` — mod: колонка и группировка времени по задаче с учётом `plan_item_id`.
+- `alembic/versions/2026_10_25_1700-c3e5a7b9d1f4_activity_interval_plan_item.py` — new: колонка, FK `SET NULL`, частичный индекс; обратима.
+- `tests/test_agent_config_task.py`, `tests/test_agent_plan_item_link.py` — new; `tests/test_categories.py` — mod: проверка головы Alembic не называет ревизию.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/*.swift` (8 файлов), `App/PanelHost.swift` — new; `App/HabitAgentApp.swift` — mod; `HabitAgentTests/PanelTests.swift` — new.
+
+Проверки: см. сдачу исполнителя в тикете #159. Не проверено вживую: окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.

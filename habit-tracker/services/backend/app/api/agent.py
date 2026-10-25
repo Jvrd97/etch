@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
-# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160
+# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges; since #159 the config also names the task the day is on right now and the path of the day page, and answers 304 to a poll whose ETag still matches
 """
 HTTP surface of the macOS agent.
 
@@ -21,16 +21,24 @@ hand would be a markup nobody triggers. The same run is available on its own as
 
 from __future__ import annotations
 
+import json
+import uuid
 from datetime import date as date_type
-from datetime import timedelta
+from datetime import datetime, timedelta
+from hashlib import sha256
+from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.daytime import now_utc, today_local
+from app.core.daytime import local_date, now_utc, today_local
 from app.crud import activity as activity_crud
+from app.day.skeleton import KIND_TASK
 from app.models.activity import ACTIVITY_SOURCE_MANUAL, ActivityInterval
+from app.models.mark import PlanMark
+from app.models.plan import DayPlan, PlanItem, PlanSection
 from app.roles import classify
 from app.schemas.activity import (
     ActivityAppSlice,
@@ -41,6 +49,7 @@ from app.schemas.activity import (
     ActivityIntervalResponse,
     ActivityTaskSlice,
     AgentConfigResponse,
+    AgentCurrentTask,
     AgentSettingsIn,
     AgentSettingsResponse,
     DayModeResponse,
@@ -64,6 +73,22 @@ MANUAL_APP_NAME = "вручную"
 # успевает задеть каждое приложение, которым человек пользуется.
 HITS_WINDOW_DAYS = 7
 
+# Where the web keeps the page of one day. The mac gets the finished path from
+# the config, so the route is spelled here and nowhere on the mac.
+DAY_PAGE_PATH = "/day/{day}"
+
+
+async def _require_plan_item(db: AsyncSession, item_id: uuid.UUID | None) -> None:
+    """422 for a link to a plan item that is stored nowhere; None is no link."""
+    if item_id is not None and not await activity_crud.plan_item_exists(db, item_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"plan_item_id {item_id}: такого пункта нет ни в одном плане. "
+                "Интервал не записан."
+            ),
+        )
+
 
 def _interval_dto(
     interval: ActivityInterval, bundles: dict[int, str], names: dict[int, str]
@@ -75,6 +100,7 @@ def _interval_dto(
         bundle_id=bundles.get(interval.app_id) if interval.app_id else None,
         app_name=names.get(interval.app_id) if interval.app_id else None,
         plan_task_id=interval.plan_task_id,
+        plan_item_id=interval.plan_item_id,
         clickup_task_id=interval.clickup_task_id,
         corrected_at=interval.corrected_at,
         started_at=interval.started_at,
@@ -194,6 +220,7 @@ async def get_activity(
         tasks=[
             ActivityTaskSlice(
                 plan_task_id=task.plan_task_id,
+                plan_item_id=task.plan_item_id,
                 clickup_task_id=task.clickup_task_id,
                 minutes=task.seconds // SECONDS_PER_MINUTE,
             )
@@ -226,6 +253,7 @@ async def patch_activity(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="activity interval"
         )
+    await _require_plan_item(db, body.plan_item_id)
     try:
         stored = await activity_crud.patch_interval(
             db,
@@ -234,6 +262,7 @@ async def patch_activity(
                 started_at=body.started_at,
                 ended_at=body.ended_at,
                 plan_task_id=body.plan_task_id,
+                plan_item_id=body.plan_item_id,
                 clickup_task_id=body.clickup_task_id,
                 note=body.note,
                 fields=frozenset(body.model_fields_set),
@@ -279,6 +308,7 @@ async def post_manual_activity(
     409 — тот же ключ с другими границами: это ошибка вызывающего, и молча
     отдать ему чужую строку значило бы потерять его собственную.
     """
+    await _require_plan_item(db, body.plan_item_id)
     try:
         stored, created = await activity_crud.create_manual_interval(
             db,
@@ -290,6 +320,7 @@ async def post_manual_activity(
                 utc_offset_minutes=body.utc_offset_minutes,
                 source=ACTIVITY_SOURCE_MANUAL,
                 note=body.note,
+                plan_item_id=body.plan_item_id,
             ),
             idempotency_key=idempotency_key,
         )
@@ -529,23 +560,92 @@ async def put_settings(
     )
 
 
+async def _current_task(
+    db: AsyncSession, on: date_type, now: datetime
+) -> AgentCurrentTask | None:
+    """
+    The task the day is on at `now`: the running one, else the next one.
+
+    A task is a candidate while it carries no mark — `done`, `failed` and
+    `skipped` all take it off the window — and while its own window has not
+    ended. Among candidates the one that is running goes first, then the one
+    that starts soonest. A task whose window is behind and never ticked is not
+    shown: the panel names what is happening, and the day screen is where an
+    unfinished morning is dealt with.
+    """
+    # False sorts before True: a window that already opened goes before one that has not.
+    not_started = PlanItem.starts_at > now
+    row = (
+        await db.execute(
+            select(PlanItem)
+            .join(PlanSection, PlanItem.section_id == PlanSection.id)
+            .join(DayPlan, PlanSection.plan_id == DayPlan.id)
+            .outerjoin(PlanMark, PlanMark.item_id == PlanItem.id)
+            .where(
+                DayPlan.day_date == on,
+                PlanItem.kind == KIND_TASK,
+                PlanMark.item_id.is_(None),
+                PlanItem.ends_at > now,
+            )
+            .order_by(not_started, PlanItem.starts_at, PlanItem.ord)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None or row.starts_at is None or row.ends_at is None:
+        return None
+    return AgentCurrentTask(
+        id=row.id, title=row.text_plain, starts_at=row.starts_at, ends_at=row.ends_at
+    )
+
+
+def _config_etag(body: AgentConfigResponse) -> str:
+    """
+    Fingerprint of the whole answer, not of any one table behind it.
+
+    The config is built from settings, rules, the schedule and the plan, and a
+    tag taken from one of them would answer 304 over a change in another — the
+    panel would keep a task somebody had already ticked in the browser.
+    """
+    payload = json.dumps(
+        body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
+    )
+    return '"' + sha256(payload.encode("utf-8")).hexdigest()[:32] + '"'
+
+
 @router.get("/config", response_model=AgentConfigResponse)
-async def get_config(db: AsyncSession = Depends(get_db)) -> AgentConfigResponse:
+async def get_config(
+    response: Response,
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
     """
     Всё, что агент спрашивает у сервера перед тем, как что-то собирать.
 
     Правила приезжают сюда, поэтому правило, сохранённое в вебе, начинает
     действовать на маке со следующего опроса — без пересборки `.app` и без
     перезапуска агента.
+
+    Плавающее окно (#159) опрашивает эту ручку постоянно, поэтому ответ несёт
+    `ETag`, а совпавший `If-None-Match` получает 304 без тела. День берётся из
+    одного момента: задача, дата и путь к странице дня не могут разойтись на
+    границе суток.
     """
+    now = now_utc()
+    today = local_date(now)
     row = await activity_crud.get_settings(db)
-    today = today_local()
     mode = await activity_crud.day_mode(db, today)
-    return AgentConfigResponse(
+    body = AgentConfigResponse(
         titles_enabled=row.titles_enabled,
         sampling_seconds=row.sampling_seconds,
         day_mode=DayModeResponse(
             date=today, kind=mode.kind, nocode=mode.nocode, source=mode.source
         ),
         title_rules=await _rules_response(db),
+        current_task=await _current_task(db, today, now),
+        day_path=DAY_PAGE_PATH.format(day=today.isoformat()),
     )
+    tag = _config_etag(body)
+    if if_none_match == tag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": tag})
+    response.headers["ETag"] = tag
+    return body

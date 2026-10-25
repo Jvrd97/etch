@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
-# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, the mode of a date with who decided it, and (since #158) the title rules with the number of intervals each one touches, the order of the policy as one list, the settings the agent polls, and (since #160) the correction of one interval, the manual record with its idempotency key, and the day's time per task counted as the union of ranges
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160
+# summary: wire types of the agent's activity — a batch of intervals capped at 500, an interval read back with its generated duration and the display name of its application, the day's roll-up per application, the mode of a date with who decided it, and (since #158) the title rules with the number of intervals each one touches, the order of the policy as one list, the settings the agent polls, and (since #160) the correction of one interval, the manual record with its idempotency key, and the day's time per task counted as the union of ranges, and (since #159) the task the day is on right now plus the path of the day page, both riding the config the floating panel polls, and a plan item named by uuid on an interval, its correction and the day's slice per task
 """
 Wire types of the measured activity.
 
@@ -20,6 +20,7 @@ state it could state it wrong.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -116,6 +117,7 @@ class ActivityIntervalResponse(BaseModel):
     bundle_id: str | None
     app_name: str | None
     plan_task_id: int | None
+    plan_item_id: uuid.UUID | None
     clickup_task_id: str | None
     corrected_at: datetime | None
     started_at: datetime
@@ -144,6 +146,7 @@ class ActivityIntervalPatch(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     plan_task_id: int | None = None
+    plan_item_id: uuid.UUID | None = None
     clickup_task_id: str | None = Field(default=None, max_length=40)
     note: str | None = None
 
@@ -164,6 +167,10 @@ class ManualIntervalIn(BaseModel):
     local_date: date
     utc_offset_minutes: int = 0
     plan_task_id: int | None = None
+    plan_item_id: uuid.UUID | None = Field(
+        default=None,
+        description="Пункт плана по uuid; неизвестный пункт — 422",
+    )
     clickup_task_id: str | None = Field(default=None, max_length=40)
     note: str | None = None
 
@@ -178,6 +185,7 @@ class ActivityTaskSlice(BaseModel):
     """
 
     plan_task_id: int | None
+    plan_item_id: uuid.UUID | None
     clickup_task_id: str | None
     minutes: int
 
@@ -337,23 +345,45 @@ class AgentSettingsResponse(BaseModel):
     sampling_seconds: int
 
 
+class AgentCurrentTask(BaseModel):
+    """
+    The task the floating panel shows: the one the day is on right now.
+
+    Only what the panel draws. The choice among tasks is made in the browser, so
+    this carries no way to pick another one.
+    """
+
+    id: uuid.UUID
+    title: str
+    starts_at: datetime
+    ends_at: datetime
+
+
 class AgentConfigResponse(BaseModel):
     """
     What the agent asks the server before it collects anything.
 
     The title policy comes with it, so a rule saved in the web takes effect on
     the mac at the next poll — no rebuild of the `.app`, no restart.
+
+    `current_task` and `day_path` are for the floating panel (`#159`). The path
+    is the server's answer rather than a string the mac assembles, so that the
+    date on the button and the date in the window come from the same response
+    and the route of the page stays the web's own business.
     """
 
     titles_enabled: bool
     sampling_seconds: int
     day_mode: DayModeResponse
     title_rules: list[TitleRuleResponse]
+    current_task: AgentCurrentTask | None
+    day_path: str = Field(description="Страница дня в вебе, например /day/2026-10-25")
 
 
 __all__ = [
     "MAX_BATCH_INTERVALS",
     "AgentConfigResponse",
+    "AgentCurrentTask",
     "AgentSettingsIn",
     "AgentSettingsResponse",
     "TitleRuleIn",

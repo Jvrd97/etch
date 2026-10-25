@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/160
-# summary: database access for the agent's tables — the catalogue lookup that refuses an unknown bundle, the batch upsert of intervals on `(source, started_at, app_id)`, the intervals of one work day read through `day_bounds()`, and the mode of a date, where a manual row overrides the schedule and nothing else does
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160
+# summary: database access for the agent's tables — the catalogue lookup that refuses an unknown bundle, the batch upsert of intervals on `(source, started_at, app_id)`, the intervals of one work day read through `day_bounds()`, and the mode of a date, where a manual row overrides the schedule and nothing else does, and (since #159) the link of an interval to a plan item by uuid, which the day's time per task counts and which is refused when the item does not exist
 """
 Database access for the activity the macOS agent records.
 
@@ -25,6 +25,7 @@ believed.
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -49,6 +50,7 @@ from app.models.activity import (
     TitleRule,
     TrackedApp,
 )
+from app.models.plan import PlanItem
 
 # Шаг нумерации правил при перестановке. Не единица: между двумя правилами
 # должно оставаться место, чтобы вставить третье, не перенумеровывая список.
@@ -73,6 +75,7 @@ __all__ = [
     "get_settings",
     "get_title_rule",
     "list_apps",
+    "plan_item_exists",
     "list_title_rules",
     "reorder_title_rules",
     "rule_hits",
@@ -113,6 +116,7 @@ class IntervalDraft:
     switch_count: int = 0
     source: str = ACTIVITY_SOURCE_AGENT
     note: str | None = None
+    plan_item_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +500,7 @@ class IntervalPatch:
     started_at: datetime | None = None
     ended_at: datetime | None = None
     plan_task_id: int | None = None
+    plan_item_id: uuid.UUID | None = None
     clickup_task_id: str | None = None
     note: str | None = None
     fields: frozenset[str] = frozenset()
@@ -507,6 +512,12 @@ class IntervalPatch:
 async def get_interval(db: AsyncSession, interval_id: int) -> ActivityInterval | None:
     """One interval by id."""
     return await db.get(ActivityInterval, interval_id)
+
+
+async def plan_item_exists(db: AsyncSession, item_id: uuid.UUID) -> bool:
+    """Whether a plan item with this uuid is stored, in any day's plan."""
+    found = await db.execute(select(PlanItem.id).where(PlanItem.id == item_id))
+    return found.first() is not None
 
 
 async def patch_interval(
@@ -539,6 +550,8 @@ async def patch_interval(
     interval.ended_at = ended
     if patch.has("plan_task_id"):
         interval.plan_task_id = patch.plan_task_id
+    if patch.has("plan_item_id"):
+        interval.plan_item_id = patch.plan_item_id
     if patch.has("clickup_task_id"):
         interval.clickup_task_id = patch.clickup_task_id
     if patch.has("note"):
@@ -596,6 +609,7 @@ async def create_manual_interval(
         title=None,
         title_source=TITLE_DROPPED,
         note=draft.note,
+        plan_item_id=draft.plan_item_id,
         idempotency_key=idempotency_key,
     )
     db.add(row)
@@ -609,6 +623,7 @@ class TaskTime:
     """Seconds spent on one task, counted as the union of its intervals."""
 
     plan_task_id: int | None
+    plan_item_id: uuid.UUID | None
     clickup_task_id: str | None
     seconds: int
 
@@ -634,6 +649,7 @@ async def task_time_seconds(
         """
         SELECT
             plan_task_id,
+            plan_item_id,
             clickup_task_id,
             (
                 SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (upper(r) - lower(r)))), 0)
@@ -641,7 +657,7 @@ async def task_time_seconds(
             )::bigint AS seconds
         FROM activity_interval
         WHERE started_at < :day_end AND ended_at > :day_start
-        GROUP BY plan_task_id, clickup_task_id
+        GROUP BY plan_task_id, plan_item_id, clickup_task_id
         ORDER BY seconds DESC
         """
     )
@@ -652,12 +668,17 @@ async def task_time_seconds(
     tasks: list[TaskTime] = []
     untasked = 0
     for row in rows:
-        if row.plan_task_id is None and row.clickup_task_id is None:
+        if (
+            row.plan_task_id is None
+            and row.plan_item_id is None
+            and row.clickup_task_id is None
+        ):
             untasked += int(row.seconds)
             continue
         tasks.append(
             TaskTime(
                 plan_task_id=row.plan_task_id,
+                plan_item_id=row.plan_item_id,
                 clickup_task_id=row.clickup_task_id,
                 seconds=int(row.seconds),
             )
