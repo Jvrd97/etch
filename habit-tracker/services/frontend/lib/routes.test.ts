@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152, PHASE-03/nav-drawer, #176
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/93, PHASE-03/111, PHASE-03/118, PHASE-03/134, PHASE-03/152, PHASE-03/nav-drawer, #176, #209
+// summary: plus the Health registration (#209) — a screen that had a mobile twin before it had a navigation entry
 // summary: plus the desktop grouping — every screen filed under exactly one Russian-named section, the header anchors, and the active-route rule that also lights a screen on its detail routes
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens), and the chat's own registration: a mobile twin under "More" that leaves the five tab slots alone
 // summary: unit tests for the screen registry — unique ids, tab-bar order, "More" list is the complement of the tab bar, tab destinations and mobile header titles (Journal and Onboarding name their More-only mobile screens)
@@ -103,6 +104,27 @@ describe('the chat registration', () => {
   });
 });
 
+describe('the health registration', () => {
+  const health = APP_ROUTES.find((route) => route.id === 'health');
+
+  it('is one entry in the registry, with the mobile twin #65 already shipped', () => {
+    expect(health).toBeDefined();
+    expect(health?.href).toBe('/health');
+    expect(health?.hasMobile).toBe(true);
+    expect(health?.hasMobileNested).toBe(false);
+  });
+
+  it('lives under "More" and takes no tab slot', () => {
+    expect(health?.inTabBar).toBeNull();
+    expect(TAB_BAR_ROUTES.some((route) => route.id === 'health')).toBe(false);
+    expect(MORE_ROUTES.some((route) => route.id === 'health')).toBe(true);
+  });
+
+  it('points the "More" entry at the /m twin, same as any other screen with one', () => {
+    expect(MOBILE_TABS.some((tab) => tab.id === 'health')).toBe(false);
+  });
+});
+
 describe('MORE_ROUTES', () => {
   it('is exactly the screens missing from the tab bar', () => {
     expect(MORE_ROUTES.map((route) => route.id)).toEqual([
@@ -119,6 +141,7 @@ describe('MORE_ROUTES', () => {
       'journal',
       'insights',
       'day-rules',
+      'health',
       'onboarding',
     ]);
   });
@@ -266,6 +289,7 @@ describe('NAV_SECTIONS', () => {
       'entries',
       'journal',
       'insights',
+      'health',
     ]);
   });
 
