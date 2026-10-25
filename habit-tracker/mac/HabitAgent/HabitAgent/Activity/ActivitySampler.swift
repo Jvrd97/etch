@@ -8,7 +8,7 @@ import os
 @MainActor
 final class ActivitySampler: ObservableObject {
     static let samplingInterval: TimeInterval = 5
-    private static let logger = Logger(subsystem: "com.talvior.habitagent", category: "ActivitySampler")
+    private static let logger = Logger(subsystem: AgentPaths.identifier, category: "ActivitySampler")
     private static let serverAddressKey = "server-address"
 
     @Published private(set) var status = "Ожидание настройки"
@@ -74,14 +74,13 @@ final class ActivitySampler: ObservableObject {
         let own = Set([Bundle.main.bundleIdentifier].compactMap { $0 })
         let opened: OutboxStore
         do {
-            opened = try OutboxStore(excluding: own)
+            opened = try OutboxStore.openWithFallback(excluding: own)
         } catch {
-            Self.logger.error("Queue on disk unavailable: \(String(describing: error), privacy: .public)")
-            guard let inMemory = try? OutboxStore(directory: nil, excluding: own) else {
-                status = "Очередь недоступна, сбор не запущен"
-                return nil
-            }
-            opened = inMemory
+            Self.logger.error("Queue unavailable: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
+            status = "Очередь недоступна, сбор не запущен"
+            return nil
+        }
+        if !opened.isOnDisk {
             queueNote = "; очередь на диске недоступна, интервалы хранятся только в памяти"
         }
         let opening = Flusher(
@@ -129,7 +128,9 @@ final class ActivitySampler: ObservableObject {
         if summary.expired > 0 {
             parts.append("не дошли за 14 дней и отброшены: \(summary.expired)")
         }
-        if summary.failed {
+        if summary.serverRefuses {
+            parts.append("сервер отвергает интервалы, повтор позже")
+        } else if summary.failed {
             parts.append("сервер недоступен, повтор позже")
         }
         return parts.joined(separator: "; ") + queued()

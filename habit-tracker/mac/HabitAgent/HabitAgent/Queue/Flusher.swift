@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/163
-// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back; backs off while the server is down and drops by retention
+// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back; backs off while the server is down, drops by retention, and narrows a refused batch down to the one refused interval
 import Foundation
 import Network
 import os
@@ -10,7 +10,12 @@ struct FlushSummary: Equatable {
     var droppedInvalid = 0
     var expired = 0
     var failed = false
+    /// The server refused single intervals in a row, so the queue was left alone and the pass ended.
+    var serverRefuses = false
 }
+
+/// The server turned down `Flusher.maxLoneRefusals` single intervals without taking anything between them.
+private struct RefusalStreak: Error {}
 
 @MainActor
 final class Flusher {
@@ -18,14 +23,19 @@ final class Flusher {
 
     /// How often a pending queue is tried again when no interval closes and the network does not change.
     static let timerInterval: TimeInterval = 30
+    /// Single intervals the server may refuse in a row, with no send accepted between them, before the
+    /// pass stops. One bad line is dropped; a server that refuses everything (versions out of step)
+    /// must not eat the queue, so it costs fewer than this many intervals until a send is accepted.
+    static let maxLoneRefusals = 3
 
-    private static let logger = Logger(subsystem: "com.talvior.habitagent", category: "Flusher")
+    private static let logger = Logger(subsystem: AgentPaths.identifier, category: "Flusher")
 
     private let store: OutboxStore
     /// Nil while the agent has no server address or key: the queue then only grows.
     private let sender: @MainActor () -> Sender?
     private let onFlush: @MainActor (FlushSummary) -> Void
     private var backoff = Backoff()
+    private var loneRefusals = 0
     private var networkAvailable = true
     private var inFlight: Task<FlushSummary, Never>?
     private var timer: Task<Void, Never>?
@@ -52,7 +62,7 @@ final class Flusher {
             let available = path.status == .satisfied
             Task { @MainActor in await self?.networkChanged(available: available) }
         }
-        monitor.start(queue: DispatchQueue(label: "com.talvior.habitagent.network"))
+        monitor.start(queue: DispatchQueue(label: "\(AgentPaths.identifier).network"))
         self.monitor = monitor
         timer = Task { [weak self] in
             while !Task.isCancelled {
@@ -121,20 +131,15 @@ final class Flusher {
         // Only this task removes from the queue, so the batch read is still the head when the answer comes back.
         while let batch = store.nextBatch() {
             do {
-                try await send(batch.intervals)
-                store.remove(batch)
-                summary.sent += batch.intervals.count
-                backoff.reset()
+                try await deliver(batch, send: send, now: now, summary: &summary)
             } catch AgentAPIError.unknownApp(let bundleID) {
                 store.drop(bundleID: bundleID, at: now)
                 summary.droppedBundles.append(bundleID)
-            } catch AgentAPIError.invalidBatch {
-                store.drop(batch, at: now)
-                summary.droppedInvalid += batch.intervals.count
             } catch {
                 let delay = backoff.recordFailure()
                 retryNotBefore = now.addingTimeInterval(delay)
                 summary.failed = true
+                summary.serverRefuses = error is RefusalStreak
                 Self.logger.notice(
                     "Send failed (\(Self.describe(error), privacy: .public)), \(self.store.count) queued, next try in \(Int(delay)) s"
                 )
@@ -144,9 +149,37 @@ final class Flusher {
         return summary
     }
 
+    /// Sends `batch` and removes it once the server took it.
+    ///
+    /// The server takes a batch whole or refuses it whole, so one bad interval would
+    /// block the other 499. A refused batch is halved until the refused interval
+    /// stands alone; only that interval is dropped.
+    private func deliver(_ batch: OutboxStore.Batch, send: Sender, now: Date, summary: inout FlushSummary) async throws {
+        do {
+            try await send(batch.intervals)
+        } catch AgentAPIError.invalidBatch {
+            guard batch.ids.count > 1 else {
+                loneRefusals += 1
+                guard loneRefusals < Self.maxLoneRefusals else { throw RefusalStreak() }
+                store.drop(batch, at: now)
+                summary.droppedInvalid += 1
+                return
+            }
+            let (head, tail) = batch.halves
+            try await deliver(head, send: send, now: now, summary: &summary)
+            try await deliver(tail, send: send, now: now, summary: &summary)
+            return
+        }
+        store.remove(batch)
+        summary.sent += batch.intervals.count
+        backoff.reset()
+        loneRefusals = 0
+    }
+
     private static func describe(_ error: Error) -> String {
         if let urlError = error as? URLError { return "URLError \(urlError.code.rawValue)" }
         if case AgentAPIError.http(let status) = error { return "HTTP \(status)" }
+        if error is RefusalStreak { return "server refuses single intervals" }
         return String(describing: type(of: error))
     }
 }

@@ -1,17 +1,20 @@
 // [review:need-review] PHASE-03/163
-// summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with a code kept in the agent state
+// summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with a code kept in the agent state
 import Foundation
 import SwiftData
 import os
 
 /// Where the agent keeps files. ADR-0019: nothing goes to `~/Documents` or the repository.
 enum AgentPaths {
-    static let directoryName = "com.talvior.habitagent"
+    /// Names the data directory, the log subsystem and the network queue.
+    static let identifier = "com.talvior.habitagent"
     static let queueStoreName = "queue.store"
+    /// The queue says which apps the person used and when; only the owner reads it.
+    static let directoryPermissions = 0o700
 
     static var directory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(directoryName, isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
     }
 
     static var queueStore: URL {
@@ -82,6 +85,15 @@ final class OutboxStore {
     struct Batch: Equatable {
         let ids: [UUID]
         let intervals: [ActivityInterval]
+
+        /// The first half and the rest, to find the one interval the server refuses.
+        var halves: (head: Batch, tail: Batch) {
+            let middle = ids.count / 2
+            return (
+                Batch(ids: Array(ids[..<middle]), intervals: Array(intervals[..<middle])),
+                Batch(ids: Array(ids[middle...]), intervals: Array(intervals[middle...]))
+            )
+        }
     }
 
     /// The server's cap on one batch (`MAX_BATCH_INTERVALS`).
@@ -89,11 +101,13 @@ final class OutboxStore {
     /// An interval that did not arrive within two weeks is dropped; a queue that grows forever is not an option.
     static let retention: TimeInterval = 14 * 24 * 60 * 60
 
-    private static let logger = Logger(subsystem: "com.talvior.habitagent", category: "OutboxStore")
+    private static let logger = Logger(subsystem: AgentPaths.identifier, category: "OutboxStore")
 
     private let container: ModelContainer
     private let context: ModelContext
     private var excludedBundles: Set<String>
+    /// False for a queue in memory: it does not survive a restart.
+    let isOnDisk: Bool
 
     /// Opens (creates) the queue in `directory`; `nil` keeps it in memory only.
     init(directory: URL? = AgentPaths.directory, excluding bundles: Set<String> = []) throws {
@@ -101,7 +115,7 @@ final class OutboxStore {
         let configuration: ModelConfiguration
         if let directory {
             try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+                at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: AgentPaths.directoryPermissions]
             )
             configuration = ModelConfiguration(
                 schema: schema,
@@ -115,13 +129,24 @@ final class OutboxStore {
         container = try ModelContainer(for: schema, configurations: configuration)
         context = ModelContext(container)
         excludedBundles = bundles
+        isOnDisk = directory != nil
+    }
+
+    /// The queue on disk; if the disk refuses it, a queue in memory, so collection goes on.
+    static func openWithFallback(directory: URL = AgentPaths.directory, excluding bundles: Set<String> = []) throws -> OutboxStore {
+        do {
+            return try OutboxStore(directory: directory, excluding: bundles)
+        } catch {
+            logger.error("Queue on disk unavailable: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
+            return try OutboxStore(directory: nil, excluding: bundles)
+        }
     }
 
     var count: Int {
         do {
             return try context.fetchCount(FetchDescriptor<QueuedInterval>())
         } catch {
-            Self.logger.error("Queue count failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("Queue count failed: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
             return 0
         }
     }
@@ -208,7 +233,7 @@ final class OutboxStore {
         do {
             return try context.fetch(descriptor)
         } catch {
-            Self.logger.error("Queue fetch failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("Queue fetch failed: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
             return nil
         }
     }
@@ -218,7 +243,7 @@ final class OutboxStore {
             try context.save()
         } catch {
             // The changes stay in the context and go out with the next successful save.
-            Self.logger.error("Queue save failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("Queue save failed: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
         }
     }
 }

@@ -107,6 +107,20 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(backoff.recordFailure(), Backoff.initialDelay)
     }
 
+    func testBackoffTakesItsOwnDelays() {
+        var backoff = Backoff(initialDelay: 1, maxDelay: 5)
+        XCTAssertEqual((0..<5).map { _ in backoff.recordFailure() }, [1, 2, 4, 5, 5])
+    }
+
+    func testErrorCodeForTheLogCarriesNoDescriptionOrUserInfo() {
+        let error = NSError(
+            domain: "Test", code: 7,
+            userInfo: [NSLocalizedDescriptionKey: "Quarterly-report.xlsx", NSFilePathErrorKey: "/Users/someone/Quarterly-report.xlsx"]
+        )
+        XCTAssertEqual(AgentLog.code(of: error), "Test 7")
+        XCTAssertEqual(AgentLog.code(of: URLError(.cannotConnectToHost)), "NSURLErrorDomain -1004")
+    }
+
     // MARK: Store
 
     func testIntervalsCommittedBeforeAKillAreThereAfterTheRestart() async throws {
@@ -136,11 +150,27 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(reopened.nextBatch()?.intervals, intervals(3) + intervals(3, from: 5))
     }
 
-    func testInMemoryStoreQueuesWithoutCreatingAnyFile() throws {
-        let store = try OutboxStore(directory: nil)
+    func testInMemoryStoresShareNothing() throws {
+        var first: OutboxStore? = try OutboxStore(directory: nil)
+        first?.enqueue(intervals(2))
+        XCTAssertEqual(first?.count, 2)
+        first = nil
+        XCTAssertEqual(try OutboxStore(directory: nil).count, 0)
+    }
+
+    func testUnwritableDirectoryFallsBackToAnInMemoryQueue() throws {
+        let locked = directory.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path) }
+        let target = locked.appendingPathComponent("agent", isDirectory: true)
+
+        XCTAssertThrowsError(try OutboxStore(directory: target))
+        let store = try OutboxStore.openWithFallback(directory: target)
+        XCTAssertFalse(store.isOnDisk)
         store.enqueue(intervals(2))
         XCTAssertEqual(store.count, 2)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
     }
 
     func testExcludedBundleNeverEntersTheQueue() throws {
@@ -199,6 +229,9 @@ final class QueueTests: XCTestCase {
         let after = try Set(FileManager.default.contentsOfDirectory(atPath: sibling.path))
         XCTAssertEqual(after.subtracting(before), [directory.lastPathComponent])
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        XCTAssertTrue(store.isOnDisk)
+        let permissions = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        XCTAssertEqual(permissions, AgentPaths.directoryPermissions)
     }
 
     // MARK: Flusher
@@ -402,18 +435,69 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(store.count, 0)
     }
 
-    func testBatchRefusedWithoutANamedAppIsDroppedInsteadOfRetriedForever() async throws {
+    func testOneRefusedIntervalAmongFiveHundredIsTheOnlyOneDropped() async throws {
         let store = try makeStore()
-        store.enqueue(intervals(3))
+        let all = intervals(500)
+        let bad = all[217]
+        store.enqueue(all)
+        var accepted: [ActivityInterval] = []
         var calls = 0
-        let summary = await makeFlusher(store) { _ in
+        let summary = await makeFlusher(store) { batch in
+            calls += 1
+            if batch.contains(bad) { throw AgentAPIError.invalidBatch }
+            accepted += batch
+        }.flush(now: start)
+
+        XCTAssertEqual(summary?.droppedInvalid, 1)
+        XCTAssertEqual(summary?.sent, 499)
+        XCTAssertEqual(accepted.count, 499)
+        XCTAssertEqual(Set(accepted.map(\.startedAt)), Set(all.filter { $0 != bad }.map(\.startedAt)))
+        XCTAssertEqual(store.count, 0)
+        XCTAssertEqual(store.lastError, QueueError(code: .invalidBatch, count: 1, at: start))
+        // Halving finds the culprit in about two sends per level, not one per interval.
+        XCTAssertLessThan(calls, 25)
+    }
+
+    func testRefusedIntervalsSeparatedByAcceptedOnesAreAllDropped() async throws {
+        let store = try makeStore()
+        let all = intervals(40)
+        let bad = [all[3], all[20], all[37]]
+        store.enqueue(all)
+        var accepted: [ActivityInterval] = []
+        let summary = await makeFlusher(store) { batch in
+            if batch.contains(where: bad.contains) { throw AgentAPIError.invalidBatch }
+            accepted += batch
+        }.flush(now: start)
+
+        XCTAssertEqual(summary?.droppedInvalid, 3)
+        XCTAssertEqual(summary?.failed, false)
+        XCTAssertEqual(accepted.count, 37)
+        XCTAssertEqual(store.count, 0)
+    }
+
+    func testServerRefusingEverythingCostsAtMostAFewIntervalsAndThenBacksOff() async throws {
+        let store = try makeStore()
+        store.enqueue(intervals(600))
+        var calls = 0
+        let flusher = makeFlusher(store) { _ in
             calls += 1
             throw AgentAPIError.invalidBatch
-        }.flush(now: start)
-        XCTAssertEqual(calls, 1)
-        XCTAssertEqual(summary?.droppedInvalid, 3)
-        XCTAssertEqual(store.count, 0)
-        XCTAssertEqual(store.lastError, QueueError(code: .invalidBatch, count: 3, at: start))
+        }
+
+        // Several passes, each at the earliest moment the backoff allows: a version
+        // mismatch must not eat the queue one pass at a time.
+        var now = start
+        for _ in 0..<5 {
+            let summary = await flusher.flush(now: now)
+            XCTAssertEqual(summary?.failed, true)
+            XCTAssertGreaterThan(flusher.retryNotBefore, now)
+            now = flusher.retryNotBefore
+        }
+        let lost = 600 - store.count
+        XCTAssertLessThanOrEqual(lost, Flusher.maxLoneRefusals)
+        XCTAssertEqual(lost, Flusher.maxLoneRefusals - 1)
+        XCTAssertEqual(store.lastError?.code, .invalidBatch)
+        XCTAssertLessThan(calls, 100)
     }
 
     func testNothingIsAttemptedWithoutASender() async throws {
