@@ -69,5 +69,3 @@ export function ContinueTracking({ categories, entries, mobile = false }: Contin
     </section>
   );
 }
-
-export default ContinueTracking;

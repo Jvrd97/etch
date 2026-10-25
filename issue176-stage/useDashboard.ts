@@ -42,7 +42,12 @@ export const CONTINUE_HISTORY_PAGE_SIZE = 100;
 async function loadCategoryHistory(categoryId: number): Promise<Entry[]> {
   const entries: Entry[] = [];
   for (let skip = 0; ; skip += CONTINUE_HISTORY_PAGE_SIZE) {
-    const page = await entriesAPI.getAll({ categoryId, skip, limit: CONTINUE_HISTORY_PAGE_SIZE });
+    const page = await entriesAPI.getAll({
+      categoryId,
+      skip,
+      limit: CONTINUE_HISTORY_PAGE_SIZE,
+      sort: 'created_at_desc',
+    });
     entries.push(...page);
     if (page.length < CONTINUE_HISTORY_PAGE_SIZE) return entries;
   }

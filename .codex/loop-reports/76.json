@@ -2,14 +2,28 @@
   "issue": 76,
   "date": "2026-09-05",
   "verdict": "BLOCKED",
-  "rounds": 0,
-  "summary": "GET /entries уже поддерживает сортировку и лимит из #173, но Field.unit отсутствует. Обязательное отображение значения с единицей невозможно до завершения #176.",
-  "evidence": [
-    "issues/PHASE-01/backlog/76-dashboard-recent-activity-feed.md:18",
-    "habit-tracker/services/frontend/lib/api.ts:779",
-    "habit-tracker/services/backend/app/models/field.py:53",
-    "habit-tracker/services/backend/app/schemas/category.py:14"
+  "rounds": 3,
+  "commit": null,
+  "integrated": false,
+  "worktree": "/private/tmp/habit-issue-76",
+  "codeFilesChanged": 15,
+  "summary": "Клиентская лента tracker и journal реализована в изолированном worktree, но после трёх раундов не прошла обязательный antivibe-гейт. Частичные изменения сохранены и не перенесены в main.",
+  "reviews": {
+    "standards": "APPROVE",
+    "alignment": "APPROVE",
+    "antivibe": "BLOCKED",
+    "verdict": "BLOCKED"
+  },
+  "tests": {
+    "focused": "до 53 тестов прошли",
+    "typesLintDiff": "tsc, lint и git diff --check прошли",
+    "fullSuite": "1426 прошли; один import error healthAPI вызван отставшим frozen baseline, на актуальном main соответствующие 2 теста проходят",
+    "buildBaseline": "актуальный main компилируется, затем Next.js отклоняет существующий экспорт EMPTY_FEED в app/inbox/page.tsx"
+  },
+  "blockers": [
+    "Нужна backend-доработка GET /journal: сортировка по created_at и корректная страничная выборка последних записей. Сейчас API возвращает ограниченный набор по entry_date, поэтому клиент не может гарантировать попадание свежей backdated-записи.",
+    "На страницах истории дублируются select и chips; при пустом результате ActivityFeed размонтируется, поэтому chips нельзя сбросить.",
+    "Необязательные обработчики ActivityFeed допускают видимые неработающие кнопки; в useEntries осталась прежняя grouped/categoryOf модель только ради старых тестов."
   ],
-  "tests": [],
-  "blockers": ["#176-field-unit-quick-steps-continue-tracking"]
+  "lifecycle": "/Users/daniilbystrov/Documents/MyProj/habit_tracker_ai/issues/PHASE-01/backlog/76-dashboard-recent-activity-feed.md"
 }

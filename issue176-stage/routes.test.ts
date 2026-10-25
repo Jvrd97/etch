@@ -27,6 +27,11 @@ describe('entry deep links', () => {
     expect(newEntryHref(42)).toBe('/entries?new=1&category=42');
     expect(newEntryCategoryId(new URLSearchParams('new=1&category=42'))).toBe(42);
     expect(newEntryCategoryId(new URLSearchParams('category=0'))).toBeNull();
+    expect(
+      newEntryCategoryId(
+        new URLSearchParams(`category=${Number.MAX_SAFE_INTEGER + 1}`)
+      )
+    ).toBeNull();
   });
 });
 

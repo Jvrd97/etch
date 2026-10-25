@@ -280,5 +280,7 @@ describe('useDashboard hero', () => {
     expect(categoryCalls).toHaveLength(2);
     expect(categoryCalls[0].limit).toBeGreaterThan(0);
     expect(categoryCalls[1].skip).toBe(categoryCalls[0].limit);
+    expect(categoryCalls[0].sort).toBe('created_at_desc');
+    expect(categoryCalls[1].sort).toBe('created_at_desc');
   });
 });

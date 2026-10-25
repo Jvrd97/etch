@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175
-// summary: Shared category draft state, including explicit selection and clearing of the table field in both editors
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
+// summary: Shared category drafts preserve unit, quick_steps, and raw quick-step text until save
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {

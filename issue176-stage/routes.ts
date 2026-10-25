@@ -464,7 +464,7 @@ export function newEntryCategoryId(params: { get(name: string): string | null })
   const raw = params.get(ENTRY_CATEGORY_PARAM);
   if (raw === null || !/^\d+$/.test(raw)) return null;
   const categoryId = Number(raw);
-  return categoryId > 0 ? categoryId : null;
+  return Number.isSafeInteger(categoryId) && categoryId > 0 ? categoryId : null;
 }
 
 /** Whether a screen's query string asks for the editor to open on mount. */
