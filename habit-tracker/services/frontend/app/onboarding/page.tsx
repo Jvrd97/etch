@@ -1,11 +1,12 @@
 'use client';
 // [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: desktop voice-category-builder — markup only; the draft/preview/apply flow moved into useOnboardingPlan, which /m/onboarding renders with its own layout
+// summary: desktop voice-category-builder with the built-in template step above it (#219) — markup only; the draft/preview/apply flow moved into useOnboardingPlan, which /m/onboarding renders with its own layout
 
 import { useRouter } from 'next/navigation';
 import { Sparkles, AlertTriangle } from 'lucide-react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
+import OnboardingTemplates from '@/components/onboarding/OnboardingTemplates';
 import { useOnboardingPlan, type OpState } from '@/hooks/useOnboardingPlan';
 import type { PlanField, PlanOperation } from '@/lib/api';
 
@@ -106,6 +107,10 @@ export default function OnboardingPage() {
           выбранное одним нажатием.
         </p>
       </div>
+
+      <OnboardingTemplates onOpenCategories={() => router.push('/categories')} />
+
+      <p className="text-text-secondary">Или опишите словами, что хотите отслеживать.</p>
 
       <div className="space-y-4">
         <textarea
