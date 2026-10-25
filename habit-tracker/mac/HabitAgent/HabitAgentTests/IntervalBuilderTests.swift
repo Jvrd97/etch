@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/155, PHASE-03/217
+// [review:need-review] PHASE-03/155, PHASE-03/217, PHASE-03/172
 // summary: verifies coalescing, micro-switches under 30 seconds, closing at the moment of leaving, the silence gap, dropped titles and the checkpoint that bounds what a kill can lose
 import XCTest
 @testable import HabitAgent
@@ -68,12 +68,13 @@ final class IntervalBuilderTests: XCTestCase {
         XCTAssertEqual(rest.map(\.endedAt), [at(15), at(20)])
     }
 
-    func testSilenceOfThirtySecondsEndsTheIntervalAtTheLastSighting() {
+    func testSilenceOfTheSilenceWindowEndsTheIntervalAtTheLastSighting() {
         var builder = IntervalBuilder()
-        let closed = feed(&builder, [(editor, 0), (editor, 5), (editor, 35)])
+        let silent = IntervalBuilder.silenceWindow
+        let closed = feed(&builder, [(editor, 0), (editor, 5), (editor, 5 + silent)])
         XCTAssertEqual(closed.count, 1)
         XCTAssertEqual(closed.first?.endedAt, at(5))
-        XCTAssertEqual(builder.finish(at: at(40)).first?.startedAt, at(35))
+        XCTAssertEqual(builder.finish(at: at(10 + silent)).first?.startedAt, at(5 + silent))
     }
 
     func testStoppingDuringAShortVisitReportsBothApps() {

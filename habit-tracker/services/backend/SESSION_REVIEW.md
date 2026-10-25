@@ -2646,3 +2646,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgentTests/IntervalBuilderTests.swift`, `QueueTests.swift` — mod: 4 + 4 новых теста.
 
 Проверки: `xcodebuild test -destination 'platform=macOS'` — 99 passed. Не проверено вживую: реальный `NWPathMonitor` при старте Tailscale (список `availableInterfaces` с `utun*` не смотрел), настоящий `kill -9` процесса агента.
+
+## 2026-10-25 — PHASE-03/172: mac-агент, энергия: адаптивный опрос, простой, сон и блокировка
+
+Что поменялось: период опроса 5 с, при простое дольше 60 с — 30 с (одноразовый таймер; глобальный монитор мыши возвращает 5 с сразу); сон, сон дисплея и блокировка экрана останавливают сбор, открытый интервал закрывается по последнему вводу; отсутствие 10 минут закрывает интервал по последнему вводу; `idle_seconds` считает паузы дольше 60 с внутри интервала. Окно тишины сборщика стало 45 с (было 30), иначе опрос раз в 30 с рвал бы интервал. Серверной части нет.
+
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IdleMonitor.swift` — new: пороги и `samplingPeriod(idleSeconds:)`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/PowerObserver.swift` — new: сон/пробуждение/блокировка в один сигнал paused.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `AppSighting.idleSeconds`, `silenceWindow`, `finish(at:lastInput:)`, подсчёт `idle_seconds`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: адаптивный таймер, `setPaused`, монитор мыши.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/OutboxStore.swift` — mod: `QueuedInterval.idleSeconds` (с умолчанием 0, старая очередь открывается).
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IdleTests.swift` — new; `IntervalBuilderTests.swift` — mod (окно тишины).
+- `docs/PHASE-03/how-to/agent-energy-measurement.md` — new: команда замера `powermetrics`.
+
+Проверки: `xcodebuild test -destination 'platform=macOS'` — 114 passed. Не проверено: замер `powermetrics` (нужен sudo и человек), реальные уведомления сна и блокировки, глобальный монитор мыши, открытие старой очереди на диске со SwiftData-миграцией.

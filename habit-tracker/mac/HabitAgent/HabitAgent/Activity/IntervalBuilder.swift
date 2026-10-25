@@ -1,10 +1,18 @@
-// [review:need-review] PHASE-03/155, PHASE-03/217
-// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one; an interval open for 5 minutes is cut so a kill loses at most that
+// [review:need-review] PHASE-03/155, PHASE-03/217, PHASE-03/172
+// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one; an interval open for 5 minutes is cut so a kill loses at most that; pauses in input become idle_seconds, and a long absence or a sleep closes the interval at the last input
 import Foundation
 
 struct AppSighting: Equatable {
     let bundleID: String
     let date: Date
+    /// Seconds since the last keyboard or mouse event when the app was seen.
+    let idleSeconds: TimeInterval
+
+    init(bundleID: String, date: Date, idleSeconds: TimeInterval = 0) {
+        self.bundleID = bundleID
+        self.date = date
+        self.idleSeconds = idleSeconds
+    }
 }
 
 struct ActivityInterval: Equatable, Encodable {
@@ -15,8 +23,9 @@ struct ActivityInterval: Equatable, Encodable {
     let utcOffsetMinutes: Int
     let title: String? = nil
     let titleSource = "dropped"
-    let idleSeconds = 0
     let switchCount: Int
+    /// Time without input inside the interval, counted from pauses longer than `IdleMonitor.idleThreshold`.
+    var idleSeconds = 0
     let source = "agent"
 
     enum CodingKeys: String, CodingKey {
@@ -40,14 +49,21 @@ struct ActivityInterval: Equatable, Encodable {
 /// interval open and counts one micro-switch (`switch_count`); the short visit
 /// is absorbed. A visit that lasts `continuityWindow` or longer — or turns into
 /// a third app — closes the interval at the moment of leaving. Silence of
-/// `continuityWindow` or longer (sleep, stopped sampling) ends an interval at
+/// `silenceWindow` or longer (sleep, stopped sampling) ends an interval at
 /// its last sighting.
+///
+/// Sightings carry the seconds since the last input. A pause longer than
+/// `IdleMonitor.idleThreshold` stays in the interval and adds to `idle_seconds`; an absence of
+/// `IdleMonitor.awayThreshold` or a sleep (`finish(at:lastInput:)`) ends the interval at the
+/// last input, so the time away belongs to nothing.
 ///
 /// An interval has no upper bound while it is open, and a killed agent never
 /// closes it. `checkpoint()` cuts a long interval so only the part since the
 /// last cut can be lost.
 struct IntervalBuilder {
     static let continuityWindow: TimeInterval = 30
+    /// Longer than the idle sampling period, or every idle sighting would start a new interval.
+    static let silenceWindow: TimeInterval = IdleMonitor.idlePeriod + 15
     static let checkpointInterval: TimeInterval = 5 * 60
 
     private struct OpenInterval {
@@ -55,6 +71,20 @@ struct IntervalBuilder {
         let startedAt: Date
         var lastSeen: Date
         var switchCount: Int
+        var idle: TimeInterval = 0
+        /// How much of the pause still going on is already in `idle`.
+        var pauseCounted: TimeInterval = 0
+
+        mutating func observe(_ sighting: AppSighting) {
+            lastSeen = sighting.date
+            guard sighting.idleSeconds > IdleMonitor.idleThreshold else {
+                pauseCounted = 0
+                return
+            }
+            let pause = min(sighting.idleSeconds, sighting.date.timeIntervalSince(startedAt))
+            idle += max(0, pause - pauseCounted)
+            pauseCounted = max(pause, pauseCounted)
+        }
     }
 
     /// Another app in front while `current` may still be resumed.
@@ -74,18 +104,21 @@ struct IntervalBuilder {
 
     /// Feeds one sighting and returns the intervals it closed.
     mutating func record(_ sighting: AppSighting) -> [ActivityInterval] {
+        if sighting.idleSeconds >= IdleMonitor.awayThreshold {
+            return finish(at: sighting.date, lastInput: sighting.date.addingTimeInterval(-sighting.idleSeconds))
+        }
         guard var active = current else {
             current = OpenInterval(bundleID: sighting.bundleID, startedAt: sighting.date, lastSeen: sighting.date, switchCount: 0)
             return []
         }
 
         guard var away = excursion else {
-            guard isContinuous(from: active.lastSeen, to: sighting.date) else {
+            guard isContinuous(from: active.lastSeen, to: sighting.date, within: Self.silenceWindow) else {
                 current = OpenInterval(bundleID: sighting.bundleID, startedAt: sighting.date, lastSeen: sighting.date, switchCount: 0)
                 return close(active, at: active.lastSeen)
             }
             if sighting.bundleID == active.bundleID {
-                active.lastSeen = sighting.date
+                active.observe(sighting)
                 current = active
             } else {
                 excursion = Excursion(bundleID: sighting.bundleID, startedAt: sighting.date, lastSeen: sighting.date)
@@ -93,15 +126,15 @@ struct IntervalBuilder {
             return []
         }
 
-        let withinWindow = isContinuous(from: away.startedAt, to: sighting.date)
+        let withinWindow = isContinuous(from: away.startedAt, to: sighting.date, within: Self.continuityWindow)
         if sighting.bundleID == active.bundleID, withinWindow {
-            active.lastSeen = sighting.date
+            active.observe(sighting)
             active.switchCount += 1
             current = active
             excursion = nil
             return []
         }
-        let staysOnVisit = sighting.bundleID == away.bundleID && isContinuous(from: away.lastSeen, to: sighting.date)
+        let staysOnVisit = sighting.bundleID == away.bundleID && isContinuous(from: away.lastSeen, to: sighting.date, within: Self.silenceWindow)
         if staysOnVisit, withinWindow {
             away.lastSeen = sighting.date
             excursion = away
@@ -126,31 +159,37 @@ struct IntervalBuilder {
         return close(active, at: active.lastSeen)
     }
 
-    /// Closes whatever is open as of `date` and returns it.
-    mutating func finish(at date: Date) -> [ActivityInterval] {
+    /// Closes whatever is open as of `date` and returns it. With `lastInput` nothing runs past
+    /// it: the person left at that moment, however late the sleep or the absence was noticed.
+    mutating func finish(at date: Date, lastInput: Date? = nil) -> [ActivityInterval] {
         guard let active = current else { return [] }
         current = nil
+        let limit = lastInput ?? .distantFuture
         guard let away = excursion else {
-            return close(active, at: continuousEnd(lastSeen: active.lastSeen, now: date))
+            return close(active, at: min(continuousEnd(lastSeen: active.lastSeen, now: date), limit))
         }
         excursion = nil
         let visited = OpenInterval(bundleID: away.bundleID, startedAt: away.startedAt, lastSeen: away.lastSeen, switchCount: 0)
-        return close(active, at: away.startedAt) + close(visited, at: continuousEnd(lastSeen: away.lastSeen, now: date))
+        return close(active, at: min(away.startedAt, limit))
+            + close(visited, at: min(continuousEnd(lastSeen: away.lastSeen, now: date), limit))
     }
 
-    private func isContinuous(from earlier: Date, to later: Date) -> Bool {
+    private func isContinuous(from earlier: Date, to later: Date, within window: TimeInterval) -> Bool {
         let gap = later.timeIntervalSince(earlier)
-        return gap >= 0 && gap < Self.continuityWindow
+        return gap >= 0 && gap < window
     }
 
-    /// An interval runs up to `now` unless the app went unseen for the whole window.
+    /// An interval runs up to `now` unless the app went unseen for the whole silence window.
     private func continuousEnd(lastSeen: Date, now: Date) -> Date {
-        isContinuous(from: lastSeen, to: now) ? now : lastSeen
+        isContinuous(from: lastSeen, to: now, within: Self.silenceWindow) ? now : lastSeen
     }
 
-    /// A zero-length interval carries no time and is not reported.
+    /// A zero-length interval carries no time and is not reported. Ending before the last sighting
+    /// cuts off the pause still going on, so it leaves `idle_seconds` too.
     private func close(_ interval: OpenInterval, at end: Date) -> [ActivityInterval] {
         guard end > interval.startedAt else { return [] }
+        let cutOff = end < interval.lastSeen ? interval.pauseCounted : 0
+        let idle = max(0, min(interval.idle - cutOff, end.timeIntervalSince(interval.startedAt)))
         let dateFormatter = ISO8601DateFormatter()
         dateFormatter.formatOptions = [.withFullDate]
         dateFormatter.timeZone = timeZone
@@ -160,7 +199,8 @@ struct IntervalBuilder {
             endedAt: end,
             localDate: dateFormatter.string(from: interval.startedAt),
             utcOffsetMinutes: timeZone.secondsFromGMT(for: interval.startedAt) / 60,
-            switchCount: interval.switchCount
+            switchCount: interval.switchCount,
+            idleSeconds: Int(idle.rounded())
         )]
     }
 }
