@@ -1,15 +1,23 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks
-// summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, avoid-streak load + relapse reset
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210
+// summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete
 import XCTest
 @testable import HabitTracker
 
 /// Scriptable stand-in for the API used by `TodayViewModel`.
-final class MockTodayAPI: TodayAPI {
+final class MockTodayAPI: TodayScreenAPI {
     var categoriesResult: Result<[CategoryDTO], Error> = .success([])
     var entriesResult: Result<[EntryDTO], Error> = .success([])
     var createEntryResult: Result<EntryDTO, Error>?
     var upsertChecklistResult: Result<EntryDTO, Error>?
     var streakResults: [Int: Result<CategoryStreakDTO, Error>] = [:]
+    var avoidStreaksResult: Result<[CategoryStreakDTO], Error> = .success([])
+    var relapseResults: [Result<RelapseRecordedDTO, Error>] = []
+    var updateEntryResult: Result<EntryDTO, Error>?
+    var deleteEntryError: Error?
+    private(set) var avoidStreakFetches = 0
+    private(set) var relapseCalls: [(categoryId: Int, key: String)] = []
+    private(set) var updatedEntries: [(id: Int, payload: EntryUpdateDTO)] = []
+    private(set) var deletedEntryIDs: [Int] = []
     private(set) var fetchedEntryRanges: [(start: String, end: String)] = []
     private(set) var createdEntries: [EntryCreateDTO] = []
     private(set) var upsertedChecklists: [ChecklistUpsertDTO] = []
@@ -46,6 +54,28 @@ final class MockTodayAPI: TodayAPI {
             throw APIClientError.invalidResponse
         }
         return try result.get()
+    }
+
+    func fetchAvoidStreaks() async throws -> [CategoryStreakDTO] {
+        avoidStreakFetches += 1
+        return try avoidStreaksResult.get()
+    }
+
+    func recordRelapse(categoryId: Int, idempotencyKey: String) async throws -> RelapseRecordedDTO {
+        relapseCalls.append((categoryId: categoryId, key: idempotencyKey))
+        guard !relapseResults.isEmpty else { throw APIClientError.invalidResponse }
+        return try relapseResults.removeFirst().get()
+    }
+
+    func updateEntry(id: Int, _ payload: EntryUpdateDTO) async throws -> EntryDTO {
+        updatedEntries.append((id: id, payload: payload))
+        guard let result = updateEntryResult else { throw APIClientError.invalidResponse }
+        return try result.get()
+    }
+
+    func deleteEntry(id: Int) async throws {
+        deletedEntryIDs.append(id)
+        if let deleteEntryError { throw deleteEntryError }
     }
 }
 
@@ -253,118 +283,315 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.entries(forCategory: 2), [updated])
     }
 
-    func testLoadFetchesStreakForAvoidCategoriesOnly() async {
-        let api = MockTodayAPI()
-        let rmo = makeCategory(
-            id: 1,
+    private func avoidCategory(id: Int = 1, fields: [FieldDTO]? = nil) -> CategoryDTO {
+        makeCategory(
+            id: id,
             name: "RMO",
-            fields: [makeNumberField(id: 10, name: "Count")],
+            fields: fields ?? [makeNumberField(id: 10, name: "Count")],
             streakMode: "avoid"
         )
+    }
+
+    private func recorded(
+        entryID: Int = 300, created: Bool = true, values: [EntryValueDTO] = []
+    ) -> RelapseRecordedDTO {
+        RelapseRecordedDTO(
+            entry: EntryDTO(
+                id: entryID, categoryId: 1, entryDate: Self.fixedToday, values: values
+            ),
+            created: created
+        )
+    }
+
+    func testLoadReadsTheStreaksOfAllAvoidCategoriesInOneRequest() async {
+        let api = MockTodayAPI()
         let pushups = makeCategory(
-            id: 2,
-            name: "Pushups",
-            fields: [makeNumberField(id: 20, name: "Count")],
-            streakMode: "build"
+            id: 3, name: "Pushups", fields: [makeNumberField(id: 20, name: "Count")]
         )
-        api.categoriesResult = .success([rmo, pushups])
-        api.streakResults[1] = .success(
-            makeStreak(categoryID: 1, current: 7, best: 12, lastRelapse: "2026-07-16")
-        )
+        api.categoriesResult = .success([avoidCategory(id: 1), avoidCategory(id: 2), pushups])
+        api.avoidStreaksResult = .success([
+            makeStreak(categoryID: 1, current: 7, best: 12, lastRelapse: "2026-07-16"),
+            makeStreak(categoryID: 2, current: 0, best: 3, lastRelapse: Self.fixedToday),
+        ])
 
         let viewModel = makeViewModel(api: api)
         await viewModel.load()
 
-        XCTAssertEqual(api.fetchedStreakIDs, [1], "only avoid categories load a streak")
+        XCTAssertEqual(api.avoidStreakFetches, 1, "N avoid categories must not cost N requests")
+        XCTAssertTrue(api.fetchedStreakIDs.isEmpty)
         XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 7)
-        XCTAssertEqual(viewModel.streak(forCategory: 1)?.bestStreak, 12)
-        XCTAssertNil(viewModel.streak(forCategory: 2), "build categories have no streak card")
+        XCTAssertEqual(viewModel.streak(forCategory: 2)?.bestStreak, 3)
+        XCTAssertNil(viewModel.streak(forCategory: 3), "build categories have no streak card")
     }
 
-    func testLoadStreakFailureDegradesToNoCardWithoutFailingLoad() async {
+    func testNoAvoidCategoryMeansNoStreakRequestAtAll() async {
         let api = MockTodayAPI()
-        let rmo = makeCategory(
-            id: 1,
-            name: "RMO",
-            fields: [makeNumberField(id: 10, name: "Count")],
-            streakMode: "avoid"
-        )
-        api.categoriesResult = .success([rmo])
-        api.streakResults[1] = .failure(APIClientError.unexpectedStatus(500))
+        api.categoriesResult = .success([
+            makeCategory(id: 3, name: "Pushups", fields: [makeNumberField(id: 20, name: "Count")])
+        ])
+
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        XCTAssertEqual(api.avoidStreakFetches, 0)
+    }
+
+    func testLoadStreakFailureDegradesToNoNumbersWithoutFailingLoad() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        api.avoidStreaksResult = .failure(APIClientError.unexpectedStatus(500))
 
         let viewModel = makeViewModel(api: api)
         await viewModel.load()
 
         XCTAssertEqual(viewModel.state, .loaded)
         XCTAssertNil(viewModel.streak(forCategory: 1))
+        XCTAssertNotNil(viewModel.streaksError, "the section says the numbers failed, not the screen")
     }
 
-    func testLogRelapseResetsCurrentStreakWhileKeepingBest() async {
+    func testRecordRelapseIsOneTapAtAnyFieldSetAndResetsTheStreakFromTheServer() async {
         let api = MockTodayAPI()
-        let rmo = makeCategory(
-            id: 1,
-            name: "RMO",
-            fields: [makeNumberField(id: 10, name: "Count")],
-            streakMode: "avoid"
-        )
-        api.categoriesResult = .success([rmo])
-        api.streakResults[1] = .success(
+        // No number field at all: the old client refused this category.
+        api.categoriesResult = .success([
+            avoidCategory(fields: [makeBooleanField(id: 10, name: "Did it")])
+        ])
+        api.avoidStreaksResult = .success([
             makeStreak(categoryID: 1, current: 7, best: 12, lastRelapse: "2026-07-16")
-        )
-
+        ])
         let viewModel = makeViewModel(api: api)
         await viewModel.load()
-        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 7)
-
-        // The relapse entry posts the count, then the streak reload returns the
-        // reset current streak with the best preserved.
-        api.createEntryResult = .success(
-            EntryDTO(
-                id: 300,
-                categoryId: 1,
-                entryDate: Self.fixedToday,
-                notes: "slipped",
-                values: [EntryValueDTO(fieldId: 10, value: "3")]
-            )
-        )
+        api.relapseResults = [.success(recorded())]
         api.streakResults[1] = .success(
             makeStreak(categoryID: 1, current: 0, best: 12, lastRelapse: Self.fixedToday)
         )
 
-        let logged = await viewModel.logRelapse(categoryID: 1, count: "3", notes: "slipped")
+        await viewModel.recordRelapse(categoryID: 1)
 
-        XCTAssertTrue(logged)
-        let payload = api.createdEntries.last
-        XCTAssertEqual(payload?.categoryId, 1)
-        XCTAssertEqual(payload?.entryDate, Self.fixedToday)
-        XCTAssertEqual(payload?.notes, "slipped")
-        XCTAssertEqual(payload?.values, [EntryValueDTO(fieldId: 10, value: "3")])
+        XCTAssertEqual(api.relapseCalls.map(\.categoryId), [1])
+        XCTAssertFalse(api.relapseCalls[0].key.isEmpty)
+        XCTAssertTrue(api.createdEntries.isEmpty, "the client no longer writes the relapse entry itself")
         XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 0)
         XCTAssertEqual(viewModel.streak(forCategory: 1)?.bestStreak, 12)
-        XCTAssertEqual(viewModel.streak(forCategory: 1)?.lastRelapseDate, Self.fixedToday)
+        XCTAssertEqual(viewModel.relapseState(forCategory: 1), .recorded(recorded()))
+        XCTAssertEqual(viewModel.entries(forCategory: 1).map(\.id), [300])
         XCTAssertNil(viewModel.saveErrorMessage)
     }
 
-    func testLogRelapseWithoutNumberFieldSetsErrorAndReturnsFalse() async {
+    func testAFailedRelapseTapIsRetriedUnderTheSameKey() async {
         let api = MockTodayAPI()
-        let boolOnly = makeCategory(
-            id: 1,
-            name: "RMO",
-            fields: [makeBooleanField(id: 10, name: "Did it")],
-            streakMode: "avoid"
-        )
-        api.categoriesResult = .success([boolOnly])
-        api.streakResults[1] = .success(
-            makeStreak(categoryID: 1, current: 1, best: 1, lastRelapse: nil)
-        )
-
+        api.categoriesResult = .success([avoidCategory()])
         let viewModel = makeViewModel(api: api)
         await viewModel.load()
-        let logged = await viewModel.logRelapse(categoryID: 1, count: "3", notes: nil)
+        api.relapseResults = [.failure(APIClientError.timeout), .success(recorded())]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 12, lastRelapse: Self.fixedToday)
+        )
 
-        XCTAssertFalse(logged)
-        XCTAssertTrue(api.createdEntries.isEmpty)
-        XCTAssertEqual(viewModel.saveErrorMessage, TodayViewModel.noCountFieldMessage)
+        await viewModel.recordRelapse(categoryID: 1)
+        XCTAssertEqual(viewModel.relapseState(forCategory: 1), .idle)
+        XCTAssertNotNil(viewModel.saveErrorMessage)
+        await viewModel.recordRelapse(categoryID: 1)
+
+        XCTAssertEqual(api.relapseCalls.count, 2)
+        XCTAssertEqual(
+            api.relapseCalls[0].key, api.relapseCalls[1].key,
+            "a lost answer must not become a second relapse"
+        )
+    }
+
+    func testARepeatedTapKeepsTheUndoOfTheRelapseThisCardWrote() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.relapseResults = [
+            .success(recorded(created: true)),
+            .success(recorded(created: false)),
+        ]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 1, lastRelapse: Self.fixedToday)
+        )
+
+        await viewModel.recordRelapse(categoryID: 1)
+        await viewModel.recordRelapse(categoryID: 1)
+
+        XCTAssertEqual(viewModel.relapseState(forCategory: 1), .recorded(recorded(created: true)))
+        XCTAssertEqual(viewModel.entries(forCategory: 1).count, 1)
+    }
+
+    func testARelapseSomebodyElseWroteCannotBeUndoneFromHere() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.relapseResults = [.success(recorded(created: false))]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 1, lastRelapse: Self.fixedToday)
+        )
+
+        await viewModel.recordRelapse(categoryID: 1)
+        await viewModel.undoRelapse(categoryID: 1)
+
+        XCTAssertTrue(api.deletedEntryIDs.isEmpty)
+        XCTAssertEqual(viewModel.relapseState(forCategory: 1), .recorded(recorded(created: false)))
+    }
+
+    func testUndoRelapseDeletesTheEntryAndReadsTheStreakAgain() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.relapseResults = [.success(recorded())]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 12, lastRelapse: Self.fixedToday)
+        )
+        await viewModel.recordRelapse(categoryID: 1)
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 8, best: 12, lastRelapse: "2026-07-16")
+        )
+
+        await viewModel.undoRelapse(categoryID: 1)
+
+        XCTAssertEqual(api.deletedEntryIDs, [300])
+        XCTAssertEqual(viewModel.relapseState(forCategory: 1), .idle)
+        XCTAssertTrue(viewModel.entries(forCategory: 1).isEmpty)
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 8)
+    }
+
+    func testRelapseDetailsPatchTheAmountOverTheTickTheServerWrote() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([
+            avoidCategory(fields: [
+                makeBooleanField(id: 11, name: "Did it"), makeNumberField(id: 10, name: "Count"),
+            ])
+        ])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.relapseResults = [
+            .success(recorded(values: [EntryValueDTO(fieldId: 11, value: "true")]))
+        ]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 1, lastRelapse: Self.fixedToday)
+        )
+        await viewModel.recordRelapse(categoryID: 1)
+        api.updateEntryResult = .success(
+            EntryDTO(
+                id: 300, categoryId: 1, entryDate: Self.fixedToday, notes: "slipped",
+                values: [
+                    EntryValueDTO(fieldId: 11, value: "true"),
+                    EntryValueDTO(fieldId: 10, value: "3"),
+                ]
+            )
+        )
+
+        let saved = await viewModel.saveRelapseDetails(
+            categoryID: 1, amount: " 3 ", notes: " slipped "
+        )
+
+        XCTAssertTrue(saved)
+        let patch = api.updatedEntries.last
+        XCTAssertEqual(patch?.id, 300)
+        XCTAssertEqual(patch?.payload.notes, "slipped")
+        XCTAssertEqual(
+            patch?.payload.values,
+            [EntryValueDTO(fieldId: 11, value: "true"), EntryValueDTO(fieldId: 10, value: "3")],
+            "PATCH replaces the whole list, so the server's tick goes back with the amount"
+        )
+        guard case .recorded(let state) = viewModel.relapseState(forCategory: 1) else {
+            return XCTFail("expected the recorded state")
+        }
+        XCTAssertTrue(state.created)
+        XCTAssertEqual(state.entry.notes, "slipped")
+    }
+
+    func testRelapseDetailsRefuseAnAmountThatWouldTurnTheRelapseIntoACleanDay() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.relapseResults = [.success(recorded())]
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 1, lastRelapse: Self.fixedToday)
+        )
+        await viewModel.recordRelapse(categoryID: 1)
+
+        let saved = await viewModel.saveRelapseDetails(categoryID: 1, amount: "0", notes: "")
+
+        XCTAssertFalse(saved)
+        XCTAssertTrue(api.updatedEntries.isEmpty)
+        XCTAssertEqual(viewModel.saveErrorMessage, TodayViewModel.amountNotPositiveMessage)
+    }
+
+    func testReloadAfterMarkReadsTheDaysEntriesAndTheStreakOfThatCategory() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        api.avoidStreaksResult = .success([
+            makeStreak(categoryID: 1, current: 7, best: 12, lastRelapse: "2026-07-16")
+        ])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.entriesResult = .success([
+            EntryDTO(id: 400, categoryId: 1, entryDate: Self.fixedToday, values: [])
+        ])
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 0, best: 12, lastRelapse: Self.fixedToday)
+        )
+
+        await viewModel.reloadAfterMark(categoryID: 1)
+
+        XCTAssertEqual(viewModel.entries(forCategory: 1).map(\.id), [400])
+        XCTAssertEqual(api.fetchedStreakIDs, [1])
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 0)
+    }
+
+    func testReloadAfterMarkOfABuildCategoryAsksNoStreak() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([
+            makeCategory(id: 3, name: "Pushups", fields: [makeNumberField(id: 20, name: "Count")])
+        ])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.reloadAfterMark(categoryID: 3)
+
+        XCTAssertTrue(api.fetchedStreakIDs.isEmpty)
+    }
+
+    func testDeleteEntryRemovesTheRowAndRefreshesAnAvoidStreak() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        api.entriesResult = .success([
+            EntryDTO(id: 400, categoryId: 1, entryDate: Self.fixedToday, values: [])
+        ])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        api.streakResults[1] = .success(
+            makeStreak(categoryID: 1, current: 5, best: 12, lastRelapse: "2026-07-18")
+        )
+
+        let deleted = await viewModel.deleteEntry(id: 400)
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(api.deletedEntryIDs, [400])
+        XCTAssertTrue(viewModel.entries(forCategory: 1).isEmpty)
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 5)
+    }
+
+    func testDeleteEntryFailureKeepsTheRowAndSaysSo() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([avoidCategory()])
+        api.entriesResult = .success([
+            EntryDTO(id: 400, categoryId: 1, entryDate: Self.fixedToday, values: [])
+        ])
+        api.deleteEntryError = APIClientError.timeout
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let deleted = await viewModel.deleteEntry(id: 400)
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(viewModel.entries(forCategory: 1).count, 1)
+        XCTAssertNotNil(viewModel.saveErrorMessage)
     }
 
     func testLoadFailureSetsFailureMessageWithoutCrash() async {

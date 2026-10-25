@@ -345,3 +345,17 @@ Avoid-стрик карточка «N дней чистый» на экране 
 Для #215 (только записано, не сделано): фоновая отправка HealthKit при запертом телефоне идёт без ключа; несохранённый ввод пропадает при повторной блокировке; при возврате из фона на кадр виден контент до блокировки; проверить на телефоне, что окно-обложка попадает в снимок app switcher и что `SecItemAdd` под pending с `.biometryCurrentSet` не поднимает второй запрос Face ID. Первые два пункта вынесены в текст под переключателем.
 
 Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 204 из 204 (+15 тестов круга).
+## 2026-10-26 — PHASE-01/210: Today на iOS целиком
+
+Быстрые отметки с отменой и офлайн-очередью, лист подходов и записей за день, Happened одним нажатием, история срывов с графиком. Тронуто 22 файла: 18 `new`, 4 `mod`.
+
+- `HabitTracker/API/APIClient+Today.swift`, `HabitTracker/API/DTOs+Today.swift` — new: справочник быстрых отметок, нажатие под `Idempotency-Key`, отмена, подходы дня, один запрос `/streaks`, срыв, история срывов, patch/delete записи.
+- `HabitTracker/Features/QuickMarks/QuickMarksViewModel.swift`, `QuickMarkTapQueue.swift`, `QuickMarkWording.swift`, `QuickMarksSection.swift` — new: кнопки отметок, очередь нажатий без потерь офлайн, формулировки, секция на Today.
+- `HabitTracker/Features/QuickMarks/QuickMarkDaySetsViewModel.swift`, `QuickMarkDaySetsSection.swift` — new: подходы за день.
+- `HabitTracker/Features/QuickMarks/QuickMarksView.swift` — mod: заглушка заменена экраном.
+- `HabitTracker/Features/Today/RelapseAnalysis.swift`, `RelapseHistoryView.swift`, `RelapseHistoryViewModel.swift`, `RelapseDetailsSheet.swift` — new: история срывов, график Swift Charts, анализ по серверной семантике #207.
+- `HabitTracker/Features/Today/TodayDaySheet.swift` — new: лист дня категории.
+- `HabitTracker/Features/Today/TodayView.swift`, `TodayViewModel.swift` — mod: серии одним `/streaks`, Happened без number-поля, переход на историю срывов; место под кнопку голоса (#213) помечено `TODO(#213)`.
+- `HabitTrackerTests/{QuickMarkTapQueueTests,QuickMarksViewModelTests,RelapseAnalysisTests,TodayDetailViewModelsTests,TodayScreenAPITests,TodayViewModelTests}.swift` — new/mod: view model на подделанном `URLProtocol`, офлайн-нажатия, одна выборка серий.
+
+Проверки: `xcodebuild test` на симуляторе av06-iPhone17Pro (iOS 26) с подписью симулятора — 227 из 227. Не проверено: живой бэкенд (охранный хук не пускает миграцию живой базы роя, экран шёл только на подделке API), вёрстка глазами, Face ID, график и анализ срывов на реальных данных, поведение на телефоне (для #215).

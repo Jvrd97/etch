@@ -1,14 +1,29 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208
-// summary: Today screen — habit cards + quick-entry sheet; avoid categories show "N days clean" streak card + "It happened" relapse form; offline banner + "N entries waiting to send" outbox badge atop when data came from the read cache / a save was queued offline
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210
+// summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner + queued-uploads badge atop when data came from the read cache / a save was queued offline
 import SwiftUI
+
+/// What a card of Today opened: the day of one category — its sets (when a button answers for it)
+/// and its records. The category is nil for a button whose category is not an active one: there are
+/// sets to show and no category to add a record to.
+struct DaySheetTarget: Identifiable {
+    let categoryID: Int
+    let title: String
+    let category: CategoryDTO?
+    let mark: QuickMarkDTO?
+
+    var id: Int { categoryID }
+}
 
 struct TodayView: View {
     @StateObject private var viewModel: TodayViewModel
+    @StateObject private var quickMarks: QuickMarksViewModel
     @State private var selectedCategory: CategoryDTO?
-    @State private var relapseCategory: CategoryDTO?
+    @State private var daySheet: DaySheetTarget?
+    @State private var detailsCategory: CategoryDTO?
 
-    init(viewModel: TodayViewModel) {
+    init(viewModel: TodayViewModel, quickMarks: QuickMarksViewModel? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        _quickMarks = StateObject(wrappedValue: quickMarks ?? .live())
     }
 
     var body: some View {
@@ -24,14 +39,27 @@ struct TodayView: View {
         .navigationTitle("Today")
         .dsScreenBackground()
         .task {
-            await viewModel.load()
+            // A tap or an undo moved the day of a category: read its records and streak again.
+            quickMarks.onDayChanged = { [weak viewModel] categoryID in
+                Task { await viewModel?.reloadAfterMark(categoryID: categoryID) }
+            }
+            await reload()
         }
         .sheet(item: $selectedCategory) { category in
             QuickEntrySheet(category: category, viewModel: viewModel)
         }
-        .sheet(item: $relapseCategory) { category in
-            RelapseSheet(category: category, viewModel: viewModel)
+        .sheet(item: $daySheet) { target in
+            TodayDaySheet(target: target, viewModel: viewModel, quickMarks: quickMarks)
         }
+        .sheet(item: $detailsCategory) { category in
+            RelapseDetailsSheet(category: category, viewModel: viewModel)
+        }
+    }
+
+    private func reload() async {
+        async let today: Void = viewModel.load()
+        async let marks: Void = quickMarks.load()
+        _ = await (today, marks)
     }
 
     @ViewBuilder
@@ -41,16 +69,30 @@ struct TodayView: View {
             NeonLoader(label: "Loading")
         case .failure(let message):
             DSErrorState(message: message) {
-                Task { await viewModel.load() }
+                Task { await reload() }
             }
         case .loaded:
             categoryList
         }
     }
 
+    /// Avoid categories get the streak card, a category a button answers for loses its legacy
+    /// card (two ways to add to one field on one screen is one too many), checklist categories keep
+    /// theirs.
+    private var plainCategories: [CategoryDTO] {
+        let covered = quickMarks.coveredCategoryIDs
+        return viewModel.categories.filter { category in
+            !category.isAvoid && (category.isChecklist || !covered.contains(category.id))
+        }
+    }
+
+    private var avoidCategories: [CategoryDTO] {
+        viewModel.categories.filter(\.isAvoid)
+    }
+
     @ViewBuilder
     private var categoryList: some View {
-        if viewModel.categories.isEmpty {
+        if viewModel.categories.isEmpty && quickMarks.marks.isEmpty {
             DSEmptyState(
                 title: "No habits yet",
                 systemImage: "checkmark.circle",
@@ -58,49 +100,99 @@ struct TodayView: View {
             )
         } else {
             ScrollView {
-                VStack(spacing: DS.Spacing.md) {
-                    ForEach(viewModel.categories) { category in
-                        row(for: category)
+                VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+                    if let message = viewModel.saveErrorMessage {
+                        Text(message)
+                            .font(DS.Typography.caption)
+                            .foregroundStyle(DS.Palette.danger)
+                            .accessibilityIdentifier("today.error")
+                    }
+                    // TODO(#213): the voice-day button goes on the next line.
+                    if !quickMarks.marks.isEmpty {
+                        sectionLabel("Быстрые отметки")
+                        QuickMarksSection(viewModel: quickMarks) { openDaySheet(for: $0) }
+                    }
+                    if !avoidCategories.isEmpty {
+                        sectionLabel("Streaks")
+                        if let message = viewModel.streaksError {
+                            Text(message)
+                                .font(DS.Typography.caption)
+                                .foregroundStyle(DS.Palette.textSecondary)
+                        }
+                        ForEach(avoidCategories) { category in
+                            avoidStreakCard(category)
+                        }
+                    }
+                    if !plainCategories.isEmpty {
+                        if !quickMarks.marks.isEmpty || !avoidCategories.isEmpty {
+                            sectionLabel("Habits")
+                        }
+                        ForEach(plainCategories) { category in
+                            habitCard(category)
+                        }
                     }
                 }
                 .padding(DS.Spacing.lg)
             }
             .refreshable {
-                await viewModel.load()
+                await reload()
             }
         }
     }
 
-    /// Avoid categories with a loaded streak show the "N days clean" card; every
-    /// other category keeps the tap-to-log habit card.
-    @ViewBuilder
-    private func row(for category: CategoryDTO) -> some View {
-        if category.isAvoid, let streak = viewModel.streak(forCategory: category.id) {
-            avoidStreakCard(category, streak: streak)
-        } else {
-            habitCard(category)
-        }
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(DS.Typography.caption)
+            .tracking(1.5)
+            .foregroundStyle(DS.Palette.lime)
     }
 
-    /// Oversized lime "N days clean" readout with the best streak underneath and a
-    /// small "It happened" button that opens the relapse form.
-    private func avoidStreakCard(
-        _ category: CategoryDTO, streak: CategoryStreakDTO
-    ) -> some View {
-        Card {
+    private func openDaySheet(for mark: QuickMarkDTO) {
+        let category = viewModel.categories.first { $0.id == mark.categoryId }
+        daySheet = DaySheetTarget(
+            categoryID: mark.categoryId, title: category?.name ?? mark.label, category: category,
+            mark: mark
+        )
+    }
+
+    private func openDaySheet(for category: CategoryDTO) {
+        let mark = quickMarks.marks.first { $0.categoryId == category.id }
+        daySheet = DaySheetTarget(
+            categoryID: category.id, title: category.name, category: category, mark: mark
+        )
+    }
+
+    // MARK: Avoid streak card
+
+    /// Oversized lime "N days clean" readout with the best streak underneath. The header leads to the
+    /// relapse history; "It happened" records a relapse in one tap, whatever fields the category has.
+    private func avoidStreakCard(_ category: CategoryDTO) -> some View {
+        let streak = viewModel.streak(forCategory: category.id)
+        let relapse = viewModel.relapseState(forCategory: category.id)
+        return Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                HStack(spacing: DS.Spacing.sm) {
-                    if let icon = category.icon, !icon.isEmpty {
-                        Text(icon)
-                            .font(DS.Typography.section)
+                NavigationLink {
+                    RelapseHistoryView(category: category, viewModel: .live(categoryId: category.id))
+                } label: {
+                    HStack(spacing: DS.Spacing.sm) {
+                        if let icon = category.icon, !icon.isEmpty {
+                            Text(icon)
+                                .font(DS.Typography.section)
+                        }
+                        Text(category.name)
+                            .font(DS.Typography.card)
+                            .foregroundStyle(DS.Palette.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(DS.Palette.textSecondary)
                     }
-                    Text(category.name)
-                        .font(DS.Typography.card)
-                        .foregroundStyle(DS.Palette.textPrimary)
-                    Spacer()
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(category.name): история срывов")
+
                 VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                    Text(TodayView.formatDays(streak.currentStreak))
+                    Text(streak.map { TodayView.formatDays($0.currentStreak) } ?? "—")
                         .font(DS.Typography.hero)
                         .foregroundStyle(DS.Palette.lime)
                         .lineLimit(1)
@@ -109,24 +201,77 @@ struct TodayView: View {
                         .font(DS.Typography.caption)
                         .foregroundStyle(DS.Palette.textSecondary)
                 }
-                Text("Best: \(TodayView.formatDays(streak.bestStreak))")
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Palette.textSecondary)
-                Button {
-                    relapseCategory = category
-                } label: {
-                    Text("It happened")
+                if let streak {
+                    Text("Best: \(TodayView.formatDays(streak.bestStreak))")
                         .font(DS.Typography.caption)
-                        .foregroundStyle(DS.Palette.danger)
-                        .padding(.vertical, DS.Spacing.xs)
-                        .padding(.horizontal, DS.Spacing.md)
-                        .overlay(
-                            Capsule().stroke(DS.Palette.danger.opacity(0.5), lineWidth: 1)
-                        )
+                        .foregroundStyle(DS.Palette.textSecondary)
                 }
-                .buttonStyle(.plain)
+
+                HStack(spacing: DS.Spacing.sm) {
+                    Button {
+                        Task { await viewModel.recordRelapse(categoryID: category.id) }
+                    } label: {
+                        pill("It happened", color: DS.Palette.danger)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isBusy(relapse))
+                    .accessibilityIdentifier("avoid.happened.\(category.id)")
+                    Button {
+                        openDaySheet(for: category)
+                    } label: {
+                        pill("Записи", color: DS.Palette.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                relapseFollowUp(relapse, category: category)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func pill(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(DS.Typography.caption)
+            .foregroundStyle(color)
+            .padding(.vertical, DS.Spacing.xs)
+            .padding(.horizontal, DS.Spacing.md)
+            .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
+    }
+
+    private func isBusy(_ state: TodayViewModel.RelapseState) -> Bool {
+        switch state {
+        case .recording, .undoing, .savingDetails: return true
+        case .idle, .recorded: return false
+        }
+    }
+
+    /// After the tap: what was written, with undo of this screen's own relapse and optional details.
+    @ViewBuilder
+    private func relapseFollowUp(
+        _ state: TodayViewModel.RelapseState, category: CategoryDTO
+    ) -> some View {
+        switch state {
+        case .idle, .recording:
+            EmptyView()
+        case .recorded(let recorded), .undoing(let recorded), .savingDetails(let recorded):
+            HStack(spacing: DS.Spacing.sm) {
+                Text(recorded.created ? "Срыв записан" : "Срыв уже записан")
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.textPrimary)
+                Spacer()
+                Button("Подробнее") { detailsCategory = category }
+                    .font(DS.Typography.caption)
+                    .disabled(isBusy(state))
+                if recorded.created {
+                    Button("Отменить") {
+                        Task { await viewModel.undoRelapse(categoryID: category.id) }
+                    }
+                    .font(DS.Typography.caption)
+                    .disabled(isBusy(state))
+                    .accessibilityIdentifier("avoid.undo.\(category.id)")
+                }
+            }
         }
     }
 
@@ -135,6 +280,8 @@ struct TodayView: View {
     static func formatDays(_ days: Int) -> String {
         "\(days) \(days == 1 ? "day" : "days")"
     }
+
+    // MARK: Habit card
 
     private func habitCard(_ category: CategoryDTO) -> some View {
         Button {
@@ -409,87 +556,6 @@ struct QuickEntrySheet: View {
             !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         if await viewModel.saveEntry(categoryID: category.id, values: nonEmptyValues) {
-            dismiss()
-        }
-    }
-}
-
-/// Relapse form for an avoid category ("It happened"): a count ("how much") and an
-/// optional note. Saving posts the entry and reloads the streak, so the card shows
-/// the reset current streak when the sheet dismisses.
-struct RelapseSheet: View {
-    let category: CategoryDTO
-    @ObservedObject var viewModel: TodayViewModel
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var count = ""
-    @State private var notes = ""
-    @State private var isSaving = false
-    @FocusState private var countFocused: Bool
-
-    private var countFieldName: String {
-        viewModel.countField(forCategory: category.id)?.name ?? "How much"
-    }
-
-    private var canSave: Bool {
-        // Backend counts a relapse only when the value is a positive number;
-        // anything else would dismiss the sheet without resetting the streak.
-        guard let value = Double(count.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
-        return value > 0 && !isSaving
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField(countFieldName, text: $count)
-                        .keyboardType(.decimalPad)
-                        .focused($countFocused)
-                    TextField("Note (optional)", text: $notes, axis: .vertical)
-                }
-                .listRowBackground(DS.Palette.card)
-                if let message = viewModel.saveErrorMessage {
-                    Section {
-                        Text(message)
-                            .foregroundStyle(DS.Palette.danger)
-                    }
-                    .listRowBackground(DS.Palette.card)
-                }
-            }
-            .dsScreenBackground()
-            .navigationTitle(category.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        Task { await save() }
-                    }
-                    .disabled(!canSave)
-                }
-            }
-            .onAppear {
-                viewModel.saveErrorMessage = nil
-                countFocused = true
-            }
-        }
-        .presentationDetents([.fraction(0.4), .medium])
-        .presentationDragIndicator(.visible)
-    }
-
-    private func save() async {
-        isSaving = true
-        defer { isSaving = false }
-        let trimmedCount = count.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        let logged = await viewModel.logRelapse(
-            categoryID: category.id,
-            count: trimmedCount,
-            notes: trimmedNotes.isEmpty ? nil : trimmedNotes
-        )
-        if logged {
             dismiss()
         }
     }
