@@ -3,7 +3,7 @@ Tests for the day-text -> numeric-metric plan (POST /api/v1/daily-summary/draft)
 and its transactional application (POST /api/v1/daily-summary/apply).
 """
 
-# [review:need-review] PHASE-01/74-daily-summary-journal
+# [review:need-review] PHASE-01/74-daily-summary-journal, PHASE-01/83-daily-summary-plan-fields-required
 # summary: unit tests for plan parsing/validation/prompt rules + API tests (503/502/repair, atomic apply with the journal, append/create collision in the draft, idempotent replay incl. journal-only and the lost race, 409 on a key reused with a new metric, a new journal or another date, transcript persisted and never logged)
 import json
 import logging
@@ -775,6 +775,28 @@ class TestJournalCollisionInDraft:
             app.dependency_overrides.pop(get_llm_client, None)
 
         assert response.json()["journal"] is None
+
+    async def test_the_draft_always_carries_all_four_plan_fields(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The frontend types every plan field as required; a reply the model left bare must still ship all four."""
+        fake = QueuedLLMClient([json.dumps({"metrics": [], "unresolved": []})])
+        app.dependency_overrides[get_llm_client] = lambda: fake
+        try:
+            response = await client.post(
+                "/api/v1/daily-summary/draft",
+                json={"transcript": "ничего не делал", "entry_date": ENTRY_DATE},
+            )
+        finally:
+            app.dependency_overrides.pop(get_llm_client, None)
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "metrics": [],
+            "checklist": [],
+            "unresolved": [],
+            "journal": None,
+        }
 
 
 class TestJournalPromptRules:

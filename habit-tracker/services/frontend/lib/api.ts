@@ -4,11 +4,16 @@
 // [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176, PHASE-01/206
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — edits one line of the plan at a time, marks the anchors of a day by kind, writes its training, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, resets a stuck dialogue, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it, the button entered, patched, reordered and deleted by hand, one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
+// [review:need-review] PHASE-01/178-builtin-category-templates
+// summary: categoriesAPI.listTemplates / applyTemplates read and apply the built-in category catalog
 // [review:need-review] PHASE-03/105
 // summary: SignalSource carries the adapter flag, the cursor moment, the count of the last good run and the class and time of the last failure
 // summary: quickMarksAPI.dayEvents reads the taps of one category's day from the journal, one row per tap, flagged when taken back and when the undo endpoint would accept it
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
+
+// [review:need-review] PHASE-01/83-daily-summary-plan-fields-required
+// summary: DailySummaryPlan types `checklist` and `journal` as required, like `metrics` and `unresolved` — the draft endpoint always sends all four
 
 // [review:need-review] PHASE-03/200
 // summary: planFactsAPI — the facts a plan line writes into its category (record under Idempotency-Key, correct, delete), their wire types, and `unmark`, which takes «сделано» back with a correction or a delete that leaves the line short
@@ -212,6 +217,21 @@ export const categoriesAPI = {
     return fetcher<CategoryBatchResponse>('/categories/batch', {
       method: 'POST',
       body: JSON.stringify({ operations }),
+    });
+  },
+
+  // #178: inside this object, not a new export — screens that mock '@/lib/api'
+  // with a fixed export set must keep linking.
+  /** The built-in catalog; creates nothing. */
+  listTemplates: async () => {
+    return fetcher<CategoryTemplate[]>('/categories/templates');
+  },
+
+  /** Create the picked templates as ordinary categories; ones already present are skipped. */
+  applyTemplates: async (keys: string[]) => {
+    return fetcher<CategoryTemplateApplyResponse>('/categories/templates/apply', {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
     });
   },
 };
@@ -1007,26 +1027,18 @@ export interface JournalOp {
 /**
  * The draft the backend produces from a retelling.
  *
- * `metrics` and `unresolved` are required because `POST /daily-summary/draft`
- * has always sent them: a response without either is a broken backend, not an
- * older one, and typing them optional would push a `?? []` into every reader
- * for a case that cannot happen.
- *
- * `checklist` and `journal` are optional only as deployment slack — each was
- * added by a later slice (#75 and #74), and a frontend that ships ahead of the
- * backend must read an old draft as "no boxes"/"no text" rather than crash the
- * preview. Dropping the `?` on both is issue #83
- * (`issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md`), which
- * unblocks once no backend older than #75 can answer this frontend — i.e. after
- * the next deploy in which backend and frontend go out together.
+ * All four fields are required because `POST /daily-summary/draft` always
+ * sends them: a response without one is a broken backend, and typing it
+ * optional would push a `?? []` into every reader for a case that cannot
+ * happen.
  */
 export interface DailySummaryPlan {
   metrics: LogMetricOp[];
-  /** Boxes the retelling ticked. Absent on an older backend; never a full map. */
-  checklist?: CheckOp[];
+  /** Boxes the retelling ticked; never a full map. */
+  checklist: CheckOp[];
   unresolved: UnresolvedMetric[];
   /** Null when the retelling held nothing worth reading back later. */
-  journal?: JournalOp | null;
+  journal: JournalOp | null;
 }
 
 /** What an apply wrote: one entry per category the day touched, plus its text. */
@@ -1040,6 +1052,25 @@ export interface DailySummaryApplyResponse {
 export interface CategoryBatchResponse {
   categories: Category[];
   fields: Field[];
+}
+
+// #178: a built-in category the user can pre-fill. `added` — a category with this
+// name already exists, so applying it again would be skipped.
+export interface CategoryTemplate {
+  key: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  display_mode: CategoryDisplayMode;
+  streak_mode: CategoryStreakMode;
+  group?: string | null;
+  fields: FieldCreate[];
+  added: boolean;
+}
+
+export interface CategoryTemplateApplyResponse {
+  categories: Category[];
+  skipped: string[];
 }
 
 export interface AIReport {

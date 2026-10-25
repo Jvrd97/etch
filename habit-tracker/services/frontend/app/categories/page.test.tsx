@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Category, Field } from '@/lib/api';
+import type { Category, CategoryTemplate, Field } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 
@@ -40,10 +40,21 @@ const CATEGORY: Category = {
   fields: [HOURS_FIELD, QUALITY_FIELD],
 };
 
+const TEMPLATE: CategoryTemplate = {
+  key: 'supplements',
+  name: 'Supplements',
+  display_mode: 'checklist',
+  streak_mode: 'build',
+  added: false,
+  fields: [{ name: 'Vitamin D', field_type: 'boolean', order: 1 }],
+};
+
 let getAllCategories: ReturnType<typeof mock>;
 let createCategory: ReturnType<typeof mock>;
 let updateCategory: ReturnType<typeof mock>;
 let deleteCategory: ReturnType<typeof mock>;
+let listTemplates: ReturnType<typeof mock>;
+let applyTemplates: ReturnType<typeof mock>;
 
 // Declares the whole surface on purpose: bun fixes a module's export *names* the
 // first time anything links against it and shares that registry across the run,
@@ -155,6 +166,8 @@ mock.module('@/lib/api', () => ({
     create: (data: unknown) => createCategory(data),
     update: (id: number, data: unknown) => updateCategory(id, data),
     delete: (id: number) => deleteCategory(id),
+    listTemplates: () => listTemplates(),
+    applyTemplates: (keys: string[]) => applyTemplates(keys),
   },
   entriesAPI: {
     getAll: () => Promise.resolve([]),
@@ -189,6 +202,8 @@ beforeEach(() => {
   createCategory = mock(() => Promise.resolve(CATEGORY));
   updateCategory = mock(() => Promise.resolve(CATEGORY));
   deleteCategory = mock(() => Promise.resolve(undefined));
+  listTemplates = mock(() => Promise.resolve([TEMPLATE]));
+  applyTemplates = mock(() => Promise.resolve({ categories: [], skipped: [] }));
   localStorage.clear();
 });
 
@@ -197,6 +212,36 @@ afterEach(() => {
 });
 
 describe('/categories (desktop)', () => {
+  it('does not offer or create templates until the user asks', async () => {
+    await renderPage();
+
+    expect(screen.queryByText('Start from a template')).toBeNull();
+    expect(listTemplates).not.toHaveBeenCalled();
+    expect(applyTemplates).not.toHaveBeenCalled();
+  });
+
+  it('opens the template picker and reloads the list after templates are added', async () => {
+    await renderPage();
+    const loadsBefore = getAllCategories.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: /from template/i }));
+    fireEvent.click(await screen.findByLabelText(/Supplements/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    await waitFor(() => expect(applyTemplates).toHaveBeenCalledWith(['supplements']));
+    await waitFor(() => expect(getAllCategories.mock.calls.length).toBeGreaterThan(loadsBefore));
+    await waitFor(() => expect(screen.queryByText('Start from a template')).toBeNull());
+  });
+
+  it('offers templates on the empty screen', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+    render(<CategoriesPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /start from a template/i }));
+
+    expect(await screen.findByLabelText(/Supplements/)).toBeDefined();
+  });
+
   it('lists the categories once the load settles', async () => {
     await renderPage();
 

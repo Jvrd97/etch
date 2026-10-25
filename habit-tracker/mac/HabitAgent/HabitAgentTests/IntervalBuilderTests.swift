@@ -1,5 +1,5 @@
-// [review:approved] PHASE-03/155
-// summary: verifies coalescing, micro-switches under 30 seconds, closing at the moment of leaving, the silence gap and dropped titles
+// [review:need-review] PHASE-03/155, PHASE-03/217
+// summary: verifies coalescing, micro-switches under 30 seconds, closing at the moment of leaving, the silence gap, dropped titles and the checkpoint that bounds what a kill can lose
 import XCTest
 @testable import HabitAgent
 
@@ -88,5 +88,62 @@ final class IntervalBuilderTests: XCTestCase {
         var builder = IntervalBuilder()
         _ = feed(&builder, [(editor, 0)])
         XCTAssertTrue(builder.finish(at: start).isEmpty)
+    }
+
+    // MARK: Checkpoint
+
+    private func ticks(_ bundleID: String, from first: TimeInterval, through last: TimeInterval) -> [(String, TimeInterval)] {
+        stride(from: first, through: last, by: 5).map { (bundleID, $0) }
+    }
+
+    func testIntervalOpenForLessThanTheCheckpointIntervalIsLeftAlone() {
+        var builder = IntervalBuilder()
+        _ = feed(&builder, ticks(editor, from: 0, through: IntervalBuilder.checkpointInterval - 5))
+        XCTAssertTrue(builder.checkpoint().isEmpty)
+    }
+
+    func testCheckpointClosesTheOpenIntervalAtTheLastSightingAndContinuesFromThere() {
+        var builder = IntervalBuilder()
+        let limit = IntervalBuilder.checkpointInterval
+        _ = feed(&builder, [(editor, 0), (browser, 5), (editor, 10)] + ticks(editor, from: 15, through: limit))
+        let closed = builder.checkpoint()
+        XCTAssertEqual(closed.map(\.bundleID), [editor])
+        XCTAssertEqual(closed.first?.startedAt, start)
+        XCTAssertEqual(closed.first?.endedAt, at(limit))
+        XCTAssertEqual(closed.first?.switchCount, 1)
+
+        let rest = builder.finish(at: at(limit + 5))
+        XCTAssertEqual(rest.map(\.bundleID), [editor])
+        XCTAssertEqual(rest.first?.startedAt, at(limit))
+        XCTAssertEqual(rest.first?.endedAt, at(limit + 5))
+        XCTAssertEqual(rest.first?.switchCount, 0)
+    }
+
+    func testCheckpointWaitsWhileAnotherAppIsInFrontSoTheInterruptedIntervalCanStillBeResumed() {
+        var builder = IntervalBuilder()
+        let limit = IntervalBuilder.checkpointInterval
+        _ = feed(&builder, ticks(editor, from: 0, through: limit) + [(browser, limit + 5)])
+        XCTAssertTrue(builder.checkpoint().isEmpty)
+        _ = feed(&builder, [(editor, limit + 10)])
+        XCTAssertEqual(builder.checkpoint().first?.switchCount, 1)
+    }
+
+    func testHourInOneAppIsCutIntoContiguousIntervalsNoLongerThanTheCheckpointInterval() {
+        var builder = IntervalBuilder()
+        var closed: [ActivityInterval] = []
+        for second in stride(from: 0.0, through: 3600, by: 5) {
+            closed += builder.record(AppSighting(bundleID: editor, date: at(second)))
+            closed += builder.checkpoint()
+        }
+        closed += builder.finish(at: at(3600))
+        XCTAssertGreaterThan(closed.count, 1)
+        XCTAssertEqual(closed.first?.startedAt, start)
+        XCTAssertEqual(closed.last?.endedAt, at(3600))
+        for (earlier, later) in zip(closed, closed.dropFirst()) {
+            XCTAssertEqual(earlier.endedAt, later.startedAt)
+        }
+        for interval in closed {
+            XCTAssertLessThanOrEqual(interval.endedAt.timeIntervalSince(interval.startedAt), IntervalBuilder.checkpointInterval)
+        }
     }
 }

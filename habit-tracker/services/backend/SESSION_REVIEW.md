@@ -2639,3 +2639,34 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Heartbeat.swift`, `HabitAgentTests/HeartbeatTests.swift` — new; `HabitAgent/Activity/ActivitySampler.swift` — mod: запуск отчёта и три поля состояния.
 
 Не проверено вживую: настоящий мак-агент против сервера, снятая галка Accessibility в системных настройках.
+
+## 2026-10-25 — PHASE-01/83: ответ draft всегда несёт четыре поля плана
+
+Тронут 1 файл.
+
+- `tests/test_daily_summary.py` — mod: `test_the_draft_always_carries_all_four_plan_fields` — ответ модели без `checklist`/`journal` всё равно отдаёт `metrics`, `checklist`, `unresolved`, `journal`. Это основание для обязательных полей во фронтенде.
+
+Проверки: `pytest tests/test_daily_summary*.py` — 92 passed; `ruff check`/`ruff format --check` — чисто. Production-код бэкенда не менялся.
+## 2026-10-25 — PHASE-03/217: mac-агент, чекпойнт открытого интервала и история кодов сброса
+
+Что поменялось: открытый интервал режется раз в 5 минут (`IntervalBuilder.checkpoint()`, вызывается из `ActivitySampler.sample` после `record`), поэтому `kill -9` теряет не больше этого окна; очередь хранит счётчики по каждому коду сброса, а не только последний; новый интерфейс на живом пути (Tailscale при поднятом Wi-Fi) отменяет бэкофф. Серверной части нет.
+
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `checkpointInterval`, `checkpoint()`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: `record` + `checkpoint` в одном вызове.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/OutboxStore.swift` — mod: модель `QueueErrorTotal`, `QueueErrorTally`, `errorHistory`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Flusher.swift` — mod: `networkChanged(available:interfaces:)`, имена интерфейсов из `NWPath.availableInterfaces`.
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IntervalBuilderTests.swift`, `QueueTests.swift` — mod: 4 + 4 новых теста.
+
+Проверки: `xcodebuild test -destination 'platform=macOS'` — 99 passed. Не проверено вживую: реальный `NWPathMonitor` при старте Tailscale (список `availableInterfaces` с `utun*` не смотрел), настоящий `kill -9` процесса агента.
+## 2026-10-25 — PHASE-01/178 встроенные категории из коробки
+
+Каталог шаблонов живёт в коде, применение идёт через существующий `apply_category_batch`; шаблон — обычная категория, никакой пометки происхождения нет. Ничего не создаётся без выбора пользователя: `GET /categories/templates` только читает.
+
+- `app/data/category_templates.py`, `app/data/__init__.py` — new: каталог Supplements (чек-лист из трёх boolean-полей), Water, Sleep, Weight.
+- `app/schemas/category_template.py` — new: `CategoryTemplate`, `CategoryTemplateResponse` (с `added`), запрос и ответ применения.
+- `app/crud/category_template.py` — new: `list_templates` (один запрос на `added`), `apply_templates` (неизвестный ключ -> 422 до записи; занятое имя -> `skipped`; остальное одной транзакцией).
+- `app/api/categories.py` — mod: `GET /categories/templates` и `POST /categories/templates/apply`, добавлены до `/{category_id}`.
+- `tests/test_category_templates.py` — new: инварианты каталога, список, применение, повтор, пропуск чужой категории, переименование/дополнение/удаление, число SQL не растёт с `added`.
+- Фронт: `components/categories/TemplatePicker.tsx` (+ тест) — new; `app/categories/page.tsx` — mod (кнопки «From template» и «Start from a template»); `lib/api.ts` — mod (типы и два метода внутри `categoriesAPI`); `app/categories/page.test.tsx` — mod.
+
+Решения без согласования с человеком (тикет их оставлял открытыми): каталог — четыре вещи из тикета; Supplements — чек-лист с boolean-полем на добавку; вход — панель на странице категорий, а не онбординг (его пути вне периметра задачи). Мобильная `/m/categories` и онбординг шаблонов пока не показывают.

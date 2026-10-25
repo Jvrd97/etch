@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217
 // summary: samples the foreground app on a timer and on every switch, builds intervals and queues them on disk; the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
 import AppKit
 import Combine
@@ -142,7 +142,7 @@ final class ActivitySampler: ObservableObject {
 
     private func sample(bundleID: String?) {
         guard let bundleID, !bundleID.isEmpty, let store, let flusher else { return }
-        let closed = builder.record(AppSighting(bundleID: bundleID, date: Date()))
+        let closed = builder.record(AppSighting(bundleID: bundleID, date: Date())) + builder.checkpoint()
         if !closed.isEmpty {
             store.enqueue(closed)
             flusher.intervalClosed()

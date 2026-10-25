@@ -1,5 +1,5 @@
-// [review:approved] PHASE-03/155
-// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one
+// [review:need-review] PHASE-03/155, PHASE-03/217
+// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one; an interval open for 5 minutes is cut so a kill loses at most that
 import Foundation
 
 struct AppSighting: Equatable {
@@ -42,8 +42,13 @@ struct ActivityInterval: Equatable, Encodable {
 /// a third app — closes the interval at the moment of leaving. Silence of
 /// `continuityWindow` or longer (sleep, stopped sampling) ends an interval at
 /// its last sighting.
+///
+/// An interval has no upper bound while it is open, and a killed agent never
+/// closes it. `checkpoint()` cuts a long interval so only the part since the
+/// last cut can be lost.
 struct IntervalBuilder {
     static let continuityWindow: TimeInterval = 30
+    static let checkpointInterval: TimeInterval = 5 * 60
 
     private struct OpenInterval {
         let bundleID: String
@@ -109,6 +114,16 @@ struct IntervalBuilder {
         current = OpenInterval(bundleID: away.bundleID, startedAt: away.startedAt, lastSeen: away.lastSeen, switchCount: 0)
         excursion = nil
         return left + record(sighting)
+    }
+
+    /// Closes the open interval at its last sighting once it has run for `checkpointInterval`
+    /// and opens its continuation from there; call it after `record`. While another app is
+    /// in front the interval may still be resumed as one, so it waits.
+    mutating func checkpoint() -> [ActivityInterval] {
+        guard let active = current, excursion == nil,
+              active.lastSeen.timeIntervalSince(active.startedAt) >= Self.checkpointInterval else { return [] }
+        current = OpenInterval(bundleID: active.bundleID, startedAt: active.lastSeen, lastSeen: active.lastSeen, switchCount: 0)
+        return close(active, at: active.lastSeen)
     }
 
     /// Closes whatever is open as of `date` and returns it.
