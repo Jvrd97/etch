@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201, PHASE-01/177, PHASE-01/207
-// summary: Today avoid streak card — «Случилось» records a relapse of any avoid category in one tap through the relapse endpoint (the server decides what to write), refreshes the streak and the day list, offers an exact undo and optional details (how many, a note) afterwards, and the card itself links to the category page of the current shell
+// summary: Today avoid streak card — «Случилось» records a relapse of any avoid category in one tap through the relapse endpoint (the server decides what to write), refreshes the streak and the day list, offers an undo only of a relapse this tap wrote, and optional details (how many, a note) afterwards, and the card itself links to the category page of the current shell
 
 import { useId, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -14,6 +14,7 @@ import {
   type Entry,
   type EntryCreate,
   type Field,
+  type RelapseRecorded,
 } from '@/lib/api';
 import { FieldValueInput } from '@/components/FieldValueInput';
 import { formatCleanDays, formatDays } from '@/lib/streak-format';
@@ -45,16 +46,17 @@ interface AvoidStreakCardProps {
 
 /**
  * Where the card is in its one job: record a relapse, then optionally undo it
- * or add details to it. The entry is the one this card recorded, so undo and
- * details never touch an entry somebody else wrote.
+ * or add details to it. The entry is the one the tap landed on; undo is offered
+ * only when the tap wrote it (`created`), so it never deletes a relapse a quick
+ * mark or another tab recorded a moment earlier.
  */
 type RelapseState =
   | { phase: 'idle' }
   | { phase: 'recording' }
-  | { phase: 'recorded'; entry: Entry }
-  | { phase: 'details'; entry: Entry }
-  | { phase: 'undoing'; entry: Entry }
-  | { phase: 'saving-details'; entry: Entry };
+  | { phase: 'recorded'; entry: RelapseRecorded }
+  | { phase: 'details'; entry: RelapseRecorded }
+  | { phase: 'undoing'; entry: RelapseRecorded }
+  | { phase: 'saving-details'; entry: RelapseRecorded };
 
 const RECORD_FAILED = 'Не удалось записать срыв';
 const UNDO_FAILED = 'Не удалось отменить срыв';
@@ -127,7 +129,7 @@ export default function AvoidStreakCard({
       tapKey.current = key;
       const previous = state;
       setState({ phase: 'recording' });
-      let entry: Entry;
+      let entry: RelapseRecorded;
       try {
         entry = await categoriesAPI.recordRelapse(category.id, key);
       } catch {
@@ -140,7 +142,7 @@ export default function AvoidStreakCard({
       await refresh();
     });
 
-  const undo = (entry: Entry) =>
+  const undo = (entry: RelapseRecorded) =>
     run(async () => {
       setState({ phase: 'undoing', entry });
       try {
@@ -154,14 +156,14 @@ export default function AvoidStreakCard({
       await refresh();
     });
 
-  const openDetails = (entry: Entry) => {
+  const openDetails = (entry: RelapseRecorded) => {
     const stored = amountField && entry.values.find((value) => value.field_id === amountField.id);
     setAmount(stored ? stored.value : '');
     setNote(entry.notes ?? '');
     setState({ phase: 'details', entry });
   };
 
-  const saveDetails = (entry: Entry) =>
+  const saveDetails = (entry: RelapseRecorded) =>
     run(async () => {
       const payload: Partial<EntryCreate> = {};
       const trimmedNote = note.trim();
@@ -191,7 +193,7 @@ export default function AvoidStreakCard({
         onError(DETAILS_FAILED);
         return;
       }
-      setState({ phase: 'recorded', entry: updated });
+      setState({ phase: 'recorded', entry: { ...updated, created: entry.created } });
       await refresh();
     });
 
@@ -243,7 +245,7 @@ export default function AvoidStreakCard({
       {recordedEntry !== null && state.phase !== 'details' && state.phase !== 'saving-details' && (
         <div className="relative z-10 mt-4 flex flex-wrap items-center gap-2">
           <span role="status" className="basis-full text-sm font-medium text-text-primary sm:basis-auto sm:mr-auto">
-            Срыв записан
+            {recordedEntry.created ? 'Срыв записан' : 'Срыв уже записан'}
           </span>
           <button
             type="button"
@@ -253,14 +255,16 @@ export default function AvoidStreakCard({
           >
             Подробнее
           </button>
-          <button
-            type="button"
-            onClick={() => void undo(recordedEntry)}
-            disabled={working}
-            className={BUTTON_CLASS}
-          >
-            Отменить
-          </button>
+          {recordedEntry.created && (
+            <button
+              type="button"
+              onClick={() => void undo(recordedEntry)}
+              disabled={working}
+              className={BUTTON_CLASS}
+            >
+              Отменить
+            </button>
+          )}
         </div>
       )}
 

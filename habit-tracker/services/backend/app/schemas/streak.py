@@ -1,10 +1,11 @@
 # [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/207
-# summary: StreakResponse DTO (current/best streak, last relapse date, streak mode) and RelapseHistoryResponse — the same numbers plus every relapse day and the first tracked day
+# summary: StreakResponse DTO (current/best streak, last relapse date, streak mode); RelapseHistoryResponse — the same numbers plus every relapse day, the first tracked day and the server's today; RelapseRecordedResponse — the entry a Happened tap landed on and whether that tap wrote it
 from datetime import date
 
 from pydantic import BaseModel
 
 from app.schemas.category import CategoryStreakMode
+from app.schemas.entry import EntryResponse
 
 
 class StreakResponse(BaseModel):
@@ -30,3 +31,21 @@ class RelapseHistoryResponse(StreakResponse):
     tracked_since: date | None
     # Every day that held a relapse, ascending.
     relapse_dates: list[date]
+    # «Сегодня» by the day rule in force (the day may end at 04:00, not at
+    # midnight), so the page counts its week and month from the same day the
+    # streak was counted to, not from the browser's calendar.
+    today: date
+
+
+class RelapseRecordedResponse(EntryResponse):
+    """
+    The entry a Happened tap landed on.
+
+    `created` is true when this request — or an earlier attempt under the same
+    Idempotency-Key — wrote the entry, so the tap may take it back. It is false
+    when the tap landed on a relapse already recorded within the repeat window:
+    that entry is somebody else's (a quick mark, another tab), and undoing this
+    tap must not delete it.
+    """
+
+    created: bool

@@ -183,10 +183,11 @@ export const categoriesAPI = {
 
   /**
    * One tap of «Случилось»: the server picks what to write for this category's
-   * fields. A repeat under the same key, or within a minute, returns the same entry.
+   * fields. A repeat under the same key, or within a minute, returns the same
+   * entry; `created` says whether this tap wrote it.
    */
   recordRelapse: async (id: number, idempotencyKey?: string) => {
-    return fetcher<Entry>(`/categories/${id}/relapses`, {
+    return fetcher<RelapseRecorded>(`/categories/${id}/relapses`, {
       method: 'POST',
       headers: idempotency(idempotencyKey),
     });
@@ -3710,7 +3711,8 @@ export const healthAPI = {
   },
 };
 
-// #207: the relapse history of an avoid category.
+// [review:need-review] PHASE-01/207
+// summary: the relapse history of an avoid category and the entry a Happened tap landed on.
 
 /** GET /categories/{id}/relapses — the streak plus the days it broke on. */
 export interface RelapseHistory extends CategoryStreak {
@@ -3718,4 +3720,15 @@ export interface RelapseHistory extends CategoryStreak {
   tracked_since: string | null;
   /** Every day that held a relapse, ascending (`YYYY-MM-DD`). */
   relapse_dates: string[];
+  /** The server's today by the day rule (`YYYY-MM-DD`): the end of the week and month windows. */
+  today: string;
+}
+
+/** POST /categories/{id}/relapses — the entry a Happened tap landed on. */
+export interface RelapseRecorded extends Entry {
+  /**
+   * True when this tap (or its retry under the same key) wrote the entry; false
+   * when it landed on a relapse somebody already recorded, which it must not undo.
+   */
+  created: boolean;
 }

@@ -1,8 +1,9 @@
 # [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127, PHASE-01/207
-# summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has, and the one-tap relapse writer that a repeated tap within a minute cannot double
+# summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has (an entry with no values always is), and the one-tap relapse writer that a repeated tap within a minute cannot double and that says whether this tap wrote the entry
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import Literal
 
 from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +28,7 @@ __all__ = [
     "get_category_streak",
     "get_category_streaks",
     "is_relapse_value",
+    "RelapseOutcome",
     "record_relapse",
 ]
 
@@ -40,6 +42,10 @@ RELAPSE_FIELD_TYPES: tuple[FieldType, ...] = (
 )
 
 _NUMERIC_RELAPSE_TYPES: tuple[FieldType, ...] = (FieldType.NUMBER, FieldType.DURATION)
+
+# The field types a one-tap relapse writes a value into. A duration is not one of
+# them: the tap does not know how long it lasted, and «1 second» is not a fact.
+_TAP_FIELD_TYPES: tuple[FieldType, ...] = (FieldType.BOOLEAN, FieldType.NUMBER)
 
 # A second relapse of the same category this soon after the first is the same
 # tap twice — a double click, a retried request without its key — not a second
@@ -92,13 +98,22 @@ def is_relapse_entry(
     One entry of an avoid category is a relapse.
 
     The verdict reads only what the entry holds, so an entry from the Today tap,
-    a quick mark, the day plan or an import is judged the same way. A category
-    that can say «не было» (it has a field of `RELAPSE_FIELD_TYPES`) relapses on
-    a value that says so; a category that cannot relapses on every entry,
-    because an entry is the only thing such a category can record.
+    a quick mark, the day plan or an import is judged the same way. An entry with
+    no values at all is a relapse: every writer that records a day sends a value
+    per field (the entry form sends '' for an untouched one), and the only empty
+    entries are «случилось» with nothing else to say — the old Today form wrote
+    exactly those. Otherwise a category that can say «не было» (it has a field of
+    `RELAPSE_FIELD_TYPES`) relapses on a value that says so, and a category that
+    cannot relapses on every entry, because an entry is all it can record.
+
+    The «can say no» answer is read off the category's fields as they are now: a
+    checkbox added to a text-only category later turns its past relapses into
+    clean days.
+
     `values` are `(field_id, field_type, value)`; the ids only localize a warning.
     """
-    if not category_can_say_no:
+    values = list(values)
+    if not values or not category_can_say_no:
         return True
     return any(
         is_relapse_value(field_type, value, field_id=field_id, entry_id=entry_id)
@@ -110,18 +125,19 @@ def relapse_field(category: Category) -> Field | None:
     """
     The field a one-tap relapse is written into, or None when there is none.
 
-    The primary field when it can say «случилось», else the first checkbox, else
-    the first count or duration, in field order. A box beats a count because
-    «случилось» is a fact and the count is a detail the tap does not know.
+    The primary field when it is a checkbox or a count, else the first checkbox,
+    else the first count, in field order. A box beats a count because
+    «случилось» is a fact and the count is a detail the tap does not know. With
+    neither, the tap writes an entry with no values, which is a relapse as it is.
     """
     fields = category.fields
     primary = next((f for f in fields if f.id == category.primary_field_id), None)
-    if primary is not None and primary.field_type in RELAPSE_FIELD_TYPES:
+    if primary is not None and primary.field_type in _TAP_FIELD_TYPES:
         return primary
     boolean = next((f for f in fields if f.field_type == FieldType.BOOLEAN), None)
     if boolean is not None:
         return boolean
-    return next((f for f in fields if f.field_type in _NUMERIC_RELAPSE_TYPES), None)
+    return next((f for f in fields if f.field_type == FieldType.NUMBER), None)
 
 
 def _relapse_value(target: Field) -> str:
@@ -332,34 +348,41 @@ async def _write_relapse(
     return written
 
 
+# How a tap ended: it wrote the entry now, it is a replay of the request that
+# wrote it (same Idempotency-Key), or it landed on a relapse somebody already
+# recorded within the repeat window — a quick mark, another tab, a double tap.
+RelapseOutcome = Literal["created", "replayed", "repeated"]
+
+
 async def record_relapse(
     db: AsyncSession, category: Category, idempotency_key: str | None = None
-) -> tuple[Entry, bool]:
+) -> tuple[Entry, RelapseOutcome]:
     """
-    Record that the avoided thing happened today; return the entry and whether it is new.
+    Record that the avoided thing happened today; return the entry and how.
 
     One rule for every avoid category, whatever its fields: the value goes into
-    `relapse_field` (a ticked box, or one of a count or a duration), and a
-    category without such a field gets an entry with no values, which
-    `is_relapse_entry` reads as a relapse all the same. The amount and a note
-    are details the caller adds to the returned entry afterwards.
+    `relapse_field` (a ticked box, or one of a count), and a category without
+    such a field gets an entry with no values, which `is_relapse_entry` reads as
+    a relapse all the same. The amount and a note are details the caller adds
+    to the returned entry afterwards.
 
-    Not new — and nothing written — when `idempotency_key` names an entry that
-    already exists (a replayed request), or when the category already got a
-    relapse within `RELAPSE_REPEAT_WINDOW` (a double tap).
+    Nothing is written for a replayed key or for a tap within
+    `RELAPSE_REPEAT_WINDOW` of a relapse already recorded today. Only the first
+    two outcomes make the entry this tap's own: a `repeated` entry belongs to
+    whoever wrote it, and taking this tap back must not delete it.
     """
     if idempotency_key is not None:
         replayed = await entry_crud.get_entry_by_idempotency_key(db, idempotency_key)
         if replayed is not None:
-            return replayed, False
+            return replayed, "replayed"
 
     today = today_local()
     recent = await _recent_relapse(db, category, today)
     if recent is not None:
-        return recent, False
+        return recent, "repeated"
 
     try:
-        return await _write_relapse(db, category, today, idempotency_key), True
+        return await _write_relapse(db, category, today, idempotency_key), "created"
     except IntegrityError:
         # A concurrent replay of the same key won the race between the lookup
         # and the insert; the unique constraint is the backstop.
@@ -369,4 +392,4 @@ async def record_relapse(
         winner = await entry_crud.get_entry_by_idempotency_key(db, idempotency_key)
         if winner is None:
             raise
-        return winner, False
+        return winner, "replayed"

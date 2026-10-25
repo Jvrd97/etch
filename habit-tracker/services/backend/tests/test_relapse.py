@@ -3,7 +3,7 @@ Tests for the one-tap relapse of an avoid category and its relapse history.
 """
 
 # [review:need-review] PHASE-01/207
-# summary: POST /categories/{id}/relapses breaks the streak whatever fields the category has, a repeated tap within a minute stays one relapse, GET /categories/{id}/relapses returns the relapse days, and the bulk streak read keeps a constant number of SQL statements
+# summary: POST /categories/{id}/relapses breaks the streak whatever fields the category has and says whether this tap wrote the entry, a repeated tap within a minute stays one relapse, an entry with no values (the old form's relapse) and a quick-mark relapse break the streak too, GET /categories/{id}/relapses returns the relapse days with the server's today, and the bulk streak read keeps a constant number of SQL statements
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -66,9 +66,10 @@ FIELD_SETS: dict[str, tuple[list[dict[str, Any]], dict[str, str]]] = {
         ],
         {},
     ),
+    # No made-up «1 second»: the entry itself is the relapse, the time is a detail.
     "duration": (
         [{"name": "Соцсети", "field_type": "duration", "order": 0}],
-        {"Соцсети": "1"},
+        {},
     ),
     "no fields": ([], {}),
 }
@@ -100,6 +101,20 @@ async def _add_entry(
     assert response.status_code == 201
 
 
+# What a category writes for a day that went clean: an unticked box, a zero.
+CLEAN_VALUES: dict[str, str] = {"boolean": "", "number": "0", "duration": "0"}
+
+
+def _clean_day(
+    fields: list[dict[str, Any]], field_ids: dict[str, int]
+) -> dict[int, str]:
+    return {
+        field_ids[f["name"]]: CLEAN_VALUES[f["field_type"]]
+        for f in fields
+        if f["field_type"] in CLEAN_VALUES
+    }
+
+
 async def _entry_count(db: AsyncSession, category_id: int) -> int:
     result = await db.execute(
         select(func.count()).select_from(Entry).where(Entry.category_id == category_id)
@@ -117,10 +132,11 @@ class TestRecordRelapse:
     ) -> None:
         fields, expected = FIELD_SETS[field_set]
         category_id, field_ids = await _create_avoid(client, fields)
-        week_ago = (today_local() - timedelta(days=7)).isoformat()
-        # A clean day a week ago, so the streak has something to lose.
-        await _add_entry(client, category_id, week_ago, {})
-        if field_set not in ("text-only", "select-only", "no fields"):
+        clean = _clean_day(fields, field_ids)
+        if clean:
+            # A clean day a week ago, so the streak has something to lose.
+            week_ago = (today_local() - timedelta(days=7)).isoformat()
+            await _add_entry(client, category_id, week_ago, clean)
             before = await client.get(f"/api/v1/categories/{category_id}/streak")
             assert before.json()["current_streak"] == 8
 
@@ -128,6 +144,7 @@ class TestRecordRelapse:
 
         assert response.status_code == 201
         entry = response.json()
+        assert entry["created"] is True
         assert entry["category_id"] == category_id
         assert entry["entry_date"] == today_local().isoformat()
         written = {value["field_id"]: value["value"] for value in entry["values"]}
@@ -168,7 +185,35 @@ class TestRecordRelapse:
         assert first.status_code == 201
         assert second.status_code == 200
         assert second.json()["id"] == first.json()["id"]
+        # The second tap wrote nothing: undoing it must not delete the first.
+        assert second.json()["created"] is False
         assert await _entry_count(db_session, category_id) == 1
+
+    async def test_a_tap_landing_on_a_quick_mark_relapse_does_not_own_it(
+        self, client: AsyncClient
+    ) -> None:
+        """A Happened right after a quick-mark relapse is the same relapse, not this tap's."""
+        category_id, field_ids = await _create_avoid(client, FIELD_SETS["number"][0])
+        mark = await client.post(
+            "/api/v1/quick-marks",
+            json={
+                "label": "Сигарета",
+                "category_id": category_id,
+                "field_id": field_ids["Сигареты"],
+                "kind": "relapse",
+            },
+        )
+        assert mark.status_code == 201
+        tapped = await client.post(
+            f"/api/v1/quick-marks/{mark.json()['id']}/events", json={}
+        )
+        assert tapped.status_code == 201
+
+        response = await client.post(f"/api/v1/categories/{category_id}/relapses")
+
+        assert response.status_code == 200
+        assert response.json()["id"] == tapped.json()["entry_id"]
+        assert response.json()["created"] is False
 
     async def test_a_replayed_key_returns_the_original_relapse(
         self, client: AsyncClient, db_session: AsyncSession
@@ -192,6 +237,8 @@ class TestRecordRelapse:
         assert first.status_code == 201
         assert replay.status_code == 200
         assert replay.json()["id"] == first.json()["id"]
+        # The same request again: the entry is still this tap's to undo.
+        assert replay.json()["created"] is True
         assert await _entry_count(db_session, category_id) == 1
 
     async def test_a_relapse_after_the_window_is_a_new_one(
@@ -273,6 +320,70 @@ class TestRelapseRuleOverEntries:
 
         assert streak.json()["current_streak"] == 0
 
+    async def test_an_entry_without_values_is_a_relapse_even_if_the_category_can_say_no(
+        self, client: AsyncClient
+    ) -> None:
+        """
+        The old Today form sent `values: []` for «Случилось»: that was a relapse.
+
+        Every other writer sends a value per field (the entry form sends '' for
+        an untouched one), so an entry with no values at all says nothing but
+        «это случилось».
+        """
+        category_id, field_ids = await _create_avoid(
+            client, FIELD_SETS["boolean+text"][0]
+        )
+        today = today_local()
+        await _add_entry(
+            client,
+            category_id,
+            (today - timedelta(days=10)).isoformat(),
+            {field_ids["Курил"]: ""},
+        )
+        legacy_day = (today - timedelta(days=3)).isoformat()
+        await _add_entry(client, category_id, legacy_day, {})
+
+        history = await client.get(f"/api/v1/categories/{category_id}/relapses")
+
+        assert history.json()["relapse_dates"] == [legacy_day]
+        assert history.json()["current_streak"] == 3
+
+    @pytest.mark.parametrize(
+        ("fields", "field_name"),
+        [
+            (FIELD_SETS["boolean"][0], "Курил"),
+            (FIELD_SETS["number"][0], "Сигареты"),
+            (FIELD_SETS["duration"][0], "Соцсети"),
+            (FIELD_SETS["text-only"][0], "Что случилось"),
+        ],
+    )
+    async def test_a_quick_mark_relapse_breaks_the_streak(
+        self, client: AsyncClient, fields: list[dict[str, Any]], field_name: str
+    ) -> None:
+        category_id, field_ids = await _create_avoid(client, fields)
+        clean = _clean_day(fields, field_ids)
+        if clean:
+            week_ago = (today_local() - timedelta(days=7)).isoformat()
+            await _add_entry(client, category_id, week_ago, clean)
+        mark = await client.post(
+            "/api/v1/quick-marks",
+            json={
+                "label": "Сорвался",
+                "category_id": category_id,
+                "field_id": field_ids[field_name],
+                "kind": "relapse",
+            },
+        )
+        assert mark.status_code == 201, mark.text
+
+        tapped = await client.post(
+            f"/api/v1/quick-marks/{mark.json()['id']}/events", json={}
+        )
+
+        assert tapped.status_code == 201
+        streak = await client.get(f"/api/v1/categories/{category_id}/streak")
+        assert streak.json()["current_streak"] == 0
+
     async def test_an_unticked_box_still_says_no(self, client: AsyncClient) -> None:
         """The entry form sends '' for an unticked box: that is a clean day, as before."""
         category_id, field_ids = await _create_avoid(
@@ -340,6 +451,9 @@ class TestRelapseHistory:
         data = response.json()
         assert data["relapse_dates"] == [days[9], days[4], days[1]]
         assert data["tracked_since"] == days[12]
+        # The page counts its windows from the server's day, not the browser's
+        # midnight: the day rule may end the day at 04:00.
+        assert data["today"] == today.isoformat()
         streak = await client.get(f"/api/v1/categories/{category_id}/streak")
         for key, value in streak.json().items():
             assert data[key] == value

@@ -1,12 +1,11 @@
 'use client';
 // [review:need-review] PHASE-01/207
-// summary: relapse block of an avoid category page — current and best streak, last relapse, relapse days in the last 7 and 30 days, average gap, trend against the month before, the history chart, the weekday split and the list of the latest relapse days
+// summary: relapse block of an avoid category page — current and best streak, last relapse, relapse days in the last 7 and 30 days counted to the server's today, average gap, trend against the month before, the history chart, the weekday split and the list of the latest relapse days
 
 import { useId, useMemo } from 'react';
 import { Flame, Minus, TrendingDown, TrendingUp } from 'lucide-react';
 import type { RelapseHistory } from '@/lib/api';
 import RelapseChart from '@/components/RelapseChart';
-import { todayISO } from '@/lib/date';
 import {
   MONTH_DAYS,
   WEEKDAY_LABELS,
@@ -25,9 +24,8 @@ const RECENT_RELAPSES_SHOWN = 10;
 const TREND_HISTORY_DAYS = MONTH_DAYS * 2;
 
 interface RelapseHistoryCardProps {
+  /** Its `today` ends the week and month windows: the server's day, not the browser's. */
   history: RelapseHistory;
-  /** Today as `YYYY-MM-DD`; injectable so tests pin the windows. */
-  today?: string;
 }
 
 function TrendLine({ trend }: { trend: RelapseTrend }) {
@@ -63,9 +61,9 @@ function TrendLine({ trend }: { trend: RelapseTrend }) {
   );
 }
 
-export default function RelapseHistoryCard({ history, today }: RelapseHistoryCardProps) {
+export default function RelapseHistoryCard({ history }: RelapseHistoryCardProps) {
   const titleId = useId();
-  const day = today ?? todayISO();
+  const day = history.today;
   const summary = useMemo(
     () => summarizeRelapses(history.relapse_dates, history.tracked_since, day),
     [history.relapse_dates, history.tracked_since, day]

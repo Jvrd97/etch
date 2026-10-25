@@ -2118,13 +2118,13 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 
 Изменено 14 файлов кода: 5 `new`, 8 `mod`, 1 удалён.
 
-- `components/AvoidStreakCard.tsx` и тест — mod: «Случилось» у любой avoid-категории — один `POST /categories/{id}/relapses`, без формы. Сначала перечитывается серия, потом список дня. Ошибка видна и счётчик не трогает, повтор идёт с тем же ключом. После срыва — «Отменить» и «Подробнее» (сколько и заметка через PATCH той же записи). Вся карточка — ссылка на страницу категории текущей оболочки (`/categories/N` или `/m/categories/N`). Проп `entries` больше не читается.
+- `components/AvoidStreakCard.tsx` и тест — mod: «Случилось» у любой avoid-категории — один `POST /categories/{id}/relapses`, без формы. Сначала перечитывается серия, потом список дня. Ошибка видна и счётчик не трогает, повтор идёт с тем же ключом. После срыва — «Подробнее» (сколько и заметка через PATCH той же записи) и «Отменить», но только если запись создало это нажатие (`created`); попав на чужой срыв той же минуты, карточка пишет «Срыв уже записан» без отмены. Вся карточка — ссылка на страницу категории текущей оболочки (`/categories/N` или `/m/categories/N`). Проп `entries` больше не читается.
 - `lib/relapse-analysis.ts` и тест — new: срывы за 7 и 30 дней, средний промежуток, дни недели, тренд к прошлому месяцу, столбцы графика по дням или неделям.
 - `components/RelapseChart.tsx` — new: график recharts с переключателем периода.
-- `components/RelapseHistoryCard.tsx` и тест — new: блок «Срывы» на странице категории.
+- `components/RelapseHistoryCard.tsx` и тест — new: блок «Срывы» на странице категории; окна недели и месяца считаются от `history.today` сервера, а не от часов браузера.
 - `hooks/useCategoryDetail.ts` и тест — mod: вместо `getStreak` читается `getRelapses`.
 - `app/categories/[id]/page.tsx`, `app/m/categories/[id]/page.tsx` и тест — mod: блок «Срывы» вместо `StreakCard`.
 - `components/StreakCard.tsx` — удалён, его заменил блок «Срывы».
-- `lib/api.ts` — mod: `categoriesAPI.getRelapses`, `categoriesAPI.recordRelapse`, тип `RelapseHistory` в конце файла.
+- `lib/api.ts` — mod: `categoriesAPI.getRelapses`, `categoriesAPI.recordRelapse`, типы `RelapseHistory` и `RelapseRecorded` в конце файла.
 
-Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, в изменённых файлах предупреждений нет. Полный `bun test` — 1497 pass, 1 fail: известный `healthAPI` в `app/m/health/page.test.tsx`, он падает и на baseline. Вживую в headless Chrome (390×844 и 1280×900) на бэкенде 8807: 8 avoid-категорий, нажатие сбивает серию в 0 на `/m/today` и `/today`, отмена возвращает. Даты в списке и на графике совпадают с записями в базе. iOS Safari и реальный телефон не проверялись.
+Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, в изменённых файлах предупреждений нет. Полный `bun test` — 1499 pass, 1 fail + 1 error: известный `healthAPI` в `app/m/health/page.test.tsx`, он падает и на baseline. Вживую в headless Chrome (390×900 и 1280×900) на бэкенде 8807 и базе `habit_live_207`: шесть avoid-категорий (boolean, boolean+текст, два boolean, число, только текст, длительность), одно нажатие сбивает серию в 0 на `/m/today` и `/today` без формы и без ошибок; повтор в пределах минуты — «Срыв уже записан» без «Отменить». Карточка ведёт на `/m/categories/N` и `/categories/N`, даты в списке совпадают с записями в базе. iOS Safari и реальный телефон не проверялись.

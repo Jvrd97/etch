@@ -1,9 +1,17 @@
 // [review:need-review] PHASE-01/201, PHASE-01/207
-// summary: tests the one-tap «Случилось» of every avoid category through the relapse endpoint (no form), its exact undo, the details added afterwards, failures that leave the counter alone, the retry under the same key, and the card's link into the category page of the current shell
+// summary: tests the one-tap «Случилось» of every avoid category through the relapse endpoint (no form), its exact undo (never of a relapse it did not write), the details added afterwards, failures that leave the counter alone, the retry under the same key, and the card's link into the category page of the current shell
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { categoriesAPI, entriesAPI, type Category, type Entry, type EntryCreate, type Field } from '@/lib/api';
+import {
+  categoriesAPI,
+  entriesAPI,
+  type Category,
+  type Entry,
+  type EntryCreate,
+  type Field,
+  type RelapseRecorded,
+} from '@/lib/api';
 
 let pathname = '/today';
 mock.module('next/navigation', () => ({
@@ -51,8 +59,8 @@ const FIELD_SETS: Array<[string, Category]> = [
   ['duration', category(7, 'Соцсети', [field(17, 7, 'Сколько', 'duration')])],
 ];
 
-function relapseEntry(categoryId: number, values: Entry['values'] = []): Entry {
-  return { id: 41, category_id: categoryId, entry_date: DATE, created_at: TIMESTAMP, updated_at: TIMESTAMP, values };
+function relapseEntry(categoryId: number, values: RelapseRecorded['values'] = [], created = true): RelapseRecorded {
+  return { id: 41, category_id: categoryId, entry_date: DATE, created_at: TIMESTAMP, updated_at: TIMESTAMP, values, created };
 }
 
 const STREAK = { category_id: 1, streak_mode: 'avoid' as const, current_streak: 3, best_streak: 8, last_relapse_date: null };
@@ -164,6 +172,18 @@ describe('AvoidStreakCard «Случилось»', () => {
     expect(onEntriesChanged).toHaveBeenCalledTimes(2);
   });
 
+  it('does not offer to undo a relapse somebody else already recorded today', async () => {
+    recordRelapse = mock(() => Promise.resolve(relapseEntry(1, [], false)));
+    const { onRelapse } = renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Срыв уже записан'));
+    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined();
+    expect(onRelapse).toHaveBeenCalledWith(1);
+  });
+
   it('shows a failed tap and leaves the counter alone, then retries under the same key', async () => {
     let attempts = 0;
     recordRelapse = mock(() => {
@@ -184,8 +204,8 @@ describe('AvoidStreakCard «Случилось»', () => {
   });
 
   it('sends one request however fast the button is pressed twice', async () => {
-    let resolve: ((entry: Entry) => void) | undefined;
-    recordRelapse = mock(() => new Promise<Entry>((done) => { resolve = done; }));
+    let resolve: ((entry: RelapseRecorded) => void) | undefined;
+    recordRelapse = mock(() => new Promise<RelapseRecorded>((done) => { resolve = done; }));
     renderCard();
     const happened = screen.getByRole('button', { name: 'Случилось' });
 

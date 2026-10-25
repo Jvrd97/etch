@@ -41,6 +41,7 @@ const STREAK: RelapseHistory = {
   last_relapse_date: '2026-07-21',
   tracked_since: '2026-07-01',
   relapse_dates: ['2026-07-12', '2026-07-21'],
+  today: '2026-10-25',
 };
 
 const ENTRY: Entry = {

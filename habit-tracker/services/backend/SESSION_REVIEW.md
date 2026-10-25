@@ -2458,10 +2458,10 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 
 Изменено 5 файлов кода: 1 `new`, 4 `mod`.
 
-- `app/crud/streak.py` — mod: одно правило срыва `is_relapse_entry` для всех писателей (Today, быстрая отметка, план, импорт). Категория с полем boolean, number или duration срывается по значению; категория без такого поля срывается на любой записи. Длительность больше нуля теперь срыв. `record_relapse` пишет срыв одним нажатием: галочка в основное или первое boolean-поле, иначе 1 в число или длительность, иначе запись без значений. Повтор по `Idempotency-Key` и второе нажатие в течение минуты за тот же день возвращают первый срыв. `StreakStats` получил `relapse_dates` и `tracked_since`; одиночный и массовый расчёт идут через один запрос `_load_histories`, признак «категория умеет сказать нет» — коррелированный EXISTS.
-- `app/schemas/streak.py` — mod: `RelapseHistoryResponse`.
+- `app/crud/streak.py` — mod: одно правило срыва `is_relapse_entry` для всех писателей (Today, быстрая отметка, план, импорт). Запись без значений — всегда срыв (так писала старая форма Today). Иначе категория с полем boolean, number или duration срывается по значению, а категория без такого поля — на любой записи. Длительность больше нуля теперь срыв. `record_relapse` пишет срыв одним нажатием: галочка в основное или первое boolean-поле, иначе 1 в число, иначе запись без значений (длительность нажатие не выдумывает). Повтор по `Idempotency-Key` (`replayed`) и нажатие в течение минуты после чужого срыва за тот же день (`repeated`) возвращают уже записанный срыв. `StreakStats` получил `relapse_dates` и `tracked_since`; одиночный и массовый расчёт идут через один запрос `_load_histories`, признак «категория умеет сказать нет» — коррелированный EXISTS.
+- `app/schemas/streak.py` — mod: `RelapseHistoryResponse` (плюс `today` — день сервера по правилу дня) и `RelapseRecordedResponse` (запись плюс `created`: можно ли этому нажатию её отменить).
 - `app/api/categories.py` — mod (добавлением): `POST /categories/{id}/relapses` (201, повтор 200, не avoid — 409) и `GET /categories/{id}/relapses`.
 - `tests/test_relapse.py` — new: девять наборов полей, основное поле, окно повтора, ключ, запись за прошлый день, правило по записям, история, число SQL на `/streaks` не растёт с категориями.
 - `tests/test_streak.py` — mod: новые поля `StreakStats`, длительность и текст в `is_relapse_value`.
 
-Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1634 passed, 2 failed: `test_goals.py` падает так же на baseline `8dc958d`.
+Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1640 passed, 3 skipped, 2 failed: `test_goals.py` падает так же на baseline `8dc958d`.

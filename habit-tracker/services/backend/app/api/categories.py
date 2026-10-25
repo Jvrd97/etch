@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.crud import category as category_crud
 from app.crud import streak as streak_crud
-from app.models import Category, Entry, Field
+from app.models import Category, Field
 from app.crud.category import (
     CHECKLIST_DISPLAY_MODE,
     CHECKLIST_NEEDS_BOOLEAN_DETAIL,
@@ -30,7 +30,8 @@ from app.schemas.category import (
     CategoryStreakMode,
 )
 from app.schemas.entry import EntryResponse
-from app.schemas.streak import RelapseHistoryResponse
+from app.schemas.streak import RelapseHistoryResponse, RelapseRecordedResponse
+from app.core.daytime import today_local
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 
@@ -92,8 +93,10 @@ async def get_category_streak(
     """
     Получить стрик категории, посчитанный по всей её истории.
 
-    Срыв — день с записью, где boolean-поле true или number-поле > 0.
-    День без записи считается чистым. Граница суток — UTC.
+    Срыв — день с записью, которую `app.crud.streak.is_relapse_entry` считает
+    срывом: boolean true, число или длительность больше нуля, запись без
+    значений, а у категории без boolean/number/duration-полей — любая запись.
+    День без записи считается чистым. Граница суток — `today_local()`.
 
     ВАЖНО: до тикета #23 числа считаются только в avoid-семантике —
     расчёт одинаков для любой категории и всегда трактует «есть значение»
@@ -313,8 +316,9 @@ async def get_category_relapses(
     Стрик категории вместе с днями срывов — для графика на странице категории.
 
     `relapse_dates` — все дни со срывом по возрастанию, `tracked_since` — первый
-    день с записью. Срыв считается тем же правилом, что и стрик
-    (`app.crud.streak.is_relapse_entry`).
+    день с записью, `today` — сегодняшний день по правилу дня, от которого
+    посчитан стрик и от которого странице считать окна недели и месяца. Срыв
+    считается тем же правилом, что и стрик (`app.crud.streak.is_relapse_entry`).
     """
     category = await category_crud.get_category(db, category_id)
     if not category:
@@ -328,7 +332,8 @@ async def get_category_relapses(
             detail=f"Category {category_id} has an unknown streak_mode",
         )
 
-    stats = await streak_crud.get_category_streak(db, category_id)
+    today = today_local()
+    stats = await streak_crud.get_category_streak(db, category_id, today)
     return RelapseHistoryResponse(
         category_id=category.id,
         streak_mode=cast(CategoryStreakMode, category.streak_mode),
@@ -337,12 +342,13 @@ async def get_category_relapses(
         last_relapse_date=stats.last_relapse_date,
         tracked_since=stats.tracked_since,
         relapse_dates=list(stats.relapse_dates),
+        today=today,
     )
 
 
 @router.post(
     "/{category_id}/relapses",
-    response_model=EntryResponse,
+    response_model=RelapseRecordedResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def record_category_relapse(
@@ -350,18 +356,19 @@ async def record_category_relapse(
     response: Response,
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> Entry:
+) -> RelapseRecordedResponse:
     """
     Записать срыв avoid-категории одним нажатием, при любом наборе полей.
 
     Сервер сам выбирает, что записать: галочку в основное или первое
-    boolean-поле, иначе 1 в первое число или длительность, иначе запись без
-    значений. Сколько и заметку клиент дописывает потом через
-    `PATCH /entries/{id}`.
+    boolean-поле, иначе 1 в первое число, иначе запись без значений.
+    Сколько и заметку клиент дописывает потом через `PATCH /entries/{id}`.
 
     Повтор с тем же `Idempotency-Key` и повторное нажатие в течение минуты
     возвращают уже записанный срыв (HTTP 200) вместо второго. Первое создание
-    отвечает 201. Не avoid-категория — 409.
+    отвечает 201. `created` — записало ли срыв это нажатие (или его повтор по
+    ключу): если нет, срыв чужой, и отменять его этим нажатием нельзя.
+    Не avoid-категория — 409.
     """
     category = await category_crud.get_category(db, category_id)
     if not category:
@@ -375,7 +382,10 @@ async def record_category_relapse(
             detail=f"Category {category_id} is not an avoid category",
         )
 
-    entry, created = await streak_crud.record_relapse(db, category, idempotency_key)
-    if not created:
+    entry, outcome = await streak_crud.record_relapse(db, category, idempotency_key)
+    if outcome != "created":
         response.status_code = status.HTTP_200_OK
-    return entry
+    recorded = EntryResponse.model_validate(entry)
+    return RelapseRecordedResponse(
+        **recorded.model_dump(), created=outcome != "repeated"
+    )

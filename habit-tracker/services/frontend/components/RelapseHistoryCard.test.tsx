@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/207
-// summary: tests for the relapse block of the category page — streak numbers, week and month counts, average gap, trend wording, weekday split, the list of relapse days matching the server's dates, and the chart period switch
+// summary: tests for the relapse block of the category page — streak numbers, week and month counts from the server's today, average gap, trend wording, weekday split, the list of relapse days matching the server's dates, and the chart period switch
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -18,6 +18,7 @@ const HISTORY: RelapseHistory = {
   tracked_since: '2026-08-01',
   // Gaps of 2, 9 and 40 days; three in the month before this one, one in this one.
   relapse_dates: ['2026-08-30', '2026-09-01', '2026-09-10', '2026-10-20'],
+  today: TODAY,
 };
 
 function term(name: string): string {
@@ -31,7 +32,7 @@ afterEach(() => {
 
 describe('RelapseHistoryCard', () => {
   it('shows the streak and the counts of the last week and month', () => {
-    render(<RelapseHistoryCard history={HISTORY} today={TODAY} />);
+    render(<RelapseHistoryCard history={HISTORY} />);
 
     expect(screen.getByRole('heading', { name: 'Срывы' })).toBeDefined();
     expect(term('Текущая серия')).toBe('4 дня');
@@ -42,22 +43,34 @@ describe('RelapseHistoryCard', () => {
     expect(term('Средний промежуток')).toBe('17 дней');
   });
 
+  it("counts the week and the month from the server's today, not the browser's", () => {
+    // Far from any real date: a browser clock would see no relapse this week.
+    render(
+      <RelapseHistoryCard
+        history={{ ...HISTORY, relapse_dates: ['2031-03-01'], tracked_since: '2031-02-20', today: '2031-03-03' }}
+      />
+    );
+
+    expect(term('Срывов за 7 дней')).toBe('1');
+    expect(term('Срывов за 30 дней')).toBe('1');
+  });
+
   it('says the relapses got rarer than a month ago', () => {
-    render(<RelapseHistoryCard history={HISTORY} today={TODAY} />);
+    render(<RelapseHistoryCard history={HISTORY} />);
 
     expect(screen.getByText('Реже, чем месяц назад: 1 против 3')).toBeDefined();
   });
 
   it('holds the trend back until the history is long enough', () => {
     render(
-      <RelapseHistoryCard history={{ ...HISTORY, tracked_since: '2026-10-01' }} today={TODAY} />
+      <RelapseHistoryCard history={{ ...HISTORY, tracked_since: '2026-10-01' }} />
     );
 
     expect(screen.getByText(/Тренд появится/)).toBeDefined();
   });
 
   it('splits the relapse days by weekday, Monday first', () => {
-    render(<RelapseHistoryCard history={HISTORY} today={TODAY} />);
+    render(<RelapseHistoryCard history={HISTORY} />);
 
     const list = screen.getByRole('list', { name: 'Срывы по дням недели' });
     // 08-30 Sun, 09-01 Tue, 09-10 Thu, 10-20 Tue.
@@ -67,7 +80,7 @@ describe('RelapseHistoryCard', () => {
   });
 
   it('lists the relapse days the server returned, newest first', () => {
-    render(<RelapseHistoryCard history={HISTORY} today={TODAY} />);
+    render(<RelapseHistoryCard history={HISTORY} />);
 
     const list = screen.getByRole('list', { name: 'Последние срывы' });
     expect(within(list).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
@@ -82,7 +95,6 @@ describe('RelapseHistoryCard', () => {
     render(
       <RelapseHistoryCard
         history={{ ...HISTORY, relapse_dates: [], last_relapse_date: null }}
-        today={TODAY}
       />
     );
 
@@ -92,7 +104,7 @@ describe('RelapseHistoryCard', () => {
   });
 
   it('switches the chart period and marks the chosen one', () => {
-    render(<RelapseHistoryCard history={HISTORY} today={TODAY} />);
+    render(<RelapseHistoryCard history={HISTORY} />);
     const group = screen.getByRole('group', { name: 'Период графика срывов' });
 
     fireEvent.click(within(group).getByRole('button', { name: 'Год' }));
