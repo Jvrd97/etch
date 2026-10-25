@@ -2453,3 +2453,23 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 Два раунда, независимое ревью **APPROVE** на обоих (раунд 1 — REQUEST_CHANGES по трём багам: бесконечный повтор на неизвестном приложении, гонка параллельных отправок терявшая интервалы или ронявшая агент, `switch_count` не по контракту ADR; раунд 2 закрыл все три, включая мутационный тест на гонку).
 
 Проверки: XCTest — 22 passed; `tests/test_agent_activity.py` — 4 passed; `-k "agent or activity"` — 41 passed на изолированном postgres; ruff, mypy --strict, `git diff --check` чистые. Живой 20-минутный сбор на реальном маке не запускался — остаётся ручным шагом. Правило HTTPS/tailnet для прод-адреса зафиксировано в тикете как решение пользователя, код его не трогает.
+
+## 2026-10-25 — PHASE-03/200: строка плана пишет факт в историю категории
+
+Тронуто 17 файлов.
+
+- `alembic/versions/2026_10_25_1200-c4e6a8b0d2f3_plan_item_category_link.py` — new: `plan_item.category_id/field_id/target_value` (SET NULL) и `entries.plan_item_id` без внешнего ключа; обратимая, голова одна.
+- `app/day/plan_links.py` — new: одно правило связи (`link_state`) для правки человека, генерации и чтения; каталог категорий для промпта.
+- `app/crud/plan_fact.py` — new: запись факта под `Idempotency-Key` через `ON CONFLICT DO NOTHING`, исправление, удаление, чтение дня за постоянное число запросов, проверка связей перед записью плана.
+- `app/schemas/plan_fact.py` — new: типизированный контракт записи и чтения факта.
+- `app/api/day.py` — mod: `POST/PUT/DELETE /day/{on}/plan/items/{item_id}/facts[/{entry_id}]`, `plan_facts` в ответе дня, каталог в генерацию.
+- `app/crud/plan.py` — mod: связь в документе, правке и новом пункте проверяется до записи.
+- `app/models/plan.py`, `app/models/entry.py` — mod: новые колонки.
+- `app/schemas/plan.py`, `app/schemas/day.py` — mod: поля связи и `plan_facts`.
+- `app/schemas/day_plan.py`, `app/llm/day_plan.py`, `app/day/generate.py` — mod: модель видит каталог и предлагает связи, неверные отбрасываются.
+- `tests/test_plan_facts.py`, `tests/test_plan_generation_links.py` — new: 300 повторений, 3 км, зал, составная категория, повтор и гонка двух соединений, исправление, отказы, даты, история, рост числа SQL, ревизия офлайн.
+- `tests/test_categories.py` — mod: проверка «одна голова» без имени ревизии.
+
+ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md`.
+
+Проверки: ruff и `ruff format --check` чистые, `mypy --strict app` — 196 файлов без замечаний, `alembic heads` — одна строка `c4e6a8b0d2f3`. `pytest tests/` на `habit_test_200` — 1661 passed, 3 skipped, 2 failed: оба в `test_goals.py` (известный провал baseline, его чинит #218).

@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93, PHASE-03/147
+# [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/93, PHASE-03/147, PHASE-03/200
 # summary: plan persistence — a document flattened and judged before a single row is written, the previous plan replaced whole in one transaction (items that re-send their uuid keep it, and their marks are carried across the replace), overlapping windows found by a self-join on `&&` rather than on render, and every goal of the quarter the document names looked up in one query so a link to a goal that does not exist is a 422 naming the task rather than a 500 naming a foreign key
+# summary: PHASE-03/200 — a line's link to a category, its field and a target is checked before the plan or the line is written, by the same rule the generator and the reader use, and travels through the document, the editor and the answer
 """
 Database access for the plan of a day.
 
@@ -39,6 +40,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from typing import Any
 
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
@@ -49,6 +51,7 @@ from app.core.daytime import DayBoundary, current_boundary, local_time
 from app.day.constraints import DraftItem, PlanDraft
 from app.crud import goal as goal_crud
 from app.crud import mark as mark_crud
+from app.crud import plan_fact as fact_crud
 from app.day.plan_validate import (
     ItemFacts,
     PlanRejected,
@@ -368,6 +371,9 @@ async def replace_plan(
         named.add(document.quarter_goal_id)
     known = await goal_crud.existing_goal_ids(db, named)
     validate_plan(facts, rule, known, document.quarter_goal_id)
+    # Links are judged before the delete as well: a plan whose line names a
+    # field of another category is refused whole, and yesterday's plan stays.
+    await fact_crud.check_links(db, [_proposed_link(row) for row in flat])
 
     carried = await mark_crud.snapshot_marks(
         db, {row.id for row in flat if row.id in keep}
@@ -423,6 +429,17 @@ async def replace_plan(
     return stored
 
 
+def _proposed_link(row: _PreparedItem) -> fact_crud.ProposedLink:
+    """The link one prepared line names, with the handle a refusal points at."""
+    return fact_crud.ProposedLink(
+        category_id=row.source.category_id,
+        field_id=row.source.field_id,
+        target_value=row.source.target_value,
+        code=row.source.code,
+        text=row.text_plain,
+    )
+
+
 def _to_model(row: _PreparedItem, section_id: uuid.UUID) -> PlanItem:
     """One prepared row as the ORM object that will be inserted."""
     source = row.source
@@ -449,6 +466,9 @@ def _to_model(row: _PreparedItem, section_id: uuid.UUID) -> PlanItem:
         quick_mark_id=source.quick_mark_id,
         role_id=source.role_id,
         act_kind=source.act_kind,
+        category_id=source.category_id,
+        field_id=source.field_id,
+        target_value=fact_crud.to_decimal(source.target_value),
         carried_from_item_id=source.carried_from_item_id,
         carry_count=source.carry_count,
         legacy_key=source.legacy_key,
@@ -542,6 +562,9 @@ def _item_response(item: PlanItem) -> PlanItemResponse:
         quick_mark_id=item.quick_mark_id,
         role_id=item.role_id,
         act_kind=item.act_kind,
+        category_id=item.category_id,
+        field_id=item.field_id,
+        target_value=None if item.target_value is None else float(item.target_value),
         carried_from_item_id=item.carried_from_item_id,
         carry_count=item.carry_count,
         children=[],
@@ -813,6 +836,8 @@ async def edit_item(
     item.edited_by = editor
     item.updated_at = datetime.now(timezone.utc)
     try:
+        if LINK_COLUMNS & fields.keys():
+            await _apply_link(db, item, fields)
         await _check_row_rules(db, item)
     except PlanRejected:
         # Отвергнутая правка не должна дожить до чужого `flush`: объект в
@@ -827,6 +852,43 @@ async def edit_item(
         raise _reject_from_db(error) from error
     await _journal(db, item, on, before, editor)
     return item
+
+
+# Поля связи с категорией (`#200`). Не в `PATCH_COLUMNS`: цель приходит
+# числом и кладётся `Decimal`, а снятая категория снимает с собой поле и цель.
+LINK_COLUMNS: frozenset[str] = frozenset({"category_id", "field_id", "target_value"})
+
+
+async def _apply_link(db: AsyncSession, item: PlanItem, fields: dict[str, Any]) -> None:
+    """
+    Перенести в пункт присланную часть связи и проверить её целиком.
+
+    Проверяется только правка, которая связь трогает: категорию, ушедшую в архив
+    после того, как пункт к ней привязали, пункт показывает состоянием, а не
+    422 на каждое исправление слова в его тексте.
+    """
+    category_id: int | None = fields.get("category_id", item.category_id)
+    if category_id is None:
+        item.category_id = item.field_id = item.target_value = None
+        return
+    field_id: int | None = fields.get("field_id", item.field_id)
+    stored_target = None if item.target_value is None else float(item.target_value)
+    target: float | None = fields.get("target_value", stored_target)
+    await fact_crud.check_links(
+        db,
+        [
+            fact_crud.ProposedLink(
+                category_id=category_id,
+                field_id=field_id,
+                target_value=target,
+                code=item.code,
+                text=item.text_plain,
+            )
+        ],
+    )
+    item.category_id = category_id
+    item.field_id = field_id
+    item.target_value = fact_crud.to_decimal(target)
 
 
 def _journalled(item: PlanItem) -> dict[str, str | None]:
@@ -939,6 +1001,9 @@ async def add_item(
         quick_mark_id=payload.quick_mark_id,
         role_id=payload.role_id,
         act_kind=payload.act_kind,
+        category_id=payload.category_id,
+        field_id=payload.field_id,
+        target_value=fact_crud.to_decimal(payload.target_value),
         carry_count=0,
         edited_by=editor,
         updated_at=datetime.now(timezone.utc),
@@ -952,6 +1017,18 @@ async def add_item(
     # Проверка до `db.add`: пункт, который правила не пропускают, в сессию не
     # попадает вовсе, и убирать его оттуда потом не приходится.
     await _check_row_rules(db, item)
+    await fact_crud.check_links(
+        db,
+        [
+            fact_crud.ProposedLink(
+                category_id=payload.category_id,
+                field_id=payload.field_id,
+                target_value=payload.target_value,
+                code=payload.code,
+                text=item.text_plain,
+            )
+        ],
+    )
     db.add(item)
     try:
         await db.flush()

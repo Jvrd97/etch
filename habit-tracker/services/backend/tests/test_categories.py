@@ -2,8 +2,8 @@
 Tests for Category CRUD operations.
 """
 
-# [review:need-review] 175, #176
-# summary: category CRUD coverage includes primary field validation and unit/quick-step persistence
+# [review:need-review] 175, #176, PHASE-03/200
+# summary: category CRUD coverage includes primary field validation and unit/quick-step persistence; #200 makes the migration test check that the chain has one head instead of naming it
 
 import logging
 from io import StringIO
@@ -984,7 +984,9 @@ def test_primary_field_migration_is_reversible_and_keeps_one_head() -> None:
 def test_field_options_migration_is_reversible_and_is_the_only_head() -> None:
     config = Config()
     config.set_main_option("script_location", "alembic")
-    assert ScriptDirectory.from_config(config).get_heads() == [FIELD_OPTIONS_REVISION]
+    # One head, whichever revision it is: naming it here made every later
+    # migration fail this test for a reason that has nothing to do with fields.
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
     upgrade_sql = _primary_field_migration_sql(
         f"f8b0d2e4a6c9:{FIELD_OPTIONS_REVISION}", downgrade=False
     )
