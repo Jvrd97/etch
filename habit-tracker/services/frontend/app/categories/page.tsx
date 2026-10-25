@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
-// summary: Desktop category editor persists field units and quick-step lists
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176, PHASE-01/178-builtin-category-templates
+// summary: Desktop category editor persists field units and quick-step lists; a "From template" panel adds built-in categories only when the user opens it
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -13,6 +13,7 @@ import {
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import FieldReorderButtons from '@/components/FieldReorderButtons';
+import TemplatePicker from '@/components/categories/TemplatePicker';
 import {
   DEFAULT_CATEGORY_COLOR,
   useCategories,
@@ -48,6 +49,7 @@ export default function CategoriesPage() {
     useCategories();
   const [showForm, setShowForm] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   const openEdit = (category: Category) => {
     setEditingCategory(category);
@@ -106,6 +108,13 @@ export default function CategoriesPage() {
             </div>
           )}
           <button
+            onClick={() => setShowTemplates((open) => !open)}
+            aria-pressed={showTemplates}
+            className="px-4 py-3 bg-surface border border-white/10 text-text-primary rounded-3xl font-medium transition-colors duration-200 hover:bg-white/5"
+          >
+            From template
+          </button>
+          <button
             onClick={() => {
               setEditingCategory(null);
               setShowForm(true);
@@ -135,6 +144,15 @@ export default function CategoriesPage() {
         />
       )}
 
+      {showTemplates && (
+        <TemplatePicker
+          onApplied={() => {
+            setShowTemplates(false);
+            void reload();
+          }}
+        />
+      )}
+
       {/* Categories Grid */}
       {categories.length === 0 ? (
         <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">
@@ -148,6 +166,12 @@ export default function CategoriesPage() {
             className="px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
           >
             Create category
+          </button>
+          <button
+            onClick={() => setShowTemplates(true)}
+            className="ml-3 px-6 py-3 bg-surface border border-white/10 text-text-primary rounded-3xl font-medium transition-colors duration-200 hover:bg-white/5"
+          >
+            Start from a template
           </button>
         </div>
       ) : layout === 'list' ? (

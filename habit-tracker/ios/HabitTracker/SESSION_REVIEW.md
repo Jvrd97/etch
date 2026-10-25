@@ -333,3 +333,46 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 Не проверено глазами и на телефоне (для #215): вёрстка экрана на симуляторе и телефоне, длинное нажатие на кружок (меню «пропущено»/«снять»), клавиатура с запятой в поле факта, `TextEditor` блокнота под клавиатурой, pull-to-refresh, переход между днями на реальных данных.
 Не вошло в порт (есть в мобильном вебе): переопределение вердикта, правка и перенос пунктов плана, якоря, тренировка, интервалы работы, карта дня, отчёт дня, создание плана, диф плана.
+
+## 2026-10-25 — PHASE-01/214: Face ID при входе
+
+Экран блокировки при запуске и после 5 минут в фоне; ключ API в Keychain под `.biometryCurrentSet` (запасной код устройства — выбор в Settings). Тронуто 11 файлов: 6 `new`, 5 `mod`.
+
+- `HabitTracker/App/BiometricAuthenticator.swift` — new: `BiometricAuthenticating`, `BiometricFailure`, `LocalAuthenticator` на `LAContext`.
+- `HabitTracker/App/BiometricSession.swift` — new: `KeyProtection`, общий проверенный `LAContext`; без него чтение защищённого ключа молча отказывает, а не поднимает Face ID.
+- `HabitTracker/App/LockController.swift` — new: `LockSettings`, `AppLockController` (запуск, фон, таймаут, один запрос за раз).
+- `HabitTracker/App/LockScreenView.swift` — new: экран блокировки, `.appLock()`, обложка для app switcher.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: одна строка `.appLock()`.
+- `HabitTracker/API/KeychainStore.swift` — mod: `save(protection:)`, `read(context:)`, значения по умолчанию прежние.
+- `HabitTracker/Features/Settings/SettingsViewModel.swift`, `SettingsView.swift` — mod: два переключателя, перезапись ключа под новую защиту с откатом, пустое поле не стирает нечитаемый ключ.
+- `HabitTrackerTests/{LockControllerTests,BiometricKeyProtectionTests}.swift` — new: 21 тест на подделке `BiometricAuthenticating`.
+- `README.md` — mod: строка таблицы про модификатор.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 189 из 189. Симулятор не навязывает access control Keychain (проба: защищённый ключ читается молчаливым контекстом), поэтому защита ключа проверяется только на телефоне. Глазами на симуляторе (Face ID записан через `notifyutil`): экран блокировки, успешное совпадение открывает Today, несовпадение показывает системный запрос; недоступный Face ID даёт сообщение.
+
+### Круг 2 — PHASE-01/214: исправления проверки
+
+Тронуто 8 файлов, все `mod`: `API/KeychainStore.swift`, `App/LockController.swift`, `App/LockScreenView.swift`, `Features/Settings/SettingsView.swift`, `Features/Settings/SettingsViewModel.swift`, `HabitTrackerTests/{KeychainStoreTests,BiometricKeyProtectionTests,LockControllerTests}.swift`.
+
+- **Перезапись ключа.** `KeychainStore.save` пишет новое значение под `<key>.pending`, удаляет старый элемент, пишет под `<key>` и чистит pending. Сбой до удаления оставляет старый ключ. Сбой последней записи оставляет значение под pending: `read` берёт его, когда основного элемента нет, `delete` стирает оба. Схему с `SecItemUpdate` (переименование) не взял: что защищённый элемент даёт менять атрибуты без Face ID, на симуляторе не проверить. Откат через `try?` убран: старый элемент не пропадает, откатывать нечего. После сбоя `SettingsViewModel` читает ключ проверенным контекстом; если не читается, возвращает открытый ключ в поле `apiKey` и пишет «нажмите «Сохранить»».
+- **Шов для тестов.** `KeychainBackend` (три замыкания: `add`, `delete`, `copyData`) передаётся в `KeychainStore.init`, по умолчанию настоящий SecItem. Тестовый `KeychainFaults` ломает нужный шаг поверх настоящего Keychain.
+- **Обложка app switcher.** Отдельный `UIWindow` на уровне `.alert + 1` (`PrivacyCoverWindow`), а не закрытие sheet. Причина: `.inactive` приходит и от Центра управления, и от системных окон; закрытие sheet стирало бы ввод без причины. Окно перекрывает sheet, alert и клавиатуру. Экран блокировки остаётся в корне: при блокировке контент уходит из дерева вместе со sheet. На устройстве не проверено: попадает ли окно в снимок app switcher.
+- **Предупреждения.** (а) Face ID сам поднимается раз на запуск и раз на возврат из `.background` (`takeActivationPrompt`); после «Отмена» остаётся кнопка «Открыть». (б) Смена запасного кода подтверждается текущей политикой (`lockSettings.allowsPasscode`). (в) Нечитаемый ключ не мешает выключить блокировку: перезаписи нет, под переключателем сообщение «введите заново». Включить блокировку при нечитаемом ключе нельзя.
+
+Для #215 (только записано, не сделано): фоновая отправка HealthKit при запертом телефоне идёт без ключа; несохранённый ввод пропадает при повторной блокировке; при возврате из фона на кадр виден контент до блокировки; проверить на телефоне, что окно-обложка попадает в снимок app switcher и что `SecItemAdd` под pending с `.biometryCurrentSet` не поднимает второй запрос Face ID. Первые два пункта вынесены в текст под переключателем.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 204 из 204 (+15 тестов круга).
+## 2026-10-26 — PHASE-01/210: Today на iOS целиком
+
+Быстрые отметки с отменой и офлайн-очередью, лист подходов и записей за день, Happened одним нажатием, история срывов с графиком. Тронуто 22 файла: 18 `new`, 4 `mod`.
+
+- `HabitTracker/API/APIClient+Today.swift`, `HabitTracker/API/DTOs+Today.swift` — new: справочник быстрых отметок, нажатие под `Idempotency-Key`, отмена, подходы дня, один запрос `/streaks`, срыв, история срывов, patch/delete записи.
+- `HabitTracker/Features/QuickMarks/QuickMarksViewModel.swift`, `QuickMarkTapQueue.swift`, `QuickMarkWording.swift`, `QuickMarksSection.swift` — new: кнопки отметок, очередь нажатий без потерь офлайн, формулировки, секция на Today.
+- `HabitTracker/Features/QuickMarks/QuickMarkDaySetsViewModel.swift`, `QuickMarkDaySetsSection.swift` — new: подходы за день.
+- `HabitTracker/Features/QuickMarks/QuickMarksView.swift` — mod: заглушка заменена экраном.
+- `HabitTracker/Features/Today/RelapseAnalysis.swift`, `RelapseHistoryView.swift`, `RelapseHistoryViewModel.swift`, `RelapseDetailsSheet.swift` — new: история срывов, график Swift Charts, анализ по серверной семантике #207.
+- `HabitTracker/Features/Today/TodayDaySheet.swift` — new: лист дня категории.
+- `HabitTracker/Features/Today/TodayView.swift`, `TodayViewModel.swift` — mod: серии одним `/streaks`, Happened без number-поля, переход на историю срывов; место под кнопку голоса (#213) помечено `TODO(#213)`.
+- `HabitTrackerTests/{QuickMarkTapQueueTests,QuickMarksViewModelTests,RelapseAnalysisTests,TodayDetailViewModelsTests,TodayScreenAPITests,TodayViewModelTests}.swift` — new/mod: view model на подделанном `URLProtocol`, офлайн-нажатия, одна выборка серий.
+
+Проверки: `xcodebuild test` на симуляторе av06-iPhone17Pro (iOS 26) с подписью симулятора — 227 из 227. Не проверено: живой бэкенд (охранный хук не пускает миграцию живой базы роя, экран шёл только на подделке API), вёрстка глазами, Face ID, график и анализ срывов на реальных данных, поведение на телефоне (для #215).

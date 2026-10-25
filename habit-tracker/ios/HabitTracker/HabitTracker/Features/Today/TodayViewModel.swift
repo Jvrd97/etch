@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208
-// summary: Today screen state — loads categories + entries + avoid streaks through the read cache (serves last snapshot + offline flag when the network is down); POST for form, idempotent checklist PUT; a form POST that fails offline is queued to the outbox and shown as a pending entry, with the badge bound reactively to the outbox so a background flush clears it (and its optimistic rows) without a manual refresh; logRelapse posts count + reloads streak
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210
+// summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form, idempotent checklist PUT; a form POST that fails offline is queued to the outbox and shown as a pending entry, with the badge bound reactively to the outbox; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
 
@@ -26,8 +26,13 @@ final class TodayViewModel: ObservableObject {
     @Published private(set) var todayEntries: [EntryDTO] = []
     /// Avoid-streak numbers keyed by category id, populated for avoid categories
     /// during `load()`. A category missing here has no streak to show (either it
-    /// is not an avoid category, or its streak request failed and degraded away).
+    /// is not an avoid category, or the streak read failed and degraded away).
     @Published private(set) var streaks: [Int: CategoryStreakDTO] = [:]
+    /// Set when the streak read failed while the rest of the screen loaded: the Streaks section says
+    /// the numbers are missing instead of taking a working screen away.
+    @Published private(set) var streaksError: String?
+    /// Where each avoid card is in its one job: record a relapse, then optionally undo it or add details.
+    @Published private(set) var relapseStates: [Int: RelapseState] = [:]
     /// When non-nil the screen is showing cached data because the last load fell back
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
@@ -36,12 +41,29 @@ final class TodayViewModel: ObservableObject {
     @Published private(set) var pendingUploadCount: Int = 0
     @Published var saveErrorMessage: String?
 
+    /// Where an avoid card is in recording a relapse. The entry is the one the tap landed on.
+    enum RelapseState: Equatable {
+        case idle
+        case recording
+        case recorded(RelapseRecordedDTO)
+        case undoing(RelapseRecordedDTO)
+        case savingDetails(RelapseRecordedDTO)
+    }
+
     static let notConfiguredMessage = "Set the server address in Settings"
-    static let noCountFieldMessage = "This habit has no number field to log"
+    static let streaksFailedMessage = "Не удалось загрузить серии."
+    static let relapseFailedMessage = "Не удалось записать срыв"
+    static let undoRelapseFailedMessage = "Не удалось отменить срыв"
+    static let relapseDetailsFailedMessage = "Не удалось сохранить подробности"
+    static let entriesRefreshFailedMessage = "Список записей не обновился"
+    static let deleteEntryFailedMessage = "Не удалось удалить запись"
+    // Zero of a count or of time spent is what a clean day records: saved over the tap, it would
+    // quietly turn the relapse into one.
+    static let amountNotPositiveMessage = "Сколько — больше нуля, или оставьте поле пустым"
     /// Read-cache key for the whole Today snapshot.
     static let cacheKey = "today.snapshot"
 
-    private let apiProvider: () -> TodayAPI?
+    private let apiProvider: () -> TodayScreenAPI?
     private let cache: ReadThroughCache
     private let outbox: OutboxQueue?
     private let dateFormatter: DateFormatter
@@ -49,6 +71,9 @@ final class TodayViewModel: ObservableObject {
     /// Next synthetic id for an optimistic pending entry. Negative and decreasing so
     /// queued rows never collide with server ids (or each other) in the list.
     private var nextPendingEntryID = -1
+    /// Idempotency-Key of a relapse tap that has not been answered yet, kept across a failed attempt so
+    /// the retry is the same request to the server and not a second relapse.
+    private var relapseKeys: [Int: String] = [:]
     /// Live subscription to the outbox depth so the badge (and the optimistic rows it
     /// represents) stay in sync with a background flush without a manual refresh.
     private var cancellables: Set<AnyCancellable> = []
@@ -56,7 +81,7 @@ final class TodayViewModel: ObservableObject {
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
     init(
-        apiProvider: @escaping () -> TodayAPI?,
+        apiProvider: @escaping () -> TodayScreenAPI?,
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
@@ -104,7 +129,7 @@ final class TodayViewModel: ObservableObject {
 
     /// Convenience init with a fixed API (used by unit tests).
     convenience init(
-        api: TodayAPI,
+        api: TodayScreenAPI,
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
@@ -143,18 +168,32 @@ final class TodayViewModel: ObservableObject {
             return
         }
         let today = todayString
+        var streaksFailed = false
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 async let categoriesTask = api.fetchCategories()
                 async let entriesTask = api.fetchEntries(startDate: today, endDate: today)
                 let (fetchedCategories, fetchedEntries) = try await (categoriesTask, entriesTask)
                 let active = fetchedCategories.filter(\.isActive)
-                let loadedStreaks = await self.loadStreaks(for: active, api: api)
+                var loadedStreaks: [Int: CategoryStreakDTO] = [:]
+                if active.contains(where: \.isAvoid) {
+                    // One request for every avoid category. A failure degrades to "no numbers"
+                    // (the web page does the same) rather than failing a Today load that succeeded.
+                    do {
+                        loadedStreaks = Dictionary(
+                            try await api.fetchAvoidStreaks().map { ($0.categoryId, $0) },
+                            uniquingKeysWith: { _, latest in latest }
+                        )
+                    } catch {
+                        streaksFailed = true
+                    }
+                }
                 return TodaySnapshot(
                     categories: active, entries: fetchedEntries, streaks: loadedStreaks
                 )
             }
             apply(outcome)
+            streaksError = streaksFailed ? Self.streaksFailedMessage : nil
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
             state = .loaded
@@ -189,30 +228,6 @@ final class TodayViewModel: ObservableObject {
         }
     }
 
-    /// Fetches streaks for every avoid category concurrently. A single failed
-    /// streak request degrades to "no card" (mirrors the web page) rather than
-    /// failing the whole Today load, which already succeeded.
-    private func loadStreaks(
-        for categories: [CategoryDTO], api: TodayAPI
-    ) async -> [Int: CategoryStreakDTO] {
-        let avoidCategories = categories.filter(\.isAvoid)
-        guard !avoidCategories.isEmpty else { return [:] }
-        return await withTaskGroup(of: (Int, CategoryStreakDTO?).self) { group in
-            for category in avoidCategories {
-                group.addTask {
-                    (category.id, try? await api.fetchStreak(categoryId: category.id))
-                }
-            }
-            var result: [Int: CategoryStreakDTO] = [:]
-            for await (categoryID, streak) in group {
-                if let streak {
-                    result[categoryID] = streak
-                }
-            }
-            return result
-        }
-    }
-
     /// Today's entries belonging to the given category.
     func entries(forCategory categoryID: Int) -> [EntryDTO] {
         todayEntries.filter { $0.categoryId == categoryID }
@@ -223,55 +238,188 @@ final class TodayViewModel: ObservableObject {
         streaks[categoryID]
     }
 
-    /// Records a relapse ("случилось") for an avoid category: posts an entry whose
-    /// primary number field carries `count`, plus optional `notes`, then reloads
-    /// that category's streak so the card shows the reset current streak (best is
-    /// preserved by the backend). Returns true on success.
-    func logRelapse(categoryID: Int, count: String, notes: String?) async -> Bool {
+    // MARK: Happened
+
+    func relapseState(forCategory categoryID: Int) -> RelapseState {
+        relapseStates[categoryID] ?? .idle
+    }
+
+    /// Records a relapse of an avoid category in one tap, at any field set: the server picks what to
+    /// write (a tick, a 1, or an entry with no values), so the client has no copy of the rule. Then
+    /// the streak is read again, so the card shows the reset number straight away.
+    func recordRelapse(categoryID: Int) async {
+        saveErrorMessage = nil
+        switch relapseState(forCategory: categoryID) {
+        case .recording, .undoing, .savingDetails:
+            return
+        case .idle, .recorded:
+            break
+        }
+        guard let api = apiProvider() else {
+            saveErrorMessage = Self.notConfiguredMessage
+            return
+        }
+        let previous = relapseState(forCategory: categoryID)
+        let key = relapseKeys[categoryID] ?? UUID().uuidString
+        relapseKeys[categoryID] = key
+        relapseStates[categoryID] = .recording
+        let landed: RelapseRecordedDTO
+        do {
+            landed = try await api.recordRelapse(categoryId: categoryID, idempotencyKey: key)
+        } catch let error as APIClientError {
+            relapseStates[categoryID] = previous
+            saveErrorMessage = error.isConnectivity
+                ? "\(Self.relapseFailedMessage): \(error.userMessage)" : error.userMessage
+            return
+        } catch {
+            relapseStates[categoryID] = previous
+            saveErrorMessage = Self.relapseFailedMessage
+            return
+        }
+        relapseKeys[categoryID] = nil
+        // A repeated tap within the minute gets this screen's own relapse back with `created: false`;
+        // it is still the relapse this screen wrote, so the undo stays.
+        var recorded = landed
+        if case .recorded(let before) = previous, before.entry.id == landed.entry.id, before.created {
+            recorded = RelapseRecordedDTO(entry: landed.entry, created: true)
+        }
+        relapseStates[categoryID] = .recorded(recorded)
+        upsert(recorded.entry)
+        await refreshStreak(categoryID: categoryID, api: api)
+    }
+
+    /// Takes back the relapse this screen wrote. Never deletes a relapse somebody else recorded.
+    func undoRelapse(categoryID: Int) async {
+        saveErrorMessage = nil
+        guard case .recorded(let recorded) = relapseState(forCategory: categoryID),
+              recorded.created, let api = apiProvider() else { return }
+        relapseStates[categoryID] = .undoing(recorded)
+        do {
+            try await api.deleteEntry(id: recorded.entry.id)
+        } catch let error as APIClientError {
+            relapseStates[categoryID] = .recorded(recorded)
+            saveErrorMessage = error.userMessage
+            return
+        } catch {
+            relapseStates[categoryID] = .recorded(recorded)
+            saveErrorMessage = Self.undoRelapseFailedMessage
+            return
+        }
+        relapseStates[categoryID] = .idle
+        todayEntries.removeAll { $0.id == recorded.entry.id }
+        await refreshStreak(categoryID: categoryID, api: api)
+    }
+
+    /// Adds the optional "how much" and a note to the relapse the tap wrote. PATCH replaces the
+    /// whole value list, so what the server wrote for the tap goes back along with the amount.
+    func saveRelapseDetails(categoryID: Int, amount: String, notes: String) async -> Bool {
+        saveErrorMessage = nil
+        guard case .recorded(let recorded) = relapseState(forCategory: categoryID),
+              let api = apiProvider() else { return false }
+        let trimmedAmount = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let field = amountField(forCategory: categoryID)
+
+        var values: [EntryValueDTO]?
+        if let field, !trimmedAmount.isEmpty {
+            guard let number = Double(trimmedAmount.replacingOccurrences(of: ",", with: ".")),
+                  number > 0 else {
+                saveErrorMessage = Self.amountNotPositiveMessage
+                return false
+            }
+            values = recorded.entry.values.filter { $0.fieldId != field.id }
+                + [EntryValueDTO(fieldId: field.id, value: trimmedAmount)]
+        }
+        let note = trimmedNotes.isEmpty ? nil : trimmedNotes
+        guard values != nil || note != nil else { return true }
+
+        relapseStates[categoryID] = .savingDetails(recorded)
+        do {
+            let updated = try await api.updateEntry(
+                id: recorded.entry.id,
+                EntryUpdateDTO(entryDate: nil, notes: note, values: values)
+            )
+            relapseStates[categoryID] = .recorded(
+                RelapseRecordedDTO(entry: updated, created: recorded.created)
+            )
+            upsert(updated)
+            await refreshStreak(categoryID: categoryID, api: api)
+            return true
+        } catch let error as APIClientError {
+            relapseStates[categoryID] = .recorded(recorded)
+            saveErrorMessage = error.userMessage
+            return false
+        } catch {
+            relapseStates[categoryID] = .recorded(recorded)
+            saveErrorMessage = Self.relapseDetailsFailedMessage
+            return false
+        }
+    }
+
+    /// The field the "how much" of a relapse is written to: the first number field in display order,
+    /// else the first duration.
+    func amountField(forCategory categoryID: Int) -> FieldDTO? {
+        let fields = (categories.first { $0.id == categoryID }?.fields ?? [])
+            .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
+        return fields.first { $0.fieldType == .number } ?? fields.first { $0.fieldType == .duration }
+    }
+
+    private func refreshStreak(categoryID: Int, api: TodayScreenAPI) async {
+        if let refreshed = try? await api.fetchStreak(categoryId: categoryID) {
+            streaks[categoryID] = refreshed
+        }
+    }
+
+    /// Replaces the entry in place when the list already holds it, appends it otherwise.
+    private func upsert(_ entry: EntryDTO) {
+        if let index = todayEntries.firstIndex(where: { $0.id == entry.id }) {
+            todayEntries[index] = entry
+        } else {
+            todayEntries.append(entry)
+        }
+    }
+
+    // MARK: Day changes made elsewhere
+
+    /// A quick-mark tap or undo moved the day of this category: read the day's records again, and the
+    /// streak when the category is an avoid one. Optimistic rows of the offline outbox stay.
+    func reloadAfterMark(categoryID: Int) async {
+        guard let api = apiProvider() else { return }
+        let today = todayString
+        do {
+            let fetched = try await api.fetchEntries(startDate: today, endDate: today)
+            todayEntries = fetched + todayEntries.filter(\.isPending)
+        } catch {
+            saveErrorMessage = Self.entriesRefreshFailedMessage
+        }
+        if categories.first(where: { $0.id == categoryID })?.isAvoid == true {
+            await refreshStreak(categoryID: categoryID, api: api)
+        }
+    }
+
+    /// Deletes an entry of the day list. The streak of an avoid category is read again, because the
+    /// deleted entry may have been the relapse.
+    func deleteEntry(id: Int) async -> Bool {
         saveErrorMessage = nil
         guard let api = apiProvider() else {
             saveErrorMessage = Self.notConfiguredMessage
             return false
         }
-        guard let countField = countField(forCategory: categoryID) else {
-            saveErrorMessage = Self.noCountFieldMessage
-            return false
-        }
+        let categoryID = todayEntries.first { $0.id == id }?.categoryId
         do {
-            let saved = try await api.createEntry(
-                EntryCreateDTO(
-                    categoryId: categoryID,
-                    entryDate: todayString,
-                    notes: notes,
-                    values: [EntryValueDTO(fieldId: countField.id, value: count)]
-                )
-            )
-            if let index = todayEntries.firstIndex(where: { $0.id == saved.id }) {
-                todayEntries[index] = saved
-            } else {
-                todayEntries.append(saved)
-            }
-            if let refreshed = try? await api.fetchStreak(categoryId: categoryID) {
-                streaks[categoryID] = refreshed
-            }
-            return true
+            try await api.deleteEntry(id: id)
         } catch let error as APIClientError {
             saveErrorMessage = error.userMessage
             return false
         } catch {
-            saveErrorMessage = "Unexpected error"
+            saveErrorMessage = Self.deleteEntryFailedMessage
             return false
         }
-    }
-
-    /// The number field a relapse count is written to — the first number field in
-    /// display order, matching the "how much" slot on the relapse form.
-    func countField(forCategory categoryID: Int) -> FieldDTO? {
-        categories
-            .first { $0.id == categoryID }?
-            .fields
-            .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
-            .first { $0.fieldType == .number }
+        todayEntries.removeAll { $0.id == id }
+        if let categoryID, categories.first(where: { $0.id == categoryID })?.isAvoid == true {
+            await refreshStreak(categoryID: categoryID, api: api)
+        }
+        return true
     }
 
     /// Saves today's values for the category. Form categories create a new entry

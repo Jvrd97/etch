@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/75-daily-summary-checklist
+// [review:need-review] PHASE-01/75-daily-summary-checklist, PHASE-01/83-daily-summary-plan-fields-required
 // summary: desktop day-summary tests — text -> plan -> unchecked rows -> apply -> redirect, the checklist section (ticks only, checklist named per row), the journal op (append checked, replace offered and off), the unresolved section, and the LLM error with Retry
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -75,6 +75,7 @@ const PLAN: DailySummaryPlan = {
       implausible: true,
     },
   ],
+  checklist: [],
   unresolved: [{ text: 'погулял с собакой', reason: 'нет категории' }],
   journal: null,
 };
@@ -373,7 +374,12 @@ describe('/daily-summary', () => {
 
   it('keeps the write available when only the day text is checked', async () => {
     draft = mock(() =>
-      Promise.resolve({ metrics: [], unresolved: [], journal: JOURNAL })
+      Promise.resolve({
+        metrics: [],
+        checklist: [],
+        unresolved: [],
+        journal: JOURNAL,
+      } satisfies DailySummaryPlan)
     );
     render(<DailySummaryPage />);
     fireEvent.change(screen.getByLabelText('Как прошёл день'), {
@@ -420,7 +426,12 @@ describe('/daily-summary checklist section', () => {
   /** Render and settle a plan whose only operation is one tick. */
   async function renderWithChecklist(check: CheckOp = CHECK) {
     draft = mock(() =>
-      Promise.resolve({ metrics: [], unresolved: [], checklist: [check] })
+      Promise.resolve({
+        metrics: [],
+        unresolved: [],
+        checklist: [check],
+        journal: null,
+      } satisfies DailySummaryPlan)
     );
     getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
     render(<DailySummaryPage />);
@@ -472,7 +483,7 @@ describe('/daily-summary checklist section', () => {
         unresolved: [],
         checklist: [CHECK],
         journal: JOURNAL,
-      })
+      } satisfies DailySummaryPlan)
     );
     getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
     render(<DailySummaryPage />);

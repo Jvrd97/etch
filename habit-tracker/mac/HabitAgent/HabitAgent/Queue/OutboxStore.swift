@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/163
-// summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with a code kept in the agent state
+// [review:need-review] PHASE-03/163, PHASE-03/217, PHASE-03/172
+// summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with the code kept in the agent state — the last one and a tally per code
 import Foundation
 import SwiftData
 import os
@@ -39,6 +39,16 @@ struct QueueError: Equatable {
     let at: Date
 }
 
+/// What dropped intervals add up to under one code, so the history survives a later drop under another code.
+struct QueueErrorTally: Equatable {
+    let code: QueueErrorCode
+    /// How many times intervals were dropped under this code.
+    let events: Int
+    /// How many intervals those events took in all.
+    let intervals: Int
+    let lastAt: Date
+}
+
 @Model
 final class QueuedInterval {
     @Attribute(.unique) var id: UUID
@@ -48,6 +58,8 @@ final class QueuedInterval {
     var localDate: String
     var utcOffsetMinutes: Int
     var switchCount: Int
+    /// A default, so a queue written before the field existed opens as is.
+    var idleSeconds: Int = 0
 
     init(_ interval: ActivityInterval) {
         id = UUID()
@@ -57,17 +69,19 @@ final class QueuedInterval {
         localDate = interval.localDate
         utcOffsetMinutes = interval.utcOffsetMinutes
         switchCount = interval.switchCount
+        idleSeconds = interval.idleSeconds
     }
 
     var interval: ActivityInterval {
         ActivityInterval(
             bundleID: bundleID, startedAt: startedAt, endedAt: endedAt,
-            localDate: localDate, utcOffsetMinutes: utcOffsetMinutes, switchCount: switchCount
+            localDate: localDate, utcOffsetMinutes: utcOffsetMinutes, switchCount: switchCount,
+            idleSeconds: idleSeconds
         )
     }
 }
 
-/// The agent's one-row state: the last reason intervals were dropped.
+/// The agent's one-row state: the last reason intervals were dropped. `QueueErrorTotal` keeps the rest.
 @Model
 final class QueueState {
     var lastErrorCode: String?
@@ -76,6 +90,22 @@ final class QueueState {
 
     init() {
         lastErrorCount = 0
+    }
+}
+
+/// One row per error code.
+@Model
+final class QueueErrorTotal {
+    @Attribute(.unique) var code: String
+    var events: Int
+    var intervals: Int
+    var lastAt: Date
+
+    init(code: String, at date: Date) {
+        self.code = code
+        events = 0
+        intervals = 0
+        lastAt = date
     }
 }
 
@@ -111,7 +141,7 @@ final class OutboxStore {
 
     /// Opens (creates) the queue in `directory`; `nil` keeps it in memory only.
     init(directory: URL? = AgentPaths.directory, excluding bundles: Set<String> = []) throws {
-        let schema = Schema([QueuedInterval.self, QueueState.self])
+        let schema = Schema([QueuedInterval.self, QueueState.self, QueueErrorTotal.self])
         let configuration: ModelConfiguration
         if let directory {
             try FileManager.default.createDirectory(
@@ -155,6 +185,16 @@ final class OutboxStore {
         guard let state = fetchState(), let raw = state.lastErrorCode,
               let code = QueueErrorCode(rawValue: raw), let at = state.lastErrorAt else { return nil }
         return QueueError(code: code, count: state.lastErrorCount, at: at)
+    }
+
+    /// Every code under which intervals were dropped, with its totals and the date of the last drop.
+    var errorHistory: [QueueErrorTally] {
+        let rows = fetch(FetchDescriptor<QueueErrorTotal>(sortBy: [SortDescriptor(\.code)])) ?? []
+        return rows.compactMap { row in
+            QueueErrorCode(rawValue: row.code).map {
+                QueueErrorTally(code: $0, events: row.events, intervals: row.intervals, lastAt: row.lastAt)
+            }
+        }
     }
 
     func enqueue(_ intervals: [ActivityInterval]) {
@@ -230,6 +270,15 @@ final class OutboxStore {
         state.lastErrorCode = code.rawValue
         state.lastErrorCount = count
         state.lastErrorAt = date
+        let raw = code.rawValue
+        let total = fetch(FetchDescriptor<QueueErrorTotal>(predicate: #Predicate { $0.code == raw }))?.first ?? {
+            let created = QueueErrorTotal(code: raw, at: date)
+            context.insert(created)
+            return created
+        }()
+        total.events += 1
+        total.intervals += count
+        total.lastAt = date
         save()
         // Codes and counts only: what an interval says about the person stays out of the log.
         Self.logger.notice("Dropped \(count) intervals: \(code.rawValue, privacy: .public)")

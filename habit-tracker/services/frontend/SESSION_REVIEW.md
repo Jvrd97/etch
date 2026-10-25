@@ -2279,3 +2279,26 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `lib/plan-facts.test.ts` — mod: 100 → 120 при цели 300 даёт `null`, удаление одной из двух частичных записей даёт `null`, правка и удаление «не было» дают `null`; прежние случаи 300 → 200, единственный факт и «было» → «не было» по-прежнему дают `unmark`.
 
 Проверки: `tsc --noEmit` чисто, ESLint 0 ошибок (17 предупреждений в чужих файлах). `bun test` — 1511 pass, 1 fail: тот же провал baseline `healthAPI`. Новый тест падал на коде круга 2. Вживую не проверялось — поменялась только чистая функция, которую покрывают тесты.
+
+## 2026-10-25 — PHASE-01/83: поля плана итога дня обязательны
+
+Тронуто 5 файлов.
+
+- `lib/api.ts` — mod: `DailySummaryPlan.checklist` и `journal` без `?`; комментарий про «deployment slack» удалён вместе с причиной.
+- `hooks/useDailySummary.ts` — mod: убраны `planChecklist` (`?? []`) и `journal ?? null`; читатели берут поля плана напрямую.
+- `hooks/useDailySummary.test.ts` — mod: фикстуры планов приведены к полной форме.
+- `app/daily-summary/page.test.tsx` — mod: `PLAN` и ответы `draft` дополнены и помечены `satisfies DailySummaryPlan`, чтобы форма не расходилась молча.
+- `app/m/daily-summary/page.test.tsx` — mod: то же для мобильного экрана.
+
+Проверки: `tsc --noEmit` чисто, ESLint 0 ошибок (18 предупреждений в чужих файлах), `bun test` — 1806 pass, 0 fail. Интерфейс не менялся (только типы и убранные защитные подстановки), в браузере не открывал.
+
+## 2026-10-26 — PHASE-01/219: шаблоны категорий в онбординге
+
+Тронуто 8 файлов.
+
+- `components/onboarding/OnboardingTemplates.tsx` + тест — new: шаг «Начните с шаблона» над голосовым конструктором. Оборачивает общий `TemplatePicker`, после применения показывает в `role="status"`, что добавлено и что пропущено (`skipped` с именами), даёт «Открыть категории», «Пропустить шаблоны» и «Показать шаблоны». Сам ничего не создаёт.
+- `components/categories/TemplatePicker.tsx` + тест — mod: `onApplied` получает вторым аргументом каталог, который показал пикер (ключи из `skipped` называются по нему); тип `TemplatePickerProps` экспортирован.
+- `app/onboarding/page.tsx`, `app/m/onboarding/page.tsx` — mod: шаг шаблонов над текстовым полем; «Открыть категории» ведёт на `/categories` и `/m/categories` соответственно.
+- `app/onboarding/page.test.tsx`, `app/m/onboarding/page.test.tsx` — mod: моки `categoriesAPI` дополнены `listTemplates`/`applyTemplates`; по пять тестов на шаблоны на каждом шелле; в мобильном тесте «нет двух колонок» учитываются только безусловные `grid-cols-2/3`, а не `md:grid-cols-2` пикера.
+
+Проверки: `tsc --noEmit` чисто, ESLint 0 ошибок (18 предупреждений в чужих файлах), `bun test` — 1832 pass, 0 fail. Вживую: заглушка API на 8819 и `next dev` на 3819, headless Chrome — шаг шаблонов виден на `/onboarding` (1280 px), список, «Пропустить шаблоны» и поле разговора на месте. Ширину 390 px headless Chrome не отдаёт (макет шире окна, так же обрезана нетронутая `/m/categories`), нажатия в браузере не делались — их покрывают тесты. Реальный бэкенд и база не использовались.

@@ -1,5 +1,5 @@
-# [review:need-review] 175, PHASE-01/207
-# summary: category update maps invalid explicit primary fields to HTTP 422; POST /{id}/relapses records a one-tap relapse of an avoid category and GET /{id}/relapses returns its relapse days
+# [review:need-review] 175, PHASE-01/207, PHASE-01/178
+# summary: category update maps invalid explicit primary fields to HTTP 422; POST /{id}/relapses records a one-tap relapse of an avoid category and GET /{id}/relapses returns its relapse days; GET /templates and POST /templates/apply expose the built-in category catalog
 from typing import cast, get_args
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.crud import category as category_crud
+from app.crud import category_template as category_template_crud
 from app.crud import streak as streak_crud
 from app.models import Category, Field
 from app.crud.category import (
@@ -28,6 +29,11 @@ from app.schemas.category import (
     CategoryBatchRequest,
     CategoryBatchResponse,
     CategoryStreakMode,
+)
+from app.schemas.category_template import (
+    CategoryTemplateApplyRequest,
+    CategoryTemplateApplyResponse,
+    CategoryTemplateResponse,
 )
 from app.schemas.entry import EntryResponse
 from app.schemas.streak import RelapseHistoryResponse, RelapseRecordedResponse
@@ -66,6 +72,43 @@ async def get_categories(
         db, skip=skip, limit=limit, active_only=active_only
     )
     return categories
+
+
+# Declared before `/{category_id}`: otherwise "templates" is parsed as an id.
+@router.get("/templates", response_model=list[CategoryTemplateResponse])
+async def get_category_templates(
+    db: AsyncSession = Depends(get_db),
+) -> list[CategoryTemplateResponse]:
+    """
+    Каталог встроенных категорий. Ничего не создаёт: `added` показывает, что
+    категория с таким именем у пользователя уже есть.
+    """
+    return await category_template_crud.list_templates(db)
+
+
+@router.post(
+    "/templates/apply",
+    response_model=CategoryTemplateApplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def apply_category_templates(
+    request: CategoryTemplateApplyRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CategoryTemplateApplyResponse:
+    """
+    Создать выбранные шаблоны как обычные категории одной транзакцией.
+
+    Шаблон, чьё имя уже занято, пропускается (`skipped`) — повторное применение
+    дублей не плодит. Неизвестный ключ -> 422, ничего не создаётся.
+    """
+    try:
+        return await category_template_crud.apply_templates(db, request.keys)
+    except category_template_crud.UnknownTemplateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except CategoryBatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/{category_id}", response_model=CategoryResponse)
