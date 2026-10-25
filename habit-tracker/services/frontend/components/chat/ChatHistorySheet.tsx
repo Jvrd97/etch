@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/203
+// [review:need-review] PHASE-03/203, PHASE-03/197
+// summary: PHASE-03/197 hands the panel's list the shared delete — it reports a deleted row to the screen, which decides whether the open conversation went, and passes on why the open one cannot be deleted right now
 // summary: the phone's history panel over /m/chat — the desktop list and its loading in a left panel above the chat sheet, a picked row or a new conversation closing it, and the modal contract its role promises: Escape closes only the panel, focus starts and stays inside, the scrim swallows taps meant for the chat underneath
 
 import { useEffect, useRef } from 'react';
@@ -26,6 +27,10 @@ export interface ChatHistorySheetProps {
    * opening button is the caller's job and it has one place to do it.
    */
   onClose: () => void;
+  /** A conversation is gone for good; the screen checks whether it was the open one. */
+  onDeleted: (id: number) => void;
+  /** Why a row cannot be deleted right now (an answer is being written), or `null`. */
+  deleteBlockedReason: (id: number) => string | null;
 }
 
 /**
@@ -43,7 +48,13 @@ export interface ChatHistorySheetProps {
  * `document`, as in the desktop drawer, so Escape still closes the panel after
  * a tap on its padding has moved focus to `body`.
  */
-export default function ChatHistorySheet({ id, activeId, onClose }: ChatHistorySheetProps) {
+export default function ChatHistorySheet({
+  id,
+  activeId,
+  onClose,
+  onDeleted,
+  deleteBlockedReason,
+}: ChatHistorySheetProps) {
   const router = useRouter();
   const pathname = usePathname();
   const history = useChatHistory();
@@ -75,6 +86,12 @@ export default function ChatHistorySheet({ id, activeId, onClose }: ChatHistoryS
     if (started === null) return;
     onClose();
     router.push(chatHrefFor(pathname, started));
+  };
+
+  const remove = async (conversationId: number) => {
+    const outcome = await history.remove(conversationId);
+    if (outcome.ok) onDeleted(conversationId);
+    return outcome;
   };
 
   return (
@@ -124,6 +141,9 @@ export default function ChatHistorySheet({ id, activeId, onClose }: ChatHistoryS
           error={history.error}
           onRetry={history.reload}
           onPick={onClose}
+          onDelete={remove}
+          deleteBlockedReason={deleteBlockedReason}
+          removing={history.removing}
         />
       </div>
     </>

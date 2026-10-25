@@ -205,6 +205,80 @@ describe('useChat: which conversation is open', () => {
   });
 });
 
+describe('useChat: a chat kept empty on purpose', () => {
+  it('opens nothing and starts nothing when the link names none and auto-start is off', async () => {
+    const view = renderHook(() =>
+      useChat({ conversationId: null, startWhenMissing: false, storage: fakeStorage() })
+    );
+
+    expect(view.result.current.screen).toEqual({ status: 'empty' });
+    await Promise.resolve();
+    expect(listConversations).toHaveBeenCalledTimes(0);
+    expect(createConversation).toHaveBeenCalledTimes(0);
+    expect(getConversation).toHaveBeenCalledTimes(0);
+    expect(view.result.current.canSend).toBe(false);
+  });
+
+  it('leaves a deleted conversation for the empty screen, not for a new conversation', async () => {
+    type Props = { conversationId: number | null; startWhenMissing: boolean };
+    const storage = fakeStorage();
+    const view = renderHook(
+      (props: Props) => useChat({ ...props, storage }),
+      { initialProps: { conversationId: CONVERSATION, startWhenMissing: true } as Props }
+    );
+    await waitFor(() => expect(view.result.current.screen.status).toBe('ready'));
+    createConversation.mockClear();
+    listConversations.mockClear();
+
+    view.rerender({ conversationId: null, startWhenMissing: false });
+
+    expect(view.result.current.screen).toEqual({ status: 'empty' });
+    expect(view.result.current.messages).toEqual([]);
+    await Promise.resolve();
+    expect(createConversation).toHaveBeenCalledTimes(0);
+    expect(listConversations).toHaveBeenCalledTimes(0);
+  });
+
+  it('forgets the feed and the draft of the latest conversation when it is the one deleted', async () => {
+    // Ссылки нет: экран показывал свежий разговор. Адрес не изменится, когда
+    // его удалят, поэтому очистить ленту и поле должен сам хук.
+    type Props = { startWhenMissing: boolean };
+    const storage = fakeStorage();
+    const view = renderHook(
+      (props: Props) => useChat({ conversationId: null, ...props, storage }),
+      { initialProps: { startWhenMissing: true } as Props }
+    );
+    await waitFor(() => expect(view.result.current.screen.status).toBe('ready'));
+    act(() => view.result.current.setDraft(HALF_WRITTEN));
+    createConversation.mockClear();
+
+    view.rerender({ startWhenMissing: false });
+
+    expect(view.result.current.screen).toEqual({ status: 'empty' });
+    expect(view.result.current.messages).toEqual([]);
+    expect(view.result.current.draft).toBe('');
+    expect(createConversation).toHaveBeenCalledTimes(0);
+  });
+
+  it('opens the conversation picked afterwards', async () => {
+    type Props = { conversationId: number | null };
+    const view = renderHook(
+      (props: Props) => useChat({ ...props, startWhenMissing: false, storage: fakeStorage() }),
+      { initialProps: { conversationId: null } as Props }
+    );
+    expect(view.result.current.screen).toEqual({ status: 'empty' });
+
+    view.rerender({ conversationId: CONVERSATION });
+
+    await waitFor(() =>
+      expect(view.result.current.screen).toEqual({
+        status: 'ready',
+        conversationId: CONVERSATION,
+      })
+    );
+  });
+});
+
 describe('useChat: the unsent draft', () => {
   it('survives the screen being torn down and mounted again', async () => {
     // Приложение свернули посреди набранной реплики и вернулись в него: React

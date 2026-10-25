@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/111
+// [review:need-review] PHASE-03/111, PHASE-03/197
+// summary: PHASE-03/197 covers deletion from the list — a row leaves only once the server has answered, a refusal keeps it and says why (a running answer in plain words), a conversation already gone counts as deleted, and two deletions never run at once
 // summary: tests for useChatHistory — the feed is read once and re-read on demand, a new conversation is created and lands on top without waiting for a round trip, a failed read is named rather than shown as an empty history, and creation never runs twice at once
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -7,6 +8,7 @@ import type { DraftStorage } from '@/lib/chat-draft';
 
 let listConversations: ReturnType<typeof mock>;
 let createConversation: ReturnType<typeof mock>;
+let removeConversation: ReturnType<typeof mock>;
 
 /**
  * Stand-in for the error class the API client throws.
@@ -90,6 +92,7 @@ mock.module('@/lib/api', () => ({
   chatAPI: {
     list: (limit?: number) => listConversations(limit),
     create: (options?: unknown) => createConversation(options),
+    remove: (id: number) => removeConversation(id),
     get: () => Promise.resolve(null),
     reset: () => Promise.resolve({ reset: 0 }),
     streamMessage: () => Promise.resolve(undefined),
@@ -124,7 +127,7 @@ mock.module('@/lib/api', () => ({
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
 }));
 
-const { useChatHistory } = await import('./useChatHistory');
+const { REMOVE_RUNNING_ANSWER, useChatHistory } = await import('./useChatHistory');
 
 const conversation = (id: number, overrides: Record<string, unknown> = {}) => ({
   id,
@@ -149,6 +152,7 @@ const conversation = (id: number, overrides: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   listConversations = mock(() => Promise.resolve([conversation(2), conversation(1)]));
   createConversation = mock(() => Promise.resolve(conversation(3, { title: null })));
+  removeConversation = mock(() => Promise.resolve({}));
 });
 
 afterEach(() => {
@@ -245,5 +249,124 @@ describe('useChatHistory', () => {
     await act(async () => {
       release(conversation(3, { title: null }));
     });
+  });
+});
+
+describe('useChatHistory: deleting a conversation', () => {
+  it('takes the row out once the server has answered', async () => {
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const outcome: { value: unknown } = { value: null };
+    await act(async () => {
+      outcome.value = await result.current.remove(2);
+    });
+
+    expect(removeConversation).toHaveBeenCalledWith(2);
+    expect(outcome.value).toEqual({ ok: true });
+    expect(result.current.conversations.map((one) => one.id)).toEqual([1]);
+  });
+
+  it('keeps the row until the server answers, and says which one is going', async () => {
+    let release: (value: unknown) => void = () => {};
+    removeConversation = mock(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      void result.current.remove(2);
+    });
+    await waitFor(() => expect(result.current.removing).toBe(2));
+    expect(result.current.conversations.map((one) => one.id)).toEqual([2, 1]);
+
+    await act(async () => {
+      release({});
+    });
+    expect(result.current.removing).toBeNull();
+    expect(result.current.conversations.map((one) => one.id)).toEqual([1]);
+  });
+
+  it('keeps the row and names the failure when the server refuses', async () => {
+    removeConversation = mock(() => Promise.reject(new Error('500: база недоступна')));
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const outcome: { value: { ok: boolean; message?: string } | null } = { value: null };
+    await act(async () => {
+      outcome.value = await result.current.remove(2);
+    });
+
+    expect(outcome.value?.ok).toBe(false);
+    expect(outcome.value?.message).toContain('500');
+    expect(result.current.conversations.map((one) => one.id)).toEqual([2, 1]);
+    expect(result.current.removing).toBeNull();
+    // Отказ удаления — про строку, а не про ленту: ошибка списка и его
+    // кнопка «Повторить» тут были бы неправдой.
+    expect(result.current.error).toBeNull();
+  });
+
+  it('explains a running answer in plain words instead of the server detail', async () => {
+    removeConversation = mock(() =>
+      Promise.reject(new FakeAPIError(409, 'turn 2 of conversation 2 is still running'))
+    );
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const outcome: { value: { ok: boolean; message?: string } | null } = { value: null };
+    await act(async () => {
+      outcome.value = await result.current.remove(2);
+    });
+
+    expect(outcome.value).toEqual({ ok: false, message: REMOVE_RUNNING_ANSWER });
+    expect(result.current.conversations.map((one) => one.id)).toEqual([2, 1]);
+  });
+
+  it('counts a conversation that is already gone as deleted', async () => {
+    // Её удалили в другой вкладке: строка, которой уже нет на сервере, не должна
+    // висеть в списке с кнопкой, которая будет отвечать 404 вечно.
+    removeConversation = mock(() =>
+      Promise.reject(new FakeAPIError(404, 'conversation 2 not found'))
+    );
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const outcome: { value: unknown } = { value: null };
+    await act(async () => {
+      outcome.value = await result.current.remove(2);
+    });
+
+    expect(outcome.value).toEqual({ ok: true });
+    expect(result.current.conversations.map((one) => one.id)).toEqual([1]);
+  });
+
+  it('does not delete two conversations at once', async () => {
+    let release: (value: unknown) => void = () => {};
+    removeConversation = mock(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const { result } = renderHook(() => useChatHistory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const second: { value: { ok: boolean } | null } = { value: null };
+    await act(async () => {
+      void result.current.remove(2);
+      second.value = await result.current.remove(1);
+    });
+
+    expect(removeConversation).toHaveBeenCalledTimes(1);
+    expect(second.value?.ok).toBe(false);
+
+    await act(async () => {
+      release({});
+    });
+    expect(result.current.conversations.map((one) => one.id)).toEqual([1]);
   });
 });

@@ -1,18 +1,22 @@
 'use client';
-// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/203
+// [review:need-review] PHASE-03/118, PHASE-03/116, PHASE-03/203, PHASE-03/197
+// summary: PHASE-03/197 wires deletion from the history panel to this screen — deleting the open conversation leaves the screen on «nothing selected» with its address cleared and no new conversation made, deleting another changes nothing here, and the open conversation with an answer running is not offered for deletion
 // summary: PHASE-03/203 puts the history button left of the message field and opens the history panel from it; the sheet now stays up while a conversation loads or fails, so the button and the panel's focus target survive a switch
 // summary: /m/chat screen — the same feed, message field and state as the desktop chat, wrapped in the mobile shell's FullScreenSheet so the bar and the field follow the visual viewport instead of disappearing under the on-screen keyboard
 
-import { Suspense, useCallback, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { History } from 'lucide-react';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
 import ChatComposer, { SEND_LABEL } from '@/components/chat/ChatComposer';
 import ChatFeed from '@/components/chat/ChatFeed';
+import { NOTHING_SELECTED } from '@/components/chat/ChatHistory';
 import ChatHistorySheet, { HISTORY_SHEET_TITLE } from '@/components/chat/ChatHistorySheet';
 import { useChat } from '@/hooks/useChat';
-import { conversationIdFrom } from '@/lib/chat-nav';
+import { useDeletedConversation } from '@/hooks/useDeletedConversation';
+import { REMOVE_RUNNING_ANSWER } from '@/hooks/useChatHistory';
+import { chatPathFor, conversationIdFrom } from '@/lib/chat-nav';
 import { MORE_PATH } from '@/lib/routes';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
@@ -47,10 +51,19 @@ const HISTORY_PANEL_ID = 'chat-history-panel';
  * читается, и когда чтение провалилось: иначе переключение разговора снимало бы
  * вместе с листом и кнопку, в которую должен вернуться фокус, а из разговора,
  * который не открылся, некуда было бы уйти в другой.
+ *
+ * Удалённый из панели открытый разговор экран не заменяет другим (`#197`): адрес
+ * очищается, лист остаётся на «разговор не выбран», а следующий человек выбирает
+ * сам. Свежий или новый разговор, открытый молча, выглядел бы как подмена.
  */
 function MobileChatScreen() {
   const router = useRouter();
-  const conversationId = conversationIdFrom(useSearchParams());
+  const pathname = usePathname();
+  const {
+    conversationId,
+    stayEmpty,
+    markDeleted,
+  } = useDeletedConversation(conversationIdFrom(useSearchParams()));
   const {
     screen,
     messages,
@@ -62,7 +75,7 @@ function MobileChatScreen() {
     canSend,
     reset,
     dismissError,
-  } = useChat({ conversationId });
+  } = useChat({ conversationId, startWhenMissing: !stayEmpty });
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
 
@@ -76,6 +89,26 @@ function MobileChatScreen() {
   }, []);
 
   const ready = screen.status === 'ready';
+  const openId = ready ? screen.conversationId : conversationId;
+
+  // Удаление отвечает, когда человек мог уже открыть другой разговор: решает
+  // тот, что открыт в момент ответа, а не тот, что был открыт при нажатии.
+  const openIdNow = useRef(openId);
+  useEffect(() => {
+    openIdNow.current = openId;
+  }, [openId]);
+
+  const handleDeleted = useCallback(
+    (removedId: number) => {
+      if (removedId !== openIdNow.current) return;
+      markDeleted(removedId);
+      router.replace(chatPathFor(pathname));
+    },
+    [markDeleted, pathname, router]
+  );
+
+  const deleteBlockedReason = (id: number) =>
+    id === openId && busy ? REMOVE_RUNNING_ANSWER : null;
 
   return (
     <>
@@ -98,6 +131,9 @@ function MobileChatScreen() {
             {screen.status === 'loading' && <LoadingSpinner size="lg" />}
             {ready && (
               <ChatFeed messages={messages} turn={turn} emptyHint={EMPTY_HINT} onReset={reset} />
+            )}
+            {screen.status === 'empty' && (
+              <p className="py-16 text-center text-text-secondary">{NOTHING_SELECTED}</p>
             )}
           </div>
           {/* Прилипает ко дну прокручиваемой области листа, а сама область
@@ -136,8 +172,10 @@ function MobileChatScreen() {
       {historyOpen && (
         <ChatHistorySheet
           id={HISTORY_PANEL_ID}
-          activeId={ready ? screen.conversationId : conversationId}
+          activeId={openId}
           onClose={closeHistory}
+          onDeleted={handleDeleted}
+          deleteBlockedReason={deleteBlockedReason}
         />
       )}
     </>

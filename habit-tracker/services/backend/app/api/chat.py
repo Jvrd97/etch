@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/114, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/187
+# [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/114, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/187, PHASE-03/197
 # summary: the chat router — conversations created, listed and read back with their messages, the plans proposed in them and whether the next turn continues a CLI session, one turn answered as text/event-stream whose answer is written by a session opened after generation, never by the one that read the context, and the apply that goes through the existing transactional `apply_daily_summary` rather than writing anything of its own
 # summary: PHASE-03/117 adds DELETE /conversations/{id} (204, cascade plus the CLI session file) and hangs the usage rollup on both the feed and the detail
 # summary: PHASE-03/113 builds the day card in the same session that records the question, sends it in the system prompt, and shows it back through GET /conversations/{id}/context
@@ -6,6 +6,7 @@
 # summary: PHASE-03/115 lets a proposal carry a whole day plan — checked against the eight rules of `#147` twice (when the card is born and again just before the write) and refused with 409 on a day that already has one, so the chat can fill an empty day but can never overwrite a full one
 # summary: PHASE-03/187 lets that day plan land on a day that already has one — the server names the operation a draft or a rewrite by the state of the day, the canon is still judged twice, and one card rewrites the day exactly once
 # summary: PHASE-03/116 opens the answer row as `streaming` before generation (it is also the lock that makes a second POST a 409), closes it from `finally` on every exit, refuses with 502 when the backend dies before the first frame, and unsticks a dialogue by a reset handle when the worker died with it
+# summary: PHASE-03/197 gives DELETE the same row-locked streaming-turn guard, so a second browser tab cannot erase a conversation while its answer is still being written
 """
 Ручки разговора.
 
@@ -442,19 +443,29 @@ async def delete_conversation(
     """
     Удалить разговор целиком: строки четырёх таблиц и файл сессии CLI.
 
-    Отвечает 204, и 404 — только на разговор, которого нет. Отсутствие файла
-    сессии на диске отказом не считается: у разговора по API-бэкенду его не
-    было никогда, у разговора после пересоздания тома — уже нет.
+    Отвечает 204, 404 — только на разговор, которого нет, и 409 — пока в нём
+    есть ответ со статусом `streaming`. Отсутствие файла сессии на диске
+    отказом не считается: у разговора по API-бэкенду его не было никогда, у
+    разговора после пересоздания тома — уже нет.
 
     Записи, сделанные применением плана (квитанция дня, запись в журнале),
     остаются: у `chat_plans.applied_summary_id` внешнего ключа нет намеренно —
     удаление разговора стирает разговор, а не сделанную по нему работу.
     """
-    conversation = await chat_crud.get_conversation(db, conversation_id)
+    conversation = await chat_crud.get_conversation_for_update(db, conversation_id)
     if conversation is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"conversation {conversation_id} not found",
+        )
+    open_turn = await chat_crud.find_open_turn(db, conversation_id)
+    if open_turn is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"turn {open_turn.seq} of conversation {conversation_id} "
+                "is still running"
+            ),
         )
     await chat_crud.delete_conversation(db, conversation)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

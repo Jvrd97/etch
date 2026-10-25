@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/117
+# [review:need-review] PHASE-03/117, PHASE-03/197
 # summary: deleting a conversation leaves nothing behind — no row in any of the four chat tables and no .jsonl session file — while a missing file, a forged session id and an applied plan's receipt each keep their own behaviour; plus the usage rollup checked against SELECT sum over chat_messages
+# summary: PHASE-03/197 refuses DELETE with 409 while the conversation carries an active streaming answer, preserving its rows and CLI session for the other browser tab
 """
 Удаление разговора и свёртка расхода.
 
@@ -37,6 +38,7 @@ from app.models.applied_daily_summary import AppliedDailySummary
 from app.models.chat import (
     MESSAGE_ROLE_ASSISTANT,
     MESSAGE_ROLE_USER,
+    MESSAGE_STATUS_STREAMING,
     PLAN_STATUS_APPLIED,
     ChatConversation,
     ChatMessage,
@@ -297,6 +299,28 @@ async def test_deleting_a_conversation_that_is_not_there_is_404(
 ) -> None:
     response = await client.delete("/api/v1/chat/conversations/4242")
     assert response.status_code == 404
+
+
+async def test_delete_refuses_a_conversation_with_an_active_streaming_turn(
+    client: AsyncClient, db_session: AsyncSession, config_dir: Path
+) -> None:
+    conversation = await seed_conversation(db_session)
+    active_turn = await db_session.scalar(
+        select(ChatMessage).where(
+            ChatMessage.conversation_id == conversation.id,
+            ChatMessage.role == MESSAGE_ROLE_ASSISTANT,
+        )
+    )
+    assert active_turn is not None
+    active_turn.status = MESSAGE_STATUS_STREAMING
+    await db_session.commit()
+    session_file = write_session_file(config_dir)
+
+    response = await client.delete(f"/api/v1/chat/conversations/{conversation.id}")
+
+    assert response.status_code == 409
+    assert await count_rows(db_session, conversation.id) == (1, 2, 1, 1)
+    assert session_file.exists()
 
 
 async def test_the_receipt_of_an_applied_plan_outlives_the_conversation(
