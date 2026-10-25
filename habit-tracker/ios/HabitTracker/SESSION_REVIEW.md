@@ -316,3 +316,19 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `README.md` — new: правила для тикетов экранов и установка на телефон.
 
 Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.
+
+## 2026-10-25 — PHASE-01/214: Face ID при входе
+
+Экран блокировки при запуске и после 5 минут в фоне; ключ API в Keychain под `.biometryCurrentSet` (запасной код устройства — выбор в Settings). Тронуто 11 файлов: 6 `new`, 5 `mod`.
+
+- `HabitTracker/App/BiometricAuthenticator.swift` — new: `BiometricAuthenticating`, `BiometricFailure`, `LocalAuthenticator` на `LAContext`.
+- `HabitTracker/App/BiometricSession.swift` — new: `KeyProtection`, общий проверенный `LAContext`; без него чтение защищённого ключа молча отказывает, а не поднимает Face ID.
+- `HabitTracker/App/LockController.swift` — new: `LockSettings`, `AppLockController` (запуск, фон, таймаут, один запрос за раз).
+- `HabitTracker/App/LockScreenView.swift` — new: экран блокировки, `.appLock()`, обложка для app switcher.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: одна строка `.appLock()`.
+- `HabitTracker/API/KeychainStore.swift` — mod: `save(protection:)`, `read(context:)`, значения по умолчанию прежние.
+- `HabitTracker/Features/Settings/SettingsViewModel.swift`, `SettingsView.swift` — mod: два переключателя, перезапись ключа под новую защиту с откатом, пустое поле не стирает нечитаемый ключ.
+- `HabitTrackerTests/{LockControllerTests,BiometricKeyProtectionTests}.swift` — new: 21 тест на подделке `BiometricAuthenticating`.
+- `README.md` — mod: строка таблицы про модификатор.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 189 из 189. Симулятор не навязывает access control Keychain (проба: защищённый ключ читается молчаливым контекстом), поэтому защита ключа проверяется только на телефоне. Глазами на симуляторе (Face ID записан через `notifyutil`): экран блокировки, успешное совпадение открывает Today, несовпадение показывает системный запрос; недоступный Face ID даёт сообщение.

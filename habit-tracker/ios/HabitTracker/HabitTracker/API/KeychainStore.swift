@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-01/03-ios-scaffold-settings
-// summary: minimal Keychain-backed string store (SecItem generic password) for the API key
+// [review:need-review] PHASE-01/03-ios-scaffold-settings, PHASE-01/214
+// summary: minimal Keychain-backed string store (SecItem generic password) for the API key; optional Face ID access control on save and an authenticated context on read
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Error thrown when a Keychain operation returns an unexpected status.
@@ -27,21 +28,42 @@ struct KeychainStore {
         ]
     }
 
-    /// Inserts or overwrites the value for `key`.
-    func save(_ value: String, for key: String) throws {
+    /// Inserts or overwrites the value for `key`. With a `protection` other than `.none`
+    /// the item is bound to the enrolled Face ID set and stays on this device.
+    func save(_ value: String, for key: String, protection: KeyProtection = .none) throws {
         try delete(key)
         var query = baseQuery(for: key)
         query[kSecValueData as String] = Data(value.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        switch protection {
+        case .none:
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        case .biometry, .biometryOrPasscode:
+            query[kSecAttrAccessControl as String] = try Self.accessControl(for: protection)
+        }
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw KeychainError(status: status)
         }
     }
 
-    /// Returns the stored value, or nil when the key is absent.
-    func read(_ key: String) throws -> String? {
+    private static func accessControl(for protection: KeyProtection) throws -> SecAccessControl {
+        let flags: SecAccessControlCreateFlags = protection == .biometryOrPasscode
+            ? [.biometryCurrentSet, .or, .devicePasscode]
+            : [.biometryCurrentSet]
+        var error: Unmanaged<CFError>?
+        guard let control = SecAccessControlCreateWithFlags(
+            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, flags, &error
+        ) else {
+            throw KeychainError(status: errSecParam)
+        }
+        return control
+    }
+
+    /// Returns the stored value, or nil when the key is absent. A protected item opens
+    /// with `context` (default: the shared session's, which never raises a prompt itself).
+    func read(_ key: String, context: LAContext? = nil) throws -> String? {
         var query = baseQuery(for: key)
+        query[kSecUseAuthenticationContext as String] = context ?? BiometricSession.shared.readContext()
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
