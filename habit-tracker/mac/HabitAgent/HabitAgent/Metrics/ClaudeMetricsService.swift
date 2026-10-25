@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/165
-// summary: the pass that turns ~/.claude/projects into session aggregates — reads only files whose size or mtime moved, and only past the saved offset, keeps the scan state on disk between launches, and sends the sessions that changed since the last successful send; failures leave them to the next pass (a file that could not be read keeps its old size and mtime, so it is read again). Runs at utility priority and yields between files
+// summary: the pass that turns ~/.claude/projects into session aggregates — reads only files whose size or mtime moved, and only past the saved offset, keeps the scan state on disk between launches, forgets transcripts deleted from disk (their totals stay, their error signals go), and sends the sessions that changed since the last successful send; failures leave them to the next pass (a file that could not be read keeps its old size and mtime, so it is read again). Runs at utility priority and yields between files
 import Foundation
 
 /// The last thing sent for a session; a session is sent again only when this differs.
@@ -116,10 +116,12 @@ actor ClaudeMetricsService {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
         guard let walker = FileManager.default.enumerator(at: projectsDirectory, includingPropertiesForKeys: keys) else { return }
         // `nextObject()`, not a for-in: the enumerator's iterator is unavailable across an `await`.
+        var seen: Set<String> = []
         while let url = walker.nextObject() as? URL {
             guard url.pathExtension == "jsonl",
                   let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
                   let size = values.fileSize.map(Int64.init), let modified = values.contentModificationDate else { continue }
+            seen.insert(url.path)
             var file = state.files[url.path] ?? FileScanState()
             guard size != file.size || modified != file.modified else { continue }
             // Shorter than what was consumed: the file was rewritten, so its old
@@ -137,6 +139,21 @@ actor ClaudeMetricsService {
             state.files[url.path] = file
             report.filesRead += 1
             await Task.yield()
+        }
+        forgetDeletedFiles(keeping: seen)
+    }
+
+    /// A deleted transcript would hold `claude_transcript_unreadable` forever. One that counted
+    /// nothing is dropped; one that counted something keeps its totals (the server already has
+    /// them, and a shrinking session would overwrite them) and loses only its error signals.
+    private func forgetDeletedFiles(keeping seen: Set<String>) {
+        for (path, var file) in state.files where !seen.contains(path) {
+            if file.contributions.isEmpty {
+                state.files[path] = nil
+            } else if file.errorCode != nil {
+                file.clearSignals()
+                state.files[path] = file
+            }
         }
     }
 

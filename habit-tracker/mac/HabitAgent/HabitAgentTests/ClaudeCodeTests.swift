@@ -78,6 +78,25 @@ final class ClaudeCodeTests: XCTestCase {
         XCTAssertEqual(state.errorCode, TranscriptScanner.unreadableCode)
     }
 
+    func testARenamedAssistantTypeRaisesTheCodeWhileUserRecordsStayReadable() throws {
+        // Only `assistant` was renamed: user records keep `readable` above zero, yet every turn and token is lost.
+        let (state, _) = try scanned("assistant_type_drift")
+
+        XCTAssertGreaterThan(state.readable, 0)
+        XCTAssertEqual(state.contributions[sessionID]?.assistantTurns, 0)
+        XCTAssertEqual(state.errorCode, TranscriptScanner.unreadableCode)
+    }
+
+    func testAResumedSessionAppendedByARenamingCLIRaisesTheCode() throws {
+        var state = FileScanState()
+        TranscriptScanner.scan(try fixture("session_basic"), into: &state)
+        XCTAssertNil(state.errorCode)
+
+        TranscriptScanner.scan(try fixture("assistant_type_drift"), into: &state)
+
+        XCTAssertEqual(state.errorCode, TranscriptScanner.unreadableCode)
+    }
+
     func testTheRequestBlobIsBookkeepingNotDrift() {
         let blob = #"{"type":"api-request-blob","message":{"role":"user","content":"x"}}"# + "\n"
         var state = FileScanState()
@@ -324,6 +343,23 @@ final class ClaudeMetricsServiceTests: XCTestCase {
 
         let code = await service.errorCode
         XCTAssertEqual(code, TranscriptScanner.unreadableCode)
+    }
+
+    func testADeletedFileNoLongerHoldsTheErrorCodeNorLosesItsSession() async throws {
+        try install("session_basic", as: "ok.jsonl")
+        try install("assistant_type_drift", as: "renamed.jsonl")
+        let service = makeService()
+        await service.runPass()
+        let raised = await service.errorCode
+        XCTAssertEqual(raised, TranscriptScanner.unreadableCode)
+
+        try FileManager.default.removeItem(at: projects.appendingPathComponent("renamed.jsonl"))
+        await service.runPass()
+
+        let cleared = await service.errorCode
+        XCTAssertNil(cleared)
+        let batches = await sent.batches
+        XCTAssertEqual(batches.last?.first?.assistantTurns, 2, "history of a deleted transcript stays in the totals")
     }
 
     func testTwoFilesOfOneSessionAreSummed() async throws {

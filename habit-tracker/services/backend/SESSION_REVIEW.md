@@ -2647,3 +2647,9 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/turn_type_drift.jsonl` — mod/new: дрейф `type`, блоб запроса, нечитаемый файл читается заново, каталог 0700, приоритет `.utility`, отправитель читает адрес на главном потоке, отказ без адреса или ключа.
 
 Не сделано (вынесено в отдельный тикет): блок на экране дня и проводка `errorCode` в heartbeat.
+
+### Круг 3 — PHASE-03/165
+
+- `Metrics/TranscriptScanner.swift` — mod: в `FileScanState` отдельный счётчик `renamed` (незнакомый `type`, но `message.role` assistant/user, кроме `api-request-blob`); `errorCode` поднимается при `renamed > 0` независимо от `readable`, так что переименование одного из двух типов и возобновлённая сессия больше не проходят молча. `clearSignals()` обнуляет `suspect` и `renamed` у удалённого файла.
+- `Metrics/ClaudeMetricsService.swift` — mod: после обхода каталога `forgetDeletedFiles`: запись удалённого файла без вкладов удаляется, с вкладами — остаётся (итоги сессии не уменьшаются) и теряет только сигналы ошибки, поэтому `claude_transcript_unreadable` не висит вечно.
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/assistant_type_drift.jsonl` — mod/new: переименован только `assistant`, `user` читается (красный на коде круга 2); дописывание такого файла к распознанной сессии; удалённый файл с ошибкой снимает код и сохраняет итоги.

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/165
-// summary: reads a chunk of a Claude Code transcript (.jsonl) into per-session counters — one assistant turn per message id, tokens from its usage, prompts without tool results as user turns — skips record types it does not know, keeps no message text, leaves a half-written last line for the next pass, and raises an error code when a non-empty file yields nothing readable (also when the record type is unknown but its message names a turn's role)
+// summary: reads a chunk of a Claude Code transcript (.jsonl) into per-session counters — one assistant turn per message id, tokens from its usage, prompts without tool results as user turns — skips record types it does not know, keeps no message text, leaves a half-written last line for the next pass, and raises an error code when a non-empty file yields nothing readable (also, whatever else is readable, when a record type is unknown but its message names a turn's role)
 import Foundation
 
 /// What one session did, as numbers and identifiers. There is no field for text
@@ -70,10 +70,20 @@ struct FileScanState: Codable, Equatable {
     /// Records that yielded a counter, and lines that looked like a turn but did not.
     var readable = 0
     var suspect = 0
+    /// Records of an unknown `type` whose message names a turn's role: the CLI renamed
+    /// what this scanner counts. Kept apart from `readable`, which the other, still known
+    /// type (or the older part of a resumed session) keeps above zero.
+    var renamed = 0
     /// What this file contributes to each session; a session is the sum over files.
     var contributions: [String: SessionTotals] = [:]
 
-    var errorCode: String? { readable == 0 && suspect > 0 ? TranscriptScanner.unreadableCode : nil }
+    var errorCode: String? { renamed > 0 || (readable == 0 && suspect > 0) ? TranscriptScanner.unreadableCode : nil }
+
+    /// The file is gone: what it counted stays in the totals, but its signals no longer hold.
+    mutating func clearSignals() {
+        suspect = 0
+        renamed = 0
+    }
 }
 
 enum TranscriptScanner {
@@ -126,12 +136,13 @@ enum TranscriptScanner {
     }
 
     /// An unknown `type` is skipped quietly, unless the record carries a turn's role:
-    /// then the CLI renamed what this scanner counts, and the file must not read as clean.
+    /// then the CLI renamed what this scanner counts, and the file must not read as clean,
+    /// whatever else in it is still readable.
     private static func noteUnknownType(of record: [String: Any], into state: inout FileScanState) {
         if let type = record["type"] as? String, bookkeepingTypesWithRole.contains(type) { return }
         guard let role = (record["message"] as? [String: Any])?["role"] as? String,
               role == "assistant" || role == "user" else { return }
-        state.suspect += 1
+        state.renamed += 1
     }
 
     private static func readAssistant(_ record: [String: Any], into state: inout FileScanState, clock: inout TimestampParser) {
