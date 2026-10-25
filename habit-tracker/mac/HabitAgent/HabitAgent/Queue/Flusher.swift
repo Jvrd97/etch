@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/163
-// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back; backs off while the server is down, drops by retention, and narrows a refused batch down to the one refused interval
+// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back; backs off while the server is down, drops by retention, and narrows a refused batch down to the one refused interval and probes the server before dropping a run of them
 import Foundation
 import Network
 import os
@@ -14,8 +14,12 @@ struct FlushSummary: Equatable {
     var serverRefuses = false
 }
 
-/// The server turned down `Flusher.maxLoneRefusals` single intervals without taking anything between them.
+/// The server turned down a run of single intervals and also the newest one: it refuses everything, not just those lines.
 private struct RefusalStreak: Error {}
+
+/// The newest interval was accepted while a refused one was dropped; the queue changed under the
+/// halving in progress, so the pass starts over from the head.
+private struct Rescan: Error {}
 
 @MainActor
 final class Flusher {
@@ -24,8 +28,9 @@ final class Flusher {
     /// How often a pending queue is tried again when no interval closes and the network does not change.
     static let timerInterval: TimeInterval = 30
     /// Single intervals the server may refuse in a row, with no send accepted between them, before the
-    /// pass stops. One bad line is dropped; a server that refuses everything (versions out of step)
-    /// must not eat the queue, so it costs fewer than this many intervals until a send is accepted.
+    /// newest interval in the queue is sent as a probe. Accepted: the server is fine, these lines are
+    /// bad, and the pass goes on from the head. Refused: the server refuses everything (versions out
+    /// of step), the pass ends and nothing more is dropped, so that costs fewer than this many intervals.
     static let maxLoneRefusals = 3
 
     private static let logger = Logger(subsystem: AgentPaths.identifier, category: "Flusher")
@@ -135,6 +140,8 @@ final class Flusher {
             } catch AgentAPIError.unknownApp(let bundleID) {
                 store.drop(bundleID: bundleID, at: now)
                 summary.droppedBundles.append(bundleID)
+            } catch is Rescan {
+                continue
             } catch {
                 let delay = backoff.recordFailure()
                 retryNotBefore = now.addingTimeInterval(delay)
@@ -160,9 +167,13 @@ final class Flusher {
         } catch AgentAPIError.invalidBatch {
             guard batch.ids.count > 1 else {
                 loneRefusals += 1
-                guard loneRefusals < Self.maxLoneRefusals else { throw RefusalStreak() }
+                let isRun = loneRefusals >= Self.maxLoneRefusals
+                if isRun, try await !newestIsAccepted(besides: batch, send: send, summary: &summary) {
+                    throw RefusalStreak()
+                }
                 store.drop(batch, at: now)
                 summary.droppedInvalid += 1
+                if isRun { throw Rescan() }
                 return
             }
             let (head, tail) = batch.halves
@@ -174,6 +185,21 @@ final class Flusher {
         summary.sent += batch.intervals.count
         backoff.reset()
         loneRefusals = 0
+    }
+
+    /// Asks the server about the newest interval in the queue, which is not the refused one.
+    private func newestIsAccepted(besides refused: OutboxStore.Batch, send: Sender, summary: inout FlushSummary) async throws -> Bool {
+        guard let newest = store.newestBatch(), newest.ids != refused.ids else { return false }
+        do {
+            try await send(newest.intervals)
+        } catch AgentAPIError.invalidBatch {
+            return false
+        }
+        store.remove(newest)
+        summary.sent += newest.intervals.count
+        backoff.reset()
+        loneRefusals = 0
+        return true
     }
 
     private static func describe(_ error: Error) -> String {

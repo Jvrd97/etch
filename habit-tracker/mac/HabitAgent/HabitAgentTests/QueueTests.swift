@@ -475,6 +475,76 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(store.count, 0)
     }
 
+    /// A server that takes any batch without a bad interval; returns what it accepted and how often it was asked.
+    private final class PickyServer {
+        let bad: [ActivityInterval]
+        private(set) var accepted: [ActivityInterval] = []
+        private(set) var requests = 0
+
+        init(bad: [ActivityInterval]) {
+            self.bad = bad
+        }
+
+        func receive(_ batch: [ActivityInterval]) throws {
+            requests += 1
+            if batch.contains(where: bad.contains) { throw AgentAPIError.invalidBatch }
+            accepted += batch
+        }
+    }
+
+    func testBadIntervalsAtTheHeadDoNotHoldBackTheGoodOnesBehindThem() async throws {
+        let store = try makeStore()
+        let all = intervals(20)
+        let server = PickyServer(bad: Array(all[0..<3]))
+        store.enqueue(all)
+        let summary = await makeFlusher(store) { try server.receive($0) }.flush(now: start)
+
+        XCTAssertEqual(summary?.failed, false)
+        XCTAssertEqual(summary?.droppedInvalid, 3)
+        XCTAssertEqual(Set(server.accepted.map(\.startedAt)), Set(all[3...].map(\.startedAt)))
+        XCTAssertEqual(server.accepted.count, 17)
+        XCTAssertEqual(summary?.sent, 17)
+        XCTAssertEqual(store.count, 0)
+        XCTAssertLessThan(server.requests, 60)
+    }
+
+    func testBadIntervalsInTheMiddleDoNotLeaveTheGoodOnesAfterThemStuck() async throws {
+        let store = try makeStore()
+        let all = intervals(20)
+        let server = PickyServer(bad: Array(all[5..<8]))
+        store.enqueue(all)
+        let summary = await makeFlusher(store) { try server.receive($0) }.flush(now: start)
+
+        XCTAssertEqual(summary?.failed, false)
+        XCTAssertEqual(summary?.droppedInvalid, 3)
+        XCTAssertEqual(server.accepted.count, 17)
+        XCTAssertEqual(store.count, 0)
+        XCTAssertEqual(store.lastError?.code, .invalidBatch)
+    }
+
+    func testBadIntervalsWithNothingAfterThemWaitForAcceptedOnesAndThenGoOn() async throws {
+        let store = try makeStore()
+        let all = intervals(3)
+        let server = PickyServer(bad: all)
+        store.enqueue(all)
+        let flusher = makeFlusher(store) { try server.receive($0) }
+
+        // Nothing else to ask the server with: it may be refusing everything, so the last one stays.
+        let first = await flusher.flush(now: start)
+        XCTAssertEqual(first?.failed, true)
+        XCTAssertEqual(store.count, 1)
+
+        let fresh = intervals(2, from: 10)
+        store.enqueue(fresh)
+        let second = await flusher.flush(now: flusher.retryNotBefore)
+        XCTAssertEqual(second?.failed, false)
+        XCTAssertEqual(second?.droppedInvalid, 1)
+        // The newest goes first, as the probe.
+        XCTAssertEqual(Set(server.accepted.map(\.startedAt)), Set(fresh.map(\.startedAt)))
+        XCTAssertEqual(server.accepted.count, 2)
+        XCTAssertEqual(store.count, 0)
+    }
+
     func testServerRefusingEverythingCostsAtMostAFewIntervalsAndThenBacksOff() async throws {
         let store = try makeStore()
         store.enqueue(intervals(600))

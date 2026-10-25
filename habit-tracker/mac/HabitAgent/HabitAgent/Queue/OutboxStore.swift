@@ -166,12 +166,12 @@ final class OutboxStore {
 
     /// The oldest intervals, at most `maxBatch`; nil when the queue is empty.
     func nextBatch() -> Batch? {
-        var descriptor = FetchDescriptor<QueuedInterval>(
-            sortBy: [SortDescriptor(\.startedAt), SortDescriptor(\.endedAt)]
-        )
-        descriptor.fetchLimit = Self.maxBatch
-        guard let rows = fetch(descriptor), !rows.isEmpty else { return nil }
-        return Batch(ids: rows.map(\.id), intervals: rows.map(\.interval))
+        read(newestFirst: false, limit: Self.maxBatch)
+    }
+
+    /// The newest interval alone: a probe to learn whether the server takes anything at all.
+    func newestBatch() -> Batch? {
+        read(newestFirst: true, limit: 1)
     }
 
     /// Deletes what the server confirmed.
@@ -203,6 +203,16 @@ final class OutboxStore {
         rows.forEach(context.delete)
         record(.expired, count: rows.count, at: now)
         return rows.count
+    }
+
+    private func read(newestFirst: Bool, limit: Int) -> Batch? {
+        let order: SortOrder = newestFirst ? .reverse : .forward
+        var descriptor = FetchDescriptor<QueuedInterval>(
+            sortBy: [SortDescriptor(\.startedAt, order: order), SortDescriptor(\.endedAt, order: order)]
+        )
+        descriptor.fetchLimit = limit
+        guard let rows = fetch(descriptor), !rows.isEmpty else { return nil }
+        return Batch(ids: rows.map(\.id), intervals: rows.map(\.interval))
     }
 
     private func delete(ids: [UUID]) {

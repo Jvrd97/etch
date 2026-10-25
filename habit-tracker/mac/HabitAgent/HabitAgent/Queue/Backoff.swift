@@ -11,6 +11,7 @@ struct Backoff: Equatable {
     private var failures = 0
 
     init(initialDelay: TimeInterval = Backoff.initialDelay, maxDelay: TimeInterval = Backoff.maxDelay) {
+        precondition(initialDelay > 0 && maxDelay >= initialDelay, "Backoff needs 0 < initialDelay <= maxDelay")
         firstDelay = initialDelay
         ceiling = maxDelay
     }
