@@ -10,6 +10,9 @@
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
+// [review:need-review] PHASE-01/83-daily-summary-plan-fields-required
+// summary: DailySummaryPlan types `checklist` and `journal` as required, like `metrics` and `unresolved` — the draft endpoint always sends all four
+
 // [review:need-review] PHASE-03/200
 // summary: planFactsAPI — the facts a plan line writes into its category (record under Idempotency-Key, correct, delete), their wire types, and `unmark`, which takes «сделано» back with a correction or a delete that leaves the line short
 
@@ -1007,26 +1010,18 @@ export interface JournalOp {
 /**
  * The draft the backend produces from a retelling.
  *
- * `metrics` and `unresolved` are required because `POST /daily-summary/draft`
- * has always sent them: a response without either is a broken backend, not an
- * older one, and typing them optional would push a `?? []` into every reader
- * for a case that cannot happen.
- *
- * `checklist` and `journal` are optional only as deployment slack — each was
- * added by a later slice (#75 and #74), and a frontend that ships ahead of the
- * backend must read an old draft as "no boxes"/"no text" rather than crash the
- * preview. Dropping the `?` on both is issue #83
- * (`issues/PHASE-01/backlog/83-daily-summary-plan-fields-required.md`), which
- * unblocks once no backend older than #75 can answer this frontend — i.e. after
- * the next deploy in which backend and frontend go out together.
+ * All four fields are required because `POST /daily-summary/draft` always
+ * sends them: a response without one is a broken backend, and typing it
+ * optional would push a `?? []` into every reader for a case that cannot
+ * happen.
  */
 export interface DailySummaryPlan {
   metrics: LogMetricOp[];
-  /** Boxes the retelling ticked. Absent on an older backend; never a full map. */
-  checklist?: CheckOp[];
+  /** Boxes the retelling ticked; never a full map. */
+  checklist: CheckOp[];
   unresolved: UnresolvedMetric[];
   /** Null when the retelling held nothing worth reading back later. */
-  journal?: JournalOp | null;
+  journal: JournalOp | null;
 }
 
 /** What an apply wrote: one entry per category the day touched, plus its text. */

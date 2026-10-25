@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/75-daily-summary-checklist
+// [review:need-review] PHASE-01/75-daily-summary-checklist, PHASE-01/83-daily-summary-plan-fields-required
 // summary: mobile day-summary tests — same full path as the desktop screen (text -> plan -> unchecked rows -> checklist ticks -> journal op -> apply), landing on the mobile Entries twin, plus the unresolved section and the LLM error with Retry
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -75,6 +75,7 @@ const PLAN: DailySummaryPlan = {
       implausible: false,
     },
   ],
+  checklist: [],
   unresolved: [{ text: 'погулял с собакой', reason: 'нет категории' }],
   journal: null,
 };
@@ -395,7 +396,12 @@ describe('/m/daily-summary checklist section', () => {
   /** Render and settle a plan whose only operation is one tick. */
   async function renderWithChecklist(check: CheckOp = CHECK) {
     draft = mock(() =>
-      Promise.resolve({ metrics: [], unresolved: [], checklist: [check] })
+      Promise.resolve({
+        metrics: [],
+        unresolved: [],
+        checklist: [check],
+        journal: null,
+      } satisfies DailySummaryPlan)
     );
     getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
     render(<MobileDailySummaryPage />);
@@ -447,7 +453,7 @@ describe('/m/daily-summary checklist section', () => {
         unresolved: [],
         checklist: [CHECK],
         journal: JOURNAL,
-      })
+      } satisfies DailySummaryPlan)
     );
     getCategories = mock(() => Promise.resolve([SPORT, VITAMINS]));
     render(<MobileDailySummaryPage />);
