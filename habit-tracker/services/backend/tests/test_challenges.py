@@ -10,7 +10,7 @@
 строк — потому что материализация идёт upsert'ом по `(challenge_id, day)`.
 """
 
-# [review:need-review] PHASE-03/127
+# [review:need-review] PHASE-03/127, PHASE-01/207
 # summary: unit tests for the pure verdict of a day (four rule kinds, an empty day, an open day) and API tests for creation, lazy materialization up to today, the edited target that leaves history alone, идемпотентность recompute, окно назад и длиннее 92 дней, и отсутствие заголовка в логах
 
 import logging
@@ -35,7 +35,6 @@ from app.challenge.rules import (
 )
 from app.core import daytime
 from app.core.daytime import DayBoundary, today_local
-from app.models.field import FieldType
 
 CHALLENGES_URL = "/api/v1/challenges"
 
@@ -59,36 +58,23 @@ class TestVerdictOfOneDay:
     """
 
     def test_a_closed_day_with_nothing_recorded_is_a_miss(self) -> None:
-        assert (
-            verdict_for_day(WATER_RULE, FieldType.NUMBER, EMPTY, is_closed=True)
-            == VERDICT_MISS
-        )
+        assert verdict_for_day(WATER_RULE, EMPTY, is_closed=True) == VERDICT_MISS
 
     def test_the_running_day_waits_rather_than_misses(self) -> None:
-        assert (
-            verdict_for_day(WATER_RULE, FieldType.NUMBER, EMPTY, is_closed=False)
-            == VERDICT_PENDING
-        )
+        assert verdict_for_day(WATER_RULE, EMPTY, is_closed=False) == VERDICT_PENDING
 
     def test_the_running_day_is_done_as_soon_as_the_promise_is_kept(self) -> None:
         assert (
-            verdict_for_day(
-                WATER_RULE, FieldType.NUMBER, sample("2.5"), is_closed=False
-            )
-            == VERDICT_DONE
+            verdict_for_day(WATER_RULE, sample("2.5"), is_closed=False) == VERDICT_DONE
         )
 
     def test_two_glasses_add_up_to_the_promise(self) -> None:
         assert (
-            verdict_for_day(
-                WATER_RULE, FieldType.NUMBER, sample("1.2", "0.5"), is_closed=True
-            )
+            verdict_for_day(WATER_RULE, sample("1.2", "0.5"), is_closed=True)
             == VERDICT_MISS
         )
         assert (
-            verdict_for_day(
-                WATER_RULE, FieldType.NUMBER, sample("1.2", "1.1"), is_closed=True
-            )
+            verdict_for_day(WATER_RULE, sample("1.2", "1.1"), is_closed=True)
             == VERDICT_DONE
         )
 
@@ -96,15 +82,9 @@ class TestVerdictOfOneDay:
         self,
     ) -> None:
         rule = ChallengeRule(kind=RULE_METRIC_AT_MOST, target=Decimal("500"))
+        assert verdict_for_day(rule, sample("300"), is_closed=True) == VERDICT_DONE
         assert (
-            verdict_for_day(rule, FieldType.NUMBER, sample("300"), is_closed=True)
-            == VERDICT_DONE
-        )
-        assert (
-            verdict_for_day(
-                rule, FieldType.NUMBER, sample("300", "400"), is_closed=True
-            )
-            == VERDICT_MISS
+            verdict_for_day(rule, sample("300", "400"), is_closed=True) == VERDICT_MISS
         )
 
     def test_at_most_still_needs_the_day_to_be_recorded(self) -> None:
@@ -116,43 +96,29 @@ class TestVerdictOfOneDay:
         своя материализация, а не `compute_streak`.
         """
         rule = ChallengeRule(kind=RULE_METRIC_AT_MOST, target=Decimal("500"))
-        assert (
-            verdict_for_day(rule, FieldType.NUMBER, EMPTY, is_closed=True)
-            == VERDICT_MISS
-        )
+        assert verdict_for_day(rule, EMPTY, is_closed=True) == VERDICT_MISS
 
     def test_checked_wants_the_box_ticked(self) -> None:
         rule = ChallengeRule(kind=RULE_CHECKED, target=None)
-        assert (
-            verdict_for_day(rule, FieldType.BOOLEAN, sample("true"), is_closed=True)
-            == VERDICT_DONE
-        )
-        assert (
-            verdict_for_day(rule, FieldType.BOOLEAN, sample("false"), is_closed=True)
-            == VERDICT_MISS
-        )
+        assert verdict_for_day(rule, sample("true"), is_closed=True) == VERDICT_DONE
+        assert verdict_for_day(rule, sample("false"), is_closed=True) == VERDICT_MISS
 
-    def test_abstain_calls_a_relapse_exactly_what_the_streak_calls_one(self) -> None:
+    def test_abstain_reads_the_streak_verdict_not_the_rule_field(self) -> None:
         """
-        Один предикат на двух потребителей.
+        Срыв дня называет стрик, а не значение в поле правила.
 
-        `is_relapse_value` считает срывом булеву истину и число больше нуля;
-        ноль и пустое значение оставляют день чистым. Здесь проверяется, что
-        `abstain` не завёл своего мнения на этот счёт.
+        Запись дня судит `app.crud.streak.is_relapse_entry` целиком: галка
+        «Случилось» при пустом счётчике — тоже срыв. Поэтому `abstain` смотрит
+        на `relapsed`, а значения своего поля не читает вовсе: «0» в нём не
+        спасает сорвавшийся день, а «1» не валит чистый.
         """
         rule = ChallengeRule(kind=RULE_ABSTAIN, target=None)
-        assert (
-            verdict_for_day(rule, FieldType.NUMBER, sample("0"), is_closed=True)
-            == VERDICT_DONE
-        )
-        assert (
-            verdict_for_day(rule, FieldType.NUMBER, sample("1"), is_closed=True)
-            == VERDICT_MISS
-        )
-        assert (
-            verdict_for_day(rule, FieldType.BOOLEAN, sample("true"), is_closed=True)
-            == VERDICT_MISS
-        )
+        relapsed = DaySample(has_entry=True, values=("0",), relapsed=True)
+        clean = DaySample(has_entry=True, values=("1",), relapsed=False)
+        assert verdict_for_day(rule, relapsed, is_closed=True) == VERDICT_MISS
+        assert verdict_for_day(rule, relapsed, is_closed=False) == VERDICT_PENDING
+        assert verdict_for_day(rule, clean, is_closed=True) == VERDICT_DONE
+        assert verdict_for_day(rule, EMPTY, is_closed=True) == VERDICT_MISS
 
 
 async def make_category(

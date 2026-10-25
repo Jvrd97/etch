@@ -176,6 +176,26 @@ export const categoriesAPI = {
     return fetcher<CategoryStreak[]>(`/streaks?streak_mode=${streakMode}`);
   },
 
+  // #207: inside this object, not a new export at the end of the file — the
+  // Today screen tests mock '@/lib/api' with a fixed set of exports, and the
+  // avoid card they render would not link against a name the mock lacks.
+  /** The streak with every relapse day — the history on the category page. */
+  getRelapses: async (id: number) => {
+    return fetcher<RelapseHistory>(`/categories/${id}/relapses`);
+  },
+
+  /**
+   * One tap of «Случилось»: the server picks what to write for this category's
+   * fields. A repeat under the same key, or within a minute, returns the same
+   * entry; `created` says whether this tap wrote it.
+   */
+  recordRelapse: async (id: number, idempotencyKey?: string) => {
+    return fetcher<RelapseRecorded>(`/categories/${id}/relapses`, {
+      method: 'POST',
+      headers: idempotency(idempotencyKey),
+    });
+  },
+
   addField: async (categoryId: number, field: FieldCreate) => {
     return fetcher<Field>(`/categories/${categoryId}/fields`, {
       method: 'POST',
@@ -3748,3 +3768,25 @@ export const healthAPI = {
     return fetcher<HealthMetricsResponse>(`/health/metrics?${query.toString()}`);
   },
 };
+
+// [review:need-review] PHASE-01/207
+// summary: the relapse history of an avoid category and the entry a Happened tap landed on.
+
+/** GET /categories/{id}/relapses — the streak plus the days it broke on. */
+export interface RelapseHistory extends CategoryStreak {
+  /** First tracked day (`YYYY-MM-DD`), or null for a category without entries. */
+  tracked_since: string | null;
+  /** Every day that held a relapse, ascending (`YYYY-MM-DD`). */
+  relapse_dates: string[];
+  /** The server's today by the day rule (`YYYY-MM-DD`): the end of the week and month windows. */
+  today: string;
+}
+
+/** POST /categories/{id}/relapses — the entry a Happened tap landed on. */
+export interface RelapseRecorded extends Entry {
+  /**
+   * True when this tap (or its retry under the same key) wrote the entry; false
+   * when it landed on a relapse somebody already recorded, which it must not undo.
+   */
+  created: boolean;
+}

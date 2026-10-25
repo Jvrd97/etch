@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
-# summary: lazy materialization of a challenge — one query of the window's entries, `verdict_for_day` over each day, and an upsert on `(challenge_id, day)` that refuses to touch a row a person set by hand; plus the counts the card prints
+# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, PHASE-01/207
+# summary: lazy materialization of a challenge — one query of the window's entries, `verdict_for_day` over each day (an `abstain` day relapsed when the avoid streak says so), and an upsert on `(challenge_id, day)` that refuses to touch a row a person set by hand; plus the counts the card prints
 """
 Челлендж: чтение окна, ленивая материализация вердиктов, счёт.
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from sqlalchemy import select
@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.challenge.rules import (
+    RULE_ABSTAIN,
     SOURCE_COMPUTED,
     SOURCE_MANUAL,
     VERDICT_MISS,
@@ -47,6 +48,7 @@ from app.challenge.rules import (
     verdict_for_day,
 )
 from app.core.daytime import today_local
+from app.crud.streak import relapse_days
 from app.models import Entry, EntryValue, Field
 from app.models.challenge import (
     ORIGIN_HUMAN,
@@ -56,7 +58,6 @@ from app.models.challenge import (
     Challenge,
     ChallengeDay,
 )
-from app.models.field import FieldType
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +100,6 @@ class ChallengeCounts:
 def rule_of(challenge: Challenge) -> ChallengeRule:
     """Правило челленджа как чистое значение, без строки таблицы вокруг."""
     return ChallengeRule(kind=challenge.rule_kind, target=challenge.target)
-
-
-async def _field_type(db: AsyncSession, field_id: int) -> FieldType | None:
-    """Тип поля, по которому считается правило."""
-    result = await db.execute(select(Field.field_type).where(Field.id == field_id))
-    return result.scalar_one_or_none()
 
 
 async def _samples(
@@ -176,20 +171,25 @@ async def materialize(
     if upto < challenge.starts_on:
         return 0
 
-    field_type = await _field_type(db, challenge.field_id)
-    if field_type is None:
-        # Поле удалить нельзя (RESTRICT), но читатель не обязан в это верить.
-        return 0
-
     samples = await _samples(db, challenge, upto)
     rule = rule_of(challenge)
+    if rule.kind == RULE_ABSTAIN:
+        # Срыв — свойство записи целиком, и называет его стрик, а не поле
+        # правила: иначе «Случилось» с галкой при пустом счётчике делало бы день
+        # челленджа выполненным, пока стрик показывает 0.
+        relapsed = await relapse_days(
+            db, challenge.category_id, challenge.starts_on, upto
+        )
+        samples = {
+            day: replace(sample, relapsed=day in relapsed)
+            for day, sample in samples.items()
+        }
 
     rows: list[dict[str, object]] = []
     day = challenge.starts_on
     while day <= upto:
         verdict = verdict_for_day(
             rule,
-            field_type,
             samples.get(day, EMPTY_DAY),
             is_closed=day < now_day,
         )

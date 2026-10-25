@@ -2,8 +2,8 @@
 Tests for category streak_mode and the streak endpoint.
 """
 
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/90, PHASE-01/174
-# summary: tests for streak_mode create/patch/422, individual and bulk streak responses, the calculation matrix, and the day boundary the streak now counts by — `today_local()`, the same one the plan uses
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/90, PHASE-01/174, PHASE-01/207
+# summary: tests for streak_mode create/patch/422, individual and bulk streak responses, the calculation matrix (now with relapse days, tracked-since and positive duration as a relapse), and the day boundary the streak now counts by — `today_local()`, the same one the plan uses
 
 import logging
 from datetime import date, timedelta
@@ -85,33 +85,53 @@ class TestComputeStreak:
         """No relapse ever: streak spans first entry day .. today inclusive."""
         stats = compute_streak({d(1), d(3)}, set(), today=d(5))
         assert stats == StreakStats(
-            current_streak=5, best_streak=5, last_relapse_date=None
+            current_streak=5,
+            best_streak=5,
+            last_relapse_date=None,
+            relapse_dates=(),
+            tracked_since=d(1),
         )
 
     def test_relapse_resets_current_but_keeps_best(self) -> None:
         """Clean 1..4 (best 4), relapse on 5, clean 6..8 (current 3)."""
         stats = compute_streak({d(1), d(5), d(8)}, {d(5)}, today=d(8))
         assert stats == StreakStats(
-            current_streak=3, best_streak=4, last_relapse_date=d(5)
+            current_streak=3,
+            best_streak=4,
+            last_relapse_date=d(5),
+            relapse_dates=(d(5),),
+            tracked_since=d(1),
         )
 
     def test_relapse_today_gives_zero_current(self) -> None:
         stats = compute_streak({d(1), d(6)}, {d(6)}, today=d(6))
         assert stats == StreakStats(
-            current_streak=0, best_streak=5, last_relapse_date=d(6)
+            current_streak=0,
+            best_streak=5,
+            last_relapse_date=d(6),
+            relapse_dates=(d(6),),
+            tracked_since=d(1),
         )
 
     def test_days_without_entries_are_clean(self) -> None:
         """Gaps in the history do not break an avoid-streak."""
         stats = compute_streak({d(1)}, {d(1)}, today=d(11))
         assert stats == StreakStats(
-            current_streak=10, best_streak=10, last_relapse_date=d(1)
+            current_streak=10,
+            best_streak=10,
+            last_relapse_date=d(1),
+            relapse_dates=(d(1),),
+            tracked_since=d(1),
         )
 
     def test_last_relapse_is_the_latest_one(self) -> None:
-        stats = compute_streak({d(2), d(7)}, {d(2), d(7)}, today=d(9))
+        stats = compute_streak({d(7), d(2)}, {d(7), d(2)}, today=d(9))
         assert stats == StreakStats(
-            current_streak=2, best_streak=4, last_relapse_date=d(7)
+            current_streak=2,
+            best_streak=4,
+            last_relapse_date=d(7),
+            relapse_dates=(d(2), d(7)),
+            tracked_since=d(2),
         )
 
 
@@ -125,6 +145,16 @@ class TestIsRelapseValue:
     def test_positive_number_is_relapse(self) -> None:
         assert is_relapse_value(FieldType.NUMBER, "2") is True
         assert is_relapse_value(FieldType.NUMBER, "0") is False
+
+    def test_positive_duration_is_relapse(self) -> None:
+        """Seconds spent on the avoided thing count like a number of times."""
+        assert is_relapse_value(FieldType.DURATION, "1800") is True
+        assert is_relapse_value(FieldType.DURATION, "0") is False
+        assert is_relapse_value(FieldType.DURATION, "") is False
+
+    def test_text_alone_says_nothing(self) -> None:
+        """A text value neither breaks nor keeps a streak on its own."""
+        assert is_relapse_value(FieldType.TEXT, "пиво") is False
 
     def test_unparsable_number_warns_with_row_ids(
         self, caplog: pytest.LogCaptureFixture

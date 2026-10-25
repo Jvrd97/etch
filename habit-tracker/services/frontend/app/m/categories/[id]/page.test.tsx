@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail
-// summary: integration tests for /m/categories/[id] — the tab strip that scrolls inside itself instead of widening the page, mobile-side links, the streak block and the shared EntryEditorSheet locked to this category
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
+// summary: integration tests for /m/categories/[id] — the tab strip that scrolls inside itself instead of widening the page, mobile-side links, the relapse block of an avoid category with the server's relapse days, and the shared EntryEditorSheet locked to this category
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { Category, CategoryStreak, Entry, Field } from '@/lib/api';
+import type { Category, Entry, Field, RelapseHistory } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
@@ -33,12 +33,15 @@ const CATEGORY: Category = {
 const AVOID_CATEGORY: Category = { ...CATEGORY, streak_mode: 'avoid' };
 const OTHER_CATEGORY: Category = { ...CATEGORY, id: 2, name: 'Mood', fields: [] };
 
-const STREAK: CategoryStreak = {
+const STREAK: RelapseHistory = {
   category_id: 1,
   streak_mode: 'avoid',
   current_streak: 3,
   best_streak: 9,
-  last_relapse_date: null,
+  last_relapse_date: '2026-07-21',
+  tracked_since: '2026-07-01',
+  relapse_dates: ['2026-07-12', '2026-07-21'],
+  today: '2026-10-25',
 };
 
 const ENTRY: Entry = {
@@ -53,7 +56,7 @@ const ENTRY: Entry = {
 let params: Record<string, string>;
 let getCategory: ReturnType<typeof mock>;
 let getAllCategories: ReturnType<typeof mock>;
-let getStreak: ReturnType<typeof mock>;
+let getRelapses: ReturnType<typeof mock>;
 let getTable: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
@@ -173,7 +176,9 @@ mock.module('@/lib/api', () => ({
   categoriesAPI: {
     getById: (id: number) => getCategory(id),
     getAll: () => getAllCategories(),
-    getStreak: (id: number) => getStreak(id),
+    getStreak: () => Promise.resolve(null),
+    getRelapses: (id: number) => getRelapses(id),
+    recordRelapse: () => Promise.resolve(ENTRY),
     create: () => Promise.resolve(CATEGORY),
     update: () => Promise.resolve(CATEGORY),
     delete: () => Promise.resolve(undefined),
@@ -205,7 +210,7 @@ beforeEach(() => {
   params = { id: '1' };
   getCategory = mock(() => Promise.resolve(CATEGORY));
   getAllCategories = mock(() => Promise.resolve([CATEGORY, OTHER_CATEGORY]));
-  getStreak = mock(() => Promise.resolve(STREAK));
+  getRelapses = mock(() => Promise.resolve(STREAK));
   getTable = mock(() => Promise.resolve({ days: [] }));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   createEntry = mock(() => Promise.resolve(ENTRY));
@@ -265,17 +270,23 @@ describe('/m/categories/[id]', () => {
     ).toBe('/m/categories/1');
   });
 
-  it('shows the streak block for an avoid category', async () => {
+  it('shows the relapse block with the days the server counted for an avoid category', async () => {
     getCategory = mock(() => Promise.resolve(AVOID_CATEGORY));
     await renderPage();
 
-    expect(screen.getByRole('heading', { name: 'Streak' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Срывы' })).toBeDefined();
+    expect(getRelapses).toHaveBeenCalledWith(1);
+    const list = screen.getByRole('list', { name: 'Последние срывы' });
+    expect(Array.from(list.querySelectorAll('li')).map((item) => item.textContent)).toEqual([
+      '21 июл 2026, Вт',
+      '12 июл 2026, Вс',
+    ]);
   });
 
-  it('leaves the streak block out for a build category', async () => {
+  it('leaves the relapse block out for a build category', async () => {
     await renderPage();
 
-    expect(screen.queryByRole('heading', { name: 'Streak' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Срывы' })).toBeNull();
   });
 
   it('logs an entry into this category from the sheet', async () => {

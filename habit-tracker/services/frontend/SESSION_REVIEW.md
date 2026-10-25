@@ -2221,3 +2221,26 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `app/chat/page.test.tsx` — mod: тест «does not bring the running-answer notice back on the next turn of the same conversation» — нажатие «Удалить» на первом ходу, конец хода, второй ход того же разговора без повторного нажатия — alert не появляется. Без правки (проверено откатом) тест падает: `Expected: true, Received: false`.
 
 Проверки: `bun test app/chat/page.test.tsx` — 20 pass (новый тест красный без правки файла `page.tsx`, зелёный с ней — проверено прогоном с временно откаченным фиксом). `bunx tsc -p tsconfig.json --noEmit` чисто. `bun run lint` — 0 ошибок в изменённых файлах (ловил `react-hooks/refs` на первой попытке через `useRef`, отсюда состояние вместо рефа). Полный `bun test` — 1530 pass, тот же единственный известный fail `app/m/health/page.test.tsx`, воспроизведён и без правки (не связан с #197). Вживую в браузере не проверялось.
+## 2026-10-25 — PHASE-01/207: «Случилось» без формы и страница срывов
+
+Изменено 14 файлов кода: 5 `new`, 8 `mod`, 1 удалён.
+
+- `components/AvoidStreakCard.tsx` и тест — mod: «Случилось» у любой avoid-категории — один `POST /categories/{id}/relapses`, без формы. Сначала перечитывается серия, потом список дня. Ошибка видна и счётчик не трогает, повтор идёт с тем же ключом. После срыва — «Подробнее» (сколько и заметка через PATCH той же записи) и «Отменить», но только если запись создало это нажатие (`created`); попав на чужой срыв той же минуты, карточка пишет «Срыв уже записан» без отмены. Вся карточка — ссылка на страницу категории текущей оболочки (`/categories/N` или `/m/categories/N`). Проп `entries` больше не читается.
+- `lib/relapse-analysis.ts` и тест — new: срывы за 7 и 30 дней, средний промежуток, дни недели, тренд к прошлому месяцу, столбцы графика по дням или неделям.
+- `components/RelapseChart.tsx` — new: график recharts с переключателем периода.
+- `components/RelapseHistoryCard.tsx` и тест — new: блок «Срывы» на странице категории; окна недели и месяца считаются от `history.today` сервера, а не от часов браузера.
+- `hooks/useCategoryDetail.ts` и тест — mod: вместо `getStreak` читается `getRelapses`.
+- `app/categories/[id]/page.tsx`, `app/m/categories/[id]/page.tsx` и тест — mod: блок «Срывы» вместо `StreakCard`.
+- `components/StreakCard.tsx` — удалён, его заменил блок «Срывы».
+- `lib/api.ts` — mod: `categoriesAPI.getRelapses`, `categoriesAPI.recordRelapse`, типы `RelapseHistory` и `RelapseRecorded` в конце файла.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, в изменённых файлах предупреждений нет. Полный `bun test` — 1499 pass, 1 fail + 1 error: известный `healthAPI` в `app/m/health/page.test.tsx`, он падает и на baseline. Вживую в headless Chrome (390×900 и 1280×900) на бэкенде 8807 и базе `habit_live_207`: шесть avoid-категорий (boolean, boolean+текст, два boolean, число, только текст, длительность), одно нажатие сбивает серию в 0 на `/m/today` и `/today` без формы и без ошибок; повтор в пределах минуты — «Срыв уже записан» без «Отменить». Карточка ведёт на `/m/categories/N` и `/categories/N`, даты в списке совпадают с записями в базе. iOS Safari и реальный телефон не проверялись.
+
+## 2026-10-25 — PHASE-01/207, круг 3: «Отменить» после повторного нажатия, ноль в подробностях
+
+Изменено 2 файла кода: 0 `new`, 2 `mod`.
+
+- `components/AvoidStreakCard.tsx` — mod: `landedEntry` сохраняет `created: true`, если повторное нажатие той же минуты вернуло срыв, который карточка уже записала сама; «Подробнее» не сохраняет количество или длительность меньше или равные нулю — такой PATCH молча превращал срыв в чистый день.
+- `components/AvoidStreakCard.test.tsx` — mod: последовательность «нажатие — повтор с `created: false` — Отменить удаляет запись 41» и отказ в нуле без PATCH.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок. Полный `bun test` — 1501 pass, 1 fail: известный `healthAPI` в `app/m/health/page.test.tsx`, падает и на baseline. Вживую в headless Chrome 1280×900 на `/today` (бэкенд 8807, `habit_live_207`): два нажатия «Случилось» — «Срыв записан» и «Отменить» остаются, «Отменить» удаляет запись. Мобильная оболочка `/m/today` и форма «Подробнее» с нулём вживую не проверялись — только тестом. Проп `entries` оставлен: его передают страницы Today (#206).

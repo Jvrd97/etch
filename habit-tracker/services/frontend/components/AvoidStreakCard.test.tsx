@@ -1,180 +1,339 @@
-// [review:need-review] PHASE-01/201
-// summary: tests the one-tap boolean avoid mark, its exact undo, failures, and the retained numeric form
+// [review:need-review] PHASE-01/201, PHASE-01/207
+// summary: tests the one-tap «Случилось» of every avoid category through the relapse endpoint (no form), its exact undo (never of a relapse it did not write, still offered after a repeated tap lands on its own relapse), a zero amount refused in the details, the details added afterwards, failures that leave the counter alone, the retry under the same key, and the card's link into the category page of the current shell
 
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import AvoidStreakCard from '@/components/AvoidStreakCard';
-import { entriesAPI, type Category, type Entry, type Field } from '@/lib/api';
-import { todayISO } from '@/lib/date';
+import {
+  categoriesAPI,
+  entriesAPI,
+  type Category,
+  type Entry,
+  type EntryCreate,
+  type Field,
+  type RelapseRecorded,
+} from '@/lib/api';
+
+let pathname = '/today';
+mock.module('next/navigation', () => ({
+  usePathname: () => pathname,
+  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  useSearchParams: () => new URLSearchParams(),
+  useParams: () => ({}),
+}));
+
+const { default: AvoidStreakCard } = await import('@/components/AvoidStreakCard');
 
 const TIMESTAMP = '2026-09-10T10:00:00Z';
-const DATE = todayISO();
+const DATE = '2026-09-10';
 
-const BOOLEAN_FIELD: Field = {
-  id: 7, category_id: 1, name: 'Курение', field_type: 'boolean', is_required: false,
-  order: 0, created_at: TIMESTAMP, updated_at: TIMESTAMP,
-};
-const NUMBER_FIELD: Field = {
-  id: 8, category_id: 2, name: 'Сигареты', field_type: 'number', is_required: false,
-  order: 0, created_at: TIMESTAMP, updated_at: TIMESTAMP,
-};
-const BOOLEAN_CATEGORY: Category = {
-  id: 1, name: 'Не курить', display_mode: 'form', streak_mode: 'avoid', is_active: true,
-  created_at: TIMESTAMP, updated_at: TIMESTAMP, fields: [BOOLEAN_FIELD],
-};
-const NUMBER_CATEGORY: Category = {
-  id: 2, name: 'Меньше сигарет', display_mode: 'form', streak_mode: 'avoid', is_active: true,
-  created_at: TIMESTAMP, updated_at: TIMESTAMP, fields: [NUMBER_FIELD],
-};
-const SAVED_BOOLEAN_ENTRY: Entry = {
-  id: 11, category_id: BOOLEAN_CATEGORY.id, entry_date: DATE, created_at: TIMESTAMP,
-  updated_at: TIMESTAMP,
-  values: [{ id: 12, entry_id: 11, field_id: BOOLEAN_FIELD.id, value: 'true' }],
-};
+function field(id: number, categoryId: number, name: string, fieldType: Field['field_type'], order = 0): Field {
+  return {
+    id, category_id: categoryId, name, field_type: fieldType, is_required: false,
+    order, created_at: TIMESTAMP, updated_at: TIMESTAMP,
+  };
+}
 
-let create: ReturnType<typeof mock>;
+function category(id: number, name: string, fields: Field[]): Category {
+  return {
+    id, name, display_mode: 'form', streak_mode: 'avoid', is_active: true,
+    created_at: TIMESTAMP, updated_at: TIMESTAMP, fields,
+  };
+}
+
+const BOOLEAN_FIELD = field(7, 1, 'Курил', 'boolean');
+const BOOLEAN_CATEGORY = category(1, 'Не курить', [BOOLEAN_FIELD]);
+const CIGARETTES_FIELD = field(8, 2, 'Сигареты', 'number');
+const COMPOSITE_CATEGORY = category(2, 'Меньше сигарет', [
+  field(9, 2, 'Курил', 'boolean', 0),
+  CIGARETTES_FIELD,
+  field(10, 2, 'Что курил', 'text', 2),
+]);
+
+// Every shape the ticket names: the card must not care which one it got.
+const FIELD_SETS: Array<[string, Category]> = [
+  ['boolean', BOOLEAN_CATEGORY],
+  ['boolean + text', category(3, 'Пиво', [field(11, 3, 'Пил', 'boolean'), field(12, 3, 'Что', 'text', 1)])],
+  ['two booleans', category(4, 'Алкоголь', [field(13, 4, 'Пиво', 'boolean'), field(14, 4, 'Вино', 'boolean', 1)])],
+  ['number', category(5, 'Сладкое', [field(15, 5, 'Штук', 'number')])],
+  ['text only', category(6, 'Ругань', [field(16, 6, 'Что сказал', 'text')])],
+  ['duration', category(7, 'Соцсети', [field(17, 7, 'Сколько', 'duration')])],
+];
+
+function relapseEntry(categoryId: number, values: RelapseRecorded['values'] = [], created = true): RelapseRecorded {
+  return { id: 41, category_id: categoryId, entry_date: DATE, created_at: TIMESTAMP, updated_at: TIMESTAMP, values, created };
+}
+
+const STREAK = { category_id: 1, streak_mode: 'avoid' as const, current_streak: 3, best_streak: 8, last_relapse_date: null };
+
+let recordRelapse: ReturnType<typeof mock>;
+let update: ReturnType<typeof mock>;
 let remove: ReturnType<typeof mock>;
-let createSpy: ReturnType<typeof spyOn>;
-let removeSpy: ReturnType<typeof spyOn>;
+let create: ReturnType<typeof mock>;
+const restores: Array<() => void> = [];
 
-function renderCard(options?: {
-  category?: Category;
-  entries?: Entry[];
-  onEntriesChanged?: ReturnType<typeof mock>;
-}) {
-  const onRelapse = mock(() => {});
+/**
+ * Swap one method of an API object for the test and remember how to put it back.
+ *
+ * Assignment rather than `spyOn`: another suite may have replaced '@/lib/api'
+ * process-wide with a mock whose `categoriesAPI` has no `recordRelapse` yet, and
+ * `spyOn` refuses a property that is not there.
+ */
+function stub<T extends object, K extends keyof T>(target: T, key: K, implementation: T[K]): void {
+  const original = target[key];
+  target[key] = implementation;
+  restores.push(() => {
+    target[key] = original;
+  });
+}
+
+function renderCard(options?: { category?: Category; numberField?: Field }) {
+  const onRelapse = mock(() => Promise.resolve());
   const onError = mock(() => {});
-  const onEntriesChanged = options?.onEntriesChanged ?? mock(() => Promise.resolve());
-  const view = render(
+  const onEntriesChanged = mock(() => Promise.resolve());
+  render(
     <AvoidStreakCard
       category={options?.category ?? BOOLEAN_CATEGORY}
-      numberField={options?.category === NUMBER_CATEGORY ? NUMBER_FIELD : undefined}
-      entries={options?.entries ?? []}
-      streak={{ category_id: options?.category?.id ?? BOOLEAN_CATEGORY.id, streak_mode: 'avoid', current_streak: 3, best_streak: 8, last_relapse_date: null }}
+      numberField={options?.numberField}
+      streak={STREAK}
       onRelapse={onRelapse}
       onEntriesChanged={onEntriesChanged}
       onError={onError}
     />
   );
-  return { onRelapse, onError, onEntriesChanged, view };
+  return { onRelapse, onError, onEntriesChanged };
 }
 
 beforeEach(() => {
-  create = mock(() => Promise.resolve(SAVED_BOOLEAN_ENTRY));
+  pathname = '/today';
+  recordRelapse = mock((categoryId: number) =>
+    Promise.resolve(relapseEntry(categoryId, [{ id: 51, entry_id: 41, field_id: 9, value: 'true' }]))
+  );
+  update = mock((id: number, data: Partial<Entry>) => Promise.resolve({ ...relapseEntry(2), id, ...data }));
   remove = mock(() => Promise.resolve(undefined));
-  createSpy = spyOn(entriesAPI, 'create').mockImplementation((payload, key) => create(payload, key));
-  removeSpy = spyOn(entriesAPI, 'delete').mockImplementation((id) => remove(id));
+  create = mock(() => Promise.reject(new Error('the card must not create entries itself')));
+  stub(categoriesAPI, 'recordRelapse', (id: number, key?: string) => recordRelapse(id, key));
+  stub(entriesAPI, 'update', (id: number, data: Partial<EntryCreate>) => update(id, data));
+  stub(entriesAPI, 'delete', (id: number) => remove(id));
+  stub(entriesAPI, 'create', (payload: EntryCreate, key?: string) => create(payload, key));
 });
 afterEach(() => {
-  createSpy.mockRestore();
-  removeSpy.mockRestore();
+  while (restores.length > 0) restores.pop()?.();
   cleanup();
 });
 
-describe('AvoidStreakCard boolean avoid category', () => {
-  it('saves true immediately and offers to undo only its own entry', async () => {
+describe('AvoidStreakCard «Случилось»', () => {
+  for (const [shape, avoidCategory] of FIELD_SETS) {
+    it(`records a relapse in one tap for a ${shape} category, without a form`, async () => {
+      const { onRelapse, onEntriesChanged } = renderCard({ category: avoidCategory });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+      await waitFor(() => expect(onEntriesChanged).toHaveBeenCalledTimes(1));
+      expect(recordRelapse).toHaveBeenCalledTimes(1);
+      expect(recordRelapse.mock.calls[0][0]).toBe(avoidCategory.id);
+      expect(recordRelapse.mock.calls[0][1]).toMatch(/^tap-/);
+      expect(create).not.toHaveBeenCalled();
+      expect(onRelapse).toHaveBeenCalledWith(avoidCategory.id);
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('status').textContent).toBe('Срыв записан');
+    });
+  }
+
+  it('refreshes the streak before the day list, so the counter drops first', async () => {
+    const order: string[] = [];
+    const onRelapse = mock(() => {
+      order.push('streak');
+      return Promise.resolve();
+    });
+    const onEntriesChanged = mock(() => {
+      order.push('entries');
+      return Promise.resolve();
+    });
+    render(
+      <AvoidStreakCard category={BOOLEAN_CATEGORY} streak={STREAK} onRelapse={onRelapse} onEntriesChanged={onEntriesChanged} onError={() => {}} />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+    await waitFor(() => expect(order).toEqual(['streak', 'entries']));
+  });
+
+  it('undoes exactly the relapse it recorded', async () => {
     const { onRelapse, onEntriesChanged } = renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(create.mock.calls[0][0]).toEqual({ category_id: BOOLEAN_CATEGORY.id, entry_date: DATE, values: [{ field_id: BOOLEAN_FIELD.id, value: 'true' }] });
-    expect(create.mock.calls[0][1]).toMatch(/^tap-/);
-    expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined());
+
     fireEvent.click(screen.getByRole('button', { name: 'Отменить' }));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(SAVED_BOOLEAN_ENTRY.id));
-    expect(screen.getByRole('button', { name: 'Случилось' })).toBeDefined();
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(41));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull());
+    expect(screen.queryByRole('status')).toBeNull();
     expect(onRelapse).toHaveBeenCalledTimes(2);
     expect(onEntriesChanged).toHaveBeenCalledTimes(2);
   });
 
-  it('retries a failed boolean mark under the same idempotency key', async () => {
-    const sentKeys: string[] = [];
+  it('does not offer to undo a relapse somebody else already recorded today', async () => {
+    recordRelapse = mock(() => Promise.resolve(relapseEntry(1, [], false)));
+    const { onRelapse } = renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Срыв уже записан'));
+    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined();
+    expect(onRelapse).toHaveBeenCalledWith(1);
+  });
+
+  it('shows a failed tap and leaves the counter alone, then retries under the same key', async () => {
     let attempts = 0;
-    create = mock((_: unknown, idempotencyKey: string) => {
-      sentKeys.push(idempotencyKey);
+    recordRelapse = mock(() => {
       attempts += 1;
-      return attempts === 1
-        ? Promise.reject(new Error('connection lost'))
-        : Promise.resolve(SAVED_BOOLEAN_ENTRY);
+      return attempts === 1 ? Promise.reject(new Error('connection lost')) : Promise.resolve(relapseEntry(1));
     });
-    const { onError } = renderCard();
+    const { onError, onRelapse } = renderCard();
 
     fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined());
-
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(sentKeys[1]).toBe(sentKeys[0]);
-  });
-
-  it('reconciles an undo before a stale entry snapshot can show the mark again', async () => {
-    const { onEntriesChanged, view } = renderCard();
-    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined());
-
-    view.rerender(
-      <AvoidStreakCard
-        category={BOOLEAN_CATEGORY}
-        numberField={undefined}
-        entries={[SAVED_BOOLEAN_ENTRY]}
-        streak={null}
-        onRelapse={() => {}}
-        onEntriesChanged={onEntriesChanged}
-        onError={() => {}}
-      />
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }));
-
-    await waitFor(() => expect(remove).toHaveBeenCalledWith(SAVED_BOOLEAN_ENTRY.id));
-    expect(onEntriesChanged).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('button', { name: 'Случилось' })).toBeDefined();
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Не удалось записать срыв'));
+    expect(onRelapse).not.toHaveBeenCalled();
+    expect(screen.getByText('3 days clean')).toBeDefined();
     expect(screen.queryByRole('status')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Срыв записан'));
+    expect(recordRelapse.mock.calls[1][1]).toBe(recordRelapse.mock.calls[0][1]);
   });
 
-  it('prevents a second click while the boolean mark is saving', async () => {
-    let resolve: ((entry: Entry) => void) | undefined;
-    create = mock(() => new Promise<Entry>((done) => { resolve = done; }));
+  it('sends one request however fast the button is pressed twice', async () => {
+    let resolve: ((entry: RelapseRecorded) => void) | undefined;
+    recordRelapse = mock(() => new Promise<RelapseRecorded>((done) => { resolve = done; }));
     renderCard();
     const happened = screen.getByRole('button', { name: 'Случилось' });
+
     fireEvent.click(happened);
     fireEvent.click(happened);
-    expect(create).toHaveBeenCalledTimes(1);
+
+    expect(recordRelapse).toHaveBeenCalledTimes(1);
     expect((happened as HTMLButtonElement).disabled).toBe(true);
-    resolve?.(SAVED_BOOLEAN_ENTRY);
+    resolve?.(relapseEntry(1));
+    await waitFor(() => expect(screen.getByRole('status')).toBeDefined());
+  });
+
+  it('keeps the undo when a second tap within the minute lands on the relapse it wrote', async () => {
+    const values = [{ id: 51, entry_id: 41, field_id: 7, value: 'true' }];
+    let taps = 0;
+    recordRelapse = mock(() => {
+      taps += 1;
+      // The server answers the repeat with the same entry and `created: false`.
+      return Promise.resolve(relapseEntry(1, values, taps === 1));
+    });
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined());
-  });
 
-  it('restores the action and explains a save failure in Russian', async () => {
-    create = mock(() => Promise.reject(new Error('network down')));
-    const { onError } = renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('Не удалось сохранить отметку'));
-    expect(screen.getByRole('button', { name: 'Случилось' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull();
+
+    await waitFor(() => expect(recordRelapse).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Срыв записан'));
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(41));
   });
 
-  it('does not treat false or an absent value as a confirmed happened state', () => {
-    const falseEntry: Entry = { ...SAVED_BOOLEAN_ENTRY, values: [{ ...SAVED_BOOLEAN_ENTRY.values[0], value: 'false' }] };
-    const { rerender } = render(<AvoidStreakCard category={BOOLEAN_CATEGORY} numberField={undefined} entries={[falseEntry]} streak={null} onRelapse={() => {}} onEntriesChanged={async () => {}} onError={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Случилось' })).toBeDefined();
-    rerender(<AvoidStreakCard category={BOOLEAN_CATEGORY} numberField={undefined} entries={[]} streak={null} onRelapse={() => {}} onEntriesChanged={async () => {}} onError={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Случилось' })).toBeDefined();
-  });
-
-  it('restores a saved true fact from the day history without offering to delete it', () => {
-    renderCard({ entries: [SAVED_BOOLEAN_ENTRY] });
-
-    expect(screen.getByRole('status').textContent).toBe('Случилось');
-    expect(screen.queryByRole('button', { name: 'Отменить' })).toBeNull();
-  });
-
-  it('keeps the number category form and sends its value', async () => {
-    renderCard({ category: NUMBER_CATEGORY });
+  it('a new tap after a recorded one is another relapse under a fresh key', async () => {
+    renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
-    fireEvent.change(screen.getByLabelText('Меньше сигарет: Сигареты'), { target: { value: '2' } });
+    await waitFor(() => expect(screen.getByRole('status')).toBeDefined());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+    await waitFor(() => expect(recordRelapse).toHaveBeenCalledTimes(2));
+    expect(recordRelapse.mock.calls[1][1]).not.toBe(recordRelapse.mock.calls[0][1]);
+  });
+});
+
+describe('AvoidStreakCard details after the tap', () => {
+  it('adds how many and a note to the recorded entry, keeping what the server wrote', async () => {
+    const { onRelapse, onEntriesChanged } = renderCard({ category: COMPOSITE_CATEGORY, numberField: CIGARETTES_FIELD });
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.change(screen.getByLabelText('Сигареты'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Заметка'), { target: { value: ' после кофе ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(create.mock.calls[0][0]).toEqual({ category_id: NUMBER_CATEGORY.id, entry_date: DATE, values: [{ field_id: NUMBER_FIELD.id, value: '2' }] });
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0]).toEqual([
+      41,
+      { notes: 'после кофе', values: [{ field_id: 9, value: 'true' }, { field_id: CIGARETTES_FIELD.id, value: '3' }] },
+    ]);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Сохранить' })).toBeNull());
+    expect(onRelapse).toHaveBeenCalledTimes(2);
+    expect(onEntriesChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers a note alone when the category counts nothing', async () => {
+    const textOnly = FIELD_SETS[4][1];
+    recordRelapse = mock(() => Promise.resolve(relapseEntry(textOnly.id)));
+    renderCard({ category: textOnly });
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.change(screen.getByLabelText('Заметка'), { target: { value: 'на работе' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(41, { notes: 'на работе' }));
+  });
+
+  it('refuses a zero amount instead of quietly turning the relapse into a clean day', async () => {
+    const countOnly = FIELD_SETS[3][1];
+    const countField = countOnly.fields[0];
+    recordRelapse = mock(() =>
+      Promise.resolve(relapseEntry(countOnly.id, [{ id: 52, entry_id: 41, field_id: countField.id, value: '1' }]))
+    );
+    const { onError } = renderCard({ category: countOnly, numberField: countField });
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.change(screen.getByLabelText('Штук'), { target: { value: '0' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Сколько — больше нуля, или оставьте поле пустым'));
+    expect(update).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDefined();
+  });
+
+  it('keeps the details open and says so when saving them fails', async () => {
+    update = mock(() => Promise.reject(new Error('server down')));
+    const { onError } = renderCard({ category: COMPOSITE_CATEGORY, numberField: CIGARETTES_FIELD });
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.change(screen.getByLabelText('Сигареты'), { target: { value: '2' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Не удалось сохранить подробности'));
+    expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDefined();
+  });
+});
+
+describe('AvoidStreakCard link to the category page', () => {
+  it('opens the desktop category page from /today', () => {
+    renderCard();
+
+    const link = screen.getByRole('link', { name: 'Не курить: история срывов' });
+
+    expect(link.getAttribute('href')).toBe('/categories/1');
+  });
+
+  it('stays inside the mobile shell from /m/today', () => {
+    pathname = '/m/today';
+    renderCard();
+
+    const link = screen.getByRole('link', { name: 'Не курить: история срывов' });
+
+    expect(link.getAttribute('href')).toBe('/m/categories/1');
   });
 });

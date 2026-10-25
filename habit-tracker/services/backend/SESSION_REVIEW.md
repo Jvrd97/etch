@@ -2543,3 +2543,26 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 Проверки: `pytest tests/test_goals.py` — 15 passed; `ruff check`/`ruff format --check` — чисто; `mypy --strict app` — чисто (тесты не под strict-гейтом); `alembic heads` — одна строка (без изменений, ревизий не заводил); полный `pytest tests/` — 1611 passed, 3 skipped, без новых падений. Живых проверок нет — чисто тестовая задача, без ручки/UI.
 
 Второй проход (круг 2, ревью): в `test_a_quarter_shift_is_followed_not_hardcoded` ожидание квартала бралось вызовом `goal_crud.quarter_code(today_local())` — той же функции, которую тест проверяет, поэтому подмена `quarter_code` константой осталась бы незамеченной. Заменено на буквальную строку `"2027-Q2"` (замороженная дата та же, 2027-05-10); `pytest tests/test_goals.py` — 15 passed, полный `pytest tests/` — 1611 passed, 3 skipped.
+## 2026-10-25 — PHASE-01/207: «Случилось» сбивает серию при любом наборе полей, история срывов
+
+Изменено 5 файлов кода: 1 `new`, 4 `mod`.
+
+- `app/crud/streak.py` — mod: одно правило срыва `is_relapse_entry` для всех писателей (Today, быстрая отметка, план, импорт). Запись без значений — всегда срыв (так писала старая форма Today). Иначе категория с полем boolean, number или duration срывается по значению, а категория без такого поля — на любой записи. Длительность больше нуля теперь срыв. `record_relapse` пишет срыв одним нажатием: галочка в основное или первое boolean-поле, иначе 1 в число, иначе запись без значений (длительность нажатие не выдумывает). Повтор по `Idempotency-Key` (`replayed`) и нажатие в течение минуты после чужого срыва за тот же день (`repeated`) возвращают уже записанный срыв. `StreakStats` получил `relapse_dates` и `tracked_since`; одиночный и массовый расчёт идут через один запрос `_load_histories`, признак «категория умеет сказать нет» — коррелированный EXISTS.
+- `app/schemas/streak.py` — mod: `RelapseHistoryResponse` (плюс `today` — день сервера по правилу дня) и `RelapseRecordedResponse` (запись плюс `created`: можно ли этому нажатию её отменить).
+- `app/api/categories.py` — mod (добавлением): `POST /categories/{id}/relapses` (201, повтор 200, не avoid — 409) и `GET /categories/{id}/relapses`.
+- `tests/test_relapse.py` — new: девять наборов полей, основное поле, окно повтора, ключ, запись за прошлый день, правило по записям, история, число SQL на `/streaks` не растёт с категориями.
+- `tests/test_streak.py` — mod: новые поля `StreakStats`, длительность и текст в `is_relapse_value`.
+
+Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1640 passed, 3 skipped, 2 failed: `test_goals.py` падает так же на baseline `8dc958d`.
+
+## 2026-10-25 — PHASE-01/207, круг 3: челлендж `abstain` судит срыв тем же правилом, что стрик
+
+Изменено 5 файлов кода: 0 `new`, 5 `mod`.
+
+- `app/crud/streak.py` — mod: `relapse_days(db, category_id, start, end)` — дни срыва за окно через тот же `_load_histories` и `is_relapse_entry`; из `__all__` ушёл `is_relapse_value`, его больше никто снаружи не читает.
+- `app/crud/challenge.py` — mod: для `abstain` `materialize` берёт дни срыва у стрика и ставит `DaySample.relapsed`; `_field_type` и проверка поля удалены — тип поля вердикту больше не нужен.
+- `app/challenge/rules.py` — mod: `DaySample.relapsed`; `abstain` выполнен, только если стрик не назвал день срывом; параметр `field_type` у `verdict_for_day` удалён как мёртвый.
+- `tests/test_relapse.py` — mod: «Случилось» и запись только со счётчиком или без значений не делают день челленджа выполненным — для правила на числовом и на boolean-поле категории «число + boolean».
+- `tests/test_challenges.py` — mod: вызовы без `field_type`; юнит-тест `abstain` читает `relapsed`, а не значения поля.
+
+Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1642 passed, 3 skipped, 2 failed (`test_goals.py`, падают и на baseline `8dc958d`). Вживую на 8807 и `habit_live_207`: два нажатия подряд — тот же `entry.id`, `created` true, затем false; `today_verdict` челленджа `pending`, стрик 0.
