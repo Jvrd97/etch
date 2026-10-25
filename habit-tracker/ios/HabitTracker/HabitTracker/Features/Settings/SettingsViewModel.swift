@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry
-// summary: Settings state — server address in UserDefaults, API key in Keychain; base URL parsing via APIClient.makeBaseURL
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/208
+// summary: Settings state — server address in UserDefaults, API key in Keychain; connection check through the production factory APIClient.live
 import Foundation
 
 @MainActor
@@ -12,8 +12,9 @@ final class SettingsViewModel: ObservableObject {
         case failure(String)
     }
 
-    static let serverAddressDefaultsKey = "server_address"
-    static let apiKeyKeychainKey = "api-key"
+    // Immutable strings, so readable off the main actor (APIClient.live builds clients anywhere).
+    nonisolated static let serverAddressDefaultsKey = "server_address"
+    nonisolated static let apiKeyKeychainKey = "api-key"
 
     @Published var serverAddress: String
     @Published var apiKey: String
@@ -56,17 +57,12 @@ final class SettingsViewModel: ObservableObject {
             return
         }
 
-        guard let baseURL = APIClient.makeBaseURL(from: serverAddress) else {
+        // The address and key were just saved, so the production factory reads back
+        // exactly what the user typed — the check runs the same wiring every screen uses.
+        guard let client = APIClient.live(defaults: defaults, keychain: keychain, session: session) else {
             connectionState = .failure("Invalid server address")
             return
         }
-
-        let keychain = self.keychain
-        let client = APIClient(
-            baseURL: baseURL,
-            apiKeyProvider: { try? keychain.read(Self.apiKeyKeychainKey) },
-            session: session
-        )
         do {
             try await client.checkConnection()
             connectionState = .success

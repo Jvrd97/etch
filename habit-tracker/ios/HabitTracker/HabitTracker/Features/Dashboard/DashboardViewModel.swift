@@ -1,7 +1,6 @@
-// [review:need-review] PHASE-01/10-ios-dashboard
+// [review:need-review] PHASE-01/10-ios-dashboard, PHASE-01/208
 // summary: Dashboard state — parallel-loads category/entry/journal counts + recent activity, mirrors the web dashboard
 import Foundation
-import os
 
 @MainActor
 final class DashboardViewModel: ObservableObject {
@@ -45,36 +44,9 @@ final class DashboardViewModel: ObservableObject {
         self.init(apiProvider: { api })
     }
 
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "DashboardViewModel"
-    )
-
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> DashboardViewModel {
-        DashboardViewModel(apiProvider: {
-            let address = UserDefaults.standard
-                .string(forKey: SettingsViewModel.serverAddressDefaultsKey) ?? ""
-            guard let baseURL = APIClient.makeBaseURL(from: address) else {
-                return nil
-            }
-            let keychain = KeychainStore()
-            return APIClient(
-                baseURL: baseURL,
-                apiKeyProvider: {
-                    do {
-                        return try keychain.read(SettingsViewModel.apiKeyKeychainKey)
-                    } catch {
-                        // A Keychain failure must not crash a background request:
-                        // send it without a key and let the backend answer 401,
-                        // which surfaces as a visible error. Logged (no secrets).
-                        Self.logger.error(
-                            "Keychain read for API key failed: \(String(describing: error))"
-                        )
-                        return nil
-                    }
-                }
-            )
-        })
+        DashboardViewModel(apiProvider: { APIClient.live() })
     }
 
     /// Loads category/entry/journal counts and the recent-activity feed in one parallel pass.

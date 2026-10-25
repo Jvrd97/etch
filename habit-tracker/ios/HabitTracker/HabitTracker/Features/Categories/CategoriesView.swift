@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/35-ios-category-detail
+// [review:need-review] PHASE-01/35-ios-category-detail, PHASE-01/208
 // summary: Categories screen — card rows navigate to category detail; leading-swipe edit, trailing-swipe delete; create/edit form + delete confirmation
 import SwiftUI
 
@@ -13,21 +13,19 @@ struct CategoriesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Categories")
-                .dsScreenBackground()
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isCreating = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add category")
+        content
+            .navigationTitle("Categories")
+            .dsScreenBackground()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        isCreating = true
+                    } label: {
+                        Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Add category")
                 }
-        }
+            }
         .task { await viewModel.load() }
         .sheet(isPresented: $isCreating) {
             CategoryFormView(mode: .create, viewModel: viewModel)

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/120
+# [review:need-review] PHASE-03/120, PHASE-01/208
 # summary: deploy & ops shortcuts; `preflight` delegates the pre-deploy run (check + live-CLI isolation smoke) to the backend; `up`/`deploy` end in `verify`, which fails the build when the containers are not running this commit
 # habit-tracker/Makefile — deploy & ops shortcuts (run from this dir on the VPS),
 # plus the local dev entrypoint (`make dev`) used on a laptop.
@@ -134,3 +134,10 @@ dev-db: ## Optional: start postgres in docker (publishes host port 5433)
 
 dev-docker: ## Optional: the whole stack in docker (base compose, no prod override)
 	$(DEV_COMPOSE) up --build
+
+# iOS app on the owner's iPhone (PHASE-01/208). Signs with the team from
+# ios/HabitTracker/project.yml; IOS_DEVICE is the phone's name or id from
+# `xcrun devicectl list devices` — several phones are paired, so there is no default.
+.PHONY: ios-device
+ios-device: ## Build the iOS app and install it on a paired iPhone (IOS_DEVICE=<id>)
+	IOS_DEVICE='$(IOS_DEVICE)' IOS_BUNDLE_ID='$(IOS_BUNDLE_ID)' ios/scripts/install-device.sh

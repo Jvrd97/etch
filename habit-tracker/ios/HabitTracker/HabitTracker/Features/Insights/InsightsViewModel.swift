@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/37-ios-insights
+// [review:need-review] PHASE-01/37-ios-insights, PHASE-01/208
 // summary: Insights state — load report history, run a period analysis (503→not-configured hint, 502→retryable failure), open a past report
 import Foundation
 import os
@@ -87,7 +87,7 @@ final class InsightsViewModel: ObservableObject {
     /// wiring a long-timeout client so the LLM round trip is not cut short.
     static func live() -> InsightsViewModel {
         InsightsViewModel(apiProvider: {
-            EntryMutationLive.makeAPIClient(timeout: analysisTimeout)
+            APIClient.live(timeout: analysisTimeout)
         })
     }
 

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/03-ios-scaffold-settings, PHASE-02/65
-# summary: XcodeGen spec for the app, tests, and read-only HealthKit capability
+# [review:need-review] PHASE-01/03-ios-scaffold-settings, PHASE-02/65, PHASE-01/208
+# summary: XcodeGen spec for the app, tests, read-only HealthKit with background delivery, automatic signing under the owner's personal team, usage strings for microphone, speech and Face ID
 name: HabitTracker
 options:
   bundleIdPrefix: com.habittracker
@@ -8,6 +8,9 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # Owner's personal team. Profiles of other teams in the login keychain are not ours.
+    DEVELOPMENT_TEAM: BU56H2G49W
+    CODE_SIGN_STYLE: Automatic
 targets:
   HabitTracker:
     type: application
@@ -18,11 +21,15 @@ targets:
       path: HabitTracker/HabitTracker.entitlements
       properties:
         com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
     info:
       path: HabitTracker/Info.plist
       properties:
         UILaunchScreen: {}
         NSHealthShareUsageDescription: Habit Tracker читает данные здоровья, чтобы показать ваши метрики.
+        NSMicrophoneUsageDescription: Habit Tracker слушает микрофон, пока вы диктуете итог дня.
+        NSSpeechRecognitionUsageDescription: Habit Tracker распознаёт продиктованный итог дня, чтобы записать его текстом.
+        NSFaceIDUsageDescription: Habit Tracker проверяет Face ID, прежде чем открыть приложение и ключ API.
         # Dev app talks to a local backend over plain HTTP (localhost / Tailscale IP).
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

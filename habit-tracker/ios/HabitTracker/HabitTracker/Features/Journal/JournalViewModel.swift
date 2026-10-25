@@ -1,7 +1,6 @@
-// [review:need-review] PHASE-01/09-ios-journal
+// [review:need-review] PHASE-01/09-ios-journal, PHASE-01/208
 // summary: Journal feed state — load list, compose draft (title/content/mood/tags/date), create with tag normalization, delete
 import Foundation
-import os
 
 /// Pure helpers for the backend's comma-separated `tags` string. Kept free of any
 /// view-model state so tag parsing is trivially testable and reused by create/edit.
@@ -84,10 +83,6 @@ final class JournalViewModel: ObservableObject {
         self.init(apiProvider: { api })
     }
 
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "JournalViewModel"
-    )
-
     /// The date used to seed a new entry, formatted as the backend's `YYYY-MM-DD`.
     static func todayString(_ now: Date = Date()) -> String {
         let formatter = DateFormatter()
@@ -100,30 +95,7 @@ final class JournalViewModel: ObservableObject {
 
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> JournalViewModel {
-        JournalViewModel(apiProvider: {
-            let address = UserDefaults.standard
-                .string(forKey: SettingsViewModel.serverAddressDefaultsKey) ?? ""
-            guard let baseURL = APIClient.makeBaseURL(from: address) else {
-                return nil
-            }
-            let keychain = KeychainStore()
-            return APIClient(
-                baseURL: baseURL,
-                apiKeyProvider: {
-                    do {
-                        return try keychain.read(SettingsViewModel.apiKeyKeychainKey)
-                    } catch {
-                        // A Keychain failure must not crash a background request:
-                        // send it without a key and let the backend answer 401,
-                        // which surfaces as a visible error. Logged (no secrets).
-                        Self.logger.error(
-                            "Keychain read for API key failed: \(String(describing: error))"
-                        )
-                        return nil
-                    }
-                }
-            )
-        })
+        JournalViewModel(apiProvider: { APIClient.live() })
     }
 
     // MARK: - Loading

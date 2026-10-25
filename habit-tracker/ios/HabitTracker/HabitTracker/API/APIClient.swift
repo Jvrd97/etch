@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-01/36-ios-category-charts, PHASE-01/38-ios-avoid-streaks, PHASE-01/37-ios-insights, PHASE-01/39-server-idempotency-key-entries
-// summary: URLSession async/await HTTP client; /api/v1 JSON; EntriesAPI/CategoryDetailAPI refine a shared EntryMutationAPI base (list/patch/delete); CategoryDetailAPI exposes GET /table; TodayAPI adds GET /categories/{id}/streak; InsightsAPI adds POST/GET /insights; createEntry forwards an optional Idempotency-Key header
+// [review:need-review] PHASE-01/36-ios-category-charts, PHASE-01/38-ios-avoid-streaks, PHASE-01/37-ios-insights, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208
+// summary: URLSession async/await HTTP client; /api/v1 JSON; EntriesAPI/CategoryDetailAPI refine a shared EntryMutationAPI base (list/patch/delete); CategoryDetailAPI exposes GET /table; TodayAPI adds GET /categories/{id}/streak; InsightsAPI adds POST/GET /insights; createEntry forwards an optional Idempotency-Key header; request helpers are internal for APIClient+<Feature>.swift extensions; APIClient.live() is the single production factory
 import Foundation
+import os
 
 /// API surface needed by the Today screen; `APIClient` is the production implementation.
 protocol TodayAPI {
@@ -114,7 +115,9 @@ final class APIClient {
 
     private let baseURL: URL
     private let apiKeyProvider: () -> String?
-    private let session: URLSession
+    /// Internal so a feature extension can open a byte stream (`session.bytes(for:)`,
+    /// e.g. chat SSE) on the same configured session the JSON helpers use.
+    let session: URLSession
     private let timeout: TimeInterval
 
     init(
@@ -154,7 +157,53 @@ final class APIClient {
     }
 }
 
-// MARK: - TodayAPI (JSON endpoints under /api/v1)
+// MARK: - Production factory
+
+extension APIClient {
+    private static let logger = Logger(subsystem: "com.habittracker.app", category: "APIClient")
+
+    /// Builds the production client from stored Settings: the server address from
+    /// `UserDefaults`, the API key from the Keychain. The key is read again on every
+    /// request, so a key saved in Settings applies without rebuilding the client.
+    /// Returns `nil` while no valid server address is stored.
+    ///
+    /// `timeout` defaults to the standard budget; callers that hit a slow synchronous
+    /// endpoint (AI insights block on the LLM) pass a longer one. The other parameters
+    /// exist for Settings and tests; every screen calls plain `APIClient.live()`.
+    static func live(
+        timeout: TimeInterval = APIClient.defaultTimeout,
+        defaults: UserDefaults = .standard,
+        keychain: KeychainStore = KeychainStore(),
+        session: URLSession = .shared
+    ) -> APIClient? {
+        let address = defaults.string(forKey: SettingsViewModel.serverAddressDefaultsKey) ?? ""
+        guard let baseURL = makeBaseURL(from: address) else {
+            return nil
+        }
+        return APIClient(
+            baseURL: baseURL,
+            apiKeyProvider: {
+                do {
+                    return try keychain.read(SettingsViewModel.apiKeyKeychainKey)
+                } catch {
+                    // A Keychain failure must not crash a background request:
+                    // send it without a key and let the backend answer 401,
+                    // which surfaces as a visible error. Logged (no secrets).
+                    logger.error("Keychain read for API key failed: \(String(describing: error))")
+                    return nil
+                }
+            },
+            session: session,
+            timeout: timeout
+        )
+    }
+}
+
+// MARK: - Screen APIs (JSON endpoints under /api/v1)
+//
+// Existing screens conform here. A new feature declares its protocol and endpoints
+// in its own `API/APIClient+<Feature>.swift` (`extension APIClient: <Feature>API`)
+// on top of the internal helpers below, and its DTOs in `API/DTOs+<Feature>.swift`.
 
 extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, DashboardAPI, CategoryDetailAPI, InsightsAPI {
     static let apiV1Path = "/api/v1"
@@ -287,7 +336,7 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
         _ = try await send(makeRequest(url: url, method: "DELETE"))
     }
 
-    private func sendJSON<Body: Encodable, Response: Decodable>(
+    func sendJSON<Body: Encodable, Response: Decodable>(
         path: String, method: String, body: Body, idempotencyKey: String? = nil
     ) async throws -> Response {
         let url = try makeAPIURL(path: path, query: [])
@@ -301,13 +350,13 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
         return try decodeJSON(data)
     }
 
-    private func getJSON<T: Decodable>(path: String, query: [URLQueryItem]) async throws -> T {
+    func getJSON<T: Decodable>(path: String, query: [URLQueryItem]) async throws -> T {
         let url = try makeAPIURL(path: path, query: query)
         let data = try await send(makeRequest(url: url, method: "GET"))
         return try decodeJSON(data)
     }
 
-    private func decodeJSON<T: Decodable>(_ data: Data) throws -> T {
+    func decodeJSON<T: Decodable>(_ data: Data) throws -> T {
         do {
             return try APIJSONCoding.makeDecoder().decode(T.self, from: data)
         } catch {
@@ -316,7 +365,7 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
     }
 
     /// Builds `<baseURL>/api/v1<path>` preserving any path prefix in the base URL.
-    private func makeAPIURL(path: String, query: [URLQueryItem]) throws -> URL {
+    func makeAPIURL(path: String, query: [URLQueryItem]) throws -> URL {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIClientError.invalidBaseURL
         }
@@ -333,7 +382,7 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
         return url
     }
 
-    private func makeRequest(url: URL, method: String) -> URLRequest {
+    func makeRequest(url: URL, method: String) -> URLRequest {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
         if let apiKey = apiKeyProvider() {
@@ -344,7 +393,7 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
 
     /// Executes the request, maps transport/status errors, returns the body on 2xx.
     @discardableResult
-    private func send(_ request: URLRequest) async throws -> Data {
+    func send(_ request: URLRequest) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65
+// [review:need-review] PHASE-02/65, PHASE-01/208
 // summary: Health section that requests access on first entry and shows four groups with honest empty values
 
 import SwiftUI
@@ -52,37 +52,35 @@ struct HealthSyncView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                if let errorMessage = viewModel.errorMessage {
-                    Text(errorMessage)
-                        .foregroundStyle(DS.Palette.danger)
-                }
-                Button("Настройки доступа") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        openURL(url)
-                    }
-                }
-                .foregroundStyle(DS.Palette.lime)
-
-                ForEach(HealthMetricGroup.allCases, id: \.self) { group in
-                    Section(group.title) {
-                        ForEach(viewModel.rows.filter { $0.metric.group == group }) { row in
-                            HStack {
-                                Text(row.metric.displayName)
-                                Spacer()
-                                Text(valueText(row))
-                                    .foregroundStyle(DS.Palette.textSecondary)
-                            }
-                        }
-                    }
-                    .listRowBackground(DS.Palette.card)
+        List {
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(DS.Palette.danger)
+            }
+            Button("Настройки доступа") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    openURL(url)
                 }
             }
-            .navigationTitle("Здоровье")
-            .dsScreenBackground()
-            .task { await viewModel.enterSection() }
+            .foregroundStyle(DS.Palette.lime)
+
+            ForEach(HealthMetricGroup.allCases, id: \.self) { group in
+                Section(group.title) {
+                    ForEach(viewModel.rows.filter { $0.metric.group == group }) { row in
+                        HStack {
+                            Text(row.metric.displayName)
+                            Spacer()
+                            Text(valueText(row))
+                                .foregroundStyle(DS.Palette.textSecondary)
+                        }
+                    }
+                }
+                .listRowBackground(DS.Palette.card)
+            }
         }
+        .navigationTitle("Здоровье")
+        .dsScreenBackground()
+        .task { await viewModel.enterSection() }
     }
 
     private func valueText(_ row: HealthMetricRow) -> String {
