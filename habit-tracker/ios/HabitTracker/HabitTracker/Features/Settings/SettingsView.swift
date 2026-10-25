@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/208
-// summary: Settings screen — Lime Tech dark restyle: card form rows, neon status indicator, lime accents; server address + API key + connection check
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/208, PHASE-01/214
+// summary: Settings screen — Lime Tech dark restyle: card form rows, neon status indicator, lime accents; server address + API key + connection check + Face ID lock switches
 import SwiftUI
 
 struct SettingsView: View {
@@ -34,9 +34,39 @@ struct SettingsView: View {
                 }
             }
             .listRowBackground(DS.Palette.card)
+            Section {
+                Toggle("Face ID при входе", isOn: faceIDBinding)
+                    .tint(DS.Palette.lime)
+                if viewModel.faceIDLockEnabled {
+                    Toggle("Код-пароль как запасной", isOn: passcodeBinding)
+                        .tint(DS.Palette.lime)
+                }
+            } footer: {
+                if let message = viewModel.lockMessage {
+                    Text(message)
+                        .foregroundStyle(DS.Palette.danger)
+                } else {
+                    Text("Ключ API открывается только после Face ID. Если набор Face ID изменится, введите ключ заново. Пока приложение заперто, фоновая отправка данных Здоровья может не пройти: ключ закрыт. Несохранённый ввод пропадает, когда приложение запирается снова.")
+                }
+            }
+            .listRowBackground(DS.Palette.card)
         }
         .navigationTitle("Settings")
         .dsScreenBackground()
+    }
+
+    private var faceIDBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.faceIDLockEnabled },
+            set: { newValue in Task { await viewModel.setFaceIDLock(newValue) } }
+        )
+    }
+
+    private var passcodeBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.passcodeFallbackEnabled },
+            set: { newValue in Task { await viewModel.setPasscodeFallback(newValue) } }
+        )
     }
 
     @ViewBuilder

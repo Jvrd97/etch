@@ -316,3 +316,32 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `README.md` — new: правила для тикетов экранов и установка на телефон.
 
 Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.
+
+## 2026-10-25 — PHASE-01/214: Face ID при входе
+
+Экран блокировки при запуске и после 5 минут в фоне; ключ API в Keychain под `.biometryCurrentSet` (запасной код устройства — выбор в Settings). Тронуто 11 файлов: 6 `new`, 5 `mod`.
+
+- `HabitTracker/App/BiometricAuthenticator.swift` — new: `BiometricAuthenticating`, `BiometricFailure`, `LocalAuthenticator` на `LAContext`.
+- `HabitTracker/App/BiometricSession.swift` — new: `KeyProtection`, общий проверенный `LAContext`; без него чтение защищённого ключа молча отказывает, а не поднимает Face ID.
+- `HabitTracker/App/LockController.swift` — new: `LockSettings`, `AppLockController` (запуск, фон, таймаут, один запрос за раз).
+- `HabitTracker/App/LockScreenView.swift` — new: экран блокировки, `.appLock()`, обложка для app switcher.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: одна строка `.appLock()`.
+- `HabitTracker/API/KeychainStore.swift` — mod: `save(protection:)`, `read(context:)`, значения по умолчанию прежние.
+- `HabitTracker/Features/Settings/SettingsViewModel.swift`, `SettingsView.swift` — mod: два переключателя, перезапись ключа под новую защиту с откатом, пустое поле не стирает нечитаемый ключ.
+- `HabitTrackerTests/{LockControllerTests,BiometricKeyProtectionTests}.swift` — new: 21 тест на подделке `BiometricAuthenticating`.
+- `README.md` — mod: строка таблицы про модификатор.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 189 из 189. Симулятор не навязывает access control Keychain (проба: защищённый ключ читается молчаливым контекстом), поэтому защита ключа проверяется только на телефоне. Глазами на симуляторе (Face ID записан через `notifyutil`): экран блокировки, успешное совпадение открывает Today, несовпадение показывает системный запрос; недоступный Face ID даёт сообщение.
+
+### Круг 2 — PHASE-01/214: исправления проверки
+
+Тронуто 8 файлов, все `mod`: `API/KeychainStore.swift`, `App/LockController.swift`, `App/LockScreenView.swift`, `Features/Settings/SettingsView.swift`, `Features/Settings/SettingsViewModel.swift`, `HabitTrackerTests/{KeychainStoreTests,BiometricKeyProtectionTests,LockControllerTests}.swift`.
+
+- **Перезапись ключа.** `KeychainStore.save` пишет новое значение под `<key>.pending`, удаляет старый элемент, пишет под `<key>` и чистит pending. Сбой до удаления оставляет старый ключ. Сбой последней записи оставляет значение под pending: `read` берёт его, когда основного элемента нет, `delete` стирает оба. Схему с `SecItemUpdate` (переименование) не взял: что защищённый элемент даёт менять атрибуты без Face ID, на симуляторе не проверить. Откат через `try?` убран: старый элемент не пропадает, откатывать нечего. После сбоя `SettingsViewModel` читает ключ проверенным контекстом; если не читается, возвращает открытый ключ в поле `apiKey` и пишет «нажмите «Сохранить»».
+- **Шов для тестов.** `KeychainBackend` (три замыкания: `add`, `delete`, `copyData`) передаётся в `KeychainStore.init`, по умолчанию настоящий SecItem. Тестовый `KeychainFaults` ломает нужный шаг поверх настоящего Keychain.
+- **Обложка app switcher.** Отдельный `UIWindow` на уровне `.alert + 1` (`PrivacyCoverWindow`), а не закрытие sheet. Причина: `.inactive` приходит и от Центра управления, и от системных окон; закрытие sheet стирало бы ввод без причины. Окно перекрывает sheet, alert и клавиатуру. Экран блокировки остаётся в корне: при блокировке контент уходит из дерева вместе со sheet. На устройстве не проверено: попадает ли окно в снимок app switcher.
+- **Предупреждения.** (а) Face ID сам поднимается раз на запуск и раз на возврат из `.background` (`takeActivationPrompt`); после «Отмена» остаётся кнопка «Открыть». (б) Смена запасного кода подтверждается текущей политикой (`lockSettings.allowsPasscode`). (в) Нечитаемый ключ не мешает выключить блокировку: перезаписи нет, под переключателем сообщение «введите заново». Включить блокировку при нечитаемом ключе нельзя.
+
+Для #215 (только записано, не сделано): фоновая отправка HealthKit при запертом телефоне идёт без ключа; несохранённый ввод пропадает при повторной блокировке; при возврате из фона на кадр виден контент до блокировки; проверить на телефоне, что окно-обложка попадает в снимок app switcher и что `SecItemAdd` под pending с `.biometryCurrentSet` не поднимает второй запрос Face ID. Первые два пункта вынесены в текст под переключателем.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 204 из 204 (+15 тестов круга).

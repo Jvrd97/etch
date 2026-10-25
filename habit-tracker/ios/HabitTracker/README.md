@@ -30,7 +30,7 @@ xcodebuild test -project HabitTracker.xcodeproj -scheme HabitTracker \
 | `Features/Day/DayView.swift` | #211 |
 | `Features/Chat/ChatView.swift` | #212 |
 | `Features/DailySummary/DailySummaryView.swift` | #213 |
-| экран блокировки: одна строка-модификатор в `RootView` | #214 |
+| экран блокировки: модификатор `.appLock()` в `HabitTrackerApp` | #214 |
 | `Features/HealthSync/`, вкладка Health | #131 |
 
 ## Установка на телефон
