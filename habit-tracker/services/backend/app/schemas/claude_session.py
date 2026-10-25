@@ -25,9 +25,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 # двести покрывают первый проход по накопленной истории кусками.
 MAX_CLAUDE_SESSIONS_BATCH = 200
 
-# Самый длинный диапазон дней в одном чтении. Блок дня просит один день, неделя —
-# предел разумного для экрана; запрос «за всё время» отдаёт тысячи строк.
+# Самый длинный диапазон дней в одном чтении. Блок дня просит один день;
+# квартал (92 дня) — предел разумного для экрана, запрос «за всё время» отдаёт тысячи строк.
 MAX_LIST_RANGE_DAYS = 92
+
+# Верхние границы счётчиков = размер колонки (`ClaudeSession`): ходы — Integer,
+# токены — BigInteger. Без них число сверх колонки доходит до базы и даёт 500, а не 422.
+MAX_TURNS = 2**31 - 1
+MAX_TOKENS = 2**63 - 1
 
 
 class ClaudeSessionIn(BaseModel):
@@ -40,12 +45,12 @@ class ClaudeSessionIn(BaseModel):
     git_branch: str | None = Field(default=None, max_length=120)
     started_at: AwareDatetime
     ended_at: AwareDatetime
-    assistant_turns: int = Field(ge=0)
-    user_turns: int = Field(ge=0)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    cache_read_tokens: int = Field(ge=0)
-    cache_creation_tokens: int = Field(ge=0)
+    assistant_turns: int = Field(ge=0, le=MAX_TURNS)
+    user_turns: int = Field(ge=0, le=MAX_TURNS)
+    input_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    output_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_read_tokens: int = Field(ge=0, le=MAX_TOKENS)
+    cache_creation_tokens: int = Field(ge=0, le=MAX_TOKENS)
     models: str = Field(default="", max_length=200, description="Через запятую")
     goal_title: str | None = Field(default=None, max_length=200)
     cli_version: str | None = Field(default=None, max_length=20)

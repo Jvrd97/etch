@@ -70,6 +70,23 @@ final class ClaudeCodeTests: XCTestCase {
         XCTAssertEqual(state.errorCode, TranscriptScanner.unreadableCode)
     }
 
+    func testARenamedTurnTypeRaisesTheCodeInsteadOfPassingSilently() throws {
+        // `type` is "turn" and the message still says assistant/user: the CLI renamed what is counted.
+        let (state, _) = try scanned("turn_type_drift")
+
+        XCTAssertTrue(state.contributions.isEmpty)
+        XCTAssertEqual(state.errorCode, TranscriptScanner.unreadableCode)
+    }
+
+    func testTheRequestBlobIsBookkeepingNotDrift() {
+        let blob = #"{"type":"api-request-blob","message":{"role":"user","content":"x"}}"# + "\n"
+        var state = FileScanState()
+
+        TranscriptScanner.scan(Data(blob.utf8), into: &state)
+
+        XCTAssertNil(state.errorCode)
+    }
+
     func testGarbageLinesRaiseTheSameCode() throws {
         let (state, _) = try scanned("garbage")
 
@@ -335,6 +352,122 @@ final class ClaudeMetricsServiceTests: XCTestCase {
         XCTAssertEqual(again.sessionsSent, 0, "the refused session waits until it changes")
     }
 
+    func testASessionThatCannotBeReadIsRetriedAndRaisesTheCode() async throws {
+        try install("session_basic")
+        let file = projects.appendingPathComponent("a.jsonl")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        let service = makeService()
+
+        let failed = await service.runPass()
+        let code = await service.errorCode
+        XCTAssertEqual(failed.sessionsSent, 0)
+        XCTAssertNotNil(code)
+        XCTAssertFalse(code?.contains("/") ?? false, "a code, not a path")
+
+        // Size and mtime were not recorded, so the finished file is read once it can be.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        let retried = await service.runPass()
+        XCTAssertEqual(retried.sessionsSent, 1)
+        let recovered = await service.errorCode
+        XCTAssertNil(recovered)
+    }
+
+    func testTheStateDirectoryIsCreatedOwnerOnly() async throws {
+        try install("session_basic")
+        let directory = root.appendingPathComponent("agent-support")
+        let service = ClaudeMetricsService(
+            projectsDirectory: root.appendingPathComponent("projects"),
+            goalsDirectory: goals,
+            stateURL: directory.appendingPathComponent("claude-metrics.json")
+        ) { _ in }
+
+        await service.runPass()
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, AgentPaths.directoryPermissions)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("claude-metrics.json").path))
+    }
+
+    func testThePassRunsAtUtilityPriority() async throws {
+        try install("session_basic")
+        let seen = PriorityBox()
+        let service = ClaudeMetricsService(
+            projectsDirectory: root.appendingPathComponent("projects"),
+            goalsDirectory: goals,
+            stateURL: nil
+        ) { _ in await seen.record(Task.currentPriority) }
+
+        await service.start()
+        for _ in 0..<100 where await seen.value == nil { try await Task.sleep(nanoseconds: 50_000_000) }
+        await service.stop()
+
+        let priority = await seen.value
+        XCTAssertEqual(priority, .utility)
+    }
+
+    actor PriorityBox {
+        private(set) var value: TaskPriority?
+        func record(_ priority: TaskPriority) { value = priority }
+    }
+
+    // MARK: the sender (address on the main actor)
+
+    private func timedPayload() -> ClaudeSessionPayload? {
+        var totals = SessionTotals()
+        totals.startedAt = Date(timeIntervalSince1970: 1_000)
+        totals.endedAt = Date(timeIntervalSince1970: 2_000)
+        return ClaudeSessionPayload(sessionID: sessionID, totals: totals, goalTitle: nil)
+    }
+
+    @MainActor
+    final class AddressBook {
+        var address: String? = "https://habit.example"
+        private(set) var readOnMain: [Bool] = []
+        func read() -> String? {
+            readOnMain.append(Thread.isMainThread)
+            return address
+        }
+    }
+
+    func testTheSenderReadsTheMainActorAddressOnTheMainActorAndPostsTheBatch() async throws {
+        let book = await AddressBook()
+        ClaudeStubProtocol.handler = { request in (request, 201) }
+        let send = ClaudeMetricsService.sender(
+            serverAddress: { book.read() }, apiKey: { "secret" }, session: ClaudeStubProtocol.session()
+        )
+        let payload = try XCTUnwrap(timedPayload())
+
+        // Called from a plain task, as the service's actor does: not from the main thread.
+        try await Task.detached { try await send([payload]) }.value
+
+        let reads = await book.readOnMain
+        XCTAssertEqual(reads, [true])
+        let request = try XCTUnwrap(ClaudeStubProtocol.lastRequest)
+        XCTAssertEqual(request.url?.path, "/api/v1/agent/claude-sessions")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-API-Key"), "secret")
+    }
+
+    func testTheSenderFailsWithoutAnAddressOrKey() async throws {
+        let book = await AddressBook()
+        await MainActor.run { book.address = nil }
+        let withoutAddress = ClaudeMetricsService.sender(
+            serverAddress: { book.read() }, apiKey: { "secret" }, session: ClaudeStubProtocol.session()
+        )
+        let withoutKey = ClaudeMetricsService.sender(
+            serverAddress: { "https://habit.example" }, apiKey: { nil }, session: ClaudeStubProtocol.session()
+        )
+        let payload = try XCTUnwrap(timedPayload())
+
+        for send in [withoutAddress, withoutKey] {
+            do {
+                try await send([payload])
+                XCTFail("expected a refusal")
+            } catch {
+                XCTAssertEqual((error as? URLError)?.code, .userAuthenticationRequired)
+            }
+        }
+    }
+
     func testTheEndpointKeepsTheAddressRulesOfTheActivityEndpoint() {
         XCTAssertEqual(ClaudeSessionsAPI.endpoint(for: "https://habit.example")?.path, "/api/v1/agent/claude-sessions")
         XCTAssertEqual(ClaudeSessionsAPI.endpoint(for: "http://localhost:8000")?.absoluteString, "http://localhost:8000/api/v1/agent/claude-sessions")
@@ -364,4 +497,30 @@ final class ClaudeMetricsServiceTests: XCTestCase {
         XCTAssertLessThan(second.bytesRead, first.bytesRead / 100)
         XCTAssertLessThan(secondSeconds, 10)
     }
+}
+
+/// Answers every request locally; remembers the last one.
+private final class ClaudeStubProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (URLRequest, Int))?
+    nonisolated(unsafe) static var lastRequest: URLRequest?
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ClaudeStubProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let (request, status) = Self.handler?(request) ?? (request, 500)
+        Self.lastRequest = request
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

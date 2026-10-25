@@ -2637,3 +2637,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgent/Metrics/` — new (`TranscriptScanner`, `SessionAggregator`, `ClaudeSessionsAPI`, `ClaudeMetricsService`); `App/HabitAgentApp.swift` — mod (запуск прохода при старте); `HabitAgentTests/ClaudeCodeTests.swift` и `Fixtures/*.jsonl` — new.
 
 Миграции нет: `claude_session` заведена ревизией `e1d3f5a7c9b0` (#155). Не сделано: блок на экране дня (`ClaudeUsageBlock.tsx`, `today/page.tsx`, `lib/api.ts`) — путь вне границ записи #165 на доске; проводка `last_error` в heartbeat — за #164 (`ClaudeMetricsService.errorCode`).
+
+### Круг 2 — PHASE-03/165
+
+- `app/schemas/claude_session.py` — mod: у счётчиков верхняя граница по колонке (`MAX_TURNS = 2**31 - 1` для Integer-ходов, `MAX_TOKENS = 2**63 - 1` для BigInteger-токенов) — число сверх колонки даёт 422, а не 500; комментарий про диапазон исправлен (константа 92 дня, не «неделя»).
+- `tests/test_claude_sessions.py` — mod: параметризованный отказ на каждом из шести счётчиков, запись на границе колонки.
+- `Metrics/ClaudeMetricsService.swift` — mod: адрес сервера читается на главном акторе (`@MainActor @Sendable` замыкание, `await`) через `sender(...)`; проход идёт `Task(priority: .utility)` с `Task.yield()` между файлами; `save()` создаёт каталог с правами 0700; ошибка открытия/seek/чтения не пишет `size`/`mtime` файла (его перечитают) и поднимает код в `errorCode`.
+- `Metrics/TranscriptScanner.swift` — mod: незнакомый `type` при `message.role` assistant/user считается подозрительным (`api-request-blob` — известная бухгалтерия, не дрейф).
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/turn_type_drift.jsonl` — mod/new: дрейф `type`, блоб запроса, нечитаемый файл читается заново, каталог 0700, приоритет `.utility`, отправитель читает адрес на главном потоке, отказ без адреса или ключа.
+
+Не сделано (вынесено в отдельный тикет): блок на экране дня и проводка `errorCode` в heartbeat.

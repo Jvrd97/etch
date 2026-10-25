@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/165
-// summary: reads a chunk of a Claude Code transcript (.jsonl) into per-session counters — one assistant turn per message id, tokens from its usage, prompts without tool results as user turns — skips record types it does not know, keeps no message text, leaves a half-written last line for the next pass, and raises an error code when a non-empty file yields nothing readable
+// summary: reads a chunk of a Claude Code transcript (.jsonl) into per-session counters — one assistant turn per message id, tokens from its usage, prompts without tool results as user turns — skips record types it does not know, keeps no message text, leaves a half-written last line for the next pass, and raises an error code when a non-empty file yields nothing readable (also when the record type is unknown but its message names a turn's role)
 import Foundation
 
 /// What one session did, as numbers and identifiers. There is no field for text
@@ -81,6 +81,8 @@ enum TranscriptScanner {
     static let unreadableCode = "claude_transcript_unreadable"
     private static let recentIDWindow = 8
     private static let syntheticModel = "<synthetic>"
+    /// Known record types that hold a message with a role but are not turns (the request blob).
+    private static let bookkeepingTypesWithRole: Set<String> = ["api-request-blob"]
     private static let turnMarkers = ["\"assistant\"", "\"user\""].map { Array($0.utf8) }
     private static let newline = UInt8(ascii: "\n")
 
@@ -119,8 +121,17 @@ enum TranscriptScanner {
         switch record["type"] as? String {
         case "assistant": readAssistant(record, into: &state, clock: &clock)
         case "user": readUser(record, into: &state, clock: &clock)
-        default: break
+        default: noteUnknownType(of: record, into: &state)
         }
+    }
+
+    /// An unknown `type` is skipped quietly, unless the record carries a turn's role:
+    /// then the CLI renamed what this scanner counts, and the file must not read as clean.
+    private static func noteUnknownType(of record: [String: Any], into state: inout FileScanState) {
+        if let type = record["type"] as? String, bookkeepingTypesWithRole.contains(type) { return }
+        guard let role = (record["message"] as? [String: Any])?["role"] as? String,
+              role == "assistant" || role == "user" else { return }
+        state.suspect += 1
     }
 
     private static func readAssistant(_ record: [String: Any], into state: inout FileScanState, clock: inout TimestampParser) {

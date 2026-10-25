@@ -5,6 +5,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,6 +151,41 @@ class TestClaudeSessionUpsert:
         response = await client.post(URL, json={"sessions": [payload]})
 
         assert response.status_code == 422
+
+    @pytest.mark.parametrize(
+        ("field", "too_big"),
+        [
+            ("assistant_turns", 2**31),
+            ("user_turns", 2**31),
+            ("input_tokens", 2**63),
+            ("output_tokens", 2**63),
+            ("cache_read_tokens", 2**63),
+            ("cache_creation_tokens", 2**63),
+        ],
+    )
+    async def test_a_counter_beyond_its_column_is_refused_not_a_500(
+        self, client: AsyncClient, db_session: AsyncSession, field: str, too_big: int
+    ) -> None:
+        payload = {**session_payload(), field: too_big}
+
+        response = await client.post(URL, json={"sessions": [payload]})
+
+        assert response.status_code == 422
+        assert await stored(db_session) == []
+
+    async def test_counters_at_the_column_limits_are_stored(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        payload = {
+            **session_payload(),
+            "assistant_turns": 2**31 - 1,
+            "cache_read_tokens": 2**63 - 1,
+        }
+
+        response = await client.post(URL, json={"sessions": [payload]})
+
+        assert response.status_code == 201
+        assert (await stored(db_session))[0].cache_read_tokens == 2**63 - 1
 
 
 class TestNoMessageText:
