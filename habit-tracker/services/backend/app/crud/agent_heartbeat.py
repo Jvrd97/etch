@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/164
-# summary: the heartbeat store — one upsert keyed on agent_id that stamps reported_at with the server's clock, one read of every known agent, and the silence rule (heard longer ago than 30 minutes) kept in a single function
+# summary: the heartbeat store — one upsert keyed on agent_id that stamps reported_at with the server's clock, one read of every agent heard in the last two weeks with the server's today, and the silence rule (heard longer ago than 30 minutes) kept in a single function
 """
 Reads and writes of `agent_heartbeat`.
 
@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import local_date
 from app.models.activity import AgentHeartbeat
 from app.schemas.agent_heartbeat import (
     AgentHeartbeatIn,
@@ -26,6 +27,11 @@ from app.schemas.agent_heartbeat import (
 # The agent reports every minute, so half an hour is thirty missed beats: a
 # sleeping lid or a restart passes unnoticed, a quit agent does not.
 SILENCE_THRESHOLD = timedelta(minutes=30)
+
+# A row that nobody has refreshed for two weeks belongs to a mac that was reset
+# or reinstalled under a new `agent_id`: it is not silent, it is gone. Showing it
+# would keep the «agent is silent» banner up for good.
+FORGOTTEN_AFTER = timedelta(days=14)
 
 
 def silent_for(reported_at: datetime, now: datetime) -> timedelta:
@@ -62,12 +68,12 @@ async def upsert_heartbeat(
 
 
 async def agent_status(db: AsyncSession, now: datetime) -> AgentStatusResponse:
-    """Every known agent, the longest-silent first, judged against `now`."""
+    """Every agent heard in the last two weeks, the longest-silent first, judged against `now`."""
     rows = (
         await db.scalars(
-            select(AgentHeartbeat).order_by(
-                AgentHeartbeat.reported_at, AgentHeartbeat.agent_id
-            )
+            select(AgentHeartbeat)
+            .where(AgentHeartbeat.reported_at >= now - FORGOTTEN_AFTER)
+            .order_by(AgentHeartbeat.reported_at, AgentHeartbeat.agent_id)
         )
     ).all()
     return AgentStatusResponse(
@@ -90,4 +96,5 @@ async def agent_status(db: AsyncSession, now: datetime) -> AgentStatusResponse:
             for row in rows
         ],
         silence_threshold_seconds=int(SILENCE_THRESHOLD.total_seconds()),
+        today=local_date(now),
     )

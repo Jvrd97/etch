@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/164
-# summary: wire types of the agent heartbeat — what a mac says about itself (alive, Accessibility, the titles switch, queue depth, last flush, one error code from a closed vocabulary) and what the web reads back (every known agent with the seconds since it was heard and a silent flag against one threshold)
+# summary: wire types of the agent heartbeat — what a mac says about itself (alive, Accessibility, the titles switch, queue depth, last flush, one error code from a closed vocabulary) and what the web reads back (every recently heard agent with the seconds since it was heard and a silent flag against one threshold, plus the server's today)
 """
 Wire types of the agent heartbeat.
 
@@ -17,10 +17,10 @@ clock: a mac with a wrong date must not be able to look alive or dead, and
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from app.models.activity import SAMPLING_MAX_SECONDS, SAMPLING_MIN_SECONDS
 
@@ -28,6 +28,9 @@ AGENT_ID_MAX_LENGTH = 64
 AGENT_VERSION_MAX_LENGTH = 20
 # The width of `agent_heartbeat.last_error`; every code of the vocabulary fits.
 LAST_ERROR_MAX_LENGTH = 200
+# The largest value of the `agent_heartbeat.queue_depth` column (a 32-bit integer);
+# a bigger one is a 422 at the door, not a 500 from the database.
+QUEUE_DEPTH_MAX = 2**31 - 1
 
 
 class AgentErrorCode(str, Enum):
@@ -53,11 +56,13 @@ class AgentHeartbeatIn(BaseModel):
 
     agent_id: str = Field(min_length=1, max_length=AGENT_ID_MAX_LENGTH)
     agent_version: str = Field(min_length=1, max_length=AGENT_VERSION_MAX_LENGTH)
-    accessibility_granted: bool
-    titles_enabled: bool
+    # Null — «I do not know yet», said out loud; leaving the field out is a 422.
+    accessibility_granted: bool | None
+    titles_enabled: bool | None
     sampling_seconds: int = Field(ge=SAMPLING_MIN_SECONDS, le=SAMPLING_MAX_SECONDS)
-    queue_depth: int = Field(ge=0)
-    last_flush_at: datetime | None = None
+    queue_depth: int = Field(ge=0, le=QUEUE_DEPTH_MAX)
+    # Aware on purpose: a naive moment has no single meaning on the server.
+    last_flush_at: AwareDatetime | None = None
     last_error: AgentErrorCode | None = None
 
 
@@ -69,8 +74,8 @@ class AgentStatusItem(BaseModel):
     agent_id: str
     agent_version: str
     reported_at: datetime
-    accessibility_granted: bool
-    titles_enabled: bool
+    accessibility_granted: bool | None
+    titles_enabled: bool | None
     sampling_seconds: int
     queue_depth: int
     last_flush_at: datetime | None
@@ -86,3 +91,7 @@ class AgentStatusResponse(BaseModel):
 
     agents: list[AgentStatusItem]
     silence_threshold_seconds: int
+    # The day the server is in now, by its day boundary. The web compares the day
+    # on screen with this, not with the calendar date of the browser, which runs
+    # ahead of the server's day between midnight and the boundary hour.
+    today: date

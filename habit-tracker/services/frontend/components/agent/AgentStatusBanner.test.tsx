@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: component tests of the agent banner on the day screen — three distinct states with their own words, none for a healthy agent, none on a day that is not today, and the silence banner telling the intervals may be missing
+// summary: component tests of the agent banner on the day screen — three distinct states with their own words, none for a healthy agent, none on a day that is not the server's today (also at 01:00 local, when the browser's date is already tomorrow), and the silence banner telling the intervals may be missing
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -10,6 +10,7 @@ afterEach(() => {
   cleanup();
 });
 
+// The server's today, deliberately not the calendar date of the machine running the test.
 const TODAY = '2026-10-25';
 const HOUR = 3600;
 
@@ -30,10 +31,10 @@ function agent(overrides: Partial<AgentStatusItem> = {}): AgentStatusItem {
   };
 }
 
-function show(item: AgentStatusItem | null, date = TODAY) {
+function show(item: AgentStatusItem | null, date = TODAY, today = TODAY) {
   const status: AgentStatus | null =
-    item === null ? null : { agents: [item], silence_threshold_seconds: 1800 };
-  return render(<AgentStatusBanner status={status} date={date} today={TODAY} />);
+    item === null ? null : { agents: [item], silence_threshold_seconds: 1800, today };
+  return render(<AgentStatusBanner status={status} date={date} />);
 }
 
 describe('AgentStatusBanner', () => {
@@ -43,9 +44,8 @@ describe('AgentStatusBanner', () => {
 
     rerender(
       <AgentStatusBanner
-        status={{ agents: [agent()], silence_threshold_seconds: 1800 }}
+        status={{ agents: [agent()], silence_threshold_seconds: 1800, today: TODAY }}
         date={TODAY}
-        today={TODAY}
       />
     );
     expect(container.textContent).toBe('');
@@ -57,6 +57,40 @@ describe('AgentStatusBanner', () => {
     expect(screen.getByText('Агент молчит 3 ч')).toBeTruthy();
     expect(screen.getByText(/могут отсутствовать/)).toBeTruthy();
     expect(screen.queryByText(/Accessibility/)).toBeNull();
+  });
+
+  it('an unknown Accessibility (null) draws no banner, a refused one does, a granted one does not', () => {
+    const { container, rerender } = show(agent({ accessibility_granted: null }));
+    expect(container.textContent).toBe('');
+
+    rerender(
+      <AgentStatusBanner
+        status={{
+          agents: [agent({ accessibility_granted: false })],
+          silence_threshold_seconds: 1800,
+          today: TODAY,
+        }}
+        date={TODAY}
+      />
+    );
+    expect(screen.getByText(/нет доступа Accessibility/)).toBeTruthy();
+
+    rerender(
+      <AgentStatusBanner
+        status={{
+          agents: [agent({ accessibility_granted: true })],
+          silence_threshold_seconds: 1800,
+          today: TODAY,
+        }}
+        date={TODAY}
+      />
+    );
+    expect(container.textContent).toBe('');
+  });
+
+  it('a silent agent is still called silent when its flags are unknown', () => {
+    show(agent({ is_silent: true, silent_for_seconds: 3 * HOUR, accessibility_granted: null }));
+    expect(screen.getByText('Агент молчит 3 ч')).toBeTruthy();
   });
 
   it('a missing Accessibility is its own banner and the agent is not called silent', () => {
@@ -80,6 +114,24 @@ describe('AgentStatusBanner', () => {
     const { container } = show(
       agent({ is_silent: true, silent_for_seconds: 3 * HOUR }),
       '2026-10-20'
+    );
+
+    expect(container.textContent).toBe('');
+  });
+
+  it('shows on the server day after midnight, when the browser calendar is a day ahead', () => {
+    // 01:00 local: the server is still in 2026-10-25 (its day starts at 04:00),
+    // the browser's calendar already says 2026-10-26. The day on screen is the
+    // server's, so the banner stays.
+    show(agent({ is_silent: true, silent_for_seconds: 3 * HOUR }), TODAY, TODAY);
+    expect(screen.getByText('Агент молчит 3 ч')).toBeTruthy();
+  });
+
+  it('follows the server when it has moved on: the old day loses the banner', () => {
+    const { container } = show(
+      agent({ is_silent: true, silent_for_seconds: 3 * HOUR }),
+      TODAY,
+      '2026-10-26'
     );
 
     expect(container.textContent).toBe('');

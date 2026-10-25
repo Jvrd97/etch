@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: tests of the agent banners — silence is worded in minutes, hours and days, a silent agent gets the silence banner only (its other flags are old news), a live one gets one banner per cause, the switch is not worded as an error, and two macs are told apart
+// summary: tests of the agent banners — silence is worded in minutes, hours and days, a silent agent gets the silence banner only (its other flags are old news), a live one gets one banner per cause, the switch is not worded as an error, an unknown flag (null) draws no banner while a refused one does, and two macs are told apart
 
 import { describe, expect, it } from 'bun:test';
 import type { AgentStatus, AgentStatusItem } from '@/lib/api';
@@ -30,7 +30,7 @@ function agent(overrides: Partial<AgentStatusItem> = {}): AgentStatusItem {
 }
 
 function status(...agents: AgentStatusItem[]): AgentStatus {
-  return { agents, silence_threshold_seconds: 1800 };
+  return { agents, silence_threshold_seconds: 1800, today: '2026-10-25' };
 }
 
 describe('formatSilence', () => {
@@ -70,6 +70,19 @@ describe('bannersFor', () => {
     const banners = bannersFor(status(agent({ accessibility_granted: false })));
 
     expect(banners.map((b) => b.kind)).toEqual(['accessibility']);
+  });
+
+  it('draws the Accessibility banner for false only: null (unknown) and true draw none', () => {
+    const kinds = (accessibility: boolean | null) =>
+      bannersFor(status(agent({ accessibility_granted: accessibility }))).map((b) => b.kind);
+
+    expect(kinds(null)).toEqual([]);
+    expect(kinds(false)).toEqual(['accessibility']);
+    expect(kinds(true)).toEqual([]);
+  });
+
+  it('draws no titles banner while the switch is unknown', () => {
+    expect(bannersFor(status(agent({ titles_enabled: null })))).toEqual([]);
   });
 
   it('gives the switched-off titles a separate banner that is not an error', () => {

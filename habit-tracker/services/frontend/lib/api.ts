@@ -2395,9 +2395,13 @@ export interface AgentStatusItem {
   agent_id: string;
   agent_version: string;
   reported_at: string;
-  accessibility_granted: boolean;
-  /** The agent's own switch of window titles — a choice, not a fault. */
-  titles_enabled: boolean;
+  /**
+   * Null — the agent does not know yet. It sends null until it collects window
+   * titles (#156/#157), and no banner is drawn for it.
+   */
+  accessibility_granted: boolean | null;
+  /** The agent's own switch of window titles — a choice, not a fault. Null until it has read the server. */
+  titles_enabled: boolean | null;
   sampling_seconds: number;
   queue_depth: number;
   last_flush_at: string | null;
@@ -2412,6 +2416,8 @@ export interface AgentStatusItem {
 export interface AgentStatus {
   agents: AgentStatusItem[];
   silence_threshold_seconds: number;
+  /** `YYYY-MM-DD` of the day the server is in, by its day boundary — not the browser's calendar date. */
+  today: string;
 }
 
 export const agentAPI = {

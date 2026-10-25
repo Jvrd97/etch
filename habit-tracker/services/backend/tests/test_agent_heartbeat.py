@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/164
-# summary: tests of the agent heartbeat — a repeat of the same agent_id is one row, a second mac is a second row, silence is counted from the server's clock against one threshold, last_error is accepted only from a closed vocabulary (a path, a free sentence or anything over 200 characters is a 422 and writes nothing), an offline hour is visible afterwards, and the status read costs the same number of queries for one agent and for six
+# summary: tests of the agent heartbeat — a repeat of the same agent_id is one row, a second mac is a second row, silence is counted from the server's clock against one threshold, last_error is accepted only from a closed vocabulary (a path, a free sentence or anything over 200 characters is a 422 and writes nothing), an offline hour is visible afterwards, an agent unheard for two weeks drops off the list, status names the server's today (01:00 local is still yesterday), the two flags may be null (unknown) and are written back as null, the migration that allows it is reversible, a naive last_flush_at and a queue_depth over 2**31-1 are a 422, and the status read costs the same number of queries for one agent and for six
 """
 Tests of `POST /agent/heartbeat` and `GET /agent/status`.
 
@@ -12,18 +12,24 @@ error field that carries a file path to a server nobody trusts with paths.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from httpx import AsyncClient
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import agent as agent_api
+from app.core.daytime import DayBoundary, use_boundary
 from app.models.activity import AgentHeartbeat
 from app.schemas.agent_heartbeat import (
     LAST_ERROR_MAX_LENGTH,
+    QUEUE_DEPTH_MAX,
     AgentErrorCode,
 )
 from tests.conftest import test_engine
@@ -36,7 +42,10 @@ SECOND_AGENT = "6f1b2c3d-0000-4000-8000-00000000a002"
 
 NOON = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 SILENCE_MINUTES = 30
+FORGOTTEN_AFTER_DAYS = 14
 MANY_AGENTS = 6
+UNKNOWN_FLAGS_REVISION = "d6f8a0b2c4e5"
+UNKNOWN_FLAGS_PREVIOUS_REVISION = "3f721bfb0123"
 
 
 def beat(agent_id: str = AGENT, **overrides: Any) -> dict[str, Any]:
@@ -235,6 +244,128 @@ class TestSilence:
         assert agents[SECOND_AGENT]["is_silent"] is False
 
 
+class TestUnknownFlags:
+    """`null` is «the agent does not know yet», which is neither granted nor withheld."""
+
+    @pytest.mark.parametrize("field", ["accessibility_granted", "titles_enabled"])
+    async def test_a_flag_the_agent_does_not_know_is_stored_and_read_back_as_null(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, field: str
+    ) -> None:
+        at(monkeypatch, NOON)
+        await send(client, beat(**{field: None}))
+
+        (agent,) = (await status(client))["agents"]
+        assert agent[field] is None
+
+    async def test_the_next_heartbeat_replaces_null_with_a_real_answer(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        at(monkeypatch, NOON)
+        await send(client, beat(accessibility_granted=None, titles_enabled=None))
+        await send(client, beat(accessibility_granted=False, titles_enabled=True))
+
+        (agent,) = (await status(client))["agents"]
+        assert agent["accessibility_granted"] is False
+        assert agent["titles_enabled"] is True
+
+    async def test_a_missing_flag_is_still_a_422(self, client: AsyncClient) -> None:
+        """Null is said out loud; leaving the field out is a malformed body."""
+        body = beat()
+        del body["accessibility_granted"]
+
+        assert (await client.post(HEARTBEAT_URL, json=body)).status_code == 422
+
+
+def _migration_sql(revision_range: str, *, downgrade: bool) -> str:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    buffer = StringIO()
+    config.output_buffer = buffer
+    runner = command.downgrade if downgrade else command.upgrade
+    runner(config, revision_range, sql=True)
+    return buffer.getvalue().lower()
+
+
+def test_the_unknown_flags_migration_is_reversible_and_keeps_one_head() -> None:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
+
+    up = _migration_sql(
+        f"{UNKNOWN_FLAGS_PREVIOUS_REVISION}:{UNKNOWN_FLAGS_REVISION}", downgrade=False
+    )
+    assert "alter column accessibility_granted drop not null" in up
+    assert "alter column titles_enabled drop not null" in up
+
+    down = _migration_sql(
+        f"{UNKNOWN_FLAGS_REVISION}:{UNKNOWN_FLAGS_PREVIOUS_REVISION}", downgrade=True
+    )
+    # Unknown becomes «no» before the column refuses null again.
+    assert "set accessibility_granted=false where accessibility_granted is null" in (
+        down.replace(" = ", "=")
+    )
+    assert "alter column accessibility_granted set not null" in down
+    assert "alter column titles_enabled set not null" in down
+
+
+class TestForgottenAgent:
+    """A row nobody refreshes is a reinstalled or reset mac, not a silent one."""
+
+    async def test_an_agent_unheard_for_over_two_weeks_is_not_shown(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        at(monkeypatch, NOON)
+        await send(client, beat(AGENT))
+        at(monkeypatch, NOON + timedelta(days=FORGOTTEN_AFTER_DAYS - 1))
+        await send(client, beat(SECOND_AGENT))
+
+        at(monkeypatch, NOON + timedelta(days=FORGOTTEN_AFTER_DAYS, seconds=1))
+        agents = (await status(client))["agents"]
+
+        assert [agent["agent_id"] for agent in agents] == [SECOND_AGENT]
+        assert await stored(db_session) == 2
+
+    async def test_an_agent_on_the_edge_of_two_weeks_is_still_shown_as_silent(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        at(monkeypatch, NOON)
+        await send(client, beat())
+        at(monkeypatch, NOON + timedelta(days=FORGOTTEN_AFTER_DAYS))
+
+        (agent,) = (await status(client))["agents"]
+        assert agent["is_silent"] is True
+
+
+class TestToday:
+    """`today` is the day by the server's rule, not the calendar date of a browser."""
+
+    @pytest.mark.parametrize(
+        ("moment", "expected"),
+        [
+            # 01:00 in Berlin: past midnight, before the day boundary at 04:00.
+            (datetime(2026, 10, 27, 0, 0, tzinfo=timezone.utc), "2026-10-26"),
+            (datetime(2026, 10, 27, 2, 59, tzinfo=timezone.utc), "2026-10-26"),
+            # 04:00 in Berlin: the new day has begun.
+            (datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc), "2026-10-27"),
+            (datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc), "2026-10-27"),
+        ],
+    )
+    async def test_status_names_the_day_the_server_is_in(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        moment: datetime,
+        expected: str,
+    ) -> None:
+        use_boundary(DayBoundary(timezone="Europe/Berlin", day_start_hour=4))
+        at(monkeypatch, moment)
+
+        assert (await status(client))["today"] == expected
+
+
 class TestLastError:
     """`last_error` is a code. A path must not get in even when somebody means it to."""
 
@@ -309,8 +440,11 @@ class TestShapeOfTheBody:
             {"agent_id": "a" * 65},
             {"agent_version": "1" * 21},
             {"queue_depth": -1},
+            {"queue_depth": QUEUE_DEPTH_MAX + 1},
+            {"queue_depth": 2**31},
+            {"last_flush_at": "2026-10-25T12:00:00"},
             {"sampling_seconds": 0},
-            {"accessibility_granted": None},
+            {"accessibility_granted": "maybe"},
         ],
     )
     async def test_a_malformed_body_is_a_422(

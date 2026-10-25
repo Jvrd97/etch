@@ -55,11 +55,11 @@ final class ActivitySampler: ObservableObject {
         timer = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
+        heartbeat?.stop()
         guard let store, let flusher else { return }
         store.enqueue(builder.finish(at: Date()))
         let summary = await flusher.flush(force: true)
         flusher.stop()
-        heartbeat?.stop()
         if summary == nil { status = "Остановлено" + queued() }
     }
 

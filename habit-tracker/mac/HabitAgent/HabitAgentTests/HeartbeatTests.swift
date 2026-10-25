@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: verifies the heartbeat the agent sends — the body's snake_case keys and ISO dates, the error codes matching the server's closed vocabulary, what a flush summary says as a code, a report built from live state, a lost send that costs nothing, a request for a beat during a send that is answered with fresh state, and the minute timer that starts at once and stops
+// summary: verifies the heartbeat the agent sends — the body's snake_case keys and ISO dates, the error codes matching the server's closed vocabulary, what a flush summary says as a code, unknown flags written as null, a titles poll that carries the last ETag and treats 304 as «unchanged», a report built from live state, a lost send that costs nothing, a request for a beat during a send that is answered with fresh state, and the minute timer that starts at once and stops
 import XCTest
 @testable import HabitAgent
 
@@ -28,6 +28,20 @@ final class HeartbeatTests: XCTestCase {
         XCTAssertEqual(object["queue_depth"] as? Int, 7)
         XCTAssertEqual(object["last_flush_at"] as? String, "2027-01-15T08:00:00Z")
         XCTAssertEqual(object["last_error"] as? String, "network")
+    }
+
+    func testAnUnknownFlagIsWrittenAsNullNotLeftOut() throws {
+        let beat = Heartbeat(
+            agentID: "mac-1", agentVersion: "1.0", accessibilityGranted: nil, titlesEnabled: nil,
+            samplingSeconds: 5, queueDepth: 0, lastFlushAt: nil, lastError: nil
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(beat)) as? [String: Any]
+        )
+
+        // The server refuses a body that leaves the keys out, and reads null as «unknown».
+        XCTAssertTrue(object["accessibility_granted"] is NSNull)
+        XCTAssertTrue(object["titles_enabled"] is NSNull)
     }
 
     func testErrorCodesAreExactlyTheServersVocabulary() {
@@ -91,16 +105,16 @@ final class HeartbeatTests: XCTestCase {
     private func reporter(
         _ recorder: Recorder,
         state: @escaping @MainActor () -> HeartbeatState,
-        accessibility: @escaping @MainActor () -> Bool = { true },
+        accessibility: @escaping @MainActor () -> Bool? = { true },
         interval: TimeInterval = 60,
-        titles: @escaping @MainActor () async -> Bool? = { false },
+        titles: @escaping @MainActor (String?) async -> TitlesAnswer? = { _ in .value(false, etag: nil) },
         gate: (@MainActor () async -> Void)? = nil
     ) -> HeartbeatReporter {
         HeartbeatReporter(
             agentID: "mac-1", agentVersion: "1.0", samplingSeconds: 5, interval: interval,
             state: state,
             accessibilityGranted: accessibility,
-            titlesEnabled: titles,
+            titles: titles,
             send: { beat in
                 if let gate { await gate() }
                 if recorder.failNext {
@@ -136,14 +150,69 @@ final class HeartbeatTests: XCTestCase {
 
     func testWhenTheServerCannotBeAskedTheLastKnownSwitchStands() async {
         let recorder = Recorder()
-        var answer: Bool? = true
-        let heartbeat = reporter(recorder, state: { HeartbeatState() }, titles: { answer })
+        var answer: TitlesAnswer? = .value(true, etag: nil)
+        let heartbeat = reporter(recorder, state: { HeartbeatState() }, titles: { _ in answer })
 
         await heartbeat.beat()
         answer = nil
         await heartbeat.beat()
 
         XCTAssertEqual(recorder.sent.map(\.titlesEnabled), [true, true])
+    }
+
+    func testTheSwitchIsNullUntilTheServerHasAnswered() async {
+        let recorder = Recorder()
+        var answer: TitlesAnswer? = nil
+        let heartbeat = reporter(recorder, state: { HeartbeatState() }, titles: { _ in answer })
+
+        await heartbeat.beat()
+        answer = .value(false, etag: nil)
+        await heartbeat.beat()
+
+        XCTAssertEqual(recorder.sent.map(\.titlesEnabled), [nil, false])
+    }
+
+    func testTheLastETagGoesBackAndA304KeepsTheKnownSwitch() async {
+        let recorder = Recorder()
+        var sentETags: [String?] = []
+        var answers: [TitlesAnswer?] = [.value(true, etag: "\"v1\""), .notModified, .value(false, etag: "\"v2\"")]
+        let heartbeat = reporter(recorder, state: { HeartbeatState() }, titles: { etag in
+            sentETags.append(etag)
+            return answers.removeFirst()
+        })
+
+        await heartbeat.beat()
+        await heartbeat.beat()
+        await heartbeat.beat()
+
+        XCTAssertEqual(sentETags, [nil, "\"v1\"", "\"v1\""])
+        XCTAssertEqual(recorder.sent.map(\.titlesEnabled), [true, true, false])
+    }
+
+    func testAnUnknownAccessibilityIsReportedAsNil() async {
+        let recorder = Recorder()
+        let heartbeat = reporter(recorder, state: { HeartbeatState() }, accessibility: { nil })
+
+        await heartbeat.beat()
+
+        XCTAssertNil(recorder.sent.first?.accessibilityGranted)
+    }
+
+    func testTheLoopEndsWhenTheReporterIsGone() async throws {
+        let recorder = Recorder()
+        weak var weakReporter: HeartbeatReporter?
+        do {
+            let heartbeat = reporter(recorder, state: { HeartbeatState() }, interval: 0.05)
+            weakReporter = heartbeat
+            heartbeat.start()
+            try await Task.sleep(for: .milliseconds(120))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let afterRelease = recorder.sent.count
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertNil(weakReporter)
+        XCTAssertEqual(recorder.sent.count, afterRelease)
     }
 
     func testALostSendCostsNothingAndTheNextBeatGoesThrough() async {

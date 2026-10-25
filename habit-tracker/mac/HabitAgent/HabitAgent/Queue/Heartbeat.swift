@@ -1,6 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: the agent's heartbeat — what it says about itself (alive, Accessibility, the titles switch read from the server, queue depth, last flush, one error code from the server's closed vocabulary), the request that carries it, and the reporter that sends it at once, every minute and after each flush, losing nothing when a send is lost
-import ApplicationServices
+// summary: the agent's heartbeat — what it says about itself (alive, Accessibility, the titles switch read from the server — each null while unknown, queue depth, last flush, one error code from the server's closed vocabulary), the request that carries it, and the reporter that sends it at once, every minute and after each flush, losing nothing when a send is lost
 import Foundation
 import os
 
@@ -46,8 +45,11 @@ enum HeartbeatErrorCode: String, CaseIterable, Encodable {
 struct Heartbeat: Encodable, Equatable {
     let agentID: String
     let agentVersion: String
-    let accessibilityGranted: Bool
-    let titlesEnabled: Bool
+    /// Nil — not known yet. Until window titles are collected (#156/#157) the agent
+    /// has no use for the permission and says nil, which the web draws as no banner.
+    let accessibilityGranted: Bool?
+    /// Nil until the server has answered once; a guess would show a false «titles are off».
+    let titlesEnabled: Bool?
     let samplingSeconds: Int
     let queueDepth: Int
     let lastFlushAt: Date?
@@ -63,6 +65,26 @@ struct Heartbeat: Encodable, Equatable {
         case lastFlushAt = "last_flush_at"
         case lastError = "last_error"
     }
+
+    /// The two flags are written out as `null` when unknown: the server refuses a
+    /// body that leaves them out, and the synthesized encoder would leave them out.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(agentID, forKey: .agentID)
+        try container.encode(agentVersion, forKey: .agentVersion)
+        try container.encode(accessibilityGranted, forKey: .accessibilityGranted)
+        try container.encode(titlesEnabled, forKey: .titlesEnabled)
+        try container.encode(samplingSeconds, forKey: .samplingSeconds)
+        try container.encode(queueDepth, forKey: .queueDepth)
+        try container.encodeIfPresent(lastFlushAt, forKey: .lastFlushAt)
+        try container.encodeIfPresent(lastError, forKey: .lastError)
+    }
+}
+
+/// The server's answer about the titles switch to a poll that may carry the last ETag.
+enum TitlesAnswer: Equatable {
+    case notModified
+    case value(Bool, etag: String?)
 }
 
 /// The part of a report that lives in the queue and the flusher.
@@ -107,17 +129,23 @@ struct HeartbeatClient {
         guard (200..<300).contains(response.statusCode) else { throw AgentAPIError.http(status: response.statusCode) }
     }
 
+    private static let notModified = 304
+
     /// The server's switch of window titles, which the web banner reports back.
-    func fetchTitlesEnabled() async throws -> Bool {
+    /// With the ETag of the last answer the server replies 304 and the body is not read again.
+    func fetchTitles(etag: String?) async throws -> TitlesAnswer {
         guard let url = PanelAPIClient.endpoint(for: serverAddress, path: Self.configPath) else {
             throw URLError(.badURL)
         }
-        var request = URLRequest(url: url, timeoutInterval: AgentAPIClient.requestTimeout)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: AgentAPIClient.requestTimeout)
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
         let (body, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if response.statusCode == Self.notModified { return .notModified }
         guard (200..<300).contains(response.statusCode) else { throw AgentAPIError.http(status: response.statusCode) }
-        return try JSONDecoder().decode(Titles.self, from: body).titlesEnabled
+        let titles = try JSONDecoder().decode(Titles.self, from: body).titlesEnabled
+        return .value(titles, etag: response.value(forHTTPHeaderField: "ETag"))
     }
 
     private struct Titles: Decodable {
@@ -142,11 +170,13 @@ final class HeartbeatReporter {
     private let samplingSeconds: Int
     private let interval: TimeInterval
     private let state: @MainActor () -> HeartbeatState
-    private let accessibilityGranted: @MainActor () -> Bool
-    /// Nil when the server could not be asked; the last answer then stands.
-    private let titlesEnabled: @MainActor () async -> Bool?
+    private let accessibilityGranted: @MainActor () -> Bool?
+    /// Gets the last ETag; nil when the server could not be asked, and the last answer then stands.
+    private let titles: @MainActor (String?) async -> TitlesAnswer?
     private let send: @MainActor (Heartbeat) async throws -> Void
-    private var knownTitlesEnabled = false
+    /// Nil until the server has answered once.
+    private var knownTitlesEnabled: Bool?
+    private var titlesETag: String?
     private var sending = false
     private var again = false
     private var loop: Task<Void, Never>?
@@ -157,8 +187,8 @@ final class HeartbeatReporter {
         samplingSeconds: Int,
         interval: TimeInterval = HeartbeatReporter.defaultInterval,
         state: @escaping @MainActor () -> HeartbeatState,
-        accessibilityGranted: @escaping @MainActor () -> Bool,
-        titlesEnabled: @escaping @MainActor () async -> Bool?,
+        accessibilityGranted: @escaping @MainActor () -> Bool?,
+        titles: @escaping @MainActor (String?) async -> TitlesAnswer?,
         send: @escaping @MainActor (Heartbeat) async throws -> Void
     ) {
         self.agentID = agentID
@@ -167,7 +197,7 @@ final class HeartbeatReporter {
         self.interval = interval
         self.state = state
         self.accessibilityGranted = accessibilityGranted
-        self.titlesEnabled = titlesEnabled
+        self.titles = titles
         self.send = send
     }
 
@@ -186,8 +216,12 @@ final class HeartbeatReporter {
             ),
             samplingSeconds: samplingSeconds,
             state: state,
-            accessibilityGranted: { AXIsProcessTrusted() },
-            titlesEnabled: { try? await client()?.fetchTitlesEnabled() },
+            // Unknown on purpose until #156/#157: no window titles are collected, so the
+            // permission is not needed and `false` would raise a banner about nothing.
+            // When titles are collected this becomes `AXIsProcessTrusted()`, and the web
+            // banner appears by itself.
+            accessibilityGranted: { nil },
+            titles: { etag in try? await client()?.fetchTitles(etag: etag) },
             send: { beat in
                 guard let client = client() else { throw HeartbeatError.notConfigured }
                 try await client.send(beat)
@@ -206,9 +240,11 @@ final class HeartbeatReporter {
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
+            // The loop holds the reporter only for the length of one beat: once it
+            // is gone `tick()` answers nil and the loop ends.
             while !Task.isCancelled {
-                await self?.beat()
-                try? await Task.sleep(for: .seconds(self?.interval ?? Self.defaultInterval))
+                guard let interval = await self?.tick() else { return }
+                try? await Task.sleep(for: .seconds(interval))
             }
         }
     }
@@ -216,6 +252,11 @@ final class HeartbeatReporter {
     func stop() {
         loop?.cancel()
         loop = nil
+    }
+
+    private func tick() async -> TimeInterval {
+        await beat()
+        return interval
     }
 
     /// Reports now. A request that comes while a report is on its way is answered
@@ -235,7 +276,13 @@ final class HeartbeatReporter {
     }
 
     private func sendOnce() async {
-        if let answer = await titlesEnabled() { knownTitlesEnabled = answer }
+        switch await titles(titlesETag) {
+        case .value(let enabled, let etag):
+            knownTitlesEnabled = enabled
+            titlesETag = etag
+        case .notModified, nil:
+            break
+        }
         let now = state()
         let beat = Heartbeat(
             agentID: agentID,

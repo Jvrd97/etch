@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164
-// summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date of today, drawn from useAgentStatus
+// summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date on the day the server is in (status.today), drawn from useAgentStatus
 // summary: PHASE-03/200 — a plan line linked to a category carries its fact card, and the day is re-read after a fact or a new link so the mark and the counts follow
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the same button that builds a plan when there is none, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and its two closing touches, the notebook, the rule as a plain list, no text below text-sm
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the map of the day beside it, the итог with the verdict, the notebook, the rule as a plain list, no text below text-sm
@@ -40,7 +40,6 @@ import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
-import { todayISO } from '@/lib/date';
 import {
   dayAPI,
   type AnchorState,
@@ -170,7 +169,7 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
         </div>
       </div>
 
-      <AgentStatusBanner status={agentStatus} date={day.date} today={todayISO()} />
+      <AgentStatusBanner status={agentStatus} date={day.date} />
 
       {plan === null ? (
         // Тот же выход, что на большом экране, и тем же компонентом: две копии

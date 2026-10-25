@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: the banners of the agent on the day screen — silence, a missing Accessibility, the titles switch — each saying what is lost and what to press; drawn only for today, because silence now says nothing about an earlier day
+// summary: the banners of the agent on the day screen — silence, a missing Accessibility, the titles switch — each saying what is lost and what to press; drawn only on the day the server is in (its `today`, not the browser's calendar date, which runs ahead between midnight and the day boundary), because silence now says nothing about an earlier day
 
 import Link from 'next/link';
 import { AlertTriangle, Info } from 'lucide-react';
@@ -11,8 +11,6 @@ export interface AgentStatusBannerProps {
   status: AgentStatus | null;
   /** `YYYY-MM-DD` of the day on screen. */
   date: string;
-  /** `YYYY-MM-DD` of today, a parameter so a test can pin it. */
-  today: string;
 }
 
 function Banner({ banner }: { banner: AgentBanner }) {
@@ -54,8 +52,8 @@ function Banner({ banner }: { banner: AgentBanner }) {
   );
 }
 
-export default function AgentStatusBanner({ status, date, today }: AgentStatusBannerProps) {
-  if (status === null || date !== today) return null;
+export default function AgentStatusBanner({ status, date }: AgentStatusBannerProps) {
+  if (status === null || date !== status.today) return null;
   const banners = bannersFor(status);
   if (banners.length === 0) return null;
   return (

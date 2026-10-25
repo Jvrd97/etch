@@ -10,7 +10,7 @@ afterEach(() => {
   cleanup();
 });
 
-const STATUS: AgentStatus = { agents: [], silence_threshold_seconds: 1800 };
+const STATUS: AgentStatus = { agents: [], silence_threshold_seconds: 1800, today: '2026-10-25' };
 
 describe('useAgentStatus', () => {
   it('reads the status once on mount', async () => {

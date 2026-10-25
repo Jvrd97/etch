@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164
-// summary: turns the agent status into the banners of the day screen — one for silence (and only that one for a silent agent), one for a missing Accessibility, one for the titles switch worded as a setting — with the words, the link and the key each one needs
+// summary: turns the agent status into the banners of the day screen — one for silence (and only that one for a silent agent), one for a refused Accessibility (not for an unknown one), one for the titles switch worded as a setting — with the words, the link and the key each one needs
 
 import type { AgentStatus, AgentStatusItem } from '@/lib/api';
 
@@ -73,10 +73,13 @@ function bannersOf(agent: AgentStatusItem, label: string | null): AgentBanner[] 
     ];
   }
   const banners: AgentBanner[] = [];
-  if (!agent.accessibility_granted) {
+  // Only an answer is news: null means the agent does not know yet (it does not
+  // collect window titles before #156/#157), and the banner comes by itself once
+  // the agent starts to send true or false.
+  if (agent.accessibility_granted === false) {
     banners.push(make('accessibility', ACCESSIBILITY_BANNER_TITLE, ACCESSIBILITY_BANNER_BODY));
   }
-  if (!agent.titles_enabled) {
+  if (agent.titles_enabled === false) {
     banners.push(
       make('titles_off', TITLES_OFF_BANNER_TITLE, TITLES_OFF_BANNER_BODY, {
         label: TITLES_OFF_ACTION_LABEL,
