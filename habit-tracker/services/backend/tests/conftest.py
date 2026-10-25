@@ -2,8 +2,8 @@
 Test configuration and fixtures.
 """
 
-# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of the quarter in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
+# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120, PHASE-03/218
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of today's quarter (computed, not frozen as `2026-Q3` — `#218`) in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core import daytime
+from app.crud import goal as goal_crud
 from app.crud import role as role_crud
 from app.core.config import settings
 from app.core.database import Base, get_db
@@ -123,10 +124,15 @@ async def seeded_goal(db_session: AsyncSession) -> AsyncGenerator[int, None]:
     plan carries, and `#93` gave the column its foreign key. The id is spelled
     out rather than taken from the sequence: the tests name the number, and a
     fixture returning 7 would make them all pass by accident of ordering.
+
+    The quarter itself is today's, computed the same way `GET /goals` computes
+    it (`#218`): a fixed `"2026-Q3"` went stale the moment the calendar crossed
+    into Q4 and a plan written for "today" could no longer name a goal of
+    "today's" quarter.
     """
     goal = QuarterGoal(
         id=1,
-        quarter="2026-Q3",
+        quarter=goal_crud.quarter_code(daytime.today_local()),
         ord=1,
         text_md="Денежный контур Talvior работает end-to-end.",
     )

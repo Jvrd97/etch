@@ -2532,3 +2532,14 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - Зависший `streaming` (воркер умер) теперь блокирует удаление, пока разговор не сброшен через `reset`; сброс есть только в мобильной ленте.
 
 Проверки: `tests/test_chat_delete.py` — 21 passed (новый тест красный до правки, зелёный после); весь `pytest tests/` — 1609 passed, 2 failed в `test_goals.py` (фикстура целей квартала `2026-Q3`, сегодня Q4, к чату не относится; на baseline не гонял); ruff, формат и `mypy --strict` чисто, `alembic heads` — одна голова `a9c1e3f5b7d0`.
+
+## 2026-10-25 — PHASE-03/218: тесты целей не зависят от текущего квартала
+
+Изменено: только `backend/tests/test_goals.py` и строки фикстуры `seeded_goal` в `backend/tests/conftest.py`. Падение (`assert 0 == 5`) было тестовым, не production-кодом: `GET /goals` всегда фильтровал по `goal_crud.quarter_code(today_local())`, а тестовая константа `QUARTER` и `seeded_goal.quarter` держали буквальный `"2026-Q3"`, который перестал совпадать с 1 октября.
+
+- `tests/test_goals.py` (mod) — `QUARTER` теперь `goal_crud.quarter_code(today_local())`, вычисляется один раз при загрузке модуля; тест на импорте `goal.md` (файл буквально пишет «Q3 2026» — вне périметра тикета) замораживает «сегодня» внутри Q3 через `monkeypatch.setattr(daytime, "now_utc", ...)`, чтобы фильтр ручки и фикстура файла совпали; новый `test_a_quarter_shift_is_followed_not_hardcoded` замораживает «сегодня» на 2027-Q2 (квартал, отличный и от реального «сегодня», и от квартала `goal.md`) и пишет-читает пять целей через API — это тест класса ошибки, не одного случая.
+- `tests/conftest.py` (mod) — `seeded_goal.quarter` вычисляется тем же `goal_crud.quarter_code(daytime.today_local())` вместо буквального `"2026-Q3"`.
+
+Проверки: `pytest tests/test_goals.py` — 15 passed; `ruff check`/`ruff format --check` — чисто; `mypy --strict app` — чисто (тесты не под strict-гейтом); `alembic heads` — одна строка (без изменений, ревизий не заводил); полный `pytest tests/` — 1611 passed, 3 skipped, без новых падений. Живых проверок нет — чисто тестовая задача, без ручки/UI.
+
+Второй проход (круг 2, ревью): в `test_a_quarter_shift_is_followed_not_hardcoded` ожидание квартала бралось вызовом `goal_crud.quarter_code(today_local())` — той же функции, которую тест проверяет, поэтому подмена `quarter_code` константой осталась бы незамеченной. Заменено на буквальную строку `"2027-Q2"` (замороженная дата та же, 2027-05-10); `pytest tests/test_goals.py` — 15 passed, полный `pytest tests/` — 1611 passed, 3 skipped.
