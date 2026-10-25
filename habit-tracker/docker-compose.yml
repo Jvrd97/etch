@@ -1,3 +1,5 @@
+# [review:need-review] 205
+# summary: WEBAUTHN_RP_ID / WEBAUTHN_RP_NAME / WEBAUTHN_ORIGINS passed to the backend; the prod override merges this environment, so prod gets them too
 version: '3.8'
 
 services:
@@ -42,6 +44,10 @@ services:
       # in every current browser, so the default works for the laptop; set it to
       # false to reach the dev server from a phone over plain http on the LAN.
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      # Passkey sign-in (#205): empty RP ID keeps it off; see habit-tracker/docs/passkey.md.
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Habit Tracker}
+      WEBAUTHN_ORIGINS: ${WEBAUTHN_ORIGINS:-}
       # cli | api | empty (auto). cli shells out to the `claude` binary
       # baked into the image and uses the mounted host login below.
       LLM_BACKEND: ${LLM_BACKEND:-cli}

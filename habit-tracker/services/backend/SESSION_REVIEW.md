@@ -2495,3 +2495,32 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - `tests/test_quick_mark_day_events.py` — new: 14 тестов — пять нажатий дают пять строк, отменённый тап остаётся, `undoable` переходит к предыдущему после отмены, две кнопки одной категории, чужая категория и чужой день не попадают, граница дня 01:00 и день по умолчанию, галка и срыв, 422 без категории.
 
 Проверки: `tests/test_quick_mark_day_events.py` — 14 passed, `tests/test_quick_mark_undo.py` — 17 passed на `habit_test_206` (порт 55432); `ruff check`, `ruff format --check`, `mypy --strict app` чисто; `alembic heads` — одна голова, миграций нет. Полный прогон: 1622 passed, 3 skipped, 2 failed — это два теста `tests/test_goals.py` (цели считаются по текущему кварталу, а фикстура лежит в 2026-Q3; сегодня Q4) — не связаны с тикетом.
+## 2026-10-25 — 205: вход по passkey
+
+Изменено 14 файлов кода бэкенда: 9 `new`, 5 `mod`, плюс `habit-tracker/docker-compose.yml` (`mod`).
+
+- `app/services/passkey.py`, `app/services/__init__.py` — new: две церемонии WebAuthn поверх `py_webauthn`. Вызов лежит в подписанном токене (своя соль, 5 минут, назначение `register`/`login`). Повтор ответа отклоняется, если вызов выпущен не позже `last_used_at` ключа: у passkey iCloud счётчик всегда ноль.
+- `app/api/passkey.py` — new: `GET /auth/passkey/status`, `POST /auth/passkey/{register,login}/{options,verify}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}`. Регистрация, список и удаление — только с сессией или ключом; вход открыт и ставит ту же `habit_session`; 503, пока passkey не настроен.
+- `app/crud/passkey.py`, `app/schemas/passkey.py`, `app/models/webauthn_credential.py` — new: таблица без `user_id`, DTO без ключевого материала.
+- `alembic/versions/2026_10_25_1700-b1d3f5a7c9e2_webauthn_credential.py` — new: обратимая ревизия от `a9c1e3f5b7d0`.
+- `app/core/config.py` — mod: `WEBAUTHN_RP_ID`/`WEBAUTHN_RP_NAME`/`WEBAUTHN_ORIGINS`; IP вместо имени, половина пары и origin вне RP ID роняют сборку настроек.
+- `app/main.py`, `app/models/__init__.py` — mod: роутер рядом с `auth.router` вне периметра; экспорт модели.
+- `pyproject.toml`, `uv.lock` — mod: `webauthn` 3.0.1 через `uv add`.
+- `tests/test_passkey.py`, `tests/test_passkey_config.py` — new: программный аутентификатор (P-256, CBOR, `none`), 34 теста.
+
+Проверки: тесты passkey, auth, session, perimeter — 78 passed; полный прогон — 1641 passed, 3 failed: `test_categories.py:987` прибит к прежней голове Alembic, два `test_goals.py` падают по дате (фикстура `2026-Q3`). Ruff, формат, `mypy --strict` чистые, одна голова `b1d3f5a7c9e2`, миграция вверх-вниз-вверх на `habit_live_205`. Живой поток через прокси Next на `:3805` — программным аутентификатором; Face ID руками не нажимался.
+
+### Круг 2
+
+Изменено 5 файлов кода бэкенда (`mod`), плюс `deploy/docker-compose.prod.yml` и `habit-tracker/docs/passkey.md`.
+
+- `app/crud/passkey.py` — mod: `get_by_credential_id(..., lock=True)` читает строку ключа `FOR UPDATE`; вставка ключа — в savepoint.
+- `app/services/passkey.py` — mod: вход читает ключ под блокировкой, поэтому параллельный повтор того же ответа ждёт commit первого и отклоняется по `last_used_at`. «Уже зарегистрирован» решает уникальный индекс (`IntegrityError` → 409), а не проверка перед вставкой.
+- `app/api/passkey.py` — mod: `db.commit()` до установки `habit_session` на входе и до 201 на регистрации.
+- `tests/test_passkey.py` — mod: два параллельных повтора одного ответа дают 200 и 401 (без блокировки — 200 и 200, проверено); две параллельные регистрации дают 201 и 409; без флага UV отказ на входе и на регистрации.
+- `tests/test_categories.py` — mod: проверка миграции полей требует одну голову, а не голову `a9c1e3f5b7d0`. Хунк дословно как у #200/#105/#159; маркер файла не менял, чтобы хунк остался одинаковым при слиянии.
+- `deploy/docker-compose.prod.yml` — фронт опубликован ещё и на `127.0.0.1:3000` — цель `tailscale serve --bg 3000`. При пустом `BIND_ADDR` compose склеивает две одинаковые строки в одну (`docker compose config`).
+
+Фронт круга 2 (десктопная строка «Passkey» в меню) — запись в `frontend/SESSION_REVIEW.md`.
+
+Проверки: passkey и categories — 92 passed; полный прогон — 1648 passed, 2 failed (`test_goals.py`, дата фикстуры, падают и на baseline); ruff, формат, `mypy --strict` чистые, одна голова `b1d3f5a7c9e2`.

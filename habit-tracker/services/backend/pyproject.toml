@@ -37,6 +37,7 @@ dependencies = [
     # не было вообще — httpx стоял только в dev ради тестового транспорта.
     "httpx==0.25.2",
     "cryptography>=42",
+    "webauthn>=3.0.1",
 ]
 
 [dependency-groups]

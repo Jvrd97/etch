@@ -1,12 +1,15 @@
 'use client';
 // [review:need-review] PHASE-03/109
 // summary: /login — the one screen where the key is typed; it goes out in a single request, is exchanged for an HttpOnly cookie and is never stored in the browser
+// [review:need-review] 205
+// summary: «Войти по passkey» under the key form — the same cookie by Face ID / Touch ID, shown only where passkey works
 
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { KeyRound } from 'lucide-react';
 import { authAPI } from '@/lib/api';
 import { NEXT_PARAM, afterLoginHref } from '@/lib/auth';
+import PasskeyLoginButton from '@/components/settings/PasskeyLoginButton';
 
 const GENERIC_FAILURE = 'Не удалось войти. Проверьте ключ и попробуйте ещё раз.';
 
@@ -25,6 +28,11 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const goOn = () => {
+    router.replace(afterLoginHref(params.get(NEXT_PARAM)));
+    router.refresh();
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (submitting || apiKey.length === 0) return;
@@ -34,8 +42,7 @@ function LoginForm() {
       await authAPI.login(apiKey);
       // Забыть ключ до навигации: экран может не размонтироваться мгновенно.
       setApiKey('');
-      router.replace(afterLoginHref(params.get(NEXT_PARAM)));
-      router.refresh();
+      goOn();
     } catch (failure) {
       setApiKey('');
       setError(failure instanceof Error && failure.message ? failure.message : GENERIC_FAILURE);
@@ -84,6 +91,8 @@ function LoginForm() {
       >
         {submitting ? 'Проверяем…' : 'Войти'}
       </button>
+
+      <PasskeyLoginButton onSignedIn={goOn} />
     </form>
   );
 }

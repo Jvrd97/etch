@@ -2143,3 +2143,26 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `lib/quick-mark-sets.ts` и тест — new: подписи подходов. `lib/today-entries.ts` — mod: `clockTime`, общий формат времени для двух списков. `components/TodayDayEntriesList.tsx` — mod: необязательный `heading`.
 
 Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, новых замечаний нет; `bun test` — 1543 pass, 0 fail. Известный `healthAPI` в `app/m/health/page.test.tsx` в этом прогоне зелёный: порядок линковки модулей сменился от новых тестов, сам файл не правился. Проверено вживую в headless Chrome с эмуляцией телефона (390×844, касания) и на десктопе 1280: пять нажатий «+», список из пяти строк с временем, отмена последнего подхода, счётчик и итог падают, серия «избегать» 5 → 0 без перезагрузки. На реальном iPhone и в Safari не проверялось.
+## 2026-10-25 — 205: вход по passkey
+
+Изменено 10 файлов кода: 8 `new`, 2 `mod`.
+
+- `lib/passkey.ts` и тест — new: base64url, перевод параметров WebAuthn туда и обратно, проверка поддержки (безопасный контекст и `PublicKeyCredential`), запросы `/auth/passkey/*`, потоки «добавить» и «войти». Закрытое окно Face ID — итог `cancelled`, а не ошибка. Новых npm-зависимостей нет.
+- `components/settings/PasskeyLoginButton.tsx` — new: «Войти по passkey» на `/login`, только где WebAuthn есть и сервер включил passkey.
+- `components/settings/PasskeyManager.tsx` — new: экран ключей для обеих оболочек: список, добавление с именем, удаление после подтверждения. При выключенном passkey — только пояснение.
+- `components/settings/PasskeyMoreLink.tsx` — new: строка «Passkey» в `/m/more`, видна, только пока passkey включён.
+- `components/settings/Passkey.test.tsx` — new: кнопка скрыта без WebAuthn и при выключенном сервере, отмена без ошибки, добавление через подменённый `navigator.credentials`.
+- `app/settings/passkeys/page.tsx`, `app/m/settings/passkeys/page.tsx` — new: десктопный и мобильный экраны.
+- `app/login/page.tsx`, `app/m/more/page.tsx` — mod: кнопка под формой ключа; строка под списком «More».
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint по изменённым файлам без замечаний; `bun test` — 1487 pass, 1 fail — известная ошибка общего mock registry в `app/m/health/page.test.tsx`. Страницы `/login`, `/settings/passkeys`, `/m/settings/passkeys`, `/m/more` отдаются dev-сервером (200); глазами в браузере не смотрел — браузера у исполнителя нет. Ссылки в десктопном меню нет: реестр `lib/routes.ts` сверяется точными списками в `routes.test.ts`.
+
+### Круг 2
+
+Изменено 3 файла кода: 3 `mod`.
+
+- `components/NavDrawer.tsx` — mod: строка «Passkey» в конце раздела «Настройка», только пока сервер включил passkey. Реестр `lib/routes.ts` не тронут. Разметка строки вынесена в `DrawerRow`, одну для экранов реестра и для passkey.
+- `components/settings/PasskeyMoreLink.tsx` — mod: проверка `usePasskeyEnabled()` вынесена в хук для мобильной строки и меню; `DESKTOP_PASSKEYS_PATH`.
+- `components/settings/Passkey.test.tsx` — mod: меню ведёт на `/settings/passkeys` из «Настройка», пока passkey включён; при выключенном строки нет.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint без ошибок (17 старых предупреждений не в этих файлах); `bun test` — 1489 pass, 1 fail — тот же `app/m/health/page.test.tsx` (`healthAPI`). Глазами: headless Chrome 1440 px на `:3805` с бэкендом `:8805` (база `habit_test_205`) — в «Настройка» есть «Passkey» → `/settings/passkeys`, заголовок «Passkey»; Safari и iPhone не проверял.

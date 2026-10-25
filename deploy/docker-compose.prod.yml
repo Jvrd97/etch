@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109, PHASE-03/188
+# [review:need-review] PHASE-03/106, PHASE-03/96, PHASE-03/108, PHASE-03/109, PHASE-03/188, PHASE-03/205
+# summary: PHASE-03/205 also publishes the frontend on 127.0.0.1:3000, the target of `tailscale serve` for the HTTPS name passkey needs
 # summary: production override — restart policies, no host port for postgres, ENVIRONMENT=prod (empty API_KEY or "*" in CORS_ORIGINS kills the start), the backups directory mounted so the weekly md export lands on the host disk, and the single `worker` container that owns every background job, and SESSION_SECRET — empty kills the start the same way an empty API_KEY does; plus the two things that make a deploy provable — every dev mount dropped, and the deployed commit stamped on each image
 # summary: PHASE-03/188 binds every published port to BIND_ADDR (the host's Tailscale address, default 127.0.0.1) and actually unpublishes postgres with `!reset` — the empty list it carried before merged into the base mapping and left the database open on the public IP
 # Usage (on VPS, from habit-tracker/): `make up` — it exports the GIT_SHA this file
@@ -163,8 +164,13 @@ services:
   frontend:
     restart: always
     profiles: ["web"]  # optional: enable with --profile web
+    # Two addresses. BIND_ADDR is the tailnet one the plain-http interface is
+    # opened on; the loopback one is what `tailscale serve --bg 3000` proxies to
+    # for the HTTPS name passkey needs (PHASE-03/205, habit-tracker/docs/passkey.md).
+    # Loopback is not reachable from outside the host, so it widens nothing.
     ports: !override
       - "${BIND_ADDR:-127.0.0.1}:3000:3000"
+      - "127.0.0.1:3000:3000"
     build:
       context: ./services/frontend
       labels:

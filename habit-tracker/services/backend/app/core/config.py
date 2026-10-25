@@ -4,6 +4,8 @@
 # summary: SESSION_SECRET / SESSION_MAX_AGE_S / SESSION_COOKIE_SECURE — the browser session; an empty secret in prod kills the start the same way an empty API_KEY does
 # summary: CHAT_CLAUDE_CONFIG_DIR + CHAT_CLI_CWD + CHAT_CONTEXT_MAX_CHARS — the isolation of a CLI call from the host configuration is configuration, not a constant; since #120 the two directory settings serve all four LLM use cases, not the chat alone
 # summary: CHAT_TURN_TIMEOUT_SECONDS + CHAT_FIRST_DELTA_TIMEOUT_SECONDS + CHAT_MAX_CONCURRENT_TURNS + CHAT_SLOT_WAIT_SECONDS — the ceilings of one turn, tunable because the right numbers are learned in production
+# [review:need-review] 205
+# summary: WEBAUTHN_RP_ID / WEBAUTHN_RP_NAME / WEBAUTHN_ORIGINS — passkey off while empty; an IP RP ID, a half-filled pair or an origin outside the RP ID refuse to build
 """
 Настройки приложения.
 
@@ -19,7 +21,9 @@
 без кавычек и скобок.
 """
 
+from ipaddress import ip_address
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
@@ -268,6 +272,61 @@ class Settings(BaseSettings):
                 "List the frontend origins explicitly, or leave CORS_ORIGINS empty."
             )
         return self
+
+    # Passkey sign-in (#205, ADR-0022) — a second way to obtain the same browser
+    # session. WebAuthn binds a key to a domain name (the RP ID) and to the
+    # origins the page is served from; it refuses an IP address and an insecure
+    # context, so it needs the HTTPS name of the tailnet (`*.ts.net`) or
+    # `localhost`. An empty RP ID switches passkeys off.
+    WEBAUTHN_RP_ID: str = ""
+    WEBAUTHN_RP_NAME: str = "Habit Tracker"
+    WEBAUTHN_ORIGINS: list[str] = []
+
+    @property
+    def passkey_enabled(self) -> bool:
+        """Включён ли вход по passkey: заданы и RP ID, и хотя бы один origin."""
+        return bool(self.WEBAUTHN_RP_ID and self.WEBAUTHN_ORIGINS)
+
+    @model_validator(mode="after")
+    def _passkey_config_is_coherent(self) -> "Settings":
+        """
+        Отбивает сочетания, на которых браузер молча откажет в passkey.
+
+        Половина пары, IP-адрес вместо имени и origin вне RP ID не дают ошибки
+        ни на сервере, ни в консоли — кнопка просто не работает. Сказать это
+        на старте, назвав переменную, дешевле, чем искать причину с телефона.
+        """
+        rp_id, origins = self.WEBAUTHN_RP_ID, self.WEBAUTHN_ORIGINS
+        if not rp_id and not origins:
+            return self
+        if not rp_id or not origins:
+            raise ValueError(
+                "passkey needs both WEBAUTHN_RP_ID and WEBAUTHN_ORIGINS "
+                "(or neither, to keep it off)"
+            )
+        if _is_ip_literal(rp_id):
+            raise ValueError(
+                f"WEBAUTHN_RP_ID={rp_id!r} is an IP address; WebAuthn needs a "
+                "domain name such as <machine>.<tailnet>.ts.net or localhost"
+            )
+        for origin in origins:
+            host = urlsplit(origin).hostname or ""
+            if host != rp_id and not host.endswith(f".{rp_id}"):
+                raise ValueError(
+                    f"WEBAUTHN_ORIGINS entry {origin!r} is not on "
+                    f"WEBAUTHN_RP_ID={rp_id!r}: the origin's host must be the RP ID "
+                    "or a subdomain of it"
+                )
+        return self
+
+
+def _is_ip_literal(value: str) -> bool:
+    """Записан ли адрес цифрами (IPv4 или IPv6), а не именем."""
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 settings = Settings()
