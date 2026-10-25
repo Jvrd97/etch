@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/83-daily-summary-plan-fields-required
 // summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric and per-checkbox opt-in, the day's journal text (append by default, replace opt-in), one idempotent transactional apply, and the shared wordings both screens label a plan with
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -209,19 +209,9 @@ function initialMetricStates(plan: DailySummaryPlan): OpEnabledState[] {
   }));
 }
 
-/**
- * The ticks of a plan, tolerating a response that carries none.
- *
- * `checklist` is optional on the wire so a frontend deployed ahead of its
- * backend reads an old draft as "no boxes" rather than crashing on the preview.
- */
-function planChecklist(plan: DailySummaryPlan): CheckOp[] {
-  return plan.checklist ?? [];
-}
-
 /** Default per tick: a confident one is opted in, a doubtful one costs a click. */
 function initialCheckStates(plan: DailySummaryPlan): OpEnabledState[] {
-  return planChecklist(plan).map((check) => ({ enabled: !check.uncertain }));
+  return plan.checklist.map((check) => ({ enabled: !check.uncertain }));
 }
 
 /** The apply payload: the metrics left checked, in plan order. */
@@ -231,7 +221,7 @@ function selectedMetrics(plan: DailySummaryPlan, states: OpEnabledState[]): LogM
 
 /** The apply payload: the ticks left checked, in plan order. */
 function selectedChecks(plan: DailySummaryPlan, states: OpEnabledState[]): CheckOp[] {
-  return planChecklist(plan).filter((_, i) => states[i]?.enabled);
+  return plan.checklist.filter((_, i) => states[i]?.enabled);
 }
 
 /**
@@ -364,7 +354,7 @@ export function useDailySummary({
     setCheckStates((prev) => prev.map((s, i) => (i === index ? { enabled } : s)));
   }, []);
 
-  const journal = draft.status === 'done' ? (draft.plan.journal ?? null) : null;
+  const journal = draft.status === 'done' ? draft.plan.journal : null;
   const canReplaceJournal = journal !== null && journal.existing_entry_id !== null;
 
   /**
@@ -422,7 +412,7 @@ export function useDailySummary({
     draft,
     applyState,
     metricStates,
-    checklist: draft.status === 'done' ? planChecklist(draft.plan) : [],
+    checklist: draft.status === 'done' ? draft.plan.checklist : [],
     checkStates,
     unresolved: draft.status === 'done' ? draft.plan.unresolved : [],
     enabledCount,

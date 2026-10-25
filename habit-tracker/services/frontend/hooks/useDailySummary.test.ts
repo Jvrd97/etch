@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/75-daily-summary-checklist
+// [review:need-review] PHASE-01/75-daily-summary-checklist, PHASE-01/83-daily-summary-plan-fields-required
 // summary: tests for useDailySummary — text/date -> plan -> checkbox edits (metrics and checklist ticks) -> the journal op (append by default, replace opt-in) -> one idempotent apply
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -94,7 +94,7 @@ function journalOp(overrides: Partial<JournalOp> = {}): JournalOp {
   };
 }
 
-const PLAN: DailySummaryPlan = { metrics: [metric()], unresolved: [], journal: null };
+const PLAN: DailySummaryPlan = { metrics: [metric()], checklist: [], unresolved: [], journal: null };
 
 const TODAY = '2026-07-30';
 
@@ -320,6 +320,8 @@ describe('useDailySummary', () => {
         metric({ implausible: true }),
       ],
       unresolved: [],
+      checklist: [],
+      journal: null,
     };
     const { result } = await renderWithPlan(plan);
 
@@ -335,6 +337,8 @@ describe('useDailySummary', () => {
     const plan: DailySummaryPlan = {
       metrics: [],
       unresolved: [{ text: 'погулял с собакой', reason: 'нет категории' }],
+      checklist: [],
+      journal: null,
     };
     const { result } = await renderWithPlan(plan);
 
@@ -346,6 +350,8 @@ describe('useDailySummary', () => {
     const plan: DailySummaryPlan = {
       metrics: [metric(), metric({ field_id: 3, value: 10 })],
       unresolved: [],
+      checklist: [],
+      journal: null,
     };
     const { result, onApplied } = await renderWithPlan(plan);
 
@@ -366,6 +372,8 @@ describe('useDailySummary', () => {
     const { result, onApplied } = await renderWithPlan({
       metrics: [metric({ uncertain: true })],
       unresolved: [],
+      checklist: [],
+      journal: null,
     });
 
     await act(async () => {
@@ -505,6 +513,7 @@ describe('useDailySummary', () => {
     const { result } = await renderWithPlan({
       metrics: [metric({ uncertain: true })],
       unresolved: [],
+      checklist: [],
       journal: journalOp(),
     });
 
@@ -521,6 +530,7 @@ describe('useDailySummary', () => {
     const { result } = await renderWithPlan({
       metrics: [metric({ uncertain: true })],
       unresolved: [],
+      checklist: [],
       journal: journalOp(),
     });
 
@@ -607,6 +617,7 @@ describe('useDailySummary checklist', () => {
     const { result } = await renderWithPlan({
       metrics: [],
       unresolved: [],
+      journal: null,
       checklist: [check({ uncertain: true })],
     });
 
@@ -618,6 +629,7 @@ describe('useDailySummary checklist', () => {
     const { result } = await renderWithPlan({
       metrics: [],
       unresolved: [],
+      journal: null,
       checklist: [check(), check({ field_id: 10, source_text: 'выпил D3' })],
     });
 
@@ -635,6 +647,7 @@ describe('useDailySummary checklist', () => {
     const { result, onApplied } = await renderWithPlan({
       metrics: [],
       unresolved: [],
+      journal: null,
       checklist: [check()],
     });
 

@@ -2627,3 +2627,11 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Не сделано: необязательное замечание про `PanelHost.swift` (новая эфемерная `URLSession` на каждый опрос/отправку без reuse) — отложено до ребейза на `main`, где `AgentAPIClient.diskFreeSession` уже есть (после #163); сейчас в этой ветке его не было, трогать чужой `AgentAPIClient.swift` без ребейза не стал.
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
+
+## 2026-10-25 — PHASE-01/83: ответ draft всегда несёт четыре поля плана
+
+Тронут 1 файл.
+
+- `tests/test_daily_summary.py` — mod: `test_the_draft_always_carries_all_four_plan_fields` — ответ модели без `checklist`/`journal` всё равно отдаёт `metrics`, `checklist`, `unresolved`, `journal`. Это основание для обязательных полей во фронтенде.
+
+Проверки: `pytest tests/test_daily_summary*.py` — 92 passed; `ruff check`/`ruff format --check` — чисто. Production-код бэкенда не менялся.
