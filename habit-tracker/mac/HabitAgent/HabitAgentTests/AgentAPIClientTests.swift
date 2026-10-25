@@ -1,5 +1,5 @@
-// [review:approved] PHASE-03/155
-// summary: permits HTTPS destinations and HTTP only for exact loopback hosts; maps a refused response onto what to do with the batch
+// [review:need-review] PHASE-03/155, PHASE-03/163
+// summary: permits HTTPS destinations and HTTP only for exact loopback hosts; maps a refused response onto what to do with the batch; the default session caches nothing on disk
 import XCTest
 @testable import HabitAgent
 
@@ -58,5 +58,12 @@ final class AgentAPIClientTests: XCTestCase {
 
     func testOtherStatusesStayRetryable() {
         XCTAssertEqual(AgentAPIClient.error(status: 401, body: Data(), sent: [interval("com.example.editor")]), .http(status: 401))
+    }
+
+    func testDefaultSessionKeepsNoCacheOrCookiesOnDisk() {
+        let configuration = AgentAPIClient.diskFreeSession.configuration
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
     }
 }
