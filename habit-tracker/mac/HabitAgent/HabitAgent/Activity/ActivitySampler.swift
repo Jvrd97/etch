@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217
-// summary: samples the foreground app on a timer and on every switch, builds intervals and queues them on disk; the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217, PHASE-03/172
+// summary: samples the foreground app on a timer (5 s, 30 s while idle) and on every switch, builds intervals and queues them on disk; stops for sleep and a locked screen (and resumes if the wake notification is lost); the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
 import AppKit
 import Combine
 import Foundation
@@ -7,7 +7,6 @@ import os
 
 @MainActor
 final class ActivitySampler: ObservableObject {
-    static let samplingInterval: TimeInterval = 5
     private static let logger = Logger(subsystem: AgentPaths.identifier, category: "ActivitySampler")
     private static let serverAddressKey = "server-address"
 
@@ -15,24 +14,39 @@ final class ActivitySampler: ObservableObject {
     @Published var serverAddress = UserDefaults.standard.string(forKey: ActivitySampler.serverAddressKey) ?? ""
 
     private let keychain = KeychainStore()
+    private let queueDirectory: URL
+    private let idle: IdleMonitor
     private var timer: Timer?
+    private var probeTimer: Timer?
+    private var started = false
+    private var wakeMonitor: Any?
     private var activationObserver: NSObjectProtocol?
+    private var power: PowerObserver?
     private var builder = IntervalBuilder()
+    /// True from sleep or screen lock until wake or unlock: nothing is sampled in between.
+    private(set) var isPaused = false
     // Opened on the first start: building the sampler touches no file.
-    private var store: OutboxStore?
+    private(set) var store: OutboxStore?
     private var flusher: Flusher?
     private var queueNote = ""
     private var heartbeat: HeartbeatReporter?
     private var lastFlushAt: Date?
     private var lastError: HeartbeatErrorCode?
 
+    init(queueDirectory: URL = AgentPaths.directory, idle: IdleMonitor = IdleMonitor()) {
+        self.queueDirectory = queueDirectory
+        self.idle = idle
+    }
+
     func start() {
-        guard timer == nil else { return }
+        guard !started else { return }
         startHeartbeat()
         guard let flusher = openQueue() else {
             lastError = .queueUnavailable
             return
         }
+        started = true
+        isPaused = false
         flusher.start()
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -42,22 +56,25 @@ final class ActivitySampler: ObservableObject {
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             Task { @MainActor in self?.sample(bundleID: app.bundleIdentifier) }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: Self.samplingInterval, repeats: true) { [weak self] _ in
-            let app = NSWorkspace.shared.frontmostApplication
-            Task { @MainActor in self?.sample(bundleID: app?.bundleIdentifier) }
-        }
-        sample(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        let observer = PowerObserver { [weak self] paused in self?.setPaused(paused) }
+        observer.start()
+        power = observer
+        sampleFrontmost()
+        scheduleNextSample()
     }
 
     /// Stops sampling, closes the open interval and sends everything pending.
     func stop() async {
-        timer?.invalidate()
-        timer = nil
+        started = false
+        stopTimers()
+        power?.stop()
+        power = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
         heartbeat?.stop()
         guard let store, let flusher else { return }
-        store.enqueue(builder.finish(at: Date()))
+        let now = Date()
+        store.enqueue(builder.finish(at: now, lastInput: lastInput(now: now)))
         let summary = await flusher.flush(force: true)
         flusher.stop()
         if summary == nil { status = "Остановлено" + queued() }
@@ -73,16 +90,53 @@ final class ActivitySampler: ObservableObject {
         }
     }
 
+    /// Sleep and a locked screen stop collection: the open interval ends at the last input
+    /// (the person left then, not when the system noticed) and nothing is sampled until wake or unlock.
+    func setPaused(_ paused: Bool, now: Date = Date()) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        Self.logger.info("Collection \(paused ? "paused" : "running", privacy: .public)")
+        if paused {
+            stopTimers()
+            enqueue(builder.finish(at: now, lastInput: lastInput(now: now)))
+            status = "Сбор приостановлен: сон или блокировка экрана"
+            scheduleProbe()
+        } else {
+            probeTimer?.invalidate()
+            probeTimer = nil
+            guard started else { return }
+            sampleFrontmost()
+            scheduleNextSample()
+        }
+    }
+
+    /// A pause whose wake or unlock notification never came would last until the agent restarts.
+    /// Fresh input on a screen that is not locked means the person is back, so collection resumes.
+    func resumeIfPauseIsStale(screenLocked: Bool = IdleMonitor.isScreenLocked()) {
+        guard isPaused, !screenLocked, idle.secondsSinceLastInput() < IdleMonitor.freshInputThreshold else { return }
+        Self.logger.info("Pause cleared by fresh input: no wake or unlock notification came")
+        if let power {
+            power.clearReasons()
+        } else {
+            setPaused(false)
+        }
+    }
+
+    /// The moment of the last keyboard or mouse event: where an interval ends when the person left before the system noticed.
+    private func lastInput(now: Date) -> Date {
+        now.addingTimeInterval(-idle.secondsSinceLastInput())
+    }
+
     /// The queue lives on disk, so a kill or a week offline loses nothing. If the
     /// disk is unusable the agent keeps collecting in memory and says so.
-    private func openQueue() -> Flusher? {
+    func openQueue() -> Flusher? {
         if let flusher { return flusher }
         // The agent itself comes to the front whenever its menu opens; the
         // catalogue does not carry it, so its time never leaves the mac.
         let own = Set([Bundle.main.bundleIdentifier].compactMap { $0 })
         let opened: OutboxStore
         do {
-            opened = try OutboxStore.openWithFallback(excluding: own)
+            opened = try OutboxStore.openWithFallback(directory: queueDirectory, excluding: own)
         } catch {
             Self.logger.error("Queue unavailable: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
             status = "Очередь недоступна, сбор не запущен"
@@ -110,7 +164,7 @@ final class ActivitySampler: ObservableObject {
     private func startHeartbeat() {
         if heartbeat == nil {
             heartbeat = HeartbeatReporter.live(
-                samplingSeconds: Int(Self.samplingInterval),
+                samplingSeconds: Int(IdleMonitor.activePeriod),
                 state: { [weak self] in
                     HeartbeatState(
                         queueDepth: self?.store?.count ?? 0,
@@ -140,14 +194,85 @@ final class ActivitySampler: ObservableObject {
         return { try await client.send($0) }
     }
 
+    private func sampleFrontmost() {
+        sample(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
     private func sample(bundleID: String?) {
-        guard let bundleID, !bundleID.isEmpty, let store, let flusher else { return }
-        let closed = builder.record(AppSighting(bundleID: bundleID, date: Date())) + builder.checkpoint()
-        if !closed.isEmpty {
-            store.enqueue(closed)
-            flusher.intervalClosed()
-        }
+        sample(bundleID: bundleID, at: Date(), idle: idle.secondsSinceLastInput())
+    }
+
+    func sample(bundleID: String?, at date: Date, idle idleSeconds: TimeInterval) {
+        guard !isPaused, let bundleID, !bundleID.isEmpty, store != nil else { return }
+        enqueue(builder.record(AppSighting(bundleID: bundleID, date: date, idleSeconds: idleSeconds)) + builder.checkpoint())
         status = "Собирается активное приложение" + queued()
+    }
+
+    private func enqueue(_ closed: [ActivityInterval]) {
+        guard !closed.isEmpty, let store, let flusher else { return }
+        store.enqueue(closed)
+        flusher.intervalClosed()
+    }
+
+    /// One-shot timer: the period follows the idle reading, so an idle mac wakes twice a minute, not twelve times.
+    private func scheduleNextSample() {
+        timer?.invalidate()
+        let period = IdleMonitor.samplingPeriod(idleSeconds: idle.secondsSinceLastInput())
+        let next = Timer(timeInterval: period, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.timerFired() }
+        }
+        next.tolerance = period * IdleMonitor.timerToleranceFraction
+        RunLoop.main.add(next, forMode: .common)
+        timer = next
+        if period == IdleMonitor.idlePeriod {
+            armWakeMonitor()
+        } else {
+            disarmWakeMonitor()
+        }
+    }
+
+    /// Checked only while paused, and a timer does not run in system sleep, so it costs nothing at night.
+    private func scheduleProbe() {
+        probeTimer?.invalidate()
+        let probe = Timer(timeInterval: IdleMonitor.pausedProbePeriod, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.resumeIfPauseIsStale() }
+        }
+        probe.tolerance = IdleMonitor.pausedProbePeriod * IdleMonitor.timerToleranceFraction
+        RunLoop.main.add(probe, forMode: .common)
+        probeTimer = probe
+    }
+
+    private func timerFired() {
+        guard started, !isPaused else { return }
+        sampleFrontmost()
+        scheduleNextSample()
+    }
+
+    /// While the sampling period is long, the first mouse or scroll event brings the short one back at once.
+    /// Mouse events need no permission and the handler reads nothing from them.
+    private func armWakeMonitor() {
+        guard wakeMonitor == nil else { return }
+        wakeMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.wakeMonitor != nil else { return }
+                self.timerFired()
+            }
+        }
+    }
+
+    private func disarmWakeMonitor() {
+        if let wakeMonitor { NSEvent.removeMonitor(wakeMonitor) }
+        wakeMonitor = nil
+    }
+
+    private func stopTimers() {
+        timer?.invalidate()
+        timer = nil
+        probeTimer?.invalidate()
+        probeTimer = nil
+        disarmWakeMonitor()
     }
 
     private func queued() -> String {
