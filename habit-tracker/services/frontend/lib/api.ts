@@ -2357,6 +2357,32 @@ export const profilesAPI = {
   },
 };
 
+// [review:need-review] PHASE-03/164
+// summary: agentAPI.status reads every known agent with its silence flag, Accessibility, the titles switch and the queue depth
+/** One agent as `GET /agent/status` reports it (#164). */
+export interface AgentStatusItem {
+  agent_id: string;
+  agent_version: string;
+  reported_at: string;
+  accessibility_granted: boolean;
+  /** The agent's own switch of window titles — a choice, not a fault. */
+  titles_enabled: boolean;
+  sampling_seconds: number;
+  queue_depth: number;
+  last_flush_at: string | null;
+  /** A code from the server's vocabulary, never the text of an exception. */
+  last_error: string | null;
+  /** Seconds since the server last heard the agent, by the server's clock. */
+  silent_for_seconds: number;
+  is_silent: boolean;
+}
+
+/** Every known agent and the line between alive and silent. */
+export interface AgentStatus {
+  agents: AgentStatusItem[];
+  silence_threshold_seconds: number;
+}
+
 export const agentAPI = {
   /** Где прошёл день — тремя срезами сразу, потому что порознь они врут. */
   day: async (date: string) => {
@@ -2423,6 +2449,10 @@ export const agentAPI = {
       method: 'PUT',
       body: JSON.stringify(patch),
     });
+  },
+  /** Which agents are alive, permitted and caught up (#164). */
+  status: async () => {
+    return fetcher<AgentStatus>('/agent/status');
   },
 };
 

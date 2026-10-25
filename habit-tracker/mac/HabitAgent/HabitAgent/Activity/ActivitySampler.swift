@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163
-// summary: samples the foreground app on a timer and on every switch, builds intervals and queues them on disk; the flusher sends them
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164
+// summary: samples the foreground app on a timer and on every switch, builds intervals and queues them on disk; the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
 import AppKit
 import Combine
 import Foundation
@@ -22,10 +22,17 @@ final class ActivitySampler: ObservableObject {
     private var store: OutboxStore?
     private var flusher: Flusher?
     private var queueNote = ""
+    private var heartbeat: HeartbeatReporter?
+    private var lastFlushAt: Date?
+    private var lastError: HeartbeatErrorCode?
 
     func start() {
         guard timer == nil else { return }
-        guard let flusher = openQueue() else { return }
+        startHeartbeat()
+        guard let flusher = openQueue() else {
+            lastError = .queueUnavailable
+            return
+        }
         flusher.start()
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -52,6 +59,7 @@ final class ActivitySampler: ObservableObject {
         store.enqueue(builder.finish(at: Date()))
         let summary = await flusher.flush(force: true)
         flusher.stop()
+        heartbeat?.stop()
         if summary == nil { status = "Остановлено" + queued() }
     }
 
@@ -89,11 +97,41 @@ final class ActivitySampler: ObservableObject {
             onFlush: { [weak self] summary in
                 guard let self else { return }
                 status = describe(summary)
+                reportFlush(summary)
             }
         )
         store = opened
         flusher = opening
         return opening
+    }
+
+    /// Starts the once-a-minute report of the agent's own state. The queue is read when
+    /// a report is built, so a queue that failed to open reports a depth of zero and says why.
+    private func startHeartbeat() {
+        if heartbeat == nil {
+            heartbeat = HeartbeatReporter.live(
+                samplingSeconds: Int(Self.samplingInterval),
+                state: { [weak self] in
+                    HeartbeatState(
+                        queueDepth: self?.store?.count ?? 0,
+                        lastFlushAt: self?.lastFlushAt,
+                        lastError: self?.lastError
+                    )
+                },
+                client: { [weak self] in
+                    guard let self, let apiKey = keychain.read(), !serverAddress.isEmpty else { return nil }
+                    return HeartbeatClient(serverAddress: serverAddress, apiKey: apiKey)
+                }
+            )
+        }
+        heartbeat?.start()
+    }
+
+    /// A flush that sent something is the last flush; its outcome is the last error, and a clean one clears it.
+    private func reportFlush(_ summary: FlushSummary) {
+        if summary.sent > 0 { lastFlushAt = Date() }
+        lastError = HeartbeatErrorCode(summary: summary)
+        Task { await heartbeat?.beat() }
     }
 
     private func makeSender() -> Flusher.Sender? {

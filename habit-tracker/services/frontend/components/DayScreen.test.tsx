@@ -1,9 +1,11 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94, PHASE-03/164
+// summary: PHASE-03/164 — the agent banner stands on today's screen when the agent is silent and is absent on any other day
 // summary: tests for the day screen — a day with no plan says so and offers the button that builds one instead of rendering a dead end, the button is gone the moment there is a plan, a plan the skeleton assembled says so and says why, the rules a plan broke are visible beside it, the rule the day is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { DayDetail, PlanViolation } from '@/lib/api';
+import type { AgentStatus, DayDetail, PlanViolation } from '@/lib/api';
+import { todayISO } from '@/lib/date';
 import { DAY, PLAN } from '@/test-fixtures/day';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
@@ -37,9 +39,17 @@ mock.module('@/hooks/useDays', () => ({
   LOAD_DAYS_ERROR: 'Не удалось загрузить дни',
 }));
 
+// The agent banner reads its own hook; a status of null draws nothing, so the
+// other suites that render this screen are not touched by it.
+let agent: AgentStatus | null = null;
+mock.module('@/hooks/useAgentStatus', () => ({
+  useAgentStatus: () => agent,
+}));
+
 const { default: DayScreen } = await import('./DayScreen');
 
 beforeEach(() => {
+  agent = null;
   state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
 });
 
@@ -221,5 +231,42 @@ describe('DayScreen и день без плана', () => {
     render(<DayScreen date="2026-08-30" />);
 
     expect(screen.getByText(ruleLabel('free_evening_empty'))).toBeDefined();
+  });
+});
+
+const SILENT_THREE_HOURS: AgentStatus = {
+  silence_threshold_seconds: 1800,
+  agents: [
+    {
+      agent_id: '6f1b2c3d-0000-4000-8000-00000000a001',
+      agent_version: '0.3.0',
+      reported_at: '2026-10-25T09:00:00Z',
+      accessibility_granted: true,
+      titles_enabled: true,
+      sampling_seconds: 5,
+      queue_depth: 0,
+      last_flush_at: null,
+      last_error: null,
+      silent_for_seconds: 3 * 3600,
+      is_silent: true,
+    },
+  ],
+};
+
+describe('DayScreen and the agent banner', () => {
+  it('says the agent is silent on the screen of today', () => {
+    agent = SILENT_THREE_HOURS;
+    const today = todayISO();
+    state = { ...state, detail: { ...DAY, day: { ...DAY.day, date: today } } };
+    render(<DayScreen date={today} />);
+
+    expect(screen.getByText('Агент молчит 3 ч')).toBeDefined();
+  });
+
+  it('stays out of the way on any other day', () => {
+    agent = SILENT_THREE_HOURS;
+    render(<DayScreen date="2026-08-30" />);
+
+    expect(screen.queryByText(/Агент молчит/)).toBeNull();
   });
 });

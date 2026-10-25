@@ -2627,3 +2627,15 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Не сделано: необязательное замечание про `PanelHost.swift` (новая эфемерная `URLSession` на каждый опрос/отправку без reuse) — отложено до ребейза на `main`, где `AgentAPIClient.diskFreeSession` уже есть (после #163); сейчас в этой ветке его не было, трогать чужой `AgentAPIClient.swift` без ребейза не стал.
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
+
+## 2026-10-25 — PHASE-03/164: heartbeat агента и баннер «агент молчит»
+
+Сервер принимает отчёт агента о себе (`POST /agent/heartbeat`, upsert по `agent_id`, момент отчёта ставит сервер) и отдаёт всех известных агентов с признаком молчания (`GET /agent/status`, порог 30 минут). `last_error` — слово из закрытого словаря (`AgentErrorCode`), путь и текст исключения отвергаются 422. Таблица `agent_heartbeat` заведена миграцией `e1d3f5a7c9b0`, новой ревизии нет. Веб рисует три баннера на экране сегодняшнего дня, мак шлёт отчёт раз в минуту и после каждого флаша.
+
+- `app/schemas/agent_heartbeat.py`, `app/crud/agent_heartbeat.py`, `tests/test_agent_heartbeat.py` — new.
+- `app/api/agent.py` — mod: два обработчика в конце файла, импорты.
+- `habit-tracker/services/frontend/lib/agent-status.ts`, `hooks/useAgentStatus.ts`, `components/agent/AgentStatusBanner.tsx` и три теста к ним — new.
+- `habit-tracker/services/frontend/components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`, `lib/api.ts` (типы и `agentAPI.status`) и их тесты `DayScreen.test.tsx`, `MobileDayScreen.test.tsx` — mod.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Heartbeat.swift`, `HabitAgentTests/HeartbeatTests.swift` — new; `HabitAgent/Activity/ActivitySampler.swift` — mod: запуск отчёта и три поля состояния.
+
+Не проверено вживую: настоящий мак-агент против сервера, снятая галка Accessibility в системных настройках.
