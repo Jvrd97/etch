@@ -1,0 +1,2 @@
+{"session":"aaaaaaaa-0000-4000-8000-000000000001","cwd":"/Users/me/Projects/talvior","gitBranch":"main","version":"2.1.309","isSidechain":false,"type":"user","timestamp":"2026-10-25T10:00:00.000Z","message":{"role":"user","content":"hi"}}
+{"session":"aaaaaaaa-0000-4000-8000-000000000001","cwd":"/Users/me/Projects/talvior","gitBranch":"main","version":"2.1.309","isSidechain":false,"type":"assistant","timestamp":"2026-10-25T10:00:05.000Z","message":{"id":"m1","model":"claude-sonnet-5-5","role":"assistant","content":[],"tokens":{"in":1}}}

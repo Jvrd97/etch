@@ -2627,3 +2627,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Не сделано: необязательное замечание про `PanelHost.swift` (новая эфемерная `URLSession` на каждый опрос/отправку без reuse) — отложено до ребейза на `main`, где `AgentAPIClient.diskFreeSession` уже есть (после #163); сейчас в этой ветке его не было, трогать чужой `AgentAPIClient.swift` без ребейза не стал.
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
+
+## 2026-10-25 — PHASE-03/165: метрики Claude Code (мак-парсер + приём агрегатов)
+
+- `app/schemas/claude_session.py` — new: `ClaudeSessionIn` с `extra="forbid"` (поле под текст — 422, а не молчаливый пропуск), пачка до 200, ответ и список; `check_range` (диапазон дней не больше 92).
+- `app/crud/claude_session.py` — new: `upsert_claude_sessions` — `ON CONFLICT (session_uid) DO UPDATE ... WHERE ended_at <= excluded.ended_at` (запоздавшая пачка не откатывает длинную сессию назад), `local_date` берётся из `daytime.local_date(started_at)`, а не от клиента; `list_claude_sessions`.
+- `app/api/agent.py` — mod (добавлением в конец): `POST` и `GET /agent/claude-sessions`; три строки импортов.
+- `tests/test_claude_sessions.py` — new: upsert одной строки на `session_uid`, повтор пачки, устаревший повтор, цель, потолок пачки, `ended_at < started_at`, лишнее поле, набор колонок таблицы, список за день.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Metrics/` — new (`TranscriptScanner`, `SessionAggregator`, `ClaudeSessionsAPI`, `ClaudeMetricsService`); `App/HabitAgentApp.swift` — mod (запуск прохода при старте); `HabitAgentTests/ClaudeCodeTests.swift` и `Fixtures/*.jsonl` — new.
+
+Миграции нет: `claude_session` заведена ревизией `e1d3f5a7c9b0` (#155). Не сделано: блок на экране дня (`ClaudeUsageBlock.tsx`, `today/page.tsx`, `lib/api.ts`) — путь вне границ записи #165 на доске; проводка `last_error` в heartbeat — за #164 (`ClaudeMetricsService.errorCode`).
