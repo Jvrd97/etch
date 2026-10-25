@@ -316,3 +316,20 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `README.md` — new: правила для тикетов экранов и установка на телефон.
 
 Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.
+
+## 2026-10-25 — PHASE-01/211 (iOS: экран дня и плана)
+
+Файлы (9 new, 1 mod):
+
+- `HabitTracker/API/DTOs+Day.swift` — new: DTO ответа `GET /day` (план деревом, отметки, факты по категориям, итог) и тела запросов.
+- `HabitTracker/API/APIClient+Day.swift` — new: `DayAPI` — чтение дня, отметка, факты (POST с `Idempotency-Key`, PUT, DELETE `?mark=unmark`), блокнот, `close/review`, `close/final`.
+- `HabitTracker/Features/Day/DayView.swift` — mod: заглушка заменена экраном (`init()` без аргументов): шапка со стрелками дней, план, карточки фактов, итог, блокнот.
+- `HabitTracker/Features/Day/DayViewModel.swift` — new: состояние экрана, оптимистичная отметка с откатом, ключи повтора, тихое перечитывание дня после записи.
+- `HabitTracker/Features/Day/PlanFactLogic.swift` — new: правила пункта с категорией (разбор «3,5» и «1:30», отметка `done`/`unmark`, тексты прогресса).
+- `HabitTracker/Features/Day/DayFormat.swift` — new: окна плана в часовом поясе правила, шаг дня, подписи отметок и вердикта.
+- `HabitTrackerTests/{DayAPIClientTests,DayViewModelTests,DayLogicTests,DayFixtures}.swift` — new: 44 теста.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 212 из 212 (44 новых). Живой бэкенд не поднимался: ответы бэкенда в `DayFixtures` собраны по схемам `DayDetailResponse`, `PlanResponse`, `PlanItemFactsResponse`, `DaySummaryResponse`, а не сняты с работающего сервера.
+
+Не проверено глазами и на телефоне (для #215): вёрстка экрана на симуляторе и телефоне, длинное нажатие на кружок (меню «пропущено»/«снять»), клавиатура с запятой в поле факта, `TextEditor` блокнота под клавиатурой, pull-to-refresh, переход между днями на реальных данных.
+Не вошло в порт (есть в мобильном вебе): переопределение вердикта, правка и перенос пунктов плана, якоря, тренировка, интервалы работы, карта дня, отчёт дня, создание плана, диф плана.
