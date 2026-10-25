@@ -93,9 +93,10 @@ final class ActivitySampler: ObservableObject {
             enqueue(builder.finish(at: now, lastInput: lastInput(now: now)))
             status = "Сбор приостановлен: сон или блокировка экрана"
             scheduleProbe()
-        } else if started {
+        } else {
             probeTimer?.invalidate()
             probeTimer = nil
+            guard started else { return }
             sampleFrontmost()
             scheduleNextSample()
         }

@@ -14,14 +14,16 @@ struct IdleMonitor {
     /// Input this recent means the person is at the mac right now.
     static let freshInputThreshold: TimeInterval = 5
     /// While collection is paused, how often to check that the wake or unlock notification did not get lost.
-    static let pausedProbePeriod: TimeInterval = 15
+    /// Not shorter than the idle sampling period, so a paused mac wakes no more often than an idle one.
+    static let pausedProbePeriod: TimeInterval = idlePeriod
     /// The system may fire a timer this late, as a fraction of its period. App Nap stretches it further.
     static let timerToleranceFraction = 0.2
 
     /// Seconds since the last keyboard, mouse or trackpad event of the session.
     var secondsSinceLastInput: () -> TimeInterval = TaskTimer.systemSecondsSinceLastInput
 
-    /// True while the session reports a locked screen; false when it does not say.
+    /// True while the session reports a locked screen. The `CGSSessionScreenIsLocked` key exists
+    /// only while the screen is locked, so no key means not locked: that is normal, not a failed read.
     static func isScreenLocked() -> Bool {
         let session = CGSessionCopyCurrentDictionary() as? [String: Any]
         return session?["CGSSessionScreenIsLocked"] as? Bool ?? false

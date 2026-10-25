@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/172
-// summary: verifies the checkpoint not cutting a pause, the adaptive sampling period, idle_seconds inside an interval, closing at the last input after a long absence or at sleep and lock, and that nothing is queued while collection is paused
+// summary: verifies the checkpoint cutting only on fresh input (swept over the moment of the last input), the adaptive sampling period, idle_seconds inside an interval, closing at the last input after a long absence or at sleep and lock, and that nothing is queued while collection is paused
 import XCTest
 @testable import HabitAgent
 
@@ -153,6 +153,20 @@ final class CheckpointDuringPauseTests: XCTestCase {
         }
     }
 
+    /// The moment of the last input is swept over a grid, so a checkpoint that lands on any second of a pause is met.
+    static let lastInputGrid = stride(from: 300.0, through: 1500, by: 5)
+    /// A sampler writes a queue file per pass, so its sweep covers one checkpoint cycle (300 s) instead.
+    static let lastInputGridOfOneCycle = stride(from: 300.0, through: 600, by: 5)
+
+    func testNoLastInputMomentLetsTheCheckpointSendTheTimeAfterItAsWork() {
+        for quiet in Self.lastInputGrid {
+            let closed = run(quiet: quiet, until: quiet + 40 * 60)
+            let end = closed.map(\.endedAt).max()
+            XCTAssertEqual(end?.timeIntervalSince(start) ?? -1, quiet, accuracy: IdleMonitor.activePeriod, "last input at \(quiet) s")
+            XCTAssertLessThanOrEqual(end ?? .distantFuture, at(quiet), "last input at \(quiet) s")
+        }
+    }
+
     func testAbsenceAfterTwelveMinutesOfWorkEndsTheLastIntervalAtTheLastInput() {
         let quiet = 720.0
         let closed = run(quiet: quiet, until: quiet + 40 * 60)
@@ -275,6 +289,41 @@ final class SamplerPauseTests: XCTestCase {
 
     private func queuedEnds(_ sampler: ActivitySampler) throws -> [Date] {
         try XCTUnwrap(sampler.store?.nextBatch()).intervals.map(\.endedAt)
+    }
+
+    func testNoLastInputMomentLetsALockSendTheTimeAfterItAsWork() throws {
+        for quiet in CheckpointDuringPauseTests.lastInputGridOfOneCycle {
+            try runWithFreshSampler { sampler in
+                work(sampler, until: quiet, away: 180)
+                idleReading = 180
+                sampler.setPaused(true, now: at(quiet + 180))
+                let end = try XCTUnwrap(try queuedEnds(sampler).max(), "last input at \(quiet) s")
+                XCTAssertLessThanOrEqual(end, at(quiet), "last input at \(quiet) s")
+                XCTAssertEqual(end.timeIntervalSince(start), quiet, accuracy: IdleMonitor.activePeriod, "last input at \(quiet) s")
+            }
+        }
+    }
+
+    func testNoLastInputMomentLetsTheAwayRuleSendTheTimeAfterItAsWork() throws {
+        for quiet in CheckpointDuringPauseTests.lastInputGridOfOneCycle {
+            try runWithFreshSampler { sampler in
+                work(sampler, until: quiet, away: IdleMonitor.awayThreshold + 60)
+                let end = try XCTUnwrap(try queuedEnds(sampler).max(), "last input at \(quiet) s")
+                XCTAssertLessThanOrEqual(end, at(quiet), "last input at \(quiet) s")
+                XCTAssertEqual(end.timeIntervalSince(start), quiet, accuracy: IdleMonitor.activePeriod, "last input at \(quiet) s")
+            }
+        }
+    }
+
+    /// A sampler on its own queue directory, so each pass of a sweep starts empty.
+    private func runWithFreshSampler(_ body: (ActivitySampler) throws -> Void) throws {
+        let previous = directory
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("idle-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            directory = previous
+        }
+        try body(makeSampler())
     }
 
     func testFortyMinutesAwayWithoutALockEndTheLastIntervalAtTheLastInput() throws {
