@@ -2635,3 +2635,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_daily_summary.py` — mod: `test_the_draft_always_carries_all_four_plan_fields` — ответ модели без `checklist`/`journal` всё равно отдаёт `metrics`, `checklist`, `unresolved`, `journal`. Это основание для обязательных полей во фронтенде.
 
 Проверки: `pytest tests/test_daily_summary*.py` — 92 passed; `ruff check`/`ruff format --check` — чисто. Production-код бэкенда не менялся.
+## 2026-10-25 — PHASE-03/217: mac-агент, чекпойнт открытого интервала и история кодов сброса
+
+Что поменялось: открытый интервал режется раз в 5 минут (`IntervalBuilder.checkpoint()`, вызывается из `ActivitySampler.sample` после `record`), поэтому `kill -9` теряет не больше этого окна; очередь хранит счётчики по каждому коду сброса, а не только последний; новый интерфейс на живом пути (Tailscale при поднятом Wi-Fi) отменяет бэкофф. Серверной части нет.
+
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `checkpointInterval`, `checkpoint()`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: `record` + `checkpoint` в одном вызове.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/OutboxStore.swift` — mod: модель `QueueErrorTotal`, `QueueErrorTally`, `errorHistory`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Flusher.swift` — mod: `networkChanged(available:interfaces:)`, имена интерфейсов из `NWPath.availableInterfaces`.
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IntervalBuilderTests.swift`, `QueueTests.swift` — mod: 4 + 4 новых теста.
+
+Проверки: `xcodebuild test -destination 'platform=macOS'` — 99 passed. Не проверено вживую: реальный `NWPathMonitor` при старте Tailscale (список `availableInterfaces` с `utun*` не смотрел), настоящий `kill -9` процесса агента.
