@@ -34,7 +34,6 @@
     "ask": [
       "Bash(git push*)",
       "Bash(git rebase*)",
-      "Bash(git merge*)",
       "Bash(docker push*)",
       "Bash(kubectl apply*)",
       "Bash(terraform apply*)",
@@ -64,6 +63,7 @@
       "Bash(git pull*)",
       "Bash(git worktree*)",
       "Bash(git mv*)",
+      "Bash(git merge*)",
       "Bash(npm run *)",
       "Bash(npm test*)",
       "Bash(npm run test*)",
