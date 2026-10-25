@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/123, PHASE-01/174, PHASE-01/177
-// summary: pure Today-screen entry state — number totals, optimistic number entries merged over the fetched snapshot, checklist map with flip/rollback, streak loading that degrades to null
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206
+// summary: pure Today-screen entry state — number totals, optimistic number entries merged over the fetched snapshot, checklist map with flip/rollback, streak loading that degrades to null, and the one wall-clock format the day's lists print their times in
 
 import type { Category, CategoryStreak, Entry } from './api';
 import { booleanFields } from './today-categories';
@@ -102,6 +102,20 @@ export function dayEntriesForCategory(entries: Entry[], categoryId: number): Ent
   return entries
     .filter((entry) => entry.category_id === categoryId && entry.id > 0)
     .toSorted((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
+/**
+ * The wall-clock time of a stored moment, "09:12".
+ *
+ * One format for every list of the day, so a record and a quick-mark set made a
+ * minute apart read as a minute apart instead of in two notations.
+ */
+export function clockTime(timestamp: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp));
 }
 
 /** Checked-state for every boolean field of every checklist category. */

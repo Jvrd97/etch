@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130
-# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-01/206
+# summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write, read back as the sets of one category's day with the flag that says which of them undo would accept
 """
 What a quick mark means and where its value lands.
 
@@ -63,6 +63,7 @@ from app.schemas.quick_mark import (
 )
 
 __all__ = [
+    "DayEvent",
     "DayState",
     "RecordedEvent",
     "SourceUsage",
@@ -72,6 +73,7 @@ __all__ = [
     "UndoRefused",
     "UndoneEvent",
     "create_quick_mark",
+    "day_events",
     "day_state",
     "event_by_idempotency_key",
     "get_event",
@@ -280,6 +282,58 @@ async def day_state(db: AsyncSession, mark: QuickMark, on: date) -> DayState:
 
     total = await _day_total(db, mark, on)
     return DayState(today_total=total, done=total is not None and total > 0)
+
+
+@dataclass(frozen=True)
+class DayEvent:
+    """One journal row of a day, with its button and whether undo would take it."""
+
+    event: QuickMarkEvent
+    mark: QuickMark
+    undoable: bool
+
+
+async def day_events(db: AsyncSession, *, category_id: int, on: date) -> list[DayEvent]:
+    """
+    Every tap of the buttons of `category_id` on the day `on`, in the order made.
+
+    The journal is the only place the sets of an increment still exist as sets:
+    `_write_number` folds them into one stored number. Taken-back taps are
+    returned too, flagged by `undone_at`, so that the list explains the total.
+
+    `undoable` is the rule of `undo_event` asked for in bulk: the tap is not
+    undone and is the last open one of its button across **all** days, not just
+    `on`. Answering it here keeps the screen from re-deriving a rule the server
+    owns; whether the value was edited by hand since is only known at undo time
+    and arrives as that endpoint's 409.
+    """
+    result = await db.execute(
+        select(QuickMarkEvent, QuickMark)
+        .join(QuickMark, QuickMark.id == QuickMarkEvent.quick_mark_id)
+        .where(QuickMark.category_id == category_id, QuickMarkEvent.entry_date == on)
+        .order_by(QuickMarkEvent.occurred_at, QuickMarkEvent.id)
+    )
+    rows = result.all()
+    if not rows:
+        return []
+
+    last_open = await db.execute(
+        select(QuickMarkEvent.quick_mark_id, func.max(QuickMarkEvent.id))
+        .where(
+            QuickMarkEvent.quick_mark_id.in_({mark.id for _, mark in rows}),
+            QuickMarkEvent.undone_at.is_(None),
+        )
+        .group_by(QuickMarkEvent.quick_mark_id)
+    )
+    last_open_id = {mark_id: event_id for mark_id, event_id in last_open.all()}
+    return [
+        DayEvent(
+            event=event,
+            mark=mark,
+            undoable=event.undone_at is None and last_open_id.get(mark.id) == event.id,
+        )
+        for event, mark in rows
+    ]
 
 
 def validate_quick_mark(data: QuickMarkCreate, category: Category | None) -> list[str]:

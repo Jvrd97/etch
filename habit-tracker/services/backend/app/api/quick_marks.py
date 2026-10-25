@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185
-# summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206
+# summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API, and the sets of one category's day are read back from the journal on the same clock
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -34,6 +34,7 @@ from app.schemas.quick_mark import (
     QuickMarkOrderIn,
     QuickMarkUpdate,
     QuickMarkCreate,
+    QuickMarkDayEvent,
     QuickMarkEventRequest,
     QuickMarkEventResponse,
     QuickMarkResponse,
@@ -294,6 +295,50 @@ def _hotkey_conflict(hotkey: str, owner: QuickMark) -> HTTPException:
             label=owner.label,
         ).model_dump(),
     )
+
+
+@router.get("/events", response_model=list[QuickMarkDayEvent])
+async def list_day_events(
+    category_id: int = Query(..., description="Категория, чьи подходы читаются"),
+    date_: date | None = Query(
+        None,
+        alias="date",
+        description="Какой день читать; по умолчанию текущий по `today_local()`",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> list[QuickMarkDayEvent]:
+    """
+    Подходы категории за день — каждый тап отдельной строкой, в порядке нажатий.
+
+    Накопительная кнопка складывает подходы в одно число, поэтому отдельными
+    подходами они живут только в журнале. Отменённый тап остаётся в списке с
+    `undone_at`: без него сумма дня уменьшилась бы без видимой причины.
+
+    `undoable` отвечает на вопрос «примет ли ручка отмены этот тап» — отмена
+    разрешена только последнему открытому тапу кнопки. Экран не пересчитывает
+    правило, а показывает кнопку там, где сервер её примет.
+
+    День — тот же, что у записи: `local_date()` от момента тапа хранится в
+    `entry_date`, а «сегодня» для чтения даёт `today_local()`.
+    """
+    on = date_ if date_ is not None else today_local()
+    listed = await quick_mark_crud.day_events(db, category_id=category_id, on=on)
+    return [
+        QuickMarkDayEvent(
+            event_id=one.event.id,
+            quick_mark_id=one.mark.id,
+            label=one.mark.label,
+            kind=one.mark.kind,
+            unit_label=one.mark.unit_label,
+            entry_date=one.event.entry_date,
+            occurred_at=one.event.occurred_at,
+            delta=None if one.event.delta is None else float(one.event.delta),
+            bool_value=one.event.bool_value,
+            undone_at=one.event.undone_at,
+            undoable=one.undoable,
+        )
+        for one in listed
+    ]
 
 
 @router.get("/events/sources", response_model=list[QuickMarkSourceUsage])

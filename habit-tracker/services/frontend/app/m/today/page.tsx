@@ -1,7 +1,8 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177, PHASE-01/206
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
+// summary: mobile Today screen — a quick-mark card opens a full-screen list of every set of its category beside the day's records while its plus still adds one, and every tap or undo reads the day's records and the streak of its category again
 
 import { useState } from 'react';
 import QuickMarkSkeleton from '@/components/QuickMarkSkeleton';
@@ -9,6 +10,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import AvoidStreakCard from '@/components/AvoidStreakCard';
 import ChallengesSection from '@/components/ChallengesSection';
 import QuickMarkRow from '@/components/QuickMarkRow';
+import QuickMarkDaySets from '@/components/QuickMarkDaySets';
 import QuickNumberRow from '@/components/QuickNumberRow';
 import TodayDayEntriesList from '@/components/TodayDayEntriesList';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
@@ -22,6 +24,7 @@ import type { Category, Entry } from '@/lib/api';
 import { TAP_TARGET_PX, TELL_DAY_LABEL } from '@/lib/ui-constants';
 import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
+import { useTodayList } from '@/hooks/useTodayList';
 import { Check, Mic, Sun } from 'lucide-react';
 
 /**
@@ -61,13 +64,16 @@ export default function MobileTodayPage() {
     deleteEntry,
     reloadStreak,
     reload,
+    reloadAfterMark,
   } = useToday();
   // Справочник кнопок отдельным чтением: он живёт дольше дня, и его порядок
-  // (плановые впереди, #130) решает сервер, а не этот экран.
-  const quickMarks = useQuickMarks();
-  // The category whose full editor is open, or null. Held here rather than in
-  // the card so only one sheet can ever be up.
-  const [listCategory, setListCategory] = useState<Category | null>(null);
+  // (плановые впереди, #130) решает сервер, а не этот экран. Кнопки сами
+  // перерисовываются из ответа на тап, а записи и серии рядом с ними — чужое
+  // состояние, поэтому каждый тап и каждая отмена просят экран перечитать день.
+  const quickMarks = useQuickMarks({ onDayChanged: reloadAfterMark });
+  // The list a card opened, or none. Held here rather than in the card so only
+  // one sheet can ever be up.
+  const dayList = useTodayList(categories, quickMarks.marks);
   const [editing, setEditing] = useState<{ category: Category; entry: Entry | null } | null>(null);
   const [dictating, setDictating] = useState(false);
 
@@ -89,141 +95,148 @@ export default function MobileTodayPage() {
   );
 
   return (
-    <div className="space-y-6 animate-fade-rise">
-      <p className="text-sm text-text-secondary">{date}</p>
+    <>
+      <div className="space-y-6 animate-fade-rise">
+        <p className="text-sm text-text-secondary">{date}</p>
 
-      {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
-      <ChallengesSection categories={categories} />
+        <ChallengesSection categories={categories} />
 
-      {/* Above the sections rather than beside one of them: dictation fills in
-          the whole day — several categories, the checklist and the day's text
-          together — so it belongs to the screen, not to any card on it. It
-          stays offered even when there is nothing to track yet, because a
-          spoken day is also the fastest way to find out what is missing. */}
-      <button
-        type="button"
-        onClick={() => setDictating(true)}
-        aria-label={TELL_DAY_LABEL}
-        style={{ minHeight: TAP_TARGET_PX }}
-        className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-transform duration-200 active:scale-95"
-      >
-        <Mic className="w-4 h-4 shrink-0" strokeWidth={2} />
-        Рассказать день
-      </button>
+        {/* Above the sections rather than beside one of them: dictation fills in
+            the whole day — several categories, the checklist and the day's text
+            together — so it belongs to the screen, not to any card on it. It
+            stays offered even when there is nothing to track yet, because a
+            spoken day is also the fastest way to find out what is missing. */}
+        <button
+          type="button"
+          onClick={() => setDictating(true)}
+          aria-label={TELL_DAY_LABEL}
+          style={{ minHeight: TAP_TARGET_PX }}
+          className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-transform duration-200 active:scale-95"
+        >
+          <Mic className="w-4 h-4 shrink-0" strokeWidth={2} />
+          Рассказать день
+        </button>
 
-      {/* Под диктовкой и на всю ширину, как она: оба действия — про день
-          целиком, и оба открываются одним большим касанием. */}
-      <AskAboutDayButton date={date} onError={setError} className="w-full" />
+        {/* Под диктовкой и на всю ширину, как она: оба действия — про день
+            целиком, и оба открываются одним большим касанием. */}
+        <AskAboutDayButton date={date} onError={setError} className="w-full" />
 
-      {nothingToTrack ? (
-        <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
-          <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
-            <Sun className="w-7 h-7 text-text-disabled" strokeWidth={2} />
+        {nothingToTrack ? (
+          <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
+            <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
+              <Sun className="w-7 h-7 text-text-disabled" strokeWidth={2} />
+            </div>
+            <h2 className="text-base font-medium text-text-primary mb-1">Nothing to track today</h2>
+            <p className="text-sm text-text-secondary px-6">
+              Create a checklist category or a form category with a number field
+            </p>
           </div>
-          <h2 className="text-base font-medium text-text-primary mb-1">Nothing to track today</h2>
-          <p className="text-sm text-text-secondary px-6">
-            Create a checklist category or a form category with a number field
-          </p>
-        </div>
-      ) : (
-        <>
-          {quickMarks.marks.length > 0 && (
-            <section>
-              <SectionLabel>Быстрые отметки</SectionLabel>
-              <QuickMarkRow
-                marks={quickMarks.marks}
-                onTap={(id) => void quickMarks.tap(id)}
-                lastEvent={quickMarks.lastEvent}
-                onUndo={() => void quickMarks.undo()}
-              />
-            </section>
-          )}
+        ) : (
+          <>
+            {quickMarks.marks.length > 0 && (
+              <section>
+                <SectionLabel>Быстрые отметки</SectionLabel>
+                <QuickMarkRow
+                  marks={quickMarks.marks}
+                  onTap={(id) => void quickMarks.tap(id)}
+                  onOpen={dayList.openMark}
+                  lastEvent={quickMarks.lastEvent}
+                  onUndo={() => void quickMarks.undo()}
+                />
+              </section>
+            )}
 
-          {avoidCategories.length > 0 && (
-            <section>
-              <SectionLabel>Streaks</SectionLabel>
-              {streaksError !== null && (
-                // Внутри секции, а не баннером над экраном: упали цифры дней,
-                // а не кнопки, и убирать из-за них рабочий экран нечестно.
-                <p role="status" className="text-xs text-text-secondary mb-3">
-                  {streaksError}
-                </p>
-              )}
-              <div className="space-y-3">
-                {avoidCategories.map(({ category, numberField }) => (
-                  <AvoidStreakCard
-                    key={category.id}
-                    category={category}
-                    numberField={numberField}
-                    entries={entries}
-                    streak={streaks[category.id] ?? null}
-                    onRelapse={reloadStreak}
-                    onEntriesChanged={reload}
-                    onError={setError}
-                    onOpenEntries={() => setListCategory(category)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
+            {avoidCategories.length > 0 && (
+              <section>
+                <SectionLabel>Streaks</SectionLabel>
+                {streaksError !== null && (
+                  // Внутри секции, а не баннером над экраном: упали цифры дней,
+                  // а не кнопки, и убирать из-за них рабочий экран нечестно.
+                  <p role="status" className="text-xs text-text-secondary mb-3">
+                    {streaksError}
+                  </p>
+                )}
+                <div className="space-y-3">
+                  {avoidCategories.map(({ category, numberField }) => (
+                    <AvoidStreakCard
+                      key={category.id}
+                      category={category}
+                      numberField={numberField}
+                      entries={entries}
+                      streak={streaks[category.id] ?? null}
+                      onRelapse={reloadStreak}
+                      onEntriesChanged={reload}
+                      onError={setError}
+                      onOpenEntries={() => dayList.openCategory(category)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
 
-          {checklistCategories.map((category) => (
-            <section key={category.id}>
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <SectionLabel>{category.name}</SectionLabel>
-                <button type="button" onClick={() => setListCategory(category)} className="text-sm text-text-secondary">Записи</button>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {booleanFields(category).map((field) => {
-                  const isChecked = isFieldChecked(checked, category.id, field.id);
-                  return (
-                    <button
-                      key={field.id}
-                      onClick={() => toggleField(category.id, field.id)}
-                      aria-pressed={isChecked}
-                      style={{ minHeight: TAP_TARGET_PX }}
-                      className={`inline-flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-sm font-medium transition-colors duration-200 border ${
-                        isChecked
-                          ? 'bg-lime text-background border-lime'
-                          : 'bg-card text-text-secondary border-white/10'
-                      }`}
-                    >
-                      {isChecked && <Check className="w-4 h-4 shrink-0" strokeWidth={2.5} />}
-                      <span className="truncate">{field.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+            {checklistCategories.map((category) => (
+              <section key={category.id}>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <SectionLabel>{category.name}</SectionLabel>
+                  <button type="button" onClick={() => dayList.openCategory(category)} className="text-sm text-text-secondary">Записи</button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {booleanFields(category).map((field) => {
+                    const isChecked = isFieldChecked(checked, category.id, field.id);
+                    return (
+                      <button
+                        key={field.id}
+                        onClick={() => toggleField(category.id, field.id)}
+                        aria-pressed={isChecked}
+                        style={{ minHeight: TAP_TARGET_PX }}
+                        className={`inline-flex items-center justify-center gap-2 px-3 py-3 rounded-2xl text-sm font-medium transition-colors duration-200 border ${
+                          isChecked
+                            ? 'bg-lime text-background border-lime'
+                            : 'bg-card text-text-secondary border-white/10'
+                        }`}
+                      >
+                        {isChecked && <Check className="w-4 h-4 shrink-0" strokeWidth={2.5} />}
+                        <span className="truncate">{field.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
 
-          {quickFormCategories.length > 0 && (
-            <section>
-              <SectionLabel>Quick input</SectionLabel>
-              <div className="space-y-3">
-                {quickFormCategories.map(({ category, numberField }) => (
-                  <QuickNumberRow
-                    key={category.id}
-                    category={category}
-                    numberField={numberField}
-                    total={
-                      numberField ? numberFieldSum(entries, category.id, numberField.id) : 0
-                    }
-                    onAdd={(amount) =>
-                      numberField
-                        ? addNumber(category.id, numberField.id, amount)
-                        : Promise.resolve(false)
-                    }
-                    onOpenEditor={() => setListCategory(category)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-        </>
-      )}
+            {quickFormCategories.length > 0 && (
+              <section>
+                <SectionLabel>Quick input</SectionLabel>
+                <div className="space-y-3">
+                  {quickFormCategories.map(({ category, numberField }) => (
+                    <QuickNumberRow
+                      key={category.id}
+                      category={category}
+                      numberField={numberField}
+                      total={
+                        numberField ? numberFieldSum(entries, category.id, numberField.id) : 0
+                      }
+                      onAdd={(amount) =>
+                        numberField
+                          ? addNumber(category.id, numberField.id, amount)
+                          : Promise.resolve(false)
+                      }
+                      onOpenEditor={() => dayList.openCategory(category)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
 
+      {/* Outside the animated column on purpose. The column ends its entrance on
+          a transform, and a transformed ancestor becomes the containing block of
+          every fixed descendant: a sheet inside it is as tall as the column, not
+          the screen, and the header and the tab bar draw over it. */}
       {dictating && (
         <VoiceDaySheet
           onClose={() => setDictating(false)}
@@ -237,29 +250,38 @@ export default function MobileTodayPage() {
         />
       )}
 
-      {listCategory && (
+      {dayList.open && (
         <FullScreenSheet
-          title={`${listCategory.name} — сегодня`}
-          onCancel={() => setListCategory(null)}
+          title={dayList.title}
+          onCancel={dayList.close}
           onDone={() => {
-            setEditing({ category: listCategory, entry: null });
-            setListCategory(null);
+            if (dayList.category) setEditing({ category: dayList.category, entry: null });
+            dayList.close();
           }}
           doneLabel="Добавить"
+          // A card whose category is not an active one has sets to show and no
+          // category to add a record to.
+          doneDisabled={dayList.category === null}
         >
-          <TodayDayEntriesList
-            category={listCategory}
-            entries={dayEntriesForCategory(entries, listCategory.id)}
-            onEdit={(entry) => {
-              setEditing({ category: listCategory, entry });
-              setListCategory(null);
-            }}
-            onDelete={deleteEntry}
-            onAdd={() => {
-              setEditing({ category: listCategory, entry: null });
-              setListCategory(null);
-            }}
-          />
+          {dayList.mark && (
+            <QuickMarkDaySets mark={dayList.mark} onUndo={quickMarks.undoEvent} />
+          )}
+          {dayList.category && (
+            <TodayDayEntriesList
+              category={dayList.category}
+              entries={dayEntriesForCategory(entries, dayList.category.id)}
+              heading={dayList.mark ? 'Записи за день' : undefined}
+              onEdit={(entry) => {
+                if (dayList.category) setEditing({ category: dayList.category, entry });
+                dayList.close();
+              }}
+              onDelete={deleteEntry}
+              onAdd={() => {
+                if (dayList.category) setEditing({ category: dayList.category, entry: null });
+                dayList.close();
+              }}
+            />
+          )}
         </FullScreenSheet>
       )}
 
@@ -276,6 +298,6 @@ export default function MobileTodayPage() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

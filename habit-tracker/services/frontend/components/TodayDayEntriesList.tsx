@@ -1,26 +1,20 @@
 'use client';
-// [review:need-review] PHASE-01/177, #176
-// summary: confirmed Today entries show numeric field units and entry-level actions
+// [review:need-review] PHASE-01/177, #176, PHASE-01/206
+// summary: confirmed Today entries show numeric field units and entry-level actions, under a heading when another list sits above them
 
 import type { Category, Entry } from '@/lib/api';
 import { formatValue } from '@/lib/format-value';
+import { clockTime } from '@/lib/today-entries';
 
 export interface TodayDayEntriesListProps {
   category: Category;
   entries: Entry[];
   deletingId?: number | null;
+  /** Names the list when it is not the only one in the sheet; absent, it has no title. */
+  heading?: string;
   onEdit: (entry: Entry) => void;
   onDelete: (entry: Entry) => Promise<boolean>;
   onAdd: () => void;
-}
-
-/** Display time consistently for the record's server timestamp. */
-function entryTime(createdAt: string): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date(createdAt));
 }
 
 function entryValues(category: Category, entry: Entry): string {
@@ -46,12 +40,14 @@ export default function TodayDayEntriesList({
   category,
   entries,
   deletingId = null,
+  heading,
   onEdit,
   onDelete,
   onAdd,
 }: TodayDayEntriesListProps) {
   return (
     <div className="space-y-3">
+      {heading && <h3 className="text-sm font-medium text-text-primary">{heading}</h3>}
       {entries.length === 0 ? (
         <p className="text-sm text-text-secondary">За сегодня записей пока нет.</p>
       ) : (
@@ -65,7 +61,7 @@ export default function TodayDayEntriesList({
                 className="flex min-w-0 flex-1 items-center gap-4 text-left"
               >
                 <time className="shrink-0 text-sm tabular-nums text-text-secondary">
-                  {entryTime(entry.created_at)}
+                  {clockTime(entry.created_at)}
                 </time>
                 <span className="min-w-0 truncate text-sm text-text-primary">
                   {entryValues(category, entry)}
