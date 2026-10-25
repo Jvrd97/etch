@@ -2646,3 +2646,15 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgentTests/IntervalBuilderTests.swift`, `QueueTests.swift` — mod: 4 + 4 новых теста.
 
 Проверки: `xcodebuild test -destination 'platform=macOS'` — 99 passed. Не проверено вживую: реальный `NWPathMonitor` при старте Tailscale (список `availableInterfaces` с `utun*` не смотрел), настоящий `kill -9` процесса агента.
+## 2026-10-25 — PHASE-01/178 встроенные категории из коробки
+
+Каталог шаблонов живёт в коде, применение идёт через существующий `apply_category_batch`; шаблон — обычная категория, никакой пометки происхождения нет. Ничего не создаётся без выбора пользователя: `GET /categories/templates` только читает.
+
+- `app/data/category_templates.py`, `app/data/__init__.py` — new: каталог Supplements (чек-лист из трёх boolean-полей), Water, Sleep, Weight.
+- `app/schemas/category_template.py` — new: `CategoryTemplate`, `CategoryTemplateResponse` (с `added`), запрос и ответ применения.
+- `app/crud/category_template.py` — new: `list_templates` (один запрос на `added`), `apply_templates` (неизвестный ключ -> 422 до записи; занятое имя -> `skipped`; остальное одной транзакцией).
+- `app/api/categories.py` — mod: `GET /categories/templates` и `POST /categories/templates/apply`, добавлены до `/{category_id}`.
+- `tests/test_category_templates.py` — new: инварианты каталога, список, применение, повтор, пропуск чужой категории, переименование/дополнение/удаление, число SQL не растёт с `added`.
+- Фронт: `components/categories/TemplatePicker.tsx` (+ тест) — new; `app/categories/page.tsx` — mod (кнопки «From template» и «Start from a template»); `lib/api.ts` — mod (типы и два метода внутри `categoriesAPI`); `app/categories/page.test.tsx` — mod.
+
+Решения без согласования с человеком (тикет их оставлял открытыми): каталог — четыре вещи из тикета; Supplements — чек-лист с boolean-полем на добавку; вход — панель на странице категорий, а не онбординг (его пути вне периметра задачи). Мобильная `/m/categories` и онбординг шаблонов пока не показывают.
