@@ -8,11 +8,11 @@ directly — that is where the rule lives — and once through the handle, which
 only has to name the refusal rather than repeat it.
 """
 
-# [review:need-review] PHASE-03/93
-# summary: the goal board answers six levels, ten milestones with their dependency codes and five goals of the quarter; a sixth goal is refused by two different constraints of the database and comes back as a 422 through the API; closing a milestone dates it and reopening it clears the date
+# [review:need-review] PHASE-03/93, PHASE-03/218
+# summary: the goal board answers six levels, ten milestones with their dependency codes and five goals of the quarter; a sixth goal is refused by two different constraints of the database and comes back as a 422 through the API; closing a milestone dates it and reopening it clears the date; the quarter is computed from `today_local()` rather than frozen as `2026-Q3`, with a dedicated test for a quarter shift (`#218`)
 import shutil
 from collections.abc import AsyncGenerator
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from httpx import AsyncClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import daytime
 from app.core.daytime import today_local
 from app.crud import day as day_crud
 from app.crud import goal as goal_crud
@@ -29,7 +30,12 @@ from app.models.goal import QuarterGoal
 FIXTURES = Path(__file__).parent / "fixtures" / "personal_os"
 
 GOALS_URL = "/api/v1/goals"
-QUARTER = "2026-Q3"
+
+# The quarter `today` falls in, not a fixed string: `2026-Q3` went stale the
+# moment the calendar crossed into Q4 and every write below landed in a
+# quarter `GET /goals` (which asks `today_local()`) no longer looks at
+# (`#218`). `test_a_quarter_shift_is_followed_not_hardcoded` guards the class.
+QUARTER = goal_crud.quarter_code(today_local())
 
 # A Monday under the current canon, used by the tests that need a plan pointing
 # at a goal of the quarter. Fixed rather than relative to today: `POST /plan`
@@ -61,9 +67,21 @@ def goal(ord_: int) -> dict[str, object]:
 
 
 async def test_get_goals_returns_six_levels_ten_milestones_and_five_quarter_goals(
-    client: AsyncClient, imported: None
+    client: AsyncClient, imported: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The first acceptance case, from the side the screen sees it."""
+    """
+    The first acceptance case, from the side the screen sees it.
+
+    `goal.md` records its five goals under «Q3 2026» (`#218`) — the file's own
+    record of which quarter they belong to, not today's. "Today" is frozen to a
+    day inside that quarter so the board's filter and the fixture agree; a real
+    quarter shift is covered on its own by
+    `test_a_quarter_shift_is_followed_not_hardcoded`.
+    """
+    monkeypatch.setattr(
+        daytime, "now_utc", lambda: datetime(2026, 8, 15, 12, tzinfo=timezone.utc)
+    )
+
     response = await client.get(GOALS_URL)
 
     assert response.status_code == 200
@@ -90,6 +108,35 @@ async def test_the_quarter_is_the_one_today_falls_in(
     response = await client.get(GOALS_URL)
 
     assert response.json()["quarter"] == goal_crud.quarter_code(today_local())
+
+
+async def test_a_quarter_shift_is_followed_not_hardcoded(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The acceptance guard: the board follows whichever quarter `today` falls
+    in, not a string frozen at the quarter the test was written in.
+
+    "Today" moves to a quarter neither this suite's real run date nor
+    `goal.md`'s own `2026-Q3` falls in, so a hardcoded quarter reappearing
+    anywhere in the write-then-read path would reproduce the `0 == 5` this
+    ticket closes.
+    """
+    monkeypatch.setattr(
+        daytime, "now_utc", lambda: datetime(2027, 5, 10, 12, tzinfo=timezone.utc)
+    )
+    quarter = goal_crud.quarter_code(today_local())
+
+    written = await client.put(
+        f"{GOALS_URL}/quarter/{quarter}",
+        json={"goals": [goal(ord_) for ord_ in range(1, 6)]},
+    )
+    assert written.status_code == 200
+
+    response = await client.get(GOALS_URL)
+
+    assert response.json()["quarter"] == quarter
+    assert len(response.json()["goals"]) == 5
 
 
 async def test_m10_depends_on_m9_and_m8(client: AsyncClient, imported: None) -> None:
