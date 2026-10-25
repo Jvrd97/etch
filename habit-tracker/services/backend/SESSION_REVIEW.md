@@ -2627,3 +2627,15 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Не сделано: необязательное замечание про `PanelHost.swift` (новая эфемерная `URLSession` на каждый опрос/отправку без reuse) — отложено до ребейза на `main`, где `AgentAPIClient.diskFreeSession` уже есть (после #163); сейчас в этой ветке его не было, трогать чужой `AgentAPIClient.swift` без ребейза не стал.
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
+
+## 2026-10-25 — PHASE-03/217: mac-агент, чекпойнт открытого интервала и история кодов сброса
+
+Что поменялось: открытый интервал режется раз в 5 минут (`IntervalBuilder.checkpoint()`, вызывается из `ActivitySampler.sample` после `record`), поэтому `kill -9` теряет не больше этого окна; очередь хранит счётчики по каждому коду сброса, а не только последний; новый интерфейс на живом пути (Tailscale при поднятом Wi-Fi) отменяет бэкофф. Серверной части нет.
+
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `checkpointInterval`, `checkpoint()`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: `record` + `checkpoint` в одном вызове.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/OutboxStore.swift` — mod: модель `QueueErrorTotal`, `QueueErrorTally`, `errorHistory`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Flusher.swift` — mod: `networkChanged(available:interfaces:)`, имена интерфейсов из `NWPath.availableInterfaces`.
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IntervalBuilderTests.swift`, `QueueTests.swift` — mod: 4 + 4 новых теста.
+
+Проверки: `xcodebuild test -destination 'platform=macOS'` — 99 passed. Не проверено вживую: реальный `NWPathMonitor` при старте Tailscale (список `availableInterfaces` с `utun*` не смотрел), настоящий `kill -9` процесса агента.

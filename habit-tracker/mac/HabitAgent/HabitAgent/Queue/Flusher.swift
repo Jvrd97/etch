@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/163
-// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back; backs off while the server is down, drops by retention, and narrows a refused batch down to the one refused interval and probes the server before dropping a run of them
+// [review:need-review] PHASE-03/163, PHASE-03/217
+// summary: sends the disk queue to the server one batch at a time — on start, on a timer, when an interval closes and when the network comes back or gains an interface; backs off while the server is down, drops by retention, and narrows a refused batch down to the one refused interval and probes the server before dropping a run of them
 import Foundation
 import Network
 import os
@@ -42,6 +42,8 @@ final class Flusher {
     private var backoff = Backoff()
     private var loneRefusals = 0
     private var networkAvailable = true
+    /// Interfaces the last path offered; nil until the first path arrives.
+    private var interfaces: Set<String>?
     private var inFlight: Task<FlushSummary, Never>?
     private var timer: Task<Void, Never>?
     private var monitor: NWPathMonitor?
@@ -65,7 +67,8 @@ final class Flusher {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let available = path.status == .satisfied
-            Task { @MainActor in await self?.networkChanged(available: available) }
+            let interfaces = Set(path.availableInterfaces.map(\.name))
+            Task { @MainActor in await self?.networkChanged(available: available, interfaces: interfaces) }
         }
         monitor.start(queue: DispatchQueue(label: "\(AgentPaths.identifier).network"))
         self.monitor = monitor
@@ -90,11 +93,15 @@ final class Flusher {
     }
 
     /// A network that returns says the server may be reachable again, so the wait is cancelled.
-    func networkChanged(available: Bool) async {
+    /// So does a new interface on a path that stayed up: Tailscale starting under a Wi-Fi
+    /// that never dropped is not a "return" for `NWPathMonitor`, yet it opens the way to the server.
+    func networkChanged(available: Bool, interfaces current: Set<String> = []) async {
         let restored = available && !networkAvailable
+        let joined = available && interfaces.map { !current.subtracting($0).isEmpty } == true
         networkAvailable = available
-        guard restored else { return }
-        Self.logger.info("Network is back, flushing without waiting")
+        interfaces = current
+        guard restored || joined else { return }
+        Self.logger.info("Network is back or has a new interface, flushing without waiting")
         backoff.reset()
         retryNotBefore = .distantPast
         await flush(force: true)

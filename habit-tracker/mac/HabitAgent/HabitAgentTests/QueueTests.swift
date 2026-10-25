@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/163
-// summary: the disk queue and its flusher — survives a kill, cuts batches at 500, keeps intervals through network errors and resends the same batch, backs off up to a ceiling, drops by retention with a code, writes only under its own directory
+// [review:need-review] PHASE-03/163, PHASE-03/217
+// summary: the disk queue and its flusher — survives a kill, cuts batches at 500, keeps intervals through network errors and resends the same batch, backs off up to a ceiling, drops by retention with a code, writes only under its own directory, keeps a tally per error code, loses at most a checkpoint to a kill and flushes when a new interface joins
 import XCTest
 @testable import HabitAgent
 
@@ -334,6 +334,100 @@ final class QueueTests: XCTestCase {
         await flusher.networkChanged(available: true)
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(store.count, 0)
+    }
+
+    // MARK: Error history
+
+    func testEveryDropCodeKeepsItsOwnTallyNotJustTheLastOne() throws {
+        var store: OutboxStore? = try makeStore()
+        store?.enqueue(intervals(2, bundleID: "com.example.unknown"))
+        store?.drop(bundleID: "com.example.unknown", at: start)
+        store?.enqueue([ActivityInterval(
+            bundleID: "com.example.editor", startedAt: start.addingTimeInterval(-60), endedAt: start.addingTimeInterval(-1),
+            localDate: "2027-01-15", utcOffsetMinutes: 0, switchCount: 0
+        )])
+        let later = start.addingTimeInterval(OutboxStore.retention)
+        XCTAssertEqual(store?.dropExpired(now: later), 1)
+        // A second unknown app after an expiry must not erase the expiry from the history.
+        store?.enqueue(intervals(3, bundleID: "com.example.other"))
+        let latest = later.addingTimeInterval(60)
+        store?.drop(bundleID: "com.example.other", at: latest)
+
+        let expected = [
+            QueueErrorTally(code: .expired, events: 1, intervals: 1, lastAt: later),
+            QueueErrorTally(code: .unknownApp, events: 2, intervals: 5, lastAt: latest),
+        ]
+        XCTAssertEqual(store?.errorHistory, expected)
+        XCTAssertEqual(store?.lastError, QueueError(code: .unknownApp, count: 3, at: latest))
+
+        store = nil
+        XCTAssertEqual(try makeStore().errorHistory, expected)
+    }
+
+    func testNoDropsMeansNoHistory() throws {
+        XCTAssertTrue(try makeStore().errorHistory.isEmpty)
+    }
+
+    // MARK: Checkpoint and kill
+
+    func testKillAfterAnHourInOneAppLosesLessThanTheCheckpointInterval() throws {
+        var store: OutboxStore? = try makeStore()
+        var builder: IntervalBuilder? = IntervalBuilder()
+        let editor = "com.example.editor"
+        var lastSighting = start
+        for second in stride(from: 0.0, through: 3600, by: Self.samplingStep) {
+            lastSighting = start.addingTimeInterval(second)
+            let closed = builder!.record(AppSighting(bundleID: editor, date: lastSighting)) + builder!.checkpoint()
+            store?.enqueue(closed)
+        }
+        // kill -9: neither the builder nor the store gets to finish anything.
+        builder = nil
+        store = nil
+
+        let survivors = try makeStore().nextBatch()?.intervals ?? []
+        let covered = try XCTUnwrap(survivors.map(\.endedAt).max())
+        XCTAssertLessThan(lastSighting.timeIntervalSince(covered), IntervalBuilder.checkpointInterval)
+        XCTAssertGreaterThan(covered.timeIntervalSince(start), 3600 - IntervalBuilder.checkpointInterval)
+    }
+
+    private static let samplingStep: TimeInterval = 5
+
+    // MARK: Interfaces
+
+    func testAnInterfaceJoiningAnAlreadyUpNetworkCancelsTheBackoffAndFlushes() async throws {
+        let store = try makeStore()
+        store.enqueue(intervals(2))
+        var calls = 0
+        var reachable = false
+        let flusher = makeFlusher(store) { _ in
+            calls += 1
+            if !reachable { throw URLError(.cannotConnectToHost) }
+        }
+        await flusher.networkChanged(available: true, interfaces: ["en0"])
+        XCTAssertEqual(calls, 0, "the first path only sets the baseline")
+        await flusher.flush(now: start)
+        XCTAssertEqual(calls, 1)
+
+        // Tailscale comes up while Wi-Fi never went down: the path is satisfied throughout.
+        reachable = true
+        await flusher.networkChanged(available: true, interfaces: ["en0", "utun4"])
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(store.count, 0)
+    }
+
+    func testTheSameInterfacesAgainDoNotCancelTheBackoff() async throws {
+        let store = try makeStore()
+        store.enqueue(intervals(2))
+        var calls = 0
+        let flusher = makeFlusher(store) { _ in
+            calls += 1
+            throw URLError(.cannotConnectToHost)
+        }
+        await flusher.networkChanged(available: true, interfaces: ["en0", "utun4"])
+        await flusher.flush(now: start)
+        await flusher.networkChanged(available: true, interfaces: ["utun4", "en0"])
+        await flusher.networkChanged(available: true, interfaces: ["en0"])
+        XCTAssertEqual(calls, 1)
     }
 
     func testExpiredIntervalsAreDroppedBeforeAnyAttemptIsMade() async throws {
