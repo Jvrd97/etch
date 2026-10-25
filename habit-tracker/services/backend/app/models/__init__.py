@@ -1,6 +1,8 @@
 # [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/89, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/135, PHASE-03/145, PHASE-03/150, PHASE-03/179
 # summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the work intervals of a day, the chat tables, the four role tables, the week snapshot, the quick-mark directory with its journal, the challenge tables, the plan violations, the day report revisions, the plan revisions with their change journal and the day rule profiles with their activations and overtime debt alongside the existing ones
 # summary: re-export the Health contour models, the day tables (versioned canon + the day itself), the plan tables, the mark tables, the day summary, the import ledger, the goal tables, the anchor/training tables the chat tables and the quick-mark tables alongside the existing ones
+# [review:need-review] 205
+# summary: re-export WebAuthnCredential, the passkey table
 from app.models.activity import (
     ActivityInterval,
     AgentHeartbeat,
@@ -59,6 +61,7 @@ from app.models.training import (
 from app.models.transcript import Transcript
 from app.models.week import Week, WeekReviewItem
 from app.models.work_interval import WorkInterval
+from app.models.webauthn_credential import WebAuthnCredential
 
 __all__ = [
     "ActivityInterval",
@@ -126,4 +129,5 @@ __all__ = [
     "Week",
     "WeekReviewItem",
     "WorkInterval",
+    "WebAuthnCredential",
 ]

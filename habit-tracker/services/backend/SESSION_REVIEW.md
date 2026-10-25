@@ -2453,3 +2453,18 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 Два раунда, независимое ревью **APPROVE** на обоих (раунд 1 — REQUEST_CHANGES по трём багам: бесконечный повтор на неизвестном приложении, гонка параллельных отправок терявшая интервалы или ронявшая агент, `switch_count` не по контракту ADR; раунд 2 закрыл все три, включая мутационный тест на гонку).
 
 Проверки: XCTest — 22 passed; `tests/test_agent_activity.py` — 4 passed; `-k "agent or activity"` — 41 passed на изолированном postgres; ruff, mypy --strict, `git diff --check` чистые. Живой 20-минутный сбор на реальном маке не запускался — остаётся ручным шагом. Правило HTTPS/tailnet для прод-адреса зафиксировано в тикете как решение пользователя, код его не трогает.
+
+## 2026-10-25 — 205: вход по passkey
+
+Изменено 14 файлов кода бэкенда: 9 `new`, 5 `mod`, плюс `habit-tracker/docker-compose.yml` (`mod`).
+
+- `app/services/passkey.py`, `app/services/__init__.py` — new: две церемонии WebAuthn поверх `py_webauthn`. Вызов лежит в подписанном токене (своя соль, 5 минут, назначение `register`/`login`). Повтор ответа отклоняется, если вызов выпущен не позже `last_used_at` ключа: у passkey iCloud счётчик всегда ноль.
+- `app/api/passkey.py` — new: `GET /auth/passkey/status`, `POST /auth/passkey/{register,login}/{options,verify}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}`. Регистрация, список и удаление — только с сессией или ключом; вход открыт и ставит ту же `habit_session`; 503, пока passkey не настроен.
+- `app/crud/passkey.py`, `app/schemas/passkey.py`, `app/models/webauthn_credential.py` — new: таблица без `user_id`, DTO без ключевого материала.
+- `alembic/versions/2026_10_25_1700-b1d3f5a7c9e2_webauthn_credential.py` — new: обратимая ревизия от `a9c1e3f5b7d0`.
+- `app/core/config.py` — mod: `WEBAUTHN_RP_ID`/`WEBAUTHN_RP_NAME`/`WEBAUTHN_ORIGINS`; IP вместо имени, половина пары и origin вне RP ID роняют сборку настроек.
+- `app/main.py`, `app/models/__init__.py` — mod: роутер рядом с `auth.router` вне периметра; экспорт модели.
+- `pyproject.toml`, `uv.lock` — mod: `webauthn` 3.0.1 через `uv add`.
+- `tests/test_passkey.py`, `tests/test_passkey_config.py` — new: программный аутентификатор (P-256, CBOR, `none`), 34 теста.
+
+Проверки: тесты passkey, auth, session, perimeter — 78 passed; полный прогон — 1641 passed, 3 failed: `test_categories.py:987` прибит к прежней голове Alembic, два `test_goals.py` падают по дате (фикстура `2026-Q3`). Ruff, формат, `mypy --strict` чистые, одна голова `b1d3f5a7c9e2`, миграция вверх-вниз-вверх на `habit_live_205`. Живой поток через прокси Next на `:3805` — программным аутентификатором; Face ID руками не нажимался.

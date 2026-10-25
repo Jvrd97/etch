@@ -2,6 +2,8 @@
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, days, weeks, roles, chat, day-rules, challenge and quick-marks routers in the API-key perimeter
 # summary: the auth router is mounted OUTSIDE that perimeter — logging in is what a client without a key or a cookie has to be able to do
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, training and chat routers in the API-key perimeter
+# [review:need-review] 205
+# summary: the passkey router is mounted beside the auth router, outside the perimeter — sign-in by passkey is open, its registration endpoints guard themselves
 """
 Сборка FastAPI-приложения.
 
@@ -39,6 +41,7 @@ from app.api import (
     week,
     training,
 )
+from app.api import passkey
 from app.core.auth import require_api_key, warn_if_auth_disabled
 from app.core.config import Settings, settings
 from app.core.database import AsyncSessionLocal
@@ -156,6 +159,9 @@ def create_app(config: Settings) -> FastAPI:
     # key nor a cookie must still be able to log in and to ask whether it is
     # logged in. The three handlers return a boolean and a lifetime, nothing else.
     app.include_router(auth.router, prefix=config.API_V1_PREFIX)
+    # Passkey sign-in (#205) is the second way to that same cookie; registering
+    # and listing keys require a session per endpoint.
+    app.include_router(passkey.router, prefix=config.API_V1_PREFIX)
 
     api_key_dependencies = [Depends(require_api_key)]
     for router in API_ROUTERS:

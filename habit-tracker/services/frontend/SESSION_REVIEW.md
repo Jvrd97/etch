@@ -2113,3 +2113,17 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `hooks/useChat.ts` и тест — mod: при смене разговора ход сбрасывается. Ход прежнего разговора больше не пишет в новую ленту ни события, ни перечитанные сообщения.
 
 Проверки: `bunx tsc --noEmit` чисто. ESLint по изменённым файлам без замечаний. `bun test` — 1458 pass; единственный fail — известная ошибка общего mock registry в `app/m/health/page.test.tsx`, в изоляции файл проходит. Вёрстка проверена в dev-сервере без бэкенда на 375×812 и 1400×800; живой список и клавиатура iOS не проверялись.
+
+## 2026-10-25 — 205: вход по passkey
+
+Изменено 10 файлов кода: 8 `new`, 2 `mod`.
+
+- `lib/passkey.ts` и тест — new: base64url, перевод параметров WebAuthn туда и обратно, проверка поддержки (безопасный контекст и `PublicKeyCredential`), запросы `/auth/passkey/*`, потоки «добавить» и «войти». Закрытое окно Face ID — итог `cancelled`, а не ошибка. Новых npm-зависимостей нет.
+- `components/settings/PasskeyLoginButton.tsx` — new: «Войти по passkey» на `/login`, только где WebAuthn есть и сервер включил passkey.
+- `components/settings/PasskeyManager.tsx` — new: экран ключей для обеих оболочек: список, добавление с именем, удаление после подтверждения. При выключенном passkey — только пояснение.
+- `components/settings/PasskeyMoreLink.tsx` — new: строка «Passkey» в `/m/more`, видна, только пока passkey включён.
+- `components/settings/Passkey.test.tsx` — new: кнопка скрыта без WebAuthn и при выключенном сервере, отмена без ошибки, добавление через подменённый `navigator.credentials`.
+- `app/settings/passkeys/page.tsx`, `app/m/settings/passkeys/page.tsx` — new: десктопный и мобильный экраны.
+- `app/login/page.tsx`, `app/m/more/page.tsx` — mod: кнопка под формой ключа; строка под списком «More».
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint по изменённым файлам без замечаний; `bun test` — 1487 pass, 1 fail — известная ошибка общего mock registry в `app/m/health/page.test.tsx`. Страницы `/login`, `/settings/passkeys`, `/m/settings/passkeys`, `/m/more` отдаются dev-сервером (200); глазами в браузере не смотрел — браузера у исполнителя нет. Ссылки в десктопном меню нет: реестр `lib/routes.ts` сверяется точными списками в `routes.test.ts`.
