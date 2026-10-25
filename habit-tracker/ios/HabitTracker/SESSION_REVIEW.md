@@ -316,3 +316,18 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `README.md` — new: правила для тикетов экранов и установка на телефон.
 
 Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.
+
+## 2026-10-26 — PHASE-01/210: Today на iOS целиком
+
+Быстрые отметки с отменой и офлайн-очередью, лист подходов и записей за день, Happened одним нажатием, история срывов с графиком. Тронуто 22 файла: 18 `new`, 4 `mod`.
+
+- `HabitTracker/API/APIClient+Today.swift`, `HabitTracker/API/DTOs+Today.swift` — new: справочник быстрых отметок, нажатие под `Idempotency-Key`, отмена, подходы дня, один запрос `/streaks`, срыв, история срывов, patch/delete записи.
+- `HabitTracker/Features/QuickMarks/QuickMarksViewModel.swift`, `QuickMarkTapQueue.swift`, `QuickMarkWording.swift`, `QuickMarksSection.swift` — new: кнопки отметок, очередь нажатий без потерь офлайн, формулировки, секция на Today.
+- `HabitTracker/Features/QuickMarks/QuickMarkDaySetsViewModel.swift`, `QuickMarkDaySetsSection.swift` — new: подходы за день.
+- `HabitTracker/Features/QuickMarks/QuickMarksView.swift` — mod: заглушка заменена экраном.
+- `HabitTracker/Features/Today/RelapseAnalysis.swift`, `RelapseHistoryView.swift`, `RelapseHistoryViewModel.swift`, `RelapseDetailsSheet.swift` — new: история срывов, график Swift Charts, анализ по серверной семантике #207.
+- `HabitTracker/Features/Today/TodayDaySheet.swift` — new: лист дня категории.
+- `HabitTracker/Features/Today/TodayView.swift`, `TodayViewModel.swift` — mod: серии одним `/streaks`, Happened без number-поля, переход на историю срывов; место под кнопку голоса (#213) помечено `TODO(#213)`.
+- `HabitTrackerTests/{QuickMarkTapQueueTests,QuickMarksViewModelTests,RelapseAnalysisTests,TodayDetailViewModelsTests,TodayScreenAPITests,TodayViewModelTests}.swift` — new/mod: view model на подделанном `URLProtocol`, офлайн-нажатия, одна выборка серий.
+
+Проверки: `xcodebuild test` на симуляторе av06-iPhone17Pro (iOS 26) с подписью симулятора — 227 из 227. Не проверено: живой бэкенд (охранный хук не пускает миграцию живой базы роя, экран шёл только на подделке API), вёрстка глазами, Face ID, график и анализ срывов на реальных данных, поведение на телефоне (для #215).
