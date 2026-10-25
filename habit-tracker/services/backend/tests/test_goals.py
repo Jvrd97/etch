@@ -125,7 +125,10 @@ async def test_a_quarter_shift_is_followed_not_hardcoded(
     monkeypatch.setattr(
         daytime, "now_utc", lambda: datetime(2027, 5, 10, 12, tzinfo=timezone.utc)
     )
-    quarter = goal_crud.quarter_code(today_local())
+    # Literal, not `goal_crud.quarter_code(today_local())` — the frozen date
+    # above is 2027-05-10, so the expectation must not call the very
+    # function under test (a stubbed `quarter_code` would still pass).
+    quarter = "2027-Q2"
 
     written = await client.put(
         f"{GOALS_URL}/quarter/{quarter}",

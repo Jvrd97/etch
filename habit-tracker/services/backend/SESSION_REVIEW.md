@@ -2478,3 +2478,5 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - `tests/conftest.py` (mod) — `seeded_goal.quarter` вычисляется тем же `goal_crud.quarter_code(daytime.today_local())` вместо буквального `"2026-Q3"`.
 
 Проверки: `pytest tests/test_goals.py` — 15 passed; `ruff check`/`ruff format --check` — чисто; `mypy --strict app` — чисто (тесты не под strict-гейтом); `alembic heads` — одна строка (без изменений, ревизий не заводил); полный `pytest tests/` — 1611 passed, 3 skipped, без новых падений. Живых проверок нет — чисто тестовая задача, без ручки/UI.
+
+Второй проход (круг 2, ревью): в `test_a_quarter_shift_is_followed_not_hardcoded` ожидание квартала бралось вызовом `goal_crud.quarter_code(today_local())` — той же функции, которую тест проверяет, поэтому подмена `quarter_code` константой осталась бы незамеченной. Заменено на буквальную строку `"2027-Q2"` (замороженная дата та же, 2027-05-10); `pytest tests/test_goals.py` — 15 passed, полный `pytest tests/` — 1611 passed, 3 skipped.
