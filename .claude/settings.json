@@ -169,6 +169,11 @@
             "type": "command",
             "command": "bash .claude/hooks/session-context.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/pulse.py\" brief",
+            "timeout": 10
           }
         ]
       }
