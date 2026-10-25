@@ -47,6 +47,13 @@ final class PowerObserver {
         reasons = []
     }
 
+    /// Forgets every pause reason and reports the running state, for a wake or unlock whose notification never came.
+    func clearReasons() {
+        let wasPaused = isPaused
+        reasons = []
+        if wasPaused { onChange(false) }
+    }
+
     func handle(_ event: Event) {
         let wasPaused = isPaused
         switch event {

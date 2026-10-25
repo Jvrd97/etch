@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/172
-// summary: verifies the adaptive sampling period, idle_seconds inside an interval, closing at the last input after a long absence or at sleep and lock, and that nothing is queued while collection is paused
+// summary: verifies the checkpoint not cutting a pause, the adaptive sampling period, idle_seconds inside an interval, closing at the last input after a long absence or at sleep and lock, and that nothing is queued while collection is paused
 import XCTest
 @testable import HabitAgent
 
@@ -121,6 +121,51 @@ final class IdleIntervalTests: XCTestCase {
     }
 }
 
+final class CheckpointDuringPauseTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+    private let editor = "com.example.editor"
+
+    private func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
+
+    /// Work up to `quiet`, then silence; every sighting is followed by the checkpoint, as the sampler does.
+    private func run(quiet: TimeInterval, until end: TimeInterval) -> [ActivityInterval] {
+        var builder = IntervalBuilder()
+        var closed: [ActivityInterval] = []
+        var now = 0.0
+        while now < end {
+            let idle = max(0, now - quiet)
+            closed += builder.record(AppSighting(bundleID: editor, date: at(now), idleSeconds: idle))
+            closed += builder.checkpoint()
+            now += IdleMonitor.samplingPeriod(idleSeconds: idle)
+        }
+        return closed
+    }
+
+    func testCheckpointDoesNotCutWhileAPauseIsGoingOn() {
+        var builder = IntervalBuilder()
+        for second in stride(from: 0.0, through: 100, by: 5) {
+            _ = builder.record(AppSighting(bundleID: editor, date: at(second)))
+        }
+        // Input stopped at 100; the pause counts from 160 on, and the interval passes the checkpoint age at 310.
+        for second in stride(from: 130.0, through: 400, by: IdleMonitor.idlePeriod) {
+            _ = builder.record(AppSighting(bundleID: editor, date: at(second), idleSeconds: second - 100))
+            XCTAssertTrue(builder.checkpoint().isEmpty, "the time after the last input must not leave as work")
+        }
+    }
+
+    func testAbsenceAfterTwelveMinutesOfWorkEndsTheLastIntervalAtTheLastInput() {
+        let quiet = 720.0
+        let closed = run(quiet: quiet, until: quiet + 40 * 60)
+        XCTAssertEqual(closed.last?.endedAt, at(quiet))
+        XCTAssertEqual(closed.first?.startedAt, start)
+        for (earlier, later) in zip(closed, closed.dropFirst()) {
+            XCTAssertEqual(earlier.endedAt, later.startedAt)
+        }
+        let worked = closed.reduce(0) { $0 + $1.endedAt.timeIntervalSince($1.startedAt) }
+        XCTAssertEqual(worked, quiet, "40 minutes away are not work time")
+    }
+}
+
 @MainActor
 final class PowerObserverTests: XCTestCase {
     private var changes: [Bool] = []
@@ -216,5 +261,69 @@ final class SamplerPauseTests: XCTestCase {
         XCTAssertEqual(sampler.store?.count, 1)
         sampler.setPaused(true, now: at(512))
         XCTAssertEqual(sampler.store?.count, 2)
+    }
+
+    /// Typing until `quiet`, then no input: the idle reading grows with the clock, the period follows it.
+    private func work(_ sampler: ActivitySampler, until quiet: TimeInterval, away: TimeInterval) {
+        var now = 0.0
+        while now < quiet + away {
+            let idle = max(0, now - quiet)
+            sampler.sample(bundleID: editor, at: at(now), idle: idle)
+            now += IdleMonitor.samplingPeriod(idleSeconds: idle)
+        }
+    }
+
+    private func queuedEnds(_ sampler: ActivitySampler) throws -> [Date] {
+        try XCTUnwrap(sampler.store?.nextBatch()).intervals.map(\.endedAt)
+    }
+
+    func testFortyMinutesAwayWithoutALockEndTheLastIntervalAtTheLastInput() throws {
+        let sampler = makeSampler()
+        let quiet = 12.0 * 60
+        // 40 minutes of absence: the ten-minute rule closes the interval on its own.
+        work(sampler, until: quiet, away: 40 * 60)
+        let ends = try queuedEnds(sampler)
+        XCTAssertEqual(ends.last, at(quiet))
+        XCTAssertEqual(ends.max(), at(quiet), "nothing reaches past the last input")
+    }
+
+    func testPausingTenMinutesAfterTheLastInputEndsTheLastIntervalAtTheLastInput() throws {
+        let sampler = makeSampler()
+        let quiet = 12.0 * 60
+        work(sampler, until: quiet, away: IdleMonitor.awayThreshold - 5)
+        idleReading = IdleMonitor.awayThreshold
+        sampler.setPaused(true, now: at(quiet + IdleMonitor.awayThreshold))
+        let ends = try queuedEnds(sampler)
+        XCTAssertEqual(ends.last, at(quiet))
+        XCTAssertEqual(ends.max(), at(quiet))
+    }
+
+    func testAStalePauseWithoutAWakeNotificationEndsOnFreshInput() {
+        let sampler = makeSampler()
+        sampler.sample(bundleID: editor, at: at(0), idle: 0)
+        idleReading = 300
+        sampler.setPaused(true, now: at(300))
+
+        sampler.resumeIfPauseIsStale(screenLocked: false)
+        XCTAssertTrue(sampler.isPaused, "no fresh input yet")
+
+        idleReading = 1
+        sampler.resumeIfPauseIsStale(screenLocked: true)
+        XCTAssertTrue(sampler.isPaused, "a locked screen stays paused however fresh the input")
+
+        sampler.resumeIfPauseIsStale(screenLocked: false)
+        XCTAssertFalse(sampler.isPaused)
+    }
+
+    func testStopClosesTheOpenIntervalAtTheLastInput() async throws {
+        let sampler = makeSampler()
+        let now = Date()
+        for second in stride(from: -130.0, through: -10, by: 5) {
+            sampler.sample(bundleID: editor, at: now.addingTimeInterval(second), idle: 0)
+        }
+        idleReading = 40
+        await sampler.stop()
+        let end = try XCTUnwrap(try queuedEnds(sampler).last)
+        XCTAssertEqual(end.timeIntervalSince(now), -40, accuracy: 1)
     }
 }

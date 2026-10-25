@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/155, PHASE-03/217, PHASE-03/172
-// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one; an interval open for 5 minutes is cut so a kill loses at most that; pauses in input become idle_seconds, and a long absence or a sleep closes the interval at the last input
+// summary: turns app sightings into title-free activity intervals; a return to the same app within 30 seconds is a micro-switch inside the interval, not a new one; an interval open for 5 minutes is cut so a kill loses at most that, but not during a pause in input; pauses in input become idle_seconds, and a long absence or a sleep closes the interval at the last input
 import Foundation
 
 struct AppSighting: Equatable {
@@ -63,7 +63,10 @@ struct ActivityInterval: Equatable, Encodable {
 struct IntervalBuilder {
     static let continuityWindow: TimeInterval = 30
     /// Longer than the idle sampling period, or every idle sighting would start a new interval.
-    static let silenceWindow: TimeInterval = IdleMonitor.idlePeriod + 15
+    static let silenceWindow: TimeInterval = IdleMonitor.idlePeriod + silenceMargin
+    /// Room for a late timer on top of the idle period. The timer's own tolerance takes a fifth of the period (6 s);
+    /// the rest, 24 s, is left for App Nap and a busy main thread, which a 15 s margin (9 s left) did not cover.
+    static let silenceMargin: TimeInterval = IdleMonitor.idlePeriod
     static let checkpointInterval: TimeInterval = 5 * 60
 
     private struct OpenInterval {
@@ -151,9 +154,11 @@ struct IntervalBuilder {
 
     /// Closes the open interval at its last sighting once it has run for `checkpointInterval`
     /// and opens its continuation from there; call it after `record`. While another app is
-    /// in front the interval may still be resumed as one, so it waits.
+    /// in front the interval may still be resumed as one, and while a pause in input is going on
+    /// the person may have left: the pause is cut off by the away rule or a sleep, so a cut
+    /// now would send the time after the last input as work. In both cases it waits.
     mutating func checkpoint() -> [ActivityInterval] {
-        guard let active = current, excursion == nil,
+        guard let active = current, excursion == nil, active.pauseCounted == 0,
               active.lastSeen.timeIntervalSince(active.startedAt) >= Self.checkpointInterval else { return [] }
         current = OpenInterval(bundleID: active.bundleID, startedAt: active.lastSeen, lastSeen: active.lastSeen, switchCount: 0)
         return close(active, at: active.lastSeen)
