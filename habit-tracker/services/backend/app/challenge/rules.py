@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/127, PHASE-03/128
-# summary: the vocabulary of a challenge (four rule kinds, three verdicts, two sources), `verdict_for_day` — the pure answer to «этот день сделан», where a day nobody recorded is a miss rather than «нет данных» — and `outcome_for`, which turns the miss days into `active`/`won`/`failed` and names the day the budget ran out
+# [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-01/207
+# summary: the vocabulary of a challenge (four rule kinds, three verdicts, two sources), `verdict_for_day` — the pure answer to «этот день сделан», where a day nobody recorded is a miss rather than «нет данных» — and `abstain` judged by the streak's relapse days rather than by its own field, and `outcome_for`, which turns the miss days into `active`/`won`/`failed` and names the day the budget ran out
 """
 Правило челленджа и вердикт одного его дня.
 
@@ -11,9 +11,11 @@
 отличается от стрика по существу. У стрика день без записей чистый: человек
 просто не курил и ничего не отмечал. У обязательства неподтверждённый день не
 сделан — иначе «7 дней подряд ≥ 2 л воды» выполняется молчанием. Поэтому
-`compute_streak` здесь не переиспользуется, а `is_relapse_value`
-переиспользуется: «что такое сорвавшееся значение» остаётся одним правилом на
-двух потребителей, а «что такое пустой день» у них разное намеренно.
+`compute_streak` здесь не переиспользуется, а «какой день сорвался» берётся у
+стрика готовым (`app.crud.streak.relapse_days`, правило `is_relapse_entry`):
+срыв — свойство всей записи, а не значения в поле челленджа, и карточки
+челленджа и стрика не должны спорить. «Что такое пустой день» у них разное
+намеренно.
 
 **Сегодня промахом не бывает.** Пока локальные сутки не закрылись, у дня ещё
 есть шанс: он либо уже `done`, либо `pending`. Промахом он становится, когда
@@ -29,7 +31,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from app.crud.streak import is_relapse_value
 from app.crud.values import is_true_value, parse_number
 from app.models.challenge import (
     FAILURE_BUDGET,
@@ -37,7 +38,6 @@ from app.models.challenge import (
     STATUS_FAILED,
     STATUS_WON,
 )
-from app.models.field import FieldType
 
 # Что именно обещано. Составные правила («и вода, и зал») вынесены из скоупа
 # ADR-0018 явно: два обязательства — это два челленджа, и заваливаются они
@@ -90,11 +90,13 @@ class DaySample:
 
     `has_entry` отдельно от `values`, потому что запись без значения в нужном
     поле — это всё-таки запись, а вот день, в который человек не открыл трекер,
-    ничем не подтверждён.
+    ничем не подтверждён. `relapsed` — вердикт стрика по записям дня; его читает
+    только `abstain`.
     """
 
     has_entry: bool
     values: tuple[str | None, ...]
+    relapsed: bool = False
 
 
 def sum_values(values: tuple[str | None, ...]) -> Decimal:
@@ -115,7 +117,6 @@ def sum_values(values: tuple[str | None, ...]) -> Decimal:
 
 def verdict_for_day(
     rule: ChallengeRule,
-    field_type: FieldType,
     sample: DaySample,
     *,
     is_closed: bool,
@@ -128,22 +129,21 @@ def verdict_for_day(
     «какое сегодня число», модуль не решает — это `app.core.daytime.local_date`,
     и вызывающий приносит ответ сюда готовым.
     """
-    if _is_satisfied(rule, field_type, sample):
+    if _is_satisfied(rule, sample):
         return VERDICT_DONE
     return VERDICT_MISS if is_closed else VERDICT_PENDING
 
 
-def _is_satisfied(
-    rule: ChallengeRule, field_type: FieldType, sample: DaySample
-) -> bool:
+def _is_satisfied(rule: ChallengeRule, sample: DaySample) -> bool:
     """Выполнено ли обещание в этот день по тому, что о нём записано."""
     if not sample.has_entry:
         return False
 
     if rule.kind == RULE_ABSTAIN:
-        # Ровно тот же предикат, которым живёт стрик avoid-категории: числа на
-        # карточке челленджа и на карточке стрика не должны спорить.
-        return not any(is_relapse_value(field_type, value) for value in sample.values)
+        # Срыв дня называет стрик avoid-категории, а не поле правила: нажатие
+        # «Случилось» ставит галку и не трогает счётчик, и день с такой записью
+        # не может быть выполненным, пока стрик показывает 0.
+        return not sample.relapsed
 
     if rule.kind == RULE_CHECKED:
         return any(is_true_value(value) for value in sample.values)

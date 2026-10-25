@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127, PHASE-01/207
-# summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has (an entry with no values always is), and the one-tap relapse writer that a repeated tap within a minute cannot double and that says whether this tap wrote the entry
+# summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has (an entry with no values always is), the relapse days of a window for an `abstain` challenge, and the one-tap relapse writer that a repeated tap within a minute cannot double and that says whether this tap wrote the entry
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -17,17 +17,17 @@ from app.crud.values import format_number, is_true_value, parse_number
 from app.models import Category, Entry, EntryValue, Field
 from app.models.field import FieldType
 
-# `is_relapse_value` is exported deliberately: «что такое сорвавшееся значение»
-# has two consumers now — the avoid streak here and the `abstain` rule of a
-# challenge (`app.challenge.rules`) — and one definition. `compute_streak` is
-# *not* shared with them: a day with no entries is clean for a streak and a miss
-# for an obligation, and that difference is the point of the second module.
+# `relapse_days` is exported deliberately: «какой день сорвался» has two
+# consumers — the avoid streak here and the `abstain` rule of a challenge
+# (`app.crud.challenge`) — and one definition, `is_relapse_entry`. `compute_streak`
+# is *not* shared with them: a day with no entries is clean for a streak and a
+# miss for an obligation, and that difference is the point of the second module.
 __all__ = [
     "StreakStats",
     "compute_streak",
     "get_category_streak",
     "get_category_streaks",
-    "is_relapse_value",
+    "relapse_days",
     "RelapseOutcome",
     "record_relapse",
 ]
@@ -278,6 +278,17 @@ async def get_category_streak(
     return compute_streak(
         history.entry_dates, history.relapse_dates, today or today_local()
     )
+
+
+async def relapse_days(
+    db: AsyncSession, category_id: int, start: date, end: date
+) -> set[date]:
+    """The days in `start..end` the streak of `category_id` counts as relapses."""
+    histories = await _load_histories(
+        db, (Category.id == category_id) & Entry.entry_date.between(start, end)
+    )
+    history = histories.get(category_id)
+    return history.relapse_dates if history is not None else set()
 
 
 async def get_category_streaks(

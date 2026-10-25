@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/201, PHASE-01/207
-// summary: tests the one-tap «Случилось» of every avoid category through the relapse endpoint (no form), its exact undo (never of a relapse it did not write), the details added afterwards, failures that leave the counter alone, the retry under the same key, and the card's link into the category page of the current shell
+// summary: tests the one-tap «Случилось» of every avoid category through the relapse endpoint (no form), its exact undo (never of a relapse it did not write, still offered after a repeated tap lands on its own relapse), a zero amount refused in the details, the details added afterwards, failures that leave the counter alone, the retry under the same key, and the card's link into the category page of the current shell
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -218,6 +218,26 @@ describe('AvoidStreakCard «Случилось»', () => {
     await waitFor(() => expect(screen.getByRole('status')).toBeDefined());
   });
 
+  it('keeps the undo when a second tap within the minute lands on the relapse it wrote', async () => {
+    const values = [{ id: 51, entry_id: 41, field_id: 7, value: 'true' }];
+    let taps = 0;
+    recordRelapse = mock(() => {
+      taps += 1;
+      // The server answers the repeat with the same entry and `created: false`.
+      return Promise.resolve(relapseEntry(1, values, taps === 1));
+    });
+    renderCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Отменить' })).toBeDefined());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+
+    await waitFor(() => expect(recordRelapse).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Срыв записан'));
+    fireEvent.click(screen.getByRole('button', { name: 'Отменить' }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(41));
+  });
+
   it('a new tap after a recorded one is another relapse under a fresh key', async () => {
     renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
@@ -263,6 +283,25 @@ describe('AvoidStreakCard details after the tap', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(41, { notes: 'на работе' }));
+  });
+
+  it('refuses a zero amount instead of quietly turning the relapse into a clean day', async () => {
+    const countOnly = FIELD_SETS[3][1];
+    const countField = countOnly.fields[0];
+    recordRelapse = mock(() =>
+      Promise.resolve(relapseEntry(countOnly.id, [{ id: 52, entry_id: 41, field_id: countField.id, value: '1' }]))
+    );
+    const { onError } = renderCard({ category: countOnly, numberField: countField });
+    fireEvent.click(screen.getByRole('button', { name: 'Случилось' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Подробнее' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.change(screen.getByLabelText('Штук'), { target: { value: '0' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Сколько — больше нуля, или оставьте поле пустым'));
+    expect(update).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Сохранить' })).toBeDefined();
   });
 
   it('keeps the details open and says so when saving them fails', async () => {

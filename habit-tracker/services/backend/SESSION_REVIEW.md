@@ -2465,3 +2465,15 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 - `tests/test_streak.py` — mod: новые поля `StreakStats`, длительность и текст в `is_relapse_value`.
 
 Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1640 passed, 3 skipped, 2 failed: `test_goals.py` падает так же на baseline `8dc958d`.
+
+## 2026-10-25 — PHASE-01/207, круг 3: челлендж `abstain` судит срыв тем же правилом, что стрик
+
+Изменено 5 файлов кода: 0 `new`, 5 `mod`.
+
+- `app/crud/streak.py` — mod: `relapse_days(db, category_id, start, end)` — дни срыва за окно через тот же `_load_histories` и `is_relapse_entry`; из `__all__` ушёл `is_relapse_value`, его больше никто снаружи не читает.
+- `app/crud/challenge.py` — mod: для `abstain` `materialize` берёт дни срыва у стрика и ставит `DaySample.relapsed`; `_field_type` и проверка поля удалены — тип поля вердикту больше не нужен.
+- `app/challenge/rules.py` — mod: `DaySample.relapsed`; `abstain` выполнен, только если стрик не назвал день срывом; параметр `field_type` у `verdict_for_day` удалён как мёртвый.
+- `tests/test_relapse.py` — mod: «Случилось» и запись только со счётчиком или без значений не делают день челленджа выполненным — для правила на числовом и на boolean-поле категории «число + boolean».
+- `tests/test_challenges.py` — mod: вызовы без `field_type`; юнит-тест `abstain` читает `relapsed`, а не значения поля.
+
+Проверки: ruff, ruff format, mypy --strict чистые; `alembic heads` — одна голова. Полный `pytest` — 1642 passed, 3 skipped, 2 failed (`test_goals.py`, падают и на baseline `8dc958d`). Вживую на 8807 и `habit_live_207`: два нажатия подряд — тот же `entry.id`, `created` true, затем false; `today_verdict` челленджа `pending`, стрик 0.

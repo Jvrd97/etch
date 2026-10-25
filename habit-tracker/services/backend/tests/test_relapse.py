@@ -475,6 +475,72 @@ class TestRelapseHistory:
         assert response.status_code == 404
 
 
+@pytest.mark.asyncio
+class TestAbstainChallengeAgreesWithTheStreak:
+    """An `abstain` challenge calls a day a relapse exactly when the streak does."""
+
+    @pytest.mark.parametrize("rule_field", ["Сигареты", "Курил"])
+    async def test_a_relapse_day_is_never_a_kept_day(
+        self, client: AsyncClient, rule_field: str
+    ) -> None:
+        """
+        The rule points at one field; the relapse is a fact about the whole entry.
+
+        A tap on «Случилось» ticks the box and leaves the count empty, an entry
+        with only a count leaves the box empty: either way the streak drops to 0,
+        and the challenge day must not turn «done» because its own field is quiet.
+        """
+        category_id, field_ids = await _create_avoid(
+            client, FIELD_SETS["number+boolean"][0]
+        )
+        today = today_local()
+        days = {n: today - timedelta(days=n) for n in (1, 2, 3)}
+        await _add_entry(
+            client,
+            category_id,
+            days[3].isoformat(),
+            {field_ids["Сигареты"]: "2", field_ids["Курил"]: ""},
+        )
+        await _add_entry(client, category_id, days[2].isoformat(), {})
+        await _add_entry(
+            client,
+            category_id,
+            days[1].isoformat(),
+            {field_ids["Сигареты"]: "0", field_ids["Курил"]: ""},
+        )
+        created = await client.post(
+            "/api/v1/challenges",
+            json={
+                "title": "Неделя без сигарет",
+                "category_id": category_id,
+                "field_id": field_ids[rule_field],
+                "rule_kind": "abstain",
+                "starts_on": days[3].isoformat(),
+                "ends_on": (today + timedelta(days=3)).isoformat(),
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        tapped = await client.post(f"/api/v1/categories/{category_id}/relapses")
+        assert tapped.status_code == 201
+        recomputed = await client.post(
+            f"/api/v1/challenges/{created.json()['id']}/recompute"
+        )
+        assert recomputed.status_code == 200
+        detail = await client.get(f"/api/v1/challenges/{created.json()['id']}")
+
+        by_day = {row["day"]: row["verdict"] for row in detail.json()["days"]}
+        assert by_day == {
+            days[3].isoformat(): "miss",
+            days[2].isoformat(): "miss",
+            days[1].isoformat(): "done",
+            # The day still runs, so it is not a miss yet — but not kept either.
+            today.isoformat(): "pending",
+        }
+        streak = await client.get(f"/api/v1/categories/{category_id}/streak")
+        assert streak.json()["current_streak"] == 0
+
+
 @contextmanager
 def _count_statements(db: AsyncSession) -> Iterator[list[str]]:
     statements: list[str] = []

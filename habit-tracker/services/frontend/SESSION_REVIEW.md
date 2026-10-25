@@ -2128,3 +2128,12 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `lib/api.ts` — mod: `categoriesAPI.getRelapses`, `categoriesAPI.recordRelapse`, типы `RelapseHistory` и `RelapseRecorded` в конце файла.
 
 Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок, в изменённых файлах предупреждений нет. Полный `bun test` — 1499 pass, 1 fail + 1 error: известный `healthAPI` в `app/m/health/page.test.tsx`, он падает и на baseline. Вживую в headless Chrome (390×900 и 1280×900) на бэкенде 8807 и базе `habit_live_207`: шесть avoid-категорий (boolean, boolean+текст, два boolean, число, только текст, длительность), одно нажатие сбивает серию в 0 на `/m/today` и `/today` без формы и без ошибок; повтор в пределах минуты — «Срыв уже записан» без «Отменить». Карточка ведёт на `/m/categories/N` и `/categories/N`, даты в списке совпадают с записями в базе. iOS Safari и реальный телефон не проверялись.
+
+## 2026-10-25 — PHASE-01/207, круг 3: «Отменить» после повторного нажатия, ноль в подробностях
+
+Изменено 2 файла кода: 0 `new`, 2 `mod`.
+
+- `components/AvoidStreakCard.tsx` — mod: `landedEntry` сохраняет `created: true`, если повторное нажатие той же минуты вернуло срыв, который карточка уже записала сама; «Подробнее» не сохраняет количество или длительность меньше или равные нулю — такой PATCH молча превращал срыв в чистый день.
+- `components/AvoidStreakCard.test.tsx` — mod: последовательность «нажатие — повтор с `created: false` — Отменить удаляет запись 41» и отказ в нуле без PATCH.
+
+Проверки: `bunx tsc --noEmit` чисто; ESLint — 0 ошибок. Полный `bun test` — 1501 pass, 1 fail: известный `healthAPI` в `app/m/health/page.test.tsx`, падает и на baseline. Вживую в headless Chrome 1280×900 на `/today` (бэкенд 8807, `habit_live_207`): два нажатия «Случилось» — «Срыв записан» и «Отменить» остаются, «Отменить» удаляет запись. Мобильная оболочка `/m/today` и форма «Подробнее» с нулём вживую не проверялись — только тестом. Проп `entries` оставлен: его передают страницы Today (#206).

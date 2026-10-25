@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-01/28-today-avoid-card, PHASE-01/201, PHASE-01/177, PHASE-01/207
-// summary: Today avoid streak card — «Случилось» records a relapse of any avoid category in one tap through the relapse endpoint (the server decides what to write), refreshes the streak and the day list, offers an undo only of a relapse this tap wrote, and optional details (how many, a note) afterwards, and the card itself links to the category page of the current shell
+// summary: Today avoid streak card — «Случилось» records a relapse of any avoid category in one tap through the relapse endpoint (the server decides what to write), refreshes the streak and the day list, offers an undo only of a relapse this card wrote (kept when a repeated tap lands on it), and optional details (how many above zero, a note) afterwards, and the card itself links to the category page of the current shell
 
 import { useId, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -61,6 +61,9 @@ type RelapseState =
 const RECORD_FAILED = 'Не удалось записать срыв';
 const UNDO_FAILED = 'Не удалось отменить срыв';
 const DETAILS_FAILED = 'Не удалось сохранить подробности';
+// Zero of a count or of time spent is what a clean day records: saved over the
+// tap, it would quietly turn the relapse into one.
+const AMOUNT_NOT_POSITIVE = 'Сколько — больше нуля, или оставьте поле пустым';
 const ENTRIES_REFRESH_FAILED = 'Список записей не обновился';
 
 const BUTTON_CLASS =
@@ -69,6 +72,20 @@ const BUTTON_CLASS =
 /** The details step's "how much": the number field, else the first duration. */
 function amountFieldOf(category: Category, numberField: Field | undefined): Field | undefined {
   return numberField ?? orderedFields(category).find((field) => field.field_type === 'duration');
+}
+
+/**
+ * The entry a tap landed on, as the card should hold it. A repeated tap within
+ * the minute gets this tab's own relapse back with `created: false`; it is still
+ * the relapse this card wrote, so the undo stays.
+ */
+function landedEntry(previous: RelapseState, entry: RelapseRecorded): RelapseRecorded {
+  const ownedBefore =
+    previous.phase !== 'idle' &&
+    previous.phase !== 'recording' &&
+    previous.entry.id === entry.id &&
+    previous.entry.created;
+  return ownedBefore ? { ...entry, created: true } : entry;
 }
 
 /** The category page in the shell the card is shown in, so /m/today stays inside /m. */
@@ -138,7 +155,7 @@ export default function AvoidStreakCard({
         return;
       }
       tapKey.current = null;
-      setState({ phase: 'recorded', entry });
+      setState({ phase: 'recorded', entry: landedEntry(previous, entry) });
       await refresh();
     });
 
@@ -170,6 +187,10 @@ export default function AvoidStreakCard({
       if (trimmedNote !== '') payload.notes = trimmedNote;
       const trimmedAmount = amount.trim();
       if (amountField && trimmedAmount !== '') {
+        if (!(Number(trimmedAmount) > 0)) {
+          onError(AMOUNT_NOT_POSITIVE);
+          return;
+        }
         // PATCH replaces the whole value list, so what the server wrote for the
         // tap (the ticked box) goes back along with the amount.
         payload.values = [
