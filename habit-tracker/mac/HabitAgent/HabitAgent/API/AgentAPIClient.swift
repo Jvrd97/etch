@@ -1,5 +1,5 @@
-// [review:approved] PHASE-03/155
-// summary: sends idempotent batches of title-free activity intervals to the API and names the bundle a 422 refused
+// [review:need-review] PHASE-03/155, PHASE-03/163
+// summary: sends idempotent batches of title-free activity intervals to the API and names the bundle a 422 refused; the default session keeps no cache or cookies on disk
 import Foundation
 
 enum AgentAPIError: Error, Equatable {
@@ -18,7 +18,17 @@ struct AgentAPIClient {
 
     let serverAddress: String
     let apiKey: String
-    var session: URLSession = .shared
+    var session: URLSession = AgentAPIClient.diskFreeSession
+
+    /// `URLSession.shared` keeps `Caches/<bundle>/Cache.db` open for writing; the
+    /// agent writes only under its own directory (ADR-0019), so nothing is cached.
+    static let diskFreeSession = URLSession(configuration: {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        return configuration
+    }())
 
     static func activityEndpoint(for address: String) -> URL? {
         guard let base = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
