@@ -2473,3 +2473,14 @@ upgrade/downgrade SQL целевой миграции по-прежнему пр
 ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md`.
 
 Проверки: ruff и `ruff format --check` чистые, `mypy --strict app` — 196 файлов без замечаний, `alembic heads` — одна строка `c4e6a8b0d2f3`. `pytest tests/` на `habit_test_200` — 1661 passed, 3 skipped, 2 failed: оба в `test_goals.py` (известный провал baseline, его чинит #218).
+
+## 2026-10-25 — PHASE-03/200, круг 2: «сделано» снимается вместе с исправлением или удалением факта
+
+Тронуто 4 файла кода, ревизии Alembic нет.
+
+- `app/schemas/plan_fact.py` — mod: `mark` принимает `unmark` (`UNMARK`, `FACT_MARKS`); это не состояние, в базу не пишется.
+- `app/crud/plan_fact.py` — mod: `_keep_mark` снимает только `done`, отметки «не сделал» и «пропустил» не трогает; `remove_fact` принимает `mark` и `source` и снимает отметку в той же транзакции, что и удаление.
+- `app/api/day.py` — mod: `DELETE .../facts/{entry_id}?mark=unmark`; акт роли сверяется с отметкой, которая осталась после записи, а не с присланной.
+- `tests/test_plan_facts.py` — mod: класс `TestTheMarkFollowsTheFact` — 300 → 200 снимает, «было» → «не было» снимает, удаление единственного факта снимает, `unmark` не трогает «пропустил», удаление без `mark` отметку не трогает.
+
+Проверки: ruff, `ruff format --check`, `mypy --strict app` (196 файлов) чистые, `alembic heads` — одна строка `c4e6a8b0d2f3`. `pytest tests/` на `habit_test_200` — 1666 passed, 3 skipped, 2 failed: те же два в `test_goals.py` (baseline, #218). Живая проверка API на 8820: 300 → 200 и удаление факта зала с `unmark` снимают «сделано».

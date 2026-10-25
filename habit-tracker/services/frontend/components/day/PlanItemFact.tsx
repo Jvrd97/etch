@@ -12,6 +12,7 @@ import type {
   PlanFactValueDraft,
   PlanItemFacts,
   PlanLinkField,
+  Unmark,
 } from '@/lib/api';
 import {
   factValueText,
@@ -20,6 +21,7 @@ import {
   linkStateText,
   markAfterCorrect,
   markAfterRecord,
+  markAfterRemove,
   parseFactInput,
   progressText,
 } from '@/lib/plan-facts';
@@ -52,7 +54,7 @@ export interface PlanItemFactProps {
   compact?: boolean;
   onRecord: (draft: PlanFactDraft) => void;
   onCorrect: (entryId: number, draft: PlanFactDraft) => void;
-  onRemove: (entryId: number) => void;
+  onRemove: (entryId: number, mark: Unmark | null) => void;
 }
 
 /** The text an input starts from when an entry is being corrected. */
@@ -247,7 +249,7 @@ export default function PlanItemFact({
                 disabled={saving}
                 onClick={() =>
                   deleting === entry.entry_id
-                    ? onRemove(entry.entry_id)
+                    ? onRemove(entry.entry_id, markAfterRemove(facts, entry.entry_id))
                     : setDeleting(entry.entry_id)
                 }
                 className="inline-flex items-center gap-1 rounded-2xl px-2 py-0.5 text-xs text-warning"

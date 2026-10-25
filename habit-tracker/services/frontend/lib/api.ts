@@ -7,6 +7,9 @@
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
+// [review:need-review] PHASE-03/200
+// summary: planFactsAPI — the facts a plan line writes into its category (record under Idempotency-Key, correct, delete), their wire types, and `unmark`, which takes «сделано» back with a correction or a delete that leaves the line short
+
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
 // app reachable from any device on the LAN without host-specific config.
@@ -3788,12 +3791,18 @@ export interface PlanFactValueDraft {
   unit?: string | null;
 }
 
+/** Takes «сделано» back when a correction or a delete leaves the line short. */
+export type Unmark = 'unmark';
+
+/** The mark a fact write may carry: a state, or `unmark`. */
+export type FactMark = MarkState | Unmark;
+
 export interface PlanFactDraft {
   values: PlanFactValueDraft[];
   /** Defaults to the day of the plan, never to today. */
   entry_date?: string | null;
   /** Put in the same transaction as the fact; omitted leaves the mark alone. */
-  mark?: MarkState | null;
+  mark?: FactMark | null;
 }
 
 export interface PlanFactWrite {
@@ -3836,9 +3845,10 @@ export const planFactsAPI = {
     );
   },
 
-  remove: async (date: string, itemId: string, entryId: number) => {
+  remove: async (date: string, itemId: string, entryId: number, mark: Unmark | null) => {
+    const query = mark === null ? '' : `?mark=${mark}`;
     return fetcher<PlanFactWrite>(
-      `/day/${date}/plan/items/${itemId}/facts/${entryId}`,
+      `/day/${date}/plan/items/${itemId}/facts/${entryId}${query}`,
       { method: 'DELETE' }
     );
   },

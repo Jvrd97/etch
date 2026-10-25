@@ -869,6 +869,132 @@ class TestDates:
         assert [one["entry_date"] for one in facts["entries"]] == [NEXT_DAY.isoformat()]
 
 
+class TestTheMarkFollowsTheFact:
+    """A correction or a delete that leaves the line short takes «сделано» back."""
+
+    async def mark_of(self, client: AsyncClient, item_id: str) -> str | None:
+        """The state of the line's mark as the day reads it, or None."""
+        marks = (await day(client, PLAN_DAY))["marks"]
+        found = [one["state"] for one in marks if one["item_id"] == item_id]
+        return found[0] if found else None
+
+    async def test_300_corrected_to_200_takes_done_back(
+        self, client: AsyncClient, pushups: dict[str, Any]
+    ) -> None:
+        plan = await put_plan(
+            client, PLAN_DAY, [linked("Отжимания", pushups, target_value=300)]
+        )
+        item_id = first_item(plan)["id"]
+        written = await record(
+            client,
+            PLAN_DAY,
+            item_id,
+            [{"field_id": field_id(pushups), "value": 300}],
+            mark="done",
+        )
+
+        response = await client.put(
+            facts_url(PLAN_DAY, item_id, written.json()["entry_id"]),
+            json={
+                "values": [{"field_id": field_id(pushups), "value": 200}],
+                "mark": "unmark",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["mark"]["state"] is None
+        assert await self.mark_of(client, item_id) is None
+        assert len(await history(client, pushups["id"])) == 1
+
+    async def test_was_corrected_to_was_not_takes_done_back(
+        self, client: AsyncClient, gym: dict[str, Any]
+    ) -> None:
+        plan = await put_plan(client, PLAN_DAY, [linked("Зал", gym)])
+        item_id = first_item(plan)["id"]
+        written = await record(
+            client,
+            PLAN_DAY,
+            item_id,
+            [{"field_id": field_id(gym), "value": True}],
+            mark="done",
+        )
+
+        response = await client.put(
+            facts_url(PLAN_DAY, item_id, written.json()["entry_id"]),
+            json={
+                "values": [{"field_id": field_id(gym), "value": False}],
+                "mark": "unmark",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert await self.mark_of(client, item_id) is None
+
+    async def test_deleting_the_only_fact_takes_done_back(
+        self, client: AsyncClient, pushups: dict[str, Any]
+    ) -> None:
+        plan = await put_plan(client, PLAN_DAY, [linked("Отжимания", pushups)])
+        item_id = first_item(plan)["id"]
+        written = await record(
+            client,
+            PLAN_DAY,
+            item_id,
+            [{"field_id": field_id(pushups), "value": 300}],
+            mark="done",
+        )
+
+        response = await client.delete(
+            facts_url(PLAN_DAY, item_id, written.json()["entry_id"]),
+            params={"mark": "unmark"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["mark"]["state"] is None
+        assert await self.mark_of(client, item_id) is None
+
+    async def test_unmark_leaves_a_mark_other_than_done(
+        self, client: AsyncClient, pushups: dict[str, Any]
+    ) -> None:
+        plan = await put_plan(
+            client, PLAN_DAY, [linked("Отжимания", pushups, target_value=300)]
+        )
+        item_id = first_item(plan)["id"]
+        written = await record(
+            client,
+            PLAN_DAY,
+            item_id,
+            [{"field_id": field_id(pushups), "value": 100}],
+            mark="skipped",
+        )
+
+        response = await client.put(
+            facts_url(PLAN_DAY, item_id, written.json()["entry_id"]),
+            json={
+                "values": [{"field_id": field_id(pushups), "value": 50}],
+                "mark": "unmark",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert await self.mark_of(client, item_id) == "skipped"
+
+    async def test_delete_without_a_mark_leaves_done(
+        self, client: AsyncClient, pushups: dict[str, Any]
+    ) -> None:
+        plan = await put_plan(client, PLAN_DAY, [linked("Отжимания", pushups)])
+        item_id = first_item(plan)["id"]
+        values = [{"field_id": field_id(pushups), "value": 150}]
+        first = await record(client, PLAN_DAY, item_id, values, mark="done")
+        await record(client, PLAN_DAY, item_id, values)
+
+        response = await client.delete(
+            facts_url(PLAN_DAY, item_id, first.json()["entry_id"])
+        )
+
+        assert response.status_code == 200, response.text
+        assert await self.mark_of(client, item_id) == "done"
+
+
 class TestHistoryStaysTheHistory:
     """The plan reads the history; it does not own it."""
 

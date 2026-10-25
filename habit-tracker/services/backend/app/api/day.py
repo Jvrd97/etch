@@ -68,7 +68,7 @@ from app.schemas.plan import (
     PlanResponse,
 )
 from app.schemas.day_profile import ProfileInForceResponse
-from app.schemas.plan_fact import PlanFactIn, PlanFactWriteResponse
+from app.schemas.plan_fact import UNMARK, PlanFactIn, PlanFactWriteResponse, Unmark
 from app.schemas.plan_revision import (
     PlanDiffResponse,
     PlanFieldChange,
@@ -473,26 +473,31 @@ async def _fact_answer(
     item: PlanItem,
     written: fact_crud.FactWrite,
     body: PlanFactIn | None,
+    mark: str | None,
 ) -> PlanFactWriteResponse:
     """
     The line after a write: its facts, the entry touched, the mark.
 
-    A write that asked for a mark closes the role act the line names, as a tick
-    on `PUT .../marks` does (`#140`); a replay changed nothing and closes
-    nothing. Only a person on the page may claim the day was opened.
+    A write that asked for a mark brings the role act the line names into line
+    with the mark it left, as a tick on `PUT .../marks` does (`#140`); a replay
+    changed nothing and touches nothing. Only a person on the page may claim the
+    day was opened, and a delete does not claim it at all.
     """
-    if body is not None and not written.replayed:
-        if body.mark is not None:
-            await plan_source.sync_act_for_item(db, day.day_date, item, body.mark)
-        await day_crud.touch_day(
-            db,
-            day,
-            opened=body.source == SOURCE_WEB and _person_is_here(day.day_date),
-        )
+    current = await mark_crud.get_mark(db, item.id)
+    if not written.replayed:
+        if mark is not None:
+            state = None if current is None else current.state
+            await plan_source.sync_act_for_item(db, day.day_date, item, state)
+        if body is not None:
+            await day_crud.touch_day(
+                db,
+                day,
+                opened=body.source == SOURCE_WEB and _person_is_here(day.day_date),
+            )
     return PlanFactWriteResponse(
         entry_id=written.entry_id,
         facts=await fact_crud.item_facts(db, item),
-        mark=mark_crud.to_response(item.id, await mark_crud.get_mark(db, item.id)),
+        mark=mark_crud.to_response(item.id, current),
     )
 
 
@@ -539,7 +544,7 @@ async def post_plan_fact(
         raise _fact_refusal(error) from error
     if written.replayed:
         response.status_code = status.HTTP_200_OK
-    return await _fact_answer(db, day, item, written, body)
+    return await _fact_answer(db, day, item, written, body, body.mark)
 
 
 @router.put(
@@ -572,7 +577,7 @@ async def put_plan_fact(
         fact_crud.FactNotFound,
     ) as error:
         raise _fact_refusal(error) from error
-    return await _fact_answer(db, day, item, written, body)
+    return await _fact_answer(db, day, item, written, body, body.mark)
 
 
 @router.delete(
@@ -584,6 +589,13 @@ async def delete_plan_fact(
     on: date,
     item_id: UUID,
     entry_id: int,
+    mark: Unmark | None = Query(
+        None,
+        description=(
+            f"`{UNMARK}` снимает «сделано» в той же транзакции, когда без этой "
+            "записи пункт больше не выполнен"
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> PlanFactWriteResponse:
     """
@@ -591,15 +603,17 @@ async def delete_plan_fact(
 
     Только этой ручкой. Снятая галочка историю не стирает: «не отметил» и
     «этого не было» — разные утверждения, и второе человек делает явно.
-    Отметку пункта удаление не трогает.
+    Без `mark` отметку пункта удаление не трогает.
     """
     day, _ = await _resolve(db, on)
     item = await _fact_item(db, day.day_date, item_id)
     try:
-        written = await fact_crud.remove_fact(db, item, entry_id)
+        written = await fact_crud.remove_fact(
+            db, day.day_date, item, entry_id, mark=mark, source=SOURCE_WEB
+        )
     except fact_crud.FactNotFound as error:
         raise _fact_refusal(error) from error
-    return await _fact_answer(db, day, item, written, None)
+    return await _fact_answer(db, day, item, written, None, mark)
 
 
 @router.put("/{on}/notebook", response_model=NotebookResponse)

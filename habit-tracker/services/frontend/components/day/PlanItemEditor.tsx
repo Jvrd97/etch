@@ -138,7 +138,10 @@ export default function PlanItemEditor({
   const [roleId, setRoleId] = useState<number | null>(item.role_id);
   const [actKind, setActKind] = useState<string | null>(item.act_kind);
   const [confirming, setConfirming] = useState(false);
-  const [link, setLink] = useState<LinkDraft>(() => linkDraftOf(item, categories));
+  // null until the person touches the link: a line whose category went to the
+  // archive, or whose categories have not loaded yet, keeps its link untouched
+  // when only its text is edited.
+  const [link, setLink] = useState<LinkDraft | null>(null);
 
   // Правка соседа переставляет строки, и сервер возвращает уже другой пункт под
   // тем же экраном; поля обязаны последовать за ним, иначе человек сохранит
@@ -154,9 +157,9 @@ export default function PlanItemEditor({
     setRoleId(item.role_id);
     setActKind(item.act_kind);
     setConfirming(false);
-    setLink(linkDraftOf(item, categories));
+    setLink(null);
   }
-  const linkReady = linkDraftReady(link, categories);
+  const linkReady = link === null || linkDraftReady(link, categories);
 
   const field =
     'w-full rounded-2xl bg-surface border border-white/10 px-3 py-2 text-sm text-text-primary';
@@ -241,7 +244,7 @@ export default function PlanItemEditor({
       {linkableCategories(categories).length > 0 && (
         <PlanItemLinkPicker
           categories={categories}
-          draft={link}
+          draft={link ?? linkDraftOf(item, categories)}
           disabled={saving}
           className={field}
           onChange={setLink}
@@ -255,7 +258,7 @@ export default function PlanItemEditor({
           onClick={() =>
             onSave({
               ...changedFields(item, { text, window, criterion, roleId, actKind }),
-              ...linkPatch(item, link, categories),
+              ...(link === null ? {} : linkPatch(item, link, categories)),
             })
           }
           className="inline-flex items-center gap-1 rounded-2xl bg-lime px-3 py-1.5 text-sm text-black disabled:opacity-50"

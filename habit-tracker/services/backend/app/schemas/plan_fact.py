@@ -30,6 +30,13 @@ from app.day.plan_links import LinkState
 from app.models.mark import MARK_SOURCES, MARK_STATES, SOURCE_WEB
 from app.schemas.mark import MarkResponse
 
+# The mark value that takes «сделано» back when a correction or a delete leaves
+# the line short of what made it done. Not a state: it never gets stored, and a
+# mark the fact did not set — «не сделал», «пропустил» — is left as it is.
+Unmark = Literal["unmark"]
+UNMARK: Unmark = "unmark"
+FACT_MARKS: tuple[str, ...] = (*MARK_STATES, UNMARK)
+
 # How a line's facts stand against its target. `none` — nothing recorded yet;
 # `partial` — recorded, below the target; `met` — the target reached, or the
 # box ticked; `recorded` — recorded, and there is no target to compare with.
@@ -63,7 +70,8 @@ class PlanFactIn(BaseModel):
     The fact as the plan card sends it.
 
     `mark` is applied in the same transaction as the fact, so "сделано" never
-    stands without the entry it claims; `null` leaves the mark as it is. A
+    stands without the entry it claims; `null` leaves the mark as it is, and
+    `unmark` takes a `done` back — 300 corrected to 200, «было» to «не было». A
     partial fact is sent without a mark — the card decides that, not the server,
     because only the person knows whether 100 of 300 is "сделано на сегодня".
     """
@@ -76,15 +84,19 @@ class PlanFactIn(BaseModel):
         description="День записи. По умолчанию — день плана, а не сегодня",
     )
     mark: str | None = Field(
-        None, description=f"Отметка пункта вместе с фактом: {', '.join(MARK_STATES)}"
+        None,
+        description=(
+            f"Отметка пункта вместе с фактом: {', '.join(MARK_STATES)}; "
+            f"`{UNMARK}` снимает «сделано», другие отметки не трогает"
+        ),
     )
     source: str = Field(SOURCE_WEB, description=f"Одно из: {', '.join(MARK_SOURCES)}")
 
     @field_validator("mark")
     @classmethod
     def _known_mark(cls, value: str | None) -> str | None:
-        if value is not None and value not in MARK_STATES:
-            raise ValueError(f"mark must be one of: {', '.join(MARK_STATES)}")
+        if value is not None and value not in FACT_MARKS:
+            raise ValueError(f"mark must be one of: {', '.join(FACT_MARKS)}")
         return value
 
     @field_validator("source")

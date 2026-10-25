@@ -3,11 +3,13 @@
 
 import type {
   Category,
+  FactMark,
   Field,
   FieldType,
   MarkState,
   PlanItemFacts,
   PlanLinkState,
+  Unmark,
 } from '@/lib/api';
 import {
   formatSecondsToHM,
@@ -26,6 +28,7 @@ export const LINKABLE_FIELD_TYPES: readonly FieldType[] = [
 export const TARGET_FIELD_TYPES: readonly FieldType[] = ['number', 'duration'];
 
 const MARK_DONE: MarkState = 'done';
+const UNMARK: Unmark = 'unmark';
 
 /** Fields of a category a fact can be typed into, in the category's order. */
 export function linkableFields(category: Category): Field[] {
@@ -157,18 +160,54 @@ export function markAfterRecord(
   return reaches(facts, (facts.total ?? 0) + value) ? MARK_DONE : null;
 }
 
-/** The mark after correcting `entryId` to `value`: its old value counted out. */
+/** The linked field of every entry but `entryId`, as stored. */
+function linkedRawsWithout(facts: PlanItemFacts, entryId: number): Array<string | null> {
+  return facts.entries
+    .filter((entry) => entry.entry_id !== entryId)
+    .map(
+      (entry) =>
+        entry.values.find((one) => one.field_id === facts.link.field_id)?.value ?? null
+    );
+}
+
+/**
+ * The mark the stored values `raws` leave the line with: none to change, or `unmark`.
+ *
+ * `unmark` only takes back «сделано»; the server leaves «не сделал» and
+ * «пропустил» where they are, so sending it on a line without «сделано» is safe.
+ */
+function markOfRaws(facts: PlanItemFacts, raws: Array<string | null>): Unmark | null {
+  if (facts.link.field_type === 'boolean') {
+    return raws.some((raw) => isTrueText(raw)) ? null : UNMARK;
+  }
+  const total = raws.reduce((sum, raw) => {
+    const number = Number(raw ?? 0);
+    return sum + (Number.isFinite(number) ? number : 0);
+  }, 0);
+  return raws.length > 0 && reaches(facts, total) ? null : UNMARK;
+}
+
+/**
+ * The mark after correcting `entryId` to `value`: its old value counted out.
+ *
+ * 300 corrected to 200 against a target of 300 takes «сделано» back in the same
+ * write, as does «было» corrected to «не было» with no other «было» left.
+ */
 export function markAfterCorrect(
   facts: PlanItemFacts,
   entryId: number,
   value: number | boolean
-): MarkState | null {
-  if (typeof value === 'boolean') return value ? MARK_DONE : null;
-  const fieldId = facts.link.field_id;
-  const entry = facts.entries.find((one) => one.entry_id === entryId);
-  const old = Number(entry?.values.find((one) => one.field_id === fieldId)?.value ?? 0);
-  const total = (facts.total ?? 0) - (Number.isFinite(old) ? old : 0) + value;
-  return reaches(facts, total) ? MARK_DONE : null;
+): FactMark | null {
+  const rest = linkedRawsWithout(facts, entryId);
+  if (typeof value === 'boolean') {
+    return value ? MARK_DONE : markOfRaws(facts, rest);
+  }
+  return markOfRaws(facts, [...rest, String(value)]) ?? MARK_DONE;
+}
+
+/** The mark after deleting `entryId`: `unmark` once what is left no longer does the line. */
+export function markAfterRemove(facts: PlanItemFacts, entryId: number): Unmark | null {
+  return markOfRaws(facts, linkedRawsWithout(facts, entryId));
 }
 
 /**

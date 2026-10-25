@@ -28,6 +28,7 @@ import type {
   PlanSection,
   PlanViolation,
   Role,
+  Unmark,
 } from '@/lib/api';
 import { actIntentLine } from '@/lib/plan-roles';
 import { ruleLabel } from '@/lib/plan-violations';
@@ -80,7 +81,7 @@ export interface PlanFacting {
   errors: Map<string, string>;
   onRecord: (itemId: string, draft: PlanFactDraft) => void;
   onCorrect: (itemId: string, entryId: number, draft: PlanFactDraft) => void;
-  onRemove: (itemId: string, entryId: number) => void;
+  onRemove: (itemId: string, entryId: number, mark: Unmark | null) => void;
 }
 
 /**
@@ -434,7 +435,7 @@ function PlanLine({
               compact={compact}
               onRecord={(draft) => facts.onRecord(item.id, draft)}
               onCorrect={(entryId, draft) => facts.onCorrect(item.id, entryId, draft)}
-              onRemove={(entryId) => facts.onRemove(item.id, entryId)}
+              onRemove={(entryId, mark) => facts.onRemove(item.id, entryId, mark)}
             />
           )}
 

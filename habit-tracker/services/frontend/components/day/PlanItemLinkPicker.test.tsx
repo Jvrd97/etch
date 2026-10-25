@@ -149,6 +149,28 @@ describe('linking a line to a category', () => {
     expect(saved[0]).toEqual({ category_id: null });
   });
 
+  it('edits the text of a line whose category went to the archive without touching its link', () => {
+    const { saved } = editorFor(line({ category_id: 9, field_id: 91, target_value: 300 }));
+
+    fireEvent.change(screen.getByLabelText('Текст пункта'), {
+      target: { value: 'Отжимания утром' },
+    });
+    fireEvent.click(screen.getByText(SAVE_LABEL));
+
+    expect(saved[0]).toEqual({ text_md: 'Отжимания утром' });
+  });
+
+  it('edits the text of a linked line before the categories have loaded', () => {
+    const { saved } = editorFor(line({ category_id: 5, field_id: 11, target_value: 300 }), []);
+
+    fireEvent.change(screen.getByLabelText('Текст пункта'), {
+      target: { value: 'Отжимания утром' },
+    });
+    fireEvent.click(screen.getByText(SAVE_LABEL));
+
+    expect(saved[0]).toEqual({ text_md: 'Отжимания утром' });
+  });
+
   it('shows no picker when there are no categories to pick from', () => {
     editorFor(line(), []);
 

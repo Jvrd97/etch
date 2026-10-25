@@ -14,6 +14,7 @@ import type {
   PlanFactWrite,
   PlanItemFacts,
   PlanItemPatch,
+  Unmark,
 } from '@/lib/api';
 import { factErrorText, newFactKey } from '@/lib/plan-facts';
 
@@ -31,7 +32,12 @@ export interface PlanFactsClient {
     entryId: number,
     draft: PlanFactDraft
   ) => Promise<PlanFactWrite>;
-  remove: (date: string, itemId: string, entryId: number) => Promise<PlanFactWrite>;
+  remove: (
+    date: string,
+    itemId: string,
+    entryId: number,
+    mark: Unmark | null
+  ) => Promise<PlanFactWrite>;
   categories: () => Promise<Category[]>;
 }
 
@@ -40,7 +46,8 @@ const API_CLIENT: PlanFactsClient = {
     api.planFactsAPI.record(date, itemId, draft, key),
   correct: (date, itemId, entryId, draft) =>
     api.planFactsAPI.correct(date, itemId, entryId, draft),
-  remove: (date, itemId, entryId) => api.planFactsAPI.remove(date, itemId, entryId),
+  remove: (date, itemId, entryId, mark) =>
+    api.planFactsAPI.remove(date, itemId, entryId, mark),
   categories: () => api.categoriesAPI.getAll(),
 };
 
@@ -55,7 +62,7 @@ export interface UsePlanFactsResult {
   errors: Map<string, string>;
   record: (itemId: string, draft: PlanFactDraft) => Promise<boolean>;
   correct: (itemId: string, entryId: number, draft: PlanFactDraft) => Promise<boolean>;
-  remove: (itemId: string, entryId: number) => Promise<boolean>;
+  remove: (itemId: string, entryId: number, mark: Unmark | null) => Promise<boolean>;
 }
 
 /** The server answered: a status means the request arrived, whatever it said. */
@@ -172,9 +179,9 @@ export function usePlanFacts(
   );
 
   const remove = useCallback(
-    (itemId: string, entryId: number) => {
+    (itemId: string, entryId: number, mark: Unmark | null) => {
       if (saving.has(itemId)) return Promise.resolve(false);
-      return run(itemId, () => client.remove(date, itemId, entryId));
+      return run(itemId, () => client.remove(date, itemId, entryId, mark));
     },
     [client, date, run, saving]
   );
@@ -191,7 +198,7 @@ export function asPlanFacting(facts: UsePlanFactsResult): PlanFacting {
     errors: facts.errors,
     onRecord: (itemId, draft) => void facts.record(itemId, draft),
     onCorrect: (itemId, entryId, draft) => void facts.correct(itemId, entryId, draft),
-    onRemove: (itemId, entryId) => void facts.remove(itemId, entryId),
+    onRemove: (itemId, entryId, mark) => void facts.remove(itemId, entryId, mark),
   };
 }
 

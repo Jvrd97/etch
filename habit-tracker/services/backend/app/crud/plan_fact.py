@@ -61,6 +61,7 @@ from app.day.plan_links import (
 )
 from app.day.plan_validate import PlanRejected
 from app.models import Category, Entry, EntryValue, FieldType
+from app.models.mark import MARK_DONE
 from app.models.plan import DayPlan, PlanItem
 from app.schemas.plan_fact import (
     PlanFactEntryResponse,
@@ -71,6 +72,7 @@ from app.schemas.plan_fact import (
     PlanLinkFieldResponse,
     PlanLinkResponse,
     Progress,
+    UNMARK,
 )
 
 __all__ = [
@@ -310,19 +312,26 @@ def _rendered(
 
 
 async def _keep_mark(
-    db: AsyncSession, on: date, item: PlanItem, data: PlanFactIn
+    db: AsyncSession, on: date, item: PlanItem, mark: str | None, source: str
 ) -> None:
-    """Put the mark the write asked for, in the same transaction, keeping its note."""
-    if data.mark is None:
+    """
+    Put the mark the write asked for, in the same transaction, keeping its note.
+
+    `unmark` takes back only a `done`: the fact no longer backs «сделано», but a
+    «не сделал» or «пропустил» was never the fact's to set.
+    """
+    if mark is None:
         return
     current = await mark_crud.get_mark(db, item.id)
+    if mark == UNMARK and (current is None or current.state != MARK_DONE):
+        return
     await mark_crud.set_mark(
         db,
         on,
         item.id,
-        state=data.mark,
+        state=None if mark == UNMARK else mark,
         note=None if current is None else current.note,
-        source=data.source,
+        source=source,
     )
 
 
@@ -399,7 +408,7 @@ async def record_fact(
         for field_id, text in rendered.items()
     )
     await db.flush()
-    await _keep_mark(db, on, item, data)
+    await _keep_mark(db, on, item, data.mark, data.source)
     return FactWrite(entry_id=entry_id, replayed=False)
 
 
@@ -448,22 +457,33 @@ async def correct_fact(
     # history can say when the fact was last changed.
     entry.updated_at = datetime.now(timezone.utc)
     await db.flush()
-    await _keep_mark(db, on, item, data)
+    await _keep_mark(db, on, item, data.mark, data.source)
     return FactWrite(entry_id=entry.id, replayed=False)
 
 
-async def remove_fact(db: AsyncSession, item: PlanItem, entry_id: int) -> FactWrite:
+async def remove_fact(
+    db: AsyncSession,
+    on: date,
+    item: PlanItem,
+    entry_id: int,
+    *,
+    mark: str | None,
+    source: str,
+) -> FactWrite:
     """
     Delete a fact this line wrote — the explicit action, never a side effect.
 
     Unticking the line does not come here: «снял галочку» and «этого не было» are
-    different statements, and only the second one removes history.
+    different statements, and only the second one removes history. `mark` is
+    `unmark` when what is left no longer makes the line done; it goes in the
+    same transaction as the delete.
     """
     entry = await _entry_of_item(db, item, entry_id)
     if entry is None:
         raise FactNotFound(entry_id)
     await db.delete(entry)
     await db.flush()
+    await _keep_mark(db, on, item, mark, source)
     return FactWrite(entry_id=entry_id, replayed=False)
 
 

@@ -11,6 +11,7 @@ import {
   linkStateText,
   markAfterCorrect,
   markAfterRecord,
+  markAfterRemove,
   parseFactInput,
   progressText,
 } from './plan-facts';
@@ -63,6 +64,16 @@ function facts(over: Partial<PlanItemFacts> = {}): PlanItemFacts {
     done: false,
     progress: 'none',
     ...over,
+  };
+}
+
+function entry(entry_id: number, value: string): PlanItemFacts['entries'][number] {
+  return {
+    entry_id,
+    entry_date: '2026-08-31',
+    values: [{ field_id: 11, value }],
+    created_at: '',
+    updated_at: '',
   };
 }
 
@@ -170,7 +181,29 @@ describe('when a write also ticks the line', () => {
         },
       ],
     });
-    expect(markAfterCorrect(written, 7, 200)).toBeNull();
+    expect(markAfterCorrect(written, 7, 200)).toBe('unmark');
     expect(markAfterCorrect(written, 7, 300)).toBe('done');
+  });
+
+  it('a box corrected to «не было» takes «сделано» back unless another entry says «было»', () => {
+    const box = facts({ entries: [entry(7, 'true')] });
+    box.link = { ...box.link, field_type: 'boolean', target_value: null };
+    expect(markAfterCorrect(box, 7, false)).toBe('unmark');
+
+    box.entries = [entry(7, 'true'), entry(8, 'true')];
+    expect(markAfterCorrect(box, 7, false)).toBeNull();
+  });
+
+  it('a delete takes «сделано» back once what is left no longer does the line', () => {
+    expect(markAfterRemove(facts({ total: 300, entries: [entry(7, '300')] }), 7)).toBe('unmark');
+
+    const two = facts({ total: 300, entries: [entry(7, '150'), entry(8, '150')] });
+    expect(markAfterRemove(two, 7)).toBe('unmark');
+    two.link = { ...two.link, target_value: 100 };
+    expect(markAfterRemove(two, 7)).toBeNull();
+
+    const box = facts({ entries: [entry(7, 'true')] });
+    box.link = { ...box.link, field_type: 'boolean', target_value: null };
+    expect(markAfterRemove(box, 7)).toBe('unmark');
   });
 });

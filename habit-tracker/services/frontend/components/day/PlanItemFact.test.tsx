@@ -55,7 +55,7 @@ function pushups(over: Partial<PlanItemFacts> = {}): PlanItemFacts {
 function setup(facts: PlanItemFacts, markState: MarkState | null = null) {
   const recorded: PlanFactDraft[] = [];
   const corrected: Array<[number, PlanFactDraft]> = [];
-  const removed: number[] = [];
+  const removed: Array<[number, string | null]> = [];
   const view = render(
     <PlanItemFact
       facts={facts}
@@ -64,7 +64,7 @@ function setup(facts: PlanItemFacts, markState: MarkState | null = null) {
       error={null}
       onRecord={(draft) => recorded.push(draft)}
       onCorrect={(entryId, draft) => corrected.push([entryId, draft])}
-      onRemove={(entryId) => removed.push(entryId)}
+      onRemove={(entryId, mark) => removed.push([entryId, mark])}
     />
   );
   return { recorded, corrected, removed, view };
@@ -174,7 +174,9 @@ describe('PlanItemFact', () => {
     fireEvent.click(screen.getByText(SAVE_CORRECTION_LABEL));
 
     expect(recorded).toEqual([]);
-    expect(corrected).toEqual([[7, { values: [{ field_id: 11, value: 200, unit: 'раз' }] }]]);
+    expect(corrected).toEqual([
+      [7, { values: [{ field_id: 11, value: 200, unit: 'раз' }], mark: 'unmark' }],
+    ]);
   });
 
   it('deletes only on the second tap', () => {
@@ -186,7 +188,7 @@ describe('PlanItemFact', () => {
     expect(removed).toEqual([]);
     fireEvent.click(screen.getByText(DELETE_FACT_CONFIRM_LABEL));
 
-    expect(removed).toEqual([7]);
+    expect(removed).toEqual([[7, 'unmark']]);
   });
 
   it('offers no input into a broken link and says why', () => {
