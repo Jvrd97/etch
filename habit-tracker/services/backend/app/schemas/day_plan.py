@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/148, PHASE-03/187
+# [review:need-review] PHASE-03/148, PHASE-03/187, PHASE-03/200
 # summary: the JSON a model is allowed to answer with — sections, lines, windows, kind and rigidity, each line carrying the short code the repair prompt names it by — plus its two conversions: into the draft the eight constraints judge, and into the document the one writing path accepts
 # summary: PHASE-03/187 lets `to_document` carry the ids of a day that already has a plan, matched by line code, so a rewrite keeps the marks of the lines it kept
+# summary: PHASE-03/200 — a line may propose a link to an existing category, its field and a target; `to_document` keeps it only when the catalogue the prompt showed says it can hold a fact, and drops it otherwise, leaving an ordinary line
 """
 План дня, каким его возвращает модель.
 
@@ -19,6 +20,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
@@ -27,6 +29,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.day.constraints import DraftItem, PlanDraft
+from app.day.plan_links import LINK_OK, CatalogCategory, link_state
 from app.models.day import DayRuleSet
 from app.models.plan import ITEM_KINDS, RIGIDITY_VALUES, SECTION_KINDS
 from app.schemas.plan import PlanDocument, PlanItemIn, PlanSectionIn
@@ -36,6 +39,8 @@ from app.schemas.plan import PlanDocument, PlanItemIn, PlanSectionIn
 # ремонтный промпт переводит их обратно в коды, и случайный uuid разорвал бы
 # эту дорогу на каждом заходе.
 ITEM_NAMESPACE = uuid.UUID("6b1f0a9c-3d52-4f0e-9c7a-2e8b5d1a4c60")
+
+logger = logging.getLogger(__name__)
 
 WINDOW_SEPARATOR = "-"
 WINDOW_FORMAT = "%H:%M"
@@ -64,6 +69,13 @@ class GeneratedItem(BaseModel):
     )
     unlinked_reason: str | None = Field(
         None, description="Почему задача не привязана к цели квартала"
+    )
+    category_id: int | None = Field(
+        None, description="Категория из списка в промпте, если строка — её занятие"
+    )
+    field_id: int | None = Field(None, description="Поле этой категории для факта")
+    target_value: float | None = Field(
+        None, gt=0, description="Сколько запланировано; это цель, а не сделанное"
     )
 
     @property
@@ -157,10 +169,35 @@ def to_draft(plan: GeneratedDayPlan, target: date, rule: DayRuleSet) -> PlanDraf
     return PlanDraft(target=target, items=tuple(items))
 
 
+def _checked_link(
+    item: GeneratedItem, catalog: Mapping[int, CatalogCategory]
+) -> tuple[int | None, int | None, float | None]:
+    """
+    The link the model proposed, if the catalogue says it can hold a fact.
+
+    A wrong id is dropped, not refused: the plan is good and the day needs it,
+    and a line without a link is an ordinary line the person links by hand. A
+    refusal here would send the whole day to the skeleton over one guess.
+    """
+    if item.category_id is None:
+        return None, None, None
+    state = link_state(catalog.get(item.category_id), item.field_id, item.target_value)
+    if state != LINK_OK:
+        logger.info(
+            "plan line %s: proposed link to category %s dropped (%s)",
+            item.code,
+            item.category_id,
+            state,
+        )
+        return None, None, None
+    return item.category_id, item.field_id, item.target_value
+
+
 def to_document(
     plan: GeneratedDayPlan,
     source: str,
     known_ids: Mapping[str, uuid.UUID] | None = None,
+    catalog: Mapping[int, CatalogCategory] | None = None,
 ) -> PlanDocument:
     """
     Ответ модели как документ, который принимает `POST /day/{date}/plan`.
@@ -175,26 +212,33 @@ def to_document(
     Без словаря каждая строка новая и без отметки — это и есть разница между
     «переписать день» и «стереть прожитое». Пустой словарь и `None` значат
     одно и то же: дню, у которого плана нет, переносить нечего.
+
+    `catalog` — категории, которые промпт показал модели (`#200`). Связь строки
+    остаётся, только если каталог подтверждает её; без каталога связей нет вовсе,
+    потому что проверить их не по чему.
     """
+    shown: Mapping[int, CatalogCategory] = catalog or {}
     sections: list[PlanSectionIn] = []
     for section in plan.sections:
-        sections.append(
-            PlanSectionIn(
-                title=section.title,
-                kind=section.kind,
-                items=[
-                    PlanItemIn(
-                        id=None if known_ids is None else known_ids.get(item.code),
-                        kind=item.kind,
-                        rigidity=item.rigidity,
-                        text_md=item.text,
-                        window=item.window,
-                        code=item.code,
-                        done_criterion=item.done_criterion,
-                        unlinked_reason=item.unlinked_reason,
-                    )
-                    for item in section.items
-                ],
+        items: list[PlanItemIn] = []
+        for item in section.items:
+            category_id, field_id, target_value = _checked_link(item, shown)
+            items.append(
+                PlanItemIn(
+                    id=None if known_ids is None else known_ids.get(item.code),
+                    kind=item.kind,
+                    rigidity=item.rigidity,
+                    text_md=item.text,
+                    window=item.window,
+                    code=item.code,
+                    done_criterion=item.done_criterion,
+                    unlinked_reason=item.unlinked_reason,
+                    category_id=category_id,
+                    field_id=field_id,
+                    target_value=target_value,
+                )
             )
+        sections.append(
+            PlanSectionIn(title=section.title, kind=section.kind, items=items)
         )
     return PlanDocument(title=plan.title, source=source, sections=sections)

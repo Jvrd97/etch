@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200
+// summary: PHASE-03/200 — a plan line linked to a category carries its fact card, and the day is re-read after a fact or a new link so the mark and the counts follow
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" with the button that builds one when there is none, the rule this particular day is judged by, and the shared day navigation beside it
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day beside it, the итог with the verdict and the condition it failed on, the notebook of the day, an explicit "плана нет" when there is none, and the rule this particular day is judged by
 
@@ -34,6 +35,7 @@ import { useDay } from '@/hooks/useDay';
 import { useRoleDirectory } from '@/hooks/useRoleDirectory';
 import { useDayAnchors } from '@/hooks/useDayAnchors';
 import { useDayMarks } from '@/hooks/useDayMarks';
+import { asPlanFacting, saveThenReadLink, usePlanFacts } from '@/hooks/usePlanFacts';
 import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
@@ -44,6 +46,7 @@ import {
   type DayCloseDraft,
   type DayReviewDraft,
   type Mark,
+  type PlanItemFacts,
   type WorkDay,
 } from '@/lib/api';
 import { dayKindLabel, ruleLines, ruleValidity } from '@/lib/day-format';
@@ -57,6 +60,9 @@ import { itemKindsById, overlappingItemIds, warningsByCode } from '@/lib/plan';
  * put the screen in a loop.
  */
 const NO_MARKS: Mark[] = [];
+
+/** Stable empty facts for a day that has not loaded yet, for the same reason. */
+const NO_FACTS: PlanItemFacts[] = [];
 
 /**
  * Stable empty anchors for a day that has not loaded yet.
@@ -113,6 +119,10 @@ export default function DayScreen({ date }: DayScreenProps) {
   // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
   // и правится, и отмечается, и обе операции обязаны пережить друг друга.
   const editor = usePlanItemEdit(detail?.day.date ?? '');
+  // Строки плана, связанные с категориями (#200): факт, введённый в плане,
+  // ложится в историю категории, а день перечитывается ради отметки и счётчиков.
+  const planFacts = useMemo(() => detail?.plan_facts ?? NO_FACTS, [detail]);
+  const facts = usePlanFacts(detail?.day.date ?? '', planFacts, reload);
   // Диф перечитывается вместе с планом: правка меняет обоих одним действием.
   const { diff } = usePlanDiff(detail?.day.date ?? '', editor.plan);
   const proposals = useMemo(() => proposalsOf(diff), [diff]);
@@ -231,11 +241,12 @@ export default function DayScreen({ date }: DayScreenProps) {
               saving: editor.saving,
               warnings: warningsByCode(editor.warnings),
               onOpen: editor.open,
-              onSave: editor.edit,
+              onSave: saveThenReadLink(editor.edit, reload),
               onDelete: editor.remove,
               onMove: editor.move,
               onAdd: editor.add,
             }}
+            facts={asPlanFacting(facts)}
           />
         </>
       )}

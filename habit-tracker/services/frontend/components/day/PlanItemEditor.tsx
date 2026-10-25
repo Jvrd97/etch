@@ -1,10 +1,19 @@
 'use client';
-// [review:need-review] PHASE-03/110, PHASE-03/140
+// [review:need-review] PHASE-03/110, PHASE-03/140, PHASE-03/200
 // summary: one plan line edited where it is drawn — text, window and criterion in three fields, save and delete beside them, the arrows that move the line inside its level, and the warning of the canon printed on the line rather than in a modal nobody reads; #140 adds the two optional pickers that turn a line into an intent to act — роль и вид акта, right where the day is already being edited
+// summary: PHASE-03/200 — the same editor links a line to a category, its field and a target, and will not save a category whose field is still ambiguous
 
 import { useState } from 'react';
 import { ArrowDown, ArrowUp, Check, Trash2, X } from 'lucide-react';
-import type { PlanItem, PlanItemPatch, Role } from '@/lib/api';
+import PlanItemLinkPicker from '@/components/day/PlanItemLinkPicker';
+import type { Category, PlanItem, PlanItemPatch, Role } from '@/lib/api';
+import {
+  linkableCategories,
+  linkDraftOf,
+  linkDraftReady,
+  linkPatch,
+  type LinkDraft,
+} from '@/lib/plan-facts';
 import {
   ACT_KIND_FIELD_LABEL,
   NO_ACT_KIND_LABEL,
@@ -45,6 +54,11 @@ export interface PlanItemEditorProps {
    * нет, и редактор остаётся ровно тем, чем был до этого тикета.
    */
   roles?: Role[];
+  /**
+   * Категории, к которым можно привязать пункт (#200). Пустой список — полей
+   * связи нет, и редактор такой же, как до этого тикета.
+   */
+  categories?: Category[];
 }
 
 /**
@@ -116,6 +130,7 @@ export default function PlanItemEditor({
   atTop,
   atBottom,
   roles,
+  categories = [],
 }: PlanItemEditorProps) {
   const [text, setText] = useState(item.text_md);
   const [window, setWindow] = useState(() => windowField(item));
@@ -123,6 +138,10 @@ export default function PlanItemEditor({
   const [roleId, setRoleId] = useState<number | null>(item.role_id);
   const [actKind, setActKind] = useState<string | null>(item.act_kind);
   const [confirming, setConfirming] = useState(false);
+  // null until the person touches the link: a line whose category went to the
+  // archive, or whose categories have not loaded yet, keeps its link untouched
+  // when only its text is edited.
+  const [link, setLink] = useState<LinkDraft | null>(null);
 
   // Правка соседа переставляет строки, и сервер возвращает уже другой пункт под
   // тем же экраном; поля обязаны последовать за ним, иначе человек сохранит
@@ -138,7 +157,9 @@ export default function PlanItemEditor({
     setRoleId(item.role_id);
     setActKind(item.act_kind);
     setConfirming(false);
+    setLink(null);
   }
+  const linkReady = link === null || linkDraftReady(link, categories);
 
   const field =
     'w-full rounded-2xl bg-surface border border-white/10 px-3 py-2 text-sm text-text-primary';
@@ -220,12 +241,25 @@ export default function PlanItemEditor({
         </div>
       )}
 
+      {linkableCategories(categories).length > 0 && (
+        <PlanItemLinkPicker
+          categories={categories}
+          draft={link ?? linkDraftOf(item, categories)}
+          disabled={saving}
+          className={field}
+          onChange={setLink}
+        />
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || !linkReady}
           onClick={() =>
-            onSave(changedFields(item, { text, window, criterion, roleId, actKind }))
+            onSave({
+              ...changedFields(item, { text, window, criterion, roleId, actKind }),
+              ...(link === null ? {} : linkPatch(item, link, categories)),
+            })
           }
           className="inline-flex items-center gap-1 rounded-2xl bg-lime px-3 py-1.5 text-sm text-black disabled:opacity-50"
         >

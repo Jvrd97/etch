@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/142, PHASE-03/152
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/142, PHASE-03/152, PHASE-03/200
+# summary: PHASE-03/200 — the day also carries `plan_facts`: every plan line linked to a category, with the entries it wrote into that category's history
 # summary: day DTOs — the day itself, the rule it is judged by, the map of the day the rule draws (edges, free evening, ceilings, anchors, the order of the verdict), the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, the итог with the verdict of the day, and the intervals of work with their sum — and no window title, because the table has no column for one; since #152 also the draft of a new version of the canon (`DayRuleSetPublish`) and the history the rules screen reads
 # summary: day DTOs — the day itself, the rule it is judged by, the map of the day the rule draws (edges, free evening, ceilings, anchors, the order of the verdict), the plan when there is one instead of a 404 when there is not, the marks, task counts and notebook that come with it, the anchors and the training of the day (#92), and the итог with the verdict of the day
 """
@@ -25,6 +26,7 @@ from app.schemas.anchor import DayAnchorsResponse
 from app.schemas.day_profile import ProfileInForceResponse
 from app.schemas.mark import MarkResponse, TaskCountsResponse
 from app.schemas.plan import PlanResponse
+from app.schemas.plan_fact import PlanItemFactsResponse
 from app.schemas.summary import DaySummaryResponse
 from app.schemas.work_interval import WorkDayResponse
 from app.schemas.training import TrainingDayResponse
@@ -419,6 +421,13 @@ class DayDetailResponse(BaseModel):
         description=(
             "Отметки пунктов. Пункта здесь нет — отметки нет, «не дошёл»; "
             "не открывали ли день вообще, говорит `day.opened_at`"
+        ),
+    )
+    plan_facts: list[PlanItemFactsResponse] = Field(
+        default_factory=list,
+        description=(
+            "Пункты плана, связанные с категорией: связь, записи в истории "
+            "категории, итог по полю и сравнение с целью. Цель записью не считается"
         ),
     )
     task_counts: TaskCountsResponse = Field(

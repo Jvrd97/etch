@@ -1,10 +1,12 @@
-# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110, PHASE-03/130, PHASE-03/140
+# [review:need-review] PHASE-03/87, PHASE-03/93, PHASE-03/110, PHASE-03/130, PHASE-03/140, PHASE-03/200
 # summary: the plan tables — `day_plan` (one per day), `plan_section` (ordered), `plan_item` (ordered, nestable) with the four CHECKs that turn the prose rules of config.md into constraints the database enforces; #93 gives both `quarter_goal_id` columns their foreign key; #110 adds who last touched a line and when, and makes a position unique inside its level so a reorder cannot leave holes or twins; #140 lets a section name a role and an item name the role act its tick closes
+# summary: PHASE-03/200 — a line names a category, one of its fields and a target; the fact typed in the plan is an ordinary entry of that category (ADR-0023)
 from __future__ import annotations
 
 import uuid
 from datetime import date as date_type
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -16,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -104,6 +107,12 @@ PLAN_SOURCES: tuple[str, ...] = (
     "llm",
     "fallback",
 )
+
+
+# Точность цели пункта: та же форма, что у шага быстрой кнопки и у челленджей
+# (ADR-0018), — трёх знаков после запятой хватает на 0.25 литра и на 2.5 км.
+TARGET_PRECISION = 12
+TARGET_SCALE = 3
 
 
 def _in_list(column: str, values: tuple[str, ...]) -> str:
@@ -324,6 +333,11 @@ class PlanItem(Base):
             "role_id",
             postgresql_where=text("role_id IS NOT NULL"),
         ),
+        Index(
+            "ix_plan_item_category_id",
+            "category_id",
+            postgresql_where=text("category_id IS NOT NULL"),
+        ),
         # Partial: most items carry no code, and NULLs would otherwise make the
         # constraint vacuous for exactly the rows that need no protection.
         Index(
@@ -425,6 +439,29 @@ class PlanItem(Base):
         Integer,
         ForeignKey("role.id", ondelete="SET NULL", name="fk_plan_item_role_id"),
         nullable=True,
+    )
+
+    # Категория и её поле, в историю которых пишется факт этого пункта (`#200`,
+    # ADR-0023). Цель — `target_value` — это намерение, а не факт: «300
+    # отжиманий» не создаёт записи, запись создаёт введённое «сделал 100».
+    # `SET NULL` по той же причине, что у `quick_mark_id`: категорию удаляют, а
+    # прожитый день остаётся, и пункт без категории — обычный пункт. CHECK на
+    # «поле без категории» здесь нет намеренно: удаление категории обнуляет обе
+    # колонки двумя каскадами, и ограничение упало бы между ними.
+    category_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "categories.id", ondelete="SET NULL", name="fk_plan_item_category_id"
+        ),
+        nullable=True,
+    )
+    field_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("fields.id", ondelete="SET NULL", name="fk_plan_item_field_id"),
+        nullable=True,
+    )
+    target_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(TARGET_PRECISION, TARGET_SCALE), nullable=True
     )
 
     carried_from_item_id: Mapped[uuid.UUID | None] = mapped_column(

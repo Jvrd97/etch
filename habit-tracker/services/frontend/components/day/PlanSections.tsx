@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/140, PHASE-03/147, PHASE-03/150
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/140, PHASE-03/147, PHASE-03/150, PHASE-03/200
+// summary: PHASE-03/200 — a line linked to a category carries its fact card under the mark, an unlinked line of an editable plan offers «Связать с категорией», and the editor gets the categories to link to
 // summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, the intent of an act #140 hangs on the line it came from, and the caption saying what the machine proposed on a line the person moved
 // summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
 
@@ -8,20 +9,26 @@ import {
   Clock,
   CornerDownRight,
   Link2,
+  ListPlus,
   Pencil,
   Plus,
   TriangleAlert,
 } from 'lucide-react';
 import PlanItemEditor from '@/components/day/PlanItemEditor';
+import PlanItemFact from '@/components/day/PlanItemFact';
 import PlanItemMark from '@/components/day/PlanItemMark';
 import type {
+  Category,
   Mark,
   MarkState,
+  PlanFactDraft,
   PlanItem,
+  PlanItemFacts,
   PlanItemPatch,
   PlanSection,
   PlanViolation,
   Role,
+  Unmark,
 } from '@/lib/api';
 import { actIntentLine } from '@/lib/plan-roles';
 import { ruleLabel } from '@/lib/plan-violations';
@@ -58,6 +65,24 @@ export interface PlanMarking {
 /** Text of the two controls the editor adds; named so tests can find them. */
 export const EDIT_LINE_LABEL = 'Править пункт';
 export const ADD_LINE_LABEL = 'Добавить пункт';
+export const LINK_LINE_LABEL = 'Связать с категорией';
+
+/**
+ * What a line needs in order to write its facts into a category (#200).
+ *
+ * One object for the same reason as `PlanMarking`: a plan that is only read
+ * leaves it out and draws no card, no input and no «Связать с категорией».
+ */
+export interface PlanFacting {
+  byItem: Map<string, PlanItemFacts>;
+  /** Active categories the editor can link a line to. */
+  categories: Category[];
+  saving: Set<string>;
+  errors: Map<string, string>;
+  onRecord: (itemId: string, draft: PlanFactDraft) => void;
+  onCorrect: (itemId: string, entryId: number, draft: PlanFactDraft) => void;
+  onRemove: (itemId: string, entryId: number, mark: Unmark | null) => void;
+}
 
 /**
  * What a line needs in order to be editable.
@@ -119,6 +144,8 @@ export interface PlanSectionsProps {
    * этого тикета.
    */
   roles?: Role[];
+  /** Left out where the plan is only being read; then no fact card is drawn. */
+  facts?: PlanFacting;
 }
 
 /**
@@ -145,6 +172,7 @@ export default function PlanSections({
   violations,
   proposals,
   roles = [],
+  facts,
 }: PlanSectionsProps) {
   if (sections.length === 0) {
     return (
@@ -180,6 +208,7 @@ export default function PlanSections({
                 violations={violations}
                 proposals={proposals}
                 roles={roles}
+                facts={facts}
               />
             ))}
           </ul>
@@ -215,6 +244,7 @@ interface PlanLineProps {
   violations?: Map<string, PlanViolation[]>;
   proposals?: Map<string, string>;
   roles: Role[];
+  facts?: PlanFacting;
 }
 
 /**
@@ -237,6 +267,7 @@ function PlanLine({
   violations,
   proposals,
   roles,
+  facts,
 }: PlanLineProps) {
   const broken = violations?.get(item.id) ?? [];
   const proposed = proposals?.get(item.id) ?? null;
@@ -250,6 +281,15 @@ function PlanLine({
   // Предупреждение адресуется кодом пункта — тем же, которым его называет 422.
   const warning =
     editing && item.code ? (editing.warnings.get(item.code) ?? null) : null;
+  const lineFacts = facts?.byItem.get(item.id) ?? null;
+  // «Связать с категорией» — у строки, которой не к чему писать факт, в плане,
+  // который можно править. Связь выбирается в редакторе, а не угадывается.
+  const offersLink =
+    lineFacts === null &&
+    (item.category_id ?? null) === null &&
+    editing !== undefined &&
+    editing.openId !== item.id &&
+    (facts?.categories.length ?? 0) > 0;
 
   return (
     <li style={{ marginLeft: `${indent * 0.25}rem` }}>
@@ -367,6 +407,7 @@ function PlanLine({
               }
               onCancel={() => editing.onOpen(null)}
               roles={roles}
+              categories={facts?.categories ?? []}
             />
           )}
 
@@ -383,6 +424,30 @@ function PlanLine({
                 compact={compact}
               />
             </div>
+          )}
+
+          {facts && lineFacts !== null && (
+            <PlanItemFact
+              facts={lineFacts}
+              markState={marking?.marks.get(item.id)?.state ?? null}
+              saving={facts.saving.has(item.id)}
+              error={facts.errors.get(item.id) ?? null}
+              compact={compact}
+              onRecord={(draft) => facts.onRecord(item.id, draft)}
+              onCorrect={(entryId, draft) => facts.onCorrect(item.id, entryId, draft)}
+              onRemove={(entryId, mark) => facts.onRemove(item.id, entryId, mark)}
+            />
+          )}
+
+          {offersLink && (
+            <button
+              type="button"
+              onClick={() => editing?.onOpen(item.id)}
+              className="mt-2 inline-flex items-center gap-1 rounded-2xl bg-surface px-3 py-1 text-xs text-text-secondary"
+            >
+              <ListPlus className="w-3.5 h-3.5" strokeWidth={2} />
+              {LINK_LINE_LABEL}
+            </button>
           )}
 
           {extras.length > 0 && (
@@ -415,6 +480,7 @@ function PlanLine({
               violations={violations}
               proposals={proposals}
               roles={roles}
+              facts={facts}
             />
           ))}
         </ul>

@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/148
+# [review:need-review] PHASE-03/148, PHASE-03/200
 # summary: the model half of plan generation — the prompt built from the canon row and derived flags (never a complaint's text), the parse whose error message carries loc and type but no input, the eight constraints run over the answer, and a repair prompt made of rule codes and item codes and nothing else
+# summary: PHASE-03/200 — the prompt also lists the categories a line may be linked to, by id, so the model can propose a link it is then checked against
 """
 Генерация плана моделью: промпт, разбор, ремонт.
 
@@ -23,12 +24,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import date
 
 from pydantic import ValidationError
 
 from app.day import skeleton
 from app.day.constraints import Violation, check_all
+from app.day.plan_links import CatalogCategory, prompt_lines
 from app.llm.client import LLMClient
 from app.llm.plan_flow import PlanError, extract_json, generate_with_repair
 from app.models.day import DayRuleSet
@@ -52,7 +55,10 @@ You emit ONLY a JSON object, no prose, no markdown fences, of the shape:
           "text": "<what the person reads>",
           "window": "HH:MM-HH:MM or null",
           "done_criterion": "<required on a task>",
-          "unlinked_reason": "<why a task has no quarter goal>"
+          "unlinked_reason": "<why a task has no quarter goal>",
+          "category_id": <id from «Categories» below, or null>,
+          "field_id": <id of a field of that category, or null>,
+          "target_value": <planned amount on a number field, or null>
         }
       ]
     }
@@ -68,6 +74,9 @@ Rules of the canon, all of them checked after you answer:
 - The health anchors of the canon come before work starts.
 - Windows must not overlap, and every line belongs to the target day only.
 - Every line needs its own `code`; the same code twice is an error.
+- Link a line to a category only when the line is that very activity, with ids
+  from «Categories» below and nothing else. `target_value` is what is planned,
+  never what was done; leave all three null when unsure.
 - Output must be valid JSON and nothing else."""
 
 # Флаг ограничения тренировки — производная от жалоб, а не их текст.
@@ -119,12 +128,20 @@ def build_prompt(
     rule: DayRuleSet,
     signals: skeleton.Signals,
     gates: tuple[str, ...] = (),
+    catalog: Mapping[int, CatalogCategory] | None = None,
 ) -> str:
-    """Промпт целиком: правила ответа, канон дня, производные флаги."""
+    """
+    Промпт целиком: правила ответа, канон дня, производные флаги, категории.
+
+    Категории — именами, полями и единицами, как их уже видит чат: без имени
+    модель не отличит «Отжимания» от «Прогулки». Архивные и чек-листы в список
+    не попадают — модель видит только то, что можно выбрать.
+    """
     return (
         f"{DAY_PLAN_PROMPT}\n\n"
         f"## Canon in force\n{_canon(target, rule)}\n\n"
-        f"## Signals of the day\n{_signal_lines(signals, gates)}"
+        f"## Signals of the day\n{_signal_lines(signals, gates)}\n\n"
+        f"## Categories\n{prompt_lines(catalog or {})}"
     )
 
 
@@ -205,6 +222,7 @@ async def generate_day_plan(
     rule: DayRuleSet,
     signals: skeleton.Signals,
     gates: tuple[str, ...] = (),
+    catalog: Mapping[int, CatalogCategory] | None = None,
 ) -> GeneratedDayPlan:
     """
     План дня от модели, проверенный формой и каноном, с одним заходом ремонта.
@@ -213,7 +231,7 @@ async def generate_day_plan(
     ремонтный заход чинил бы только сломанный JSON, а нарушение канона —
     самая частая из двух причин, по которым план не годится.
     """
-    prompt = build_prompt(target, rule, signals, gates)
+    prompt = build_prompt(target, rule, signals, gates, catalog)
 
     def parse_and_validate(text: str) -> GeneratedDayPlan:
         plan = parse_plan(text)

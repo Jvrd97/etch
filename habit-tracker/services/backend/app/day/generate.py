@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/148
+# [review:need-review] PHASE-03/148, PHASE-03/200
 # summary: the orchestration of one generation — at most two model calls inside a 120-second-per-call and 300-second-total budget, and a skeleton written under `fallback` with a reason code whenever the model is missing, slow, broken or wrong twice; the day is never left without a plan
+# summary: PHASE-03/200 — the catalogue of linkable categories reaches the prompt and the check of the answer through one argument
 """
 Оркестрация генерации плана: попытка, ремонт, скелет.
 
@@ -21,11 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
 from app.day import skeleton
 from app.day.constraints import ORIGIN_AI, ORIGIN_FALLBACK, Violation, check_all
+from app.day.plan_links import CatalogCategory
 from app.llm.client import LLMClient, LLMError
 from app.llm.day_plan import DayPlanError, generate_day_plan
 from app.models.day import DayRuleSet
@@ -126,6 +129,7 @@ async def generate_plan(
     rule: DayRuleSet,
     signals: skeleton.Signals | None = None,
     gates: tuple[str, ...] = (),
+    catalog: Mapping[int, CatalogCategory] | None = None,
 ) -> GeneratedPlan:
     """
     Собрать план на `target`: моделью, если получится, скелетом — если нет.
@@ -133,6 +137,10 @@ async def generate_plan(
     Ни одна ветка не поднимает исключение наружу. Отсутствие модели — не
     состояние дня: человек, у которого кончилась подписка, не остаётся без
     плана и не видит 503 там, где ждал день.
+
+    `catalog` — категории, к которым модель может привязать строку (`#200`):
+    они уходят в промпт, и по ним же проверяется ответ. Скелет связей не
+    предлагает — угадывать по названию строки он не умеет и не должен.
     """
     resolved = signals if signals is not None else skeleton.Signals()
 
@@ -141,7 +149,9 @@ async def generate_plan(
 
     try:
         plan = await asyncio.wait_for(
-            generate_day_plan(_TimedClient(llm), target, rule, resolved, gates),
+            generate_day_plan(
+                _TimedClient(llm), target, rule, resolved, gates, catalog
+            ),
             timeout=TOTAL_BUDGET_SECONDS,
         )
     except asyncio.TimeoutError:
@@ -162,5 +172,7 @@ async def generate_plan(
 
     logger.info("day %s: plan assembled by the model", target)
     return GeneratedPlan(
-        document=to_document(plan, AUTHOR_LLM), author=AUTHOR_LLM, reason=None
+        document=to_document(plan, AUTHOR_LLM, catalog=catalog),
+        author=AUTHOR_LLM,
+        reason=None,
     )

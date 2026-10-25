@@ -1,12 +1,13 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/140
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/140, PHASE-03/200
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); #110 adds the per-item editor — PATCH/POST/DELETE of one line and POST .../move for its place, where a human's edit passes everything the database passes and comes back with the document rules it broke as warnings; all three plan writes claim `opened_at` only inside the open window
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close/review is the 15:40 touch and /close/final the evening one that writes the verdict (the bare /close stays as a synonym of `final`), both idempotent by `Idempotency-Key` and both refusing a day whose итог arrived as prose, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
+# summary: PHASE-03/200 — строка плана, связанная с категорией, пишет факт в историю категории: POST .../plan/items/{item_id}/facts под Idempotency-Key, PUT и DELETE .../facts/{entry_id}, отметка в той же транзакции; GET /day несёт `plan_facts`
 # summary: PHASE-03/140 — план стал источником ролей: отметка «сделано» у пункта с видом акта закрывает `role_act` из плана, запись плана размечает минуты секций и вытесняет за те же часы всё, что слабее плана
 from datetime import date
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -15,6 +16,7 @@ from app.crud import anchor as anchor_crud
 from app.crud import day as day_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import plan_fact as fact_crud
 from app.crud import plan_revision as revision_crud
 from app.crud import plan_violation as violation_crud
 from app.crud import day_profile as profile_crud
@@ -32,6 +34,7 @@ from app.models.anchor import ANCHOR_STATES, AnchorKind, DayAnchor
 from app.models.day import Day, DayRuleSet
 from app.models.day_report import REPORT_TRIGGERS, TRIGGER_API, TRIGGER_CLOSE, DayReport
 from app.models.mark import SOURCE_WEB
+from app.models.plan import PlanItem
 from app.models.plan_revision import AUTHOR_FALLBACK
 from app.roles import plan_source
 from app.schemas.anchor import (
@@ -65,6 +68,7 @@ from app.schemas.plan import (
     PlanResponse,
 )
 from app.schemas.day_profile import ProfileInForceResponse
+from app.schemas.plan_fact import UNMARK, PlanFactIn, PlanFactWriteResponse, Unmark
 from app.schemas.plan_revision import (
     PlanDiffResponse,
     PlanFieldChange,
@@ -190,6 +194,10 @@ async def _detail(db: AsyncSession, day: Day, rule: DayRuleSet) -> DayDetailResp
         plan=plan,
         has_plan=plan is not None,
         marks=[mark_crud.to_response(mark.item_id, mark) for mark in marks],
+        # Связанные строки плана с тем, что они записали в историю категорий
+        # (`#200`). Тем же ответом, что отметки, и по той же причине: карточка
+        # «300 из 300» без своей записи рисовалась бы дважды.
+        plan_facts=await fact_crud.day_facts(db, stored),
         task_counts=mark_crud.to_counts_response(counts),
         notebook=None if notebook is None else notebook.content,
         anchors=await _anchors(db, day.day_date, rule),
@@ -416,6 +424,196 @@ async def put_mark(
         db, day, opened=body.source == SOURCE_WEB and _person_is_here(day.day_date)
     )
     return mark_crud.to_response(item_id, mark)
+
+
+FACT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Пункта нет в плане этого дня, или запись писал не он"},
+    409: {
+        "description": (
+            "Пункт не связан с категорией, связь сломана (категория в архиве, "
+            "поле удалено) или ключ уже записал другой факт"
+        )
+    },
+    422: {"description": "Значения не подходят полям категории: тип, единица, поле"},
+}
+
+
+async def _fact_item(db: AsyncSession, on: date, item_id: UUID) -> PlanItem:
+    """The line `item_id` of the plan of `on`, or a 404 naming both."""
+    item = await mark_crud.day_item(db, on, item_id)
+    if item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"В плане на {on.isoformat()} нет пункта {item_id}.",
+        )
+    return item
+
+
+def _fact_refusal(error: Exception) -> HTTPException:
+    """A refused fact as the status that says what was wrong with it."""
+    if isinstance(error, fact_crud.FactRefused):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": error.error, "message": error.message},
+        )
+    if isinstance(error, fact_crud.FactInvalid):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "fact_invalid", "reasons": error.reasons},
+        )
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Эту запись писал не этот пункт плана: {error}.",
+    )
+
+
+async def _fact_answer(
+    db: AsyncSession,
+    day: Day,
+    item: PlanItem,
+    written: fact_crud.FactWrite,
+    body: PlanFactIn | None,
+    mark: str | None,
+) -> PlanFactWriteResponse:
+    """
+    The line after a write: its facts, the entry touched, the mark.
+
+    A write that asked for a mark brings the role act the line names into line
+    with the mark it left, as a tick on `PUT .../marks` does (`#140`); a replay
+    changed nothing and touches nothing. Only a person on the page may claim the
+    day was opened, and a delete does not claim it at all.
+    """
+    current = await mark_crud.get_mark(db, item.id)
+    if not written.replayed:
+        if mark is not None:
+            state = None if current is None else current.state
+            await plan_source.sync_act_for_item(db, day.day_date, item, state)
+        if body is not None:
+            await day_crud.touch_day(
+                db,
+                day,
+                opened=body.source == SOURCE_WEB and _person_is_here(day.day_date),
+            )
+    return PlanFactWriteResponse(
+        entry_id=written.entry_id,
+        facts=await fact_crud.item_facts(db, item),
+        mark=mark_crud.to_response(item.id, current),
+    )
+
+
+@router.post(
+    "/{on}/plan/items/{item_id}/facts",
+    response_model=PlanFactWriteResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=FACT_RESPONSES,
+)
+async def post_plan_fact(
+    on: date,
+    item_id: UUID,
+    body: PlanFactIn,
+    response: Response,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", max_length=255),
+    db: AsyncSession = Depends(get_db),
+) -> PlanFactWriteResponse:
+    """
+    Записать факт пункта в историю его категории: первый или «Добавить ещё».
+
+    Факт — обычная запись категории на день плана (`entry_date` в теле её
+    переносит). Цель пункта записью не считается: «300 отжиманий» в плане не
+    пишет ничего, «сделал 100» пишет 100.
+
+    `mark` в теле ставит отметку пункта в той же транзакции: отказ факта не
+    оставляет пункт отмеченным «сделано».
+
+    `Idempotency-Key` обязателен. Повтор с тем же ключом — **200** и та запись,
+    что уже сохранена, без второй; две одновременные попытки с одним ключом
+    кончаются одной записью. Новый ключ — новая запись.
+
+    - **201** — факт записан; **200** — повтор того же ключа
+    - **404** — пункта нет в плане этого дня
+    - **409** — пункт не связан, связь сломана, ключ записал другой факт
+    - **422** — значения не подходят полям категории
+    """
+    day, _ = await _resolve(db, on)
+    item = await _fact_item(db, day.day_date, item_id)
+    try:
+        written = await fact_crud.record_fact(
+            db, day.day_date, item, body, idempotency_key=idempotency_key
+        )
+    except (fact_crud.FactRefused, fact_crud.FactInvalid) as error:
+        raise _fact_refusal(error) from error
+    if written.replayed:
+        response.status_code = status.HTTP_200_OK
+    return await _fact_answer(db, day, item, written, body, body.mark)
+
+
+@router.put(
+    "/{on}/plan/items/{item_id}/facts/{entry_id}",
+    response_model=PlanFactWriteResponse,
+    responses=FACT_RESPONSES,
+)
+async def put_plan_fact(
+    on: date,
+    item_id: UUID,
+    entry_id: int,
+    body: PlanFactIn,
+    db: AsyncSession = Depends(get_db),
+) -> PlanFactWriteResponse:
+    """
+    Исправить факт, записанный этим пунктом: 300 → 200 меняет запись, а не
+    добавляет ещё 200.
+
+    Переписываются только присланные поля; `entry_date` переносит запись на
+    другой день. Запись, которую пункт не писал, — 404: план не правит ни
+    введённое руками, ни импортированное.
+    """
+    day, _ = await _resolve(db, on)
+    item = await _fact_item(db, day.day_date, item_id)
+    try:
+        written = await fact_crud.correct_fact(db, day.day_date, item, entry_id, body)
+    except (
+        fact_crud.FactRefused,
+        fact_crud.FactInvalid,
+        fact_crud.FactNotFound,
+    ) as error:
+        raise _fact_refusal(error) from error
+    return await _fact_answer(db, day, item, written, body, body.mark)
+
+
+@router.delete(
+    "/{on}/plan/items/{item_id}/facts/{entry_id}",
+    response_model=PlanFactWriteResponse,
+    responses=FACT_RESPONSES,
+)
+async def delete_plan_fact(
+    on: date,
+    item_id: UUID,
+    entry_id: int,
+    mark: Unmark | None = Query(
+        None,
+        description=(
+            f"`{UNMARK}` снимает «сделано» в той же транзакции, когда без этой "
+            "записи пункт больше не выполнен"
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> PlanFactWriteResponse:
+    """
+    Удалить факт, записанный этим пунктом, из истории категории.
+
+    Только этой ручкой. Снятая галочка историю не стирает: «не отметил» и
+    «этого не было» — разные утверждения, и второе человек делает явно.
+    Без `mark` отметку пункта удаление не трогает.
+    """
+    day, _ = await _resolve(db, on)
+    item = await _fact_item(db, day.day_date, item_id)
+    try:
+        written = await fact_crud.remove_fact(
+            db, day.day_date, item, entry_id, mark=mark, source=SOURCE_WEB
+        )
+    except fact_crud.FactNotFound as error:
+        raise _fact_refusal(error) from error
+    return await _fact_answer(db, day, item, written, None, mark)
 
 
 @router.put("/{on}/notebook", response_model=NotebookResponse)
@@ -906,7 +1104,10 @@ async def post_plan_generate(
     """
     day, rule = await _resolve(db, on)
 
-    built = await generate.generate_plan(llm, day.day_date, rule)
+    # Категории, к которым модель может привязать строку (`#200`). Читаются до
+    # вызова модели одним запросом: генерация не пишет ни записей, ни полей.
+    catalog = await fact_crud.read_catalog(db)
+    built = await generate.generate_plan(llm, day.day_date, rule, catalog=catalog)
     try:
         stored = await plan_crud.replace_plan(db, day.day_date, rule, built.document)
     except PlanRejected as rejected:

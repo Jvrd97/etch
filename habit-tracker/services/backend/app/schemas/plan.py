@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130, PHASE-03/140
+# [review:need-review] PHASE-03/87, PHASE-03/110, PHASE-03/130, PHASE-03/140, PHASE-03/200
 # summary: wire types of the plan — the incoming document (nested, order implied by position, windows as "ЧЧ:ММ-ЧЧ:ММ") and the outgoing plan with a schedule and the overlaps found by the database; #110 adds the per-item edit — a patch that tells "not sent" from "set to null", a new line for one section, a move to a place, and the answer that carries the whole plan back with the warnings a human's edit earned; #140 lets a section name the role its windows charge minutes to and an item name the role act its tick closes
+# summary: PHASE-03/200 — every form of a line can name a category, one of its fields and a target, the link a fact typed in the plan is written through
 """
 Wire types of the plan.
 
@@ -62,6 +63,21 @@ ACT_KIND_HINT = (
 SECTION_ROLE_HINT = (
     "Роль, которой засчитываются минуты окон этой секции. «Работа» и «Учёба» — "
     "разные роли; секция без роли минут не размечает"
+)
+
+
+# Связь пункта с категорией (`#200`, ADR-0023), одна подпись на все четыре
+# формы пункта. Цель — намерение, а не факт: запись в истории категории создаёт
+# только введённое «сделал», а сама строка плана не пишет ничего.
+CATEGORY_HINT = (
+    "Категория, в историю которой пишется факт этого пункта. Пункт без неё — "
+    "обычный пункт; `null` в правке снимает связь вместе с полем и целью"
+)
+FIELD_HINT = (
+    "Поле этой категории, в которое пишется факт: число, длительность или галочка"
+)
+TARGET_HINT = (
+    "Цель на поле — «300 отжиманий». Только для числа и длительности; записи не создаёт"
 )
 
 
@@ -148,6 +164,9 @@ class PlanItemIn(BaseModel):
     )
     role_id: int | None = Field(None, description=ROLE_ID_HINT)
     act_kind: str | None = Field(None, description=ACT_KIND_HINT)
+    category_id: int | None = Field(None, description=CATEGORY_HINT)
+    field_id: int | None = Field(None, description=FIELD_HINT)
+    target_value: float | None = Field(None, gt=0, description=TARGET_HINT)
 
     carried_from_item_id: UUID | None = None
     carry_count: int = 0
@@ -231,6 +250,9 @@ class PlanItemResponse(BaseModel):
     quick_mark_id: int | None
     role_id: int | None
     act_kind: str | None
+    category_id: int | None = None
+    field_id: int | None = None
+    target_value: float | None = None
     carried_from_item_id: UUID | None
     carry_count: int
     children: list[PlanItemResponse] = Field(default_factory=list)
@@ -374,6 +396,9 @@ class PlanItemPatch(BaseModel):
     quick_mark_id: int | None = None
     role_id: int | None = Field(None, description=ROLE_ID_HINT)
     act_kind: str | None = Field(None, description=ACT_KIND_HINT)
+    category_id: int | None = Field(None, description=CATEGORY_HINT)
+    field_id: int | None = Field(None, description=FIELD_HINT)
+    target_value: float | None = Field(None, gt=0, description=TARGET_HINT)
 
     @field_validator("act_kind")
     @classmethod
@@ -411,6 +436,9 @@ class PlanItemCreate(BaseModel):
     quick_mark_id: int | None = None
     role_id: int | None = Field(None, description=ROLE_ID_HINT)
     act_kind: str | None = Field(None, description=ACT_KIND_HINT)
+    category_id: int | None = Field(None, description=CATEGORY_HINT)
+    field_id: int | None = Field(None, description=FIELD_HINT)
+    target_value: float | None = Field(None, gt=0, description=TARGET_HINT)
 
     @field_validator("act_kind")
     @classmethod

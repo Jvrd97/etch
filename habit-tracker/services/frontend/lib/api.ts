@@ -10,6 +10,9 @@
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
+// [review:need-review] PHASE-03/200
+// summary: planFactsAPI — the facts a plan line writes into its category (record under Idempotency-Key, correct, delete), their wire types, and `unmark`, which takes «сделано» back with a correction or a delete that leaves the line short
+
 // Relative by default: requests go to the same origin that served the page and
 // are proxied to the backend by the Next rewrite (see next.config.ts). Keeps the
 // app reachable from any device on the LAN without host-specific config.
@@ -3790,3 +3793,162 @@ export interface RelapseRecorded extends Entry {
    */
   created: boolean;
 }
+// --- PHASE-03/200: a plan line that writes into a category's history ---------
+//
+// The interfaces below merge into the ones declared above rather than editing
+// them: this file is shared by the whole swarm and grows by appended blocks.
+// Every new field is optional on purpose — a plan written before the link
+// existed reads exactly as it did.
+
+export interface PlanItem {
+  /** Category whose history a fact typed in this line lands in (ADR-0023). */
+  category_id?: number | null;
+  /** The field of that category the fact is written into. */
+  field_id?: number | null;
+  /** «300 отжиманий» — a target, never a fact. */
+  target_value?: number | null;
+}
+
+export interface PlanItemPatch {
+  /** `null` unlinks the line, field and target with it. */
+  category_id?: number | null;
+  field_id?: number | null;
+  target_value?: number | null;
+}
+
+/** Why a linked line can or cannot take a fact right now. */
+export type PlanLinkState =
+  | 'ok'
+  | 'category_missing'
+  | 'category_archived'
+  | 'checklist_category'
+  | 'field_missing'
+  | 'field_not_in_category'
+  | 'field_unsupported'
+  | 'target_needs_number';
+
+/** How the line's facts stand against its target. */
+export type PlanFactProgress = 'none' | 'partial' | 'met' | 'recorded';
+
+export interface PlanLinkField {
+  id: number;
+  name: string;
+  field_type: FieldType;
+  unit: string | null;
+}
+
+export interface PlanLink {
+  category_id: number;
+  category_name: string;
+  category_active: boolean;
+  /** null — the field was removed from the category. */
+  field_id: number | null;
+  field_name: string | null;
+  field_type: FieldType | null;
+  unit: string | null;
+  target_value: number | null;
+  state: PlanLinkState;
+  /** Every field of the category the card can offer an input for. */
+  fields: PlanLinkField[];
+}
+
+export interface PlanFactValue {
+  field_id: number;
+  /** As the entry stores it: text, whatever the field type. */
+  value: string | null;
+}
+
+export interface PlanFactEntry {
+  entry_id: number;
+  entry_date: string;
+  values: PlanFactValue[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanItemFacts {
+  item_id: string;
+  link: PlanLink;
+  /** Only the entries this line wrote; hand-typed and imported ones are not here. */
+  entries: PlanFactEntry[];
+  /** The linked field summed over the entries; null for a box. */
+  total: number | null;
+  done: boolean;
+  progress: PlanFactProgress;
+}
+
+export interface DayDetail {
+  /** Every linked line of the plan with what it wrote (#200). */
+  plan_facts?: PlanItemFacts[];
+}
+
+/** One field of a fact: a number, whole seconds, or a box. */
+export interface PlanFactValueDraft {
+  field_id: number;
+  value: number | boolean;
+  /** The unit the person saw; the server refuses a mismatch. */
+  unit?: string | null;
+}
+
+/** Takes «сделано» back when a correction or a delete leaves the line short. */
+export type Unmark = 'unmark';
+
+/** The mark a fact write may carry: a state, or `unmark`. */
+export type FactMark = MarkState | Unmark;
+
+export interface PlanFactDraft {
+  values: PlanFactValueDraft[];
+  /** Defaults to the day of the plan, never to today. */
+  entry_date?: string | null;
+  /** Put in the same transaction as the fact; omitted leaves the mark alone. */
+  mark?: FactMark | null;
+}
+
+export interface PlanFactWrite {
+  entry_id: number;
+  /** null when the line is no longer linked. */
+  facts: PlanItemFacts | null;
+  mark: Mark;
+}
+
+/**
+ * The facts of a plan line: record one (or «Добавить ещё»), correct one, delete one.
+ *
+ * `record` requires its key: the hook keeps the key of an attempt whose answer
+ * was lost and sends it again, which is what keeps a retried 300 from becoming
+ * 600 in the category history.
+ */
+export const planFactsAPI = {
+  record: async (
+    date: string,
+    itemId: string,
+    draft: PlanFactDraft,
+    idempotencyKey: string
+  ) => {
+    return fetcher<PlanFactWrite>(`/day/${date}/plan/items/${itemId}/facts`, {
+      method: 'POST',
+      body: JSON.stringify(draft),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    });
+  },
+
+  correct: async (
+    date: string,
+    itemId: string,
+    entryId: number,
+    draft: PlanFactDraft
+  ) => {
+    return fetcher<PlanFactWrite>(
+      `/day/${date}/plan/items/${itemId}/facts/${entryId}`,
+      { method: 'PUT', body: JSON.stringify(draft) }
+    );
+  },
+
+  remove: async (date: string, itemId: string, entryId: number, mark: Unmark | null) => {
+    const query = mark === null ? '' : `?mark=${mark}`;
+    return fetcher<PlanFactWrite>(
+      `/day/${date}/plan/items/${itemId}/facts/${entryId}${query}`,
+      { method: 'DELETE' }
+    );
+  },
+};
