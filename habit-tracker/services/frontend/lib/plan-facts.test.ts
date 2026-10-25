@@ -206,4 +206,22 @@ describe('when a write also ticks the line', () => {
     box.link = { ...box.link, field_type: 'boolean', target_value: null };
     expect(markAfterRemove(box, 7)).toBe('unmark');
   });
+
+  it('leaves a mark the person put on a short line where it is', () => {
+    // 100 of 300 never backed «сделано»: if the line is ticked, the person did it.
+    const short = facts({ total: 100, progress: 'partial', entries: [entry(7, '100')] });
+    expect(markAfterCorrect(short, 7, 120)).toBeNull();
+
+    const two = facts({
+      total: 200,
+      progress: 'partial',
+      entries: [entry(7, '100'), entry(8, '100')],
+    });
+    expect(markAfterRemove(two, 7)).toBeNull();
+
+    const box = facts({ entries: [entry(7, 'false')] });
+    box.link = { ...box.link, field_type: 'boolean', target_value: null };
+    expect(markAfterCorrect(box, 7, false)).toBeNull();
+    expect(markAfterRemove(box, 7)).toBeNull();
+  });
 });

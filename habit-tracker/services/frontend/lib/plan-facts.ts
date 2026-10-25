@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/200
-// summary: pure helpers of a plan line linked to a category — which field a link defaults to (and when the person must choose instead), reading a typed number or duration, wording a fact, its progress against the target and a broken link, when a write also ticks the line, and the key that makes a retried write the same write
+// summary: pure helpers of a plan line linked to a category — which field a link defaults to (and when the person must choose instead), reading a typed number or duration, wording a fact, its progress against the target and a broken link, when a write also ticks the line or takes back a «сделано» the facts had earned, and the key that makes a retried write the same write
 
 import type {
   Category,
@@ -160,8 +160,8 @@ export function markAfterRecord(
   return reaches(facts, (facts.total ?? 0) + value) ? MARK_DONE : null;
 }
 
-/** The linked field of every entry but `entryId`, as stored. */
-function linkedRawsWithout(facts: PlanItemFacts, entryId: number): Array<string | null> {
+/** The linked field of every entry but `entryId` (all of them by default), as stored. */
+function linkedRaws(facts: PlanItemFacts, entryId?: number): Array<string | null> {
   return facts.entries
     .filter((entry) => entry.entry_id !== entryId)
     .map(
@@ -170,44 +170,49 @@ function linkedRawsWithout(facts: PlanItemFacts, entryId: number): Array<string 
     );
 }
 
-/**
- * The mark the stored values `raws` leave the line with: none to change, or `unmark`.
- *
- * `unmark` only takes back «сделано»; the server leaves «не сделал» and
- * «пропустил» where they are, so sending it on a line without «сделано» is safe.
- */
-function markOfRaws(facts: PlanItemFacts, raws: Array<string | null>): Unmark | null {
-  if (facts.link.field_type === 'boolean') {
-    return raws.some((raw) => isTrueText(raw)) ? null : UNMARK;
-  }
+/** The stored values `raws` do the line: a «было», or a total that reaches the target. */
+function rawsDo(facts: PlanItemFacts, raws: Array<string | null>): boolean {
+  if (facts.link.field_type === 'boolean') return raws.some((raw) => isTrueText(raw));
   const total = raws.reduce((sum, raw) => {
     const number = Number(raw ?? 0);
     return sum + (Number.isFinite(number) ? number : 0);
   }, 0);
-  return raws.length > 0 && reaches(facts, total) ? null : UNMARK;
+  return raws.length > 0 && reaches(facts, total);
+}
+
+/**
+ * `unmark` when the facts did the line before the write and `after` no longer does.
+ *
+ * Facts that fell short before the write never backed «сделано»: a mark on such
+ * a line is the person's own call, and a correction or a delete leaves it be.
+ * `unmark` only takes back «сделано»; the server leaves «не сделал» and
+ * «пропустил» where they are.
+ */
+function markOfLoss(facts: PlanItemFacts, after: Array<string | null>): Unmark | null {
+  return rawsDo(facts, linkedRaws(facts)) && !rawsDo(facts, after) ? UNMARK : null;
 }
 
 /**
  * The mark after correcting `entryId` to `value`: its old value counted out.
  *
  * 300 corrected to 200 against a target of 300 takes «сделано» back in the same
- * write, as does «было» corrected to «не было» with no other «было» left.
+ * write, as does «было» corrected to «не было» with no other «было» left. 100
+ * corrected to 120 leaves the mark alone.
  */
 export function markAfterCorrect(
   facts: PlanItemFacts,
   entryId: number,
   value: number | boolean
 ): FactMark | null {
-  const rest = linkedRawsWithout(facts, entryId);
-  if (typeof value === 'boolean') {
-    return value ? MARK_DONE : markOfRaws(facts, rest);
-  }
-  return markOfRaws(facts, [...rest, String(value)]) ?? MARK_DONE;
+  const rest = linkedRaws(facts, entryId);
+  if (typeof value === 'boolean') return value ? MARK_DONE : markOfLoss(facts, rest);
+  const after = [...rest, String(value)];
+  return rawsDo(facts, after) ? MARK_DONE : markOfLoss(facts, after);
 }
 
-/** The mark after deleting `entryId`: `unmark` once what is left no longer does the line. */
+/** The mark after deleting `entryId`: `unmark` once the line was done and is no longer. */
 export function markAfterRemove(facts: PlanItemFacts, entryId: number): Unmark | null {
-  return markOfRaws(facts, linkedRawsWithout(facts, entryId));
+  return markOfLoss(facts, linkedRaws(facts, entryId));
 }
 
 /**

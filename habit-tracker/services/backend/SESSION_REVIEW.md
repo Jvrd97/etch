@@ -2484,3 +2484,7 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_plan_facts.py` — mod: класс `TestTheMarkFollowsTheFact` — 300 → 200 снимает, «было» → «не было» снимает, удаление единственного факта снимает, `unmark` не трогает «пропустил», удаление без `mark` отметку не трогает.
 
 Проверки: ruff, `ruff format --check`, `mypy --strict app` (196 файлов) чистые, `alembic heads` — одна строка `c4e6a8b0d2f3`. `pytest tests/` на `habit_test_200` — 1666 passed, 3 skipped, 2 failed: те же два в `test_goals.py` (baseline, #218). Живая проверка API на 8820: 300 → 200 и удаление факта зала с `unmark` снимают «сделано».
+
+## 2026-10-25 — PHASE-03/200, круг 3: файлы бэкенда не тронуты
+
+Решение, слать ли `unmark`, принимает фронтенд (`lib/plan-facts.ts`); сервер выполняет присланную отметку как в круге 2. Гейт бэкенда прогнан без изменений: ruff, `ruff format --check`, `mypy --strict app` чистые, `alembic heads` — одна строка `c4e6a8b0d2f3`, `pytest tests/` на `habit_test_200` — 1666 passed, 3 skipped, 2 failed в `test_goals.py` (baseline, #218: зависят от календаря, исправлены на main в 7af85d5/a00d7b7).
