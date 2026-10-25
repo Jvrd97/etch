@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/212
-// summary: tests for the chat view model on a scripted API — opening (latest, new, named), a streamed turn folded into the live bubble, refusals, cancelling, a stuck dialogue, guarded deletion from history, and plan ticks, apply and dismiss
+// summary: tests for the chat view model on a scripted API — opening (latest, new, named, retry of the same one), a streamed turn folded into the live bubble, refusals, cancelling, late events of an older turn or conversation, a stuck dialogue, guarded deletion from history with a notice tied to its conversation, and plan ticks, apply and dismiss
 import XCTest
 @testable import HabitTracker
 
@@ -15,6 +15,13 @@ final class MockChatAPI: ChatAPI {
     var turnFailure: Error?
     /// The stream stays open after its events, like a model that went quiet.
     var holdTurnOpen = false
+    var createFailure: Error?
+    var detailFailures: [Int: Error] = [:]
+    /// Runs inside `resetConversation`, before it answers: lets a test act mid-request.
+    var onReset: (@MainActor () async -> Void)?
+    var resetFailure: Error?
+    /// Open streams of held turns, in the order they were started.
+    private(set) var heldTurns: [AsyncThrowingStream<ChatStreamEvent, Error>.Continuation] = []
 
     private(set) var createCalls = 0
     private(set) var deletedIDs: [Int] = []
@@ -31,15 +38,19 @@ final class MockChatAPI: ChatAPI {
 
     func createConversation() async throws -> ChatConversationDTO {
         createCalls += 1
+        if let createFailure { throw createFailure }
         return ChatTestData.conversation(id: createdConversationID)
     }
 
     func fetchConversation(id: Int) async throws -> ChatConversationDetailDTO {
-        ChatConversationDetailDTO(id: id, messages: details[id] ?? [])
+        if let failure = detailFailures[id] { throw failure }
+        return ChatConversationDetailDTO(id: id, messages: details[id] ?? [])
     }
 
     func resetConversation(id: Int) async throws -> ChatResetDTO {
         resetIDs.append(id)
+        await onReset?()
+        if let resetFailure { throw resetFailure }
         details[id] = (details[id] ?? []).map { ChatTestData.message(from: $0, status: ChatMessageDTO.interruptedStatus) }
         return ChatResetDTO(reset: 1)
     }
@@ -79,6 +90,7 @@ final class MockChatAPI: ChatAPI {
         return AsyncThrowingStream { continuation in
             for event in events { continuation.yield(event) }
             if hold {
+                self.heldTurns.append(continuation)
                 continuation.onTermination = { [weak self] _ in
                     self?.turnTerminated = true
                 }
@@ -383,7 +395,8 @@ final class ChatViewModelTests: XCTestCase {
         await viewModel.deleteConversation(id: 4)
 
         XCTAssertTrue(api.deletedIDs.isEmpty, "no request is sent")
-        XCTAssertEqual(viewModel.historyNotice, ChatViewModel.deleteRunningText)
+        XCTAssertEqual(viewModel.historyNotice?.text, ChatViewModel.deleteRunningText)
+        XCTAssertEqual(viewModel.historyNotice?.conversationID, 4)
         viewModel.cancelTurn()
     }
 
@@ -392,7 +405,8 @@ final class ChatViewModelTests: XCTestCase {
         api.deleteResults[3] = APIClientError.unexpectedStatus(409)
         await viewModel.deleteConversation(id: 3)
 
-        XCTAssertEqual(viewModel.historyNotice, ChatViewModel.deleteConflictText)
+        XCTAssertEqual(viewModel.historyNotice?.text, ChatViewModel.deleteConflictText)
+        XCTAssertEqual(viewModel.historyNotice?.conversationID, 3)
         XCTAssertEqual(viewModel.screen, .ready(conversationID: 4))
     }
 
@@ -500,5 +514,243 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(api.dismissedPlans, [9])
         XCTAssertEqual(viewModel.plans[9]?.status, ChatPlanDTO.dismissedStatus)
+    }
+
+    // MARK: - Round 2: notice, new conversation, retry, races
+
+    func testRunningAnswerNoticeGoesWhenThatAnswerEnds() async {
+        await openConversation(4)
+        api.holdTurnOpen = true
+        viewModel.draft = "x"
+        viewModel.send()
+        await viewModel.deleteConversation(id: 4)
+        XCTAssertEqual(viewModel.historyNotice?.reason, .answerRunning)
+
+        await waitUntil(!self.api.heldTurns.isEmpty)
+        api.heldTurns[0].finish()
+        await viewModel.awaitTurn()
+
+        XCTAssertNil(viewModel.historyNotice, "the sheet reopened later does not still say it is running")
+    }
+
+    func testRunningAnswerNoticeGoesWhenTheTurnFails() async {
+        await openConversation(4)
+        api.turnFailure = APIClientError.transport(code: -1005)
+        api.holdTurnOpen = false
+        api.turnEvents = [.delta("а")]
+        viewModel.draft = "x"
+        viewModel.send()
+        await viewModel.deleteConversation(id: 4)
+        XCTAssertEqual(viewModel.historyNotice?.reason, .answerRunning)
+
+        await viewModel.awaitTurn()
+
+        XCTAssertNil(viewModel.historyNotice)
+    }
+
+    func testRunningAnswerNoticeDoesNotFollowToAnotherConversation() async {
+        await openConversation(4)
+        api.holdTurnOpen = true
+        viewModel.draft = "x"
+        viewModel.send()
+        await viewModel.deleteConversation(id: 4)
+        XCTAssertNotNil(viewModel.historyNotice)
+
+        await openConversation(5)
+
+        XCTAssertNil(viewModel.historyNotice)
+    }
+
+    func testConflictNoticeNamesItsConversationAndGoesOnReload() async {
+        api.conversationsResult = .success([
+            ChatTestData.conversation(id: 3, title: "Про сон"), ChatTestData.conversation(id: 4),
+        ])
+        await openConversation(4)
+        await viewModel.loadHistory()
+        api.deleteResults[3] = APIClientError.unexpectedStatus(409)
+        await viewModel.deleteConversation(id: 3)
+
+        XCTAssertEqual(viewModel.historyNotice?.conversationID, 3)
+        XCTAssertEqual(
+            viewModel.historyNoticeLine, "«Про сон»: \(ChatViewModel.deleteConflictText)"
+        )
+
+        await openConversation(5)
+        await viewModel.loadHistory()
+
+        XCTAssertNil(viewModel.historyNotice, "opening the list again starts clean")
+    }
+
+    func testFailedNewConversationFromTheEmptyScreenIsReported() async {
+        await openConversation(4)
+        await viewModel.deleteConversation(id: 4)
+        XCTAssertEqual(viewModel.screen, .empty)
+        api.createFailure = APIClientError.transport(code: -1009)
+
+        await viewModel.startNewConversation()
+
+        XCTAssertEqual(viewModel.screen, .empty)
+        XCTAssertEqual(viewModel.notice, "Network error (-1009)")
+    }
+
+    func testFailedNewConversationFromTheFailedScreenIsReported() async {
+        api.conversationsResult = .failure(APIClientError.unauthorized)
+        await viewModel.refresh()
+        api.createFailure = APIClientError.transport(code: -1009)
+
+        await viewModel.startNewConversation()
+
+        XCTAssertEqual(viewModel.screen, .failed("Invalid API key (401)"))
+        XCTAssertEqual(viewModel.notice, "Network error (-1009)")
+    }
+
+    func testOpeningTheOpenConversationKeepsTheRunningAnswer() async {
+        await openConversation(4)
+        api.holdTurnOpen = true
+        viewModel.draft = "x"
+        viewModel.send()
+        await waitUntil(!self.api.heldTurns.isEmpty)
+
+        await viewModel.open(conversationID: 4)
+
+        XCTAssertTrue(viewModel.isTurnRunning)
+        XCTAssertFalse(api.turnTerminated, "the connection is not closed")
+        XCTAssertEqual(viewModel.screen, .ready(conversationID: 4))
+        viewModel.cancelTurn()
+    }
+
+    func testRetryReopensTheConversationAskedForNotTheLatest() async {
+        api.conversationsResult = .success([ChatTestData.conversation(id: 9)])
+        api.detailFailures[7] = APIClientError.timeout
+        await viewModel.open(conversationID: 7)
+        XCTAssertEqual(viewModel.screen, .failed("Connection timed out"))
+
+        api.detailFailures[7] = nil
+        api.details[7] = [ChatTestData.message(id: 1, seq: 1, content: "семь")]
+        await viewModel.retry()
+
+        XCTAssertEqual(viewModel.screen, .ready(conversationID: 7))
+        XCTAssertEqual(viewModel.messages.map(\.content), ["семь"])
+    }
+
+    func testRetryAfterFailedLatestLookupKeepsTheResolvedConversation() async {
+        api.conversationsResult = .success([ChatTestData.conversation(id: 9)])
+        api.detailFailures[9] = APIClientError.timeout
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.screen, .failed("Connection timed out"))
+
+        api.conversationsResult = .success([ChatTestData.conversation(id: 11)])
+        api.detailFailures[9] = nil
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.screen, .ready(conversationID: 9))
+        XCTAssertEqual(api.createCalls, 0)
+    }
+
+    func testResetFailureOfAnOldConversationDoesNotLandOnTheNewOne() async {
+        await openConversation(4, messages: [
+            ChatTestData.message(id: 2, seq: 2, status: ChatMessageDTO.streamingStatus),
+        ])
+        api.resetFailure = APIClientError.timeout
+        api.onReset = { [unowned self] in
+            await self.viewModel.open(conversationID: 5)
+        }
+
+        await viewModel.reset()
+
+        XCTAssertEqual(viewModel.screen, .ready(conversationID: 5))
+        XCTAssertNil(viewModel.notice)
+    }
+
+    func testLateEventsOfAnOlderConversationNeverReachTheNewOne() async {
+        await openConversation(4)
+        api.holdTurnOpen = true
+        api.turnEvents = [.delta("а")]
+        viewModel.draft = "x"
+        viewModel.send()
+        await waitUntil(self.viewModel.turn?.text == "а")
+        let late = api.heldTurns[0]
+
+        await openConversation(5)
+        late.yield(.delta("поздно"))
+        late.yield(.error(code: "turn_timeout"))
+        late.finish(throwing: APIClientError.transport(code: -1005))
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(viewModel.screen, .ready(conversationID: 5))
+        XCTAssertNil(viewModel.turn, "the new conversation has no turn of its own")
+        XCTAssertNil(viewModel.notice)
+    }
+
+    func testOldTurnEndingDoesNotWipeTheNewTurn() async {
+        await openConversation(4)
+        api.holdTurnOpen = true
+        api.turnEvents = [.error(code: "turn_timeout")]
+        viewModel.draft = "one"
+        viewModel.send()
+        await waitUntil(self.viewModel.turn?.failure != nil)
+        let old = api.heldTurns[0]
+
+        api.turnEvents = [.delta("новый")]
+        viewModel.draft = "two"
+        viewModel.send()
+        await waitUntil(self.viewModel.turn?.text == "новый")
+        old.finish()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(viewModel.turn?.question, "two")
+        XCTAssertEqual(viewModel.turn?.text, "новый")
+        XCTAssertNil(viewModel.turn?.failure)
+        viewModel.cancelTurn()
+    }
+
+    func testAnswerStaysOnScreenWhileTheStoredCopyCannotBeRead() async {
+        await openConversation(4)
+        api.turnEvents = [.delta("Привет"), .done(messageID: 2, seq: 2, status: "complete")]
+        api.detailFailures[4] = APIClientError.timeout
+        viewModel.draft = "x"
+        viewModel.send()
+        await viewModel.awaitTurn()
+
+        XCTAssertEqual(viewModel.turn?.text, "Привет", "the received answer is not taken away")
+        XCTAssertFalse(viewModel.isTurnRunning)
+        XCTAssertEqual(viewModel.notice, "Connection timed out")
+
+        api.detailFailures[4] = nil
+        api.details[4] = [ChatTestData.message(id: 2, seq: 2, content: "Привет")]
+        await viewModel.refresh()
+
+        XCTAssertNil(viewModel.turn)
+        XCTAssertEqual(viewModel.messages.map(\.content), ["Привет"])
+    }
+
+    func testPlanThatDidNotLoadIsReported() async {
+        await openConversation(messages: [ChatTestData.message(id: 31, seq: 2, planId: 9)])
+
+        XCTAssertEqual(
+            viewModel.notice, ChatViewModel.planLoadFailedText + APIClientError.unexpectedStatus(404).userMessage
+        )
+    }
+
+    func testConflictOnApplyReportsAFailedCardRefresh() async {
+        api.plansByID[9] = ChatTestData.plan(id: 9)
+        await openConversation(messages: [ChatTestData.message(id: 31, seq: 2, planId: 9)])
+        api.applyResults = [.failure(APIClientError.unexpectedStatus(409))]
+        api.plansByID[9] = nil
+        await viewModel.applyPlan(id: 9)
+
+        let notice = viewModel.planNotices[9] ?? ""
+        XCTAssertTrue(notice.hasPrefix(ChatViewModel.planConflictText))
+        XCTAssertTrue(notice.contains(ChatViewModel.planRefreshFailedText))
+    }
+
+    func testDismissReportsAFailedCardRefresh() async {
+        api.plansByID[9] = ChatTestData.plan(id: 9)
+        await openConversation(messages: [ChatTestData.message(id: 31, seq: 2, planId: 9)])
+        api.plansByID[9] = nil
+        await viewModel.dismissPlan(id: 9)
+
+        XCTAssertTrue(viewModel.planNotices[9]?.contains(ChatViewModel.planRefreshFailedText) == true)
+        XCTAssertEqual(viewModel.plans[9]?.status, ChatPlanDTO.proposedStatus, "the card is unchanged")
     }
 }

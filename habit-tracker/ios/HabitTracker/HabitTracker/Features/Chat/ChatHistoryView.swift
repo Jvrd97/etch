@@ -11,7 +11,7 @@ struct ChatHistoryView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let notice = viewModel.historyNotice {
+                if let notice = viewModel.historyNoticeLine {
                     Text(notice)
                         .font(DS.Typography.caption)
                         .foregroundStyle(DS.Palette.danger)

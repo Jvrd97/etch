@@ -102,7 +102,7 @@ struct ChatTurnView: View {
                 Text(failure)
                     .font(DS.Typography.caption)
                     .foregroundStyle(DS.Palette.danger)
-            } else {
+            } else if !turn.isStoredCopyMissing {
                 HStack(spacing: DS.Spacing.sm) {
                     ProgressView()
                         .tint(DS.Palette.lime)

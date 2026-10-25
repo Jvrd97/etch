@@ -20,6 +20,17 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             content
+            if let notice = viewModel.notice {
+                // Outside the composer: without a conversation there is no composer, and
+                // a failed "new conversation" must still be seen.
+                Text(notice)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, DS.Spacing.lg)
+                    .padding(.vertical, DS.Spacing.sm)
+                    .background(DS.Palette.background)
+            }
             if viewModel.isReady {
                 composer
             }
@@ -62,7 +73,7 @@ struct ChatView: View {
             NeonLoader(label: "Loading")
         case .failed(let message):
             DSErrorState(message: message) {
-                Task { await viewModel.open(conversationID: nil) }
+                Task { await viewModel.retry() }
             }
         case .empty:
             DSEmptyState(
@@ -129,12 +140,6 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: DS.Spacing.sm) {
-            if let notice = viewModel.notice {
-                Text(notice)
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Palette.danger)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
             HStack(alignment: .bottom, spacing: DS.Spacing.sm) {
                 TextField("Сообщение", text: $viewModel.draft, axis: .vertical)
                     .lineLimit(1...5)
