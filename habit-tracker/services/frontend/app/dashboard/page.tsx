@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76
-// summary: desktop Dashboard includes avoid-category streaks, Continue tracking and merged recent activity alongside the hero
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76, #78
+// summary: desktop Dashboard includes avoid-category streaks, Continue tracking, the 30-day Trends block and merged recent activity alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -24,6 +24,7 @@ import { ENTRIES_TODAY_LABEL, heroLastEntryLine } from '@/lib/ui-constants';
 import { ContinueTracking } from '@/components/ContinueTracking';
 import { CurrentStreaks } from '@/components/CurrentStreaks';
 import ActivityFeed from '@/components/ActivityFeed';
+import { TrendsBlock } from '@/components/dashboard/TrendsBlock';
 
 export default function Dashboard() {
   const {
@@ -33,12 +34,15 @@ export default function Dashboard() {
     categories,
     continueEntries,
     recentActivity,
+    trendState,
+    trendPeriod,
     loading,
     error,
     insight,
     insightPeriod,
     setError,
     setInsightPeriod,
+    setTrendPeriod,
     generateInsight,
   } = useDashboard();
 
@@ -116,6 +120,43 @@ export default function Dashboard() {
       </div>
 
       <ContinueTracking categories={categories} entries={continueEntries} />
+
+      {/* Recent activity and Trends side by side, as in the approved mockup's third row */}
+      <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-2">
+        {/* Recent activity */}
+        <div className="bg-card border border-white/5 rounded-3xl overflow-hidden">
+          <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
+            <h2 className="text-[22px] font-semibold text-text-primary">Recent activity</h2>
+            <Link
+              href="/entries"
+              className="text-sm font-medium text-text-secondary hover:text-lime transition-colors duration-200 inline-flex items-center gap-1"
+            >
+              View all
+              <ArrowRight className="w-4 h-4" strokeWidth={2} />
+            </Link>
+          </div>
+          <div className="px-6 py-4">
+            {recentActivity.length === 0 ? (
+              <div className="text-center py-14">
+                <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
+                  <Calendar className="w-8 h-8 text-text-disabled" strokeWidth={2} />
+                </div>
+                <p className="text-text-secondary">Nothing here yet</p>
+                <Link
+                  href={`/entries${NEW_ENTRY_QUERY}`}
+                  className="mt-5 inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
+                >
+                  Create first entry
+                </Link>
+              </div>
+            ) : (
+              <ActivityFeed items={recentActivity} categories={categories} />
+            )}
+          </div>
+        </div>
+
+        <TrendsBlock state={trendState} period={trendPeriod} onPeriodChange={setTrendPeriod} />
+      </div>
 
       {/* AI insights */}
       <div className="bg-card border border-white/5 rounded-3xl overflow-hidden">
@@ -232,38 +273,6 @@ export default function Dashboard() {
             </div>
           </Link>
         ))}
-      </div>
-
-      {/* Recent activity */}
-      <div className="bg-card border border-white/5 rounded-3xl overflow-hidden">
-        <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
-          <h2 className="text-[22px] font-semibold text-text-primary">Recent activity</h2>
-          <Link
-            href="/entries"
-            className="text-sm font-medium text-text-secondary hover:text-lime transition-colors duration-200 inline-flex items-center gap-1"
-          >
-            View all
-            <ArrowRight className="w-4 h-4" strokeWidth={2} />
-          </Link>
-        </div>
-        <div className="px-6 py-4">
-          {recentActivity.length === 0 ? (
-            <div className="text-center py-14">
-              <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
-                <Calendar className="w-8 h-8 text-text-disabled" strokeWidth={2} />
-              </div>
-              <p className="text-text-secondary">Nothing here yet</p>
-              <Link
-                href={`/entries${NEW_ENTRY_QUERY}`}
-                className="mt-5 inline-flex items-center gap-2 px-6 py-3 bg-lime text-background rounded-3xl font-medium transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_24px_rgba(184,255,54,0.35)]"
-              >
-                Create first entry
-              </Link>
-            </div>
-          ) : (
-            <ActivityFeed items={recentActivity} categories={categories} />
-          )}
-        </div>
       </div>
 
       {/* Quick actions */}

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76
-// summary: mobile Dashboard includes avoid-category streaks, Continue tracking and merged recent activity alongside the hero
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-03/123, #176, #76, #78
+// summary: mobile Dashboard includes avoid-category streaks, Continue tracking, the Trends block with its 7/30/90 selector and merged recent activity alongside the hero
 
 import { useDashboard, INSIGHT_PERIOD_OPTIONS } from '@/hooks/useDashboard';
 import ProgressRing from '@/components/ProgressRing';
@@ -24,6 +24,7 @@ import Link from 'next/link';
 import { ContinueTracking } from '@/components/ContinueTracking';
 import { CurrentStreaks } from '@/components/CurrentStreaks';
 import ActivityFeed from '@/components/ActivityFeed';
+import { TrendsBlock } from '@/components/dashboard/TrendsBlock';
 
 const MOBILE_RING_SIZE_PX = 128;
 
@@ -35,12 +36,15 @@ export default function MobileDashboardPage() {
     categories,
     continueEntries,
     recentActivity,
+    trendState,
+    trendPeriod,
     loading,
     error,
     insight,
     insightPeriod,
     setError,
     setInsightPeriod,
+    setTrendPeriod,
     generateInsight,
   } = useDashboard();
 
@@ -95,6 +99,13 @@ export default function MobileDashboardPage() {
       </div>
 
       <ContinueTracking categories={categories} entries={continueEntries} mobile />
+
+      <TrendsBlock
+        state={trendState}
+        period={trendPeriod}
+        onPeriodChange={setTrendPeriod}
+        mobile
+      />
 
       {/* KPI row */}
       <div className="grid grid-cols-3 gap-3">

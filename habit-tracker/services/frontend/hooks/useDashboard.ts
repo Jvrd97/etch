@@ -1,12 +1,13 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76
-// summary: Dashboard state exposes loaded categories, Continue tracking and the merged recent-activity feed alongside the hero load
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76, #78
+// summary: Dashboard state exposes loaded categories, Continue tracking, the merged recent-activity feed and the Trends block, which loads its own GET /table per period and fails on its own
 
 import { useCallback, useEffect, useState } from 'react';
 import {
   categoriesAPI,
   entriesAPI,
   journalAPI,
+  tableAPI,
   type Category,
   type CategoryStreak,
   type Entry,
@@ -22,6 +23,13 @@ import { todayISO } from '@/lib/date';
 import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 import { partitionTodayCategories } from '@/lib/today-categories';
 import {
+  DEFAULT_TREND_PERIOD,
+  buildDashboardTrends,
+  trendDateRange,
+  type DashboardTrend,
+  type TrendPeriod,
+} from '@/lib/trends';
+import {
   INSIGHT_PERIOD_OPTIONS,
   useInsightRun,
   type InsightPeriod,
@@ -35,6 +43,18 @@ export type { InsightPeriod };
 
 /** Discriminated state of the on-demand AI insight panel. */
 export type InsightState = InsightRunState;
+
+/**
+ * Trends load apart from the rest of the dashboard: a slow or failed table
+ * request must not hold the hero back, and a period change must not reload it.
+ */
+export type TrendState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; trends: DashboardTrend[] };
+
+/** Answer for a user with nothing to trend; no request is made for it. */
+const NO_TRENDS: TrendState = { status: 'ready', trends: [] };
 
 export interface AvoidStreak {
   category: Category;
@@ -71,12 +91,15 @@ export interface UseDashboardResult {
   categories: Category[];
   continueEntries: Entry[];
   recentActivity: ActivityFeedItem[];
+  trendState: TrendState;
+  trendPeriod: TrendPeriod;
   loading: boolean;
   error: string | null;
   insight: InsightState;
   insightPeriod: InsightPeriod;
   setError: (message: string | null) => void;
   setInsightPeriod: (period: InsightPeriod) => void;
+  setTrendPeriod: (period: TrendPeriod) => void;
   /** Kick off an AI analysis over the selected period. */
   generateInsight: () => Promise<void>;
 }
@@ -111,6 +134,8 @@ export function useDashboard(): UseDashboardResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [continueEntries, setContinueEntries] = useState<Entry[]>([]);
   const [recentActivity, setRecentActivity] = useState<ActivityFeedItem[]>([]);
+  const [trendState, setTrendState] = useState<TrendState>({ status: 'loading' });
+  const [trendPeriod, setTrendPeriodState] = useState<TrendPeriod>(DEFAULT_TREND_PERIOD);
 
   // No onReady handler: the panel renders the fresh report inline, so the run
   // parks on `ready` rather than being consumed elsewhere.
@@ -209,6 +234,47 @@ export function useDashboard(): UseDashboardResult {
     void loadDashboardData();
   }, [loadDashboardData]);
 
+  const noCategories = !loading && categories.length === 0;
+
+  useEffect(() => {
+    if (loading || noCategories) return;
+    // The answer of a period the user has already left must not overwrite the
+    // current one, so each run owns a flag its cleanup flips.
+    let cancelled = false;
+    const now = new Date();
+    const { dateFrom, dateTo } = trendDateRange(trendPeriod, now);
+    tableAPI.get(dateFrom, dateTo).then(
+      (table) => {
+        if (cancelled) return;
+        setTrendState({
+          status: 'ready',
+          trends: buildDashboardTrends(categories, table.days, trendPeriod, now),
+        });
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        setTrendState({
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Failed to load trends',
+        });
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, noCategories, categories, trendPeriod]);
+
+  const setTrendPeriod = useCallback(
+    (period: TrendPeriod) => {
+      // Re-picking the shown period starts no request, so it must not park the
+      // block on "loading" with nothing coming to end it.
+      if (period === trendPeriod) return;
+      setTrendPeriodState(period);
+      setTrendState({ status: 'loading' });
+    },
+    [trendPeriod]
+  );
+
   return {
     stats,
     hero,
@@ -216,12 +282,15 @@ export function useDashboard(): UseDashboardResult {
     categories,
     continueEntries,
     recentActivity,
+    trendState: noCategories ? NO_TRENDS : trendState,
+    trendPeriod,
     loading,
     error,
     insight,
     insightPeriod,
     setError,
     setInsightPeriod,
+    setTrendPeriod,
     generateInsight,
   };
 }

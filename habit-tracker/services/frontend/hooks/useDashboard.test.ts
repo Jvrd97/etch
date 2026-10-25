@@ -1,11 +1,12 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76
-// summary: tests for useDashboard's hero load and bounded recent-activity feed — targeted day-window, last-written and recent queries; the hero never reads the history list
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76, #78
+// summary: tests for useDashboard's hero load, bounded recent-activity feed and Trends - targeted day-window, last-written and recent queries; the hero never reads the history list; trends cost one table request per period and fail on their own
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, renderHook, waitFor } from '@testing-library/react';
-import type { Category, CategoryStreak, Entry, Field, JournalEntry } from '@/lib/api';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import type { Category, CategoryStreak, Entry, Field, JournalEntry, TableResponse } from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
+import { trendDateRange } from '@/lib/trends';
 
 const TIMESTAMP = '2026-07-24T09:00:00Z';
 
@@ -81,6 +82,7 @@ let history: Entry[];
 let categoryHistory: Entry[];
 let getAllCategories: ReturnType<typeof mock>;
 let getStreaksApi: ReturnType<typeof mock>;
+let tableGet: ReturnType<typeof mock>;
 
 mock.module('@/lib/api', () => ({
   // Профили потолка и долг за переработку (#179): экран дня читает предложение,
@@ -191,6 +193,10 @@ mock.module('@/lib/api', () => ({
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
   },
+  // GET /table feeds the Trends block; the dashboard asks it once per period.
+  tableAPI: {
+    get: (dateFrom: string, dateTo: string) => tableGet(dateFrom, dateTo),
+  },
   entriesAPI: {
     getAll: (params?: EntriesQuery) => {
       entriesCalls.push(params ?? {});
@@ -220,6 +226,23 @@ mock.module('@/lib/api', () => ({
 
 const { useDashboard } = await import('./useDashboard');
 
+function emptyTable(): TableResponse {
+  return { categories: [], days: [] };
+}
+
+/** A table answer where Water has `amount` glasses on each of the given days. */
+function waterTable(dates: string[], amount: string): TableResponse {
+  return {
+    categories: [],
+    days: dates.map((date) => ({
+      date,
+      cells: [
+        { category_id: WATER.id, field_id: GLASSES.id, aggregated_value: amount, entry_count: 1 },
+      ],
+    })),
+  };
+}
+
 /** Today exactly as the hook computes it — the local calendar date, not the UTC one. */
 const TODAY = todayISO();
 
@@ -234,6 +257,7 @@ beforeEach(() => {
   categoryHistory = [];
   getAllCategories = mock(() => Promise.resolve([WATER]));
   getStreaksApi = mock(() => Promise.resolve([]));
+  tableGet = mock(() => Promise.resolve(emptyTable()));
 });
 
 afterEach(() => {
@@ -344,5 +368,107 @@ describe('useDashboard hero', () => {
     expect(result.current.avoidStreaks).toEqual([
       { category: NO_SMOKING, streak: SMOKING_STREAK },
     ]);
+  });
+});
+
+describe('useDashboard trends', () => {
+  it('builds the rows from one table request that covers the period and the one before', async () => {
+    tableGet = mock(() => Promise.resolve(waterTable([TODAY], '6')));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    const { dateFrom, dateTo } = trendDateRange(30);
+    expect(tableGet).toHaveBeenCalledTimes(1);
+    expect(tableGet).toHaveBeenCalledWith(dateFrom, dateTo);
+    expect(result.current.trendPeriod).toBe(30);
+    const state = result.current.trendState;
+    expect(state.status === 'ready' && state.trends.map((trend) => trend.categoryId)).toEqual([
+      WATER.id,
+    ]);
+  });
+
+  it('stays loading until the dashboard has its categories, then asks once', async () => {
+    const { result } = renderHook(() => useDashboard());
+    expect(result.current.trendState.status).toBe('loading');
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+    expect(tableGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('refetches only the table when the period changes', async () => {
+    tableGet = mock(() => Promise.resolve(waterTable([TODAY], '6')));
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+    const categoryLoads = getAllCategories.mock.calls.length;
+
+    act(() => result.current.setTrendPeriod(7));
+    await waitFor(() => expect(tableGet).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    const { dateFrom, dateTo } = trendDateRange(7);
+    expect(tableGet).toHaveBeenLastCalledWith(dateFrom, dateTo);
+    expect(result.current.trendPeriod).toBe(7);
+    expect(getAllCategories.mock.calls.length).toBe(categoryLoads);
+  });
+
+  it('ignores choosing the period that is already shown', async () => {
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    act(() => result.current.setTrendPeriod(30));
+
+    expect(result.current.trendState.status).toBe('ready');
+    expect(tableGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows loading while the new period is on its way', async () => {
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    tableGet = mock(() => new Promise<TableResponse>(() => {}));
+    act(() => result.current.setTrendPeriod(90));
+
+    expect(result.current.trendState.status).toBe('loading');
+  });
+
+  it('drops the answer of a period the user has already left', async () => {
+    let answerFirst: (table: TableResponse) => void = () => {};
+    tableGet = mock((dateFrom: string) =>
+      dateFrom === trendDateRange(30).dateFrom
+        ? new Promise<TableResponse>((resolve) => {
+            answerFirst = resolve;
+          })
+        : Promise.resolve(waterTable([TODAY], '2'))
+    );
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(tableGet).toHaveBeenCalledTimes(1));
+
+    act(() => result.current.setTrendPeriod(7));
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+    await act(async () => answerFirst(waterTable([TODAY], '999')));
+
+    const state = result.current.trendState;
+    expect(state.status === 'ready' && state.trends[0]?.average).toBe(2);
+  });
+
+  it('keeps the rest of the dashboard when the table request fails', async () => {
+    tableGet = mock(() => Promise.reject(new Error('table is down')));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('error'));
+
+    expect(result.current.trendState).toEqual({ status: 'error', message: 'table is down' });
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('leaves the table alone when there are no categories to trend', async () => {
+    getAllCategories = mock(() => Promise.resolve([]));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    expect(tableGet).not.toHaveBeenCalled();
+    expect(result.current.trendState).toEqual({ status: 'ready', trends: [] });
   });
 });
