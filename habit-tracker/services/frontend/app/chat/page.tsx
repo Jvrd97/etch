@@ -4,7 +4,7 @@
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header; since PHASE-03/197 that delete goes the same way as the history rows' (see the 197 summary below)
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 // summary: PHASE-03/120 gives the wide screen the same live turn as the phone — the model's thought collapsed above the answer, a sign of life before the first word, a caret while it arrives, and a copy button on every message
-// summary: PHASE-03/197 lets every history row delete in place and sends the header's delete down the same path — the open conversation going leaves the screen on «nothing selected» with its address cleared and no new conversation made, a refusal keeps the conversation and offers a retry, and a running answer is explained instead of offered for deletion
+// summary: PHASE-03/197 lets every history row delete in place and sends the header's delete down the same path — the open conversation going leaves the screen on «nothing selected» with its address cleared and no new conversation made, a refusal keeps the conversation and offers a retry, and a running answer is explained instead of offered for deletion; `askedWhileRunning` is cleared the moment that very turn's `answerRunning` flips back to false, so the notice does not return on the next turn of the same conversation
 // summary: PHASE-03/111 puts the history of conversations beside the feed — the one named in `?conversation` is the one that opens, «Новый разговор» starts one and goes there, and the list is re-read after every turn because the title is written from the first question
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -153,6 +153,9 @@ function ChatScreen() {
   const [usage, setUsage] = useState<ChatUsage>(EMPTY_USAGE);
   const [turn, setTurn] = useState<Turn>({ phase: 'idle' });
   const [headerRemoval, setHeaderRemoval] = useState<HeaderRemoval | null>(null);
+  // Предыдущее значение `answerRunning`, нужное только для того, чтобы
+  // поймать его переход `true → false` — конец хода, а не любое сравнение.
+  const [wasAnswerRunning, setWasAnswerRunning] = useState(false);
   const [draft, setDraft] = useState('');
   // Планы лентой, по `plan_id` сообщения. Держатся отдельно от сообщений,
   // потому что применение меняет план, а не реплику, под которой он висит.
@@ -368,6 +371,28 @@ function ChatScreen() {
   // Ответ пишется в открытом разговоре: удалять его до конца ответа нельзя.
   const answerRunning =
     busy || messages.some((message) => message.status === 'streaming');
+  // Сброс состояния на смену входа, тот же приём, что у `shown` выше:
+  // сравнение прямо в рендере вместо эффекта. `askedWhileRunning` гасится
+  // ровно на переходе `answerRunning: true → false` — конец того хода, на
+  // котором нажали «Удалить», а не смена разговора и не новый вопрос (это
+  // два других места, где `headerRemoval` уже сбрасывается целиком). Без
+  // этого флаг переживал бы до следующего хода того же разговора и снова
+  // включал бы alert, хотя никто ничего не нажимал.
+  if (wasAnswerRunning !== answerRunning) {
+    setWasAnswerRunning(answerRunning);
+    // `shown === wanted` — не в разгаре переключения разговора: тот случай
+    // уже обнулил `headerRemoval` целиком в блоке выше, и вторая правка того
+    // же состояния в одном рендере перезаписала бы этот сброс последним
+    // вызовом `setHeaderRemoval`, а не сложила бы их.
+    if (
+      shown === wanted &&
+      wasAnswerRunning &&
+      !answerRunning &&
+      headerRemoval?.askedWhileRunning
+    ) {
+      setHeaderRemoval({ ...headerRemoval, askedWhileRunning: false });
+    }
+  }
   const deleteBlockedReason = (id: number) =>
     id === openId && answerRunning ? REMOVE_RUNNING_ANSWER_WITHOUT_RESET : null;
   const openRemoval = headerRemoval?.conversationId === openId ? headerRemoval : null;

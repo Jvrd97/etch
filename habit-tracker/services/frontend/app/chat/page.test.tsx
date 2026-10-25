@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/197
-// summary: tests for deleting from the history on the wide /chat screen — also that the header's question and its error stay with the conversation they were asked in, a late answer to a delete never reaches the conversation opened meanwhile, and the running-answer notice goes when the answer ends; — another conversation goes and the open one stays, the open one goes (from the row or from the header, by the same path) and the screen is left on «nothing selected» with a clean address and no new conversation, an unnamed one, the date group going with its last row, cancel sending nothing, one request on a double click, a failure kept and retried, and a running answer explained instead of offered for deletion
+// summary: tests for deleting from the history on the wide /chat screen — also that the header's question and its error stay with the conversation they were asked in, a late answer to a delete never reaches the conversation opened meanwhile, the running-answer notice goes when the answer ends and does not come back on the next turn of the same conversation; — another conversation goes and the open one stays, the open one goes (from the row or from the header, by the same path) and the screen is left on «nothing selected» with a clean address and no new conversation, an unnamed one, the date group going with its last row, cancel sending nothing, one request on a double click, a failure kept and retried, and a running answer explained instead of offered for deletion
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -609,6 +609,49 @@ describe('deleting from the header of the wide screen', () => {
     });
 
     // «Идёт ответ» — про сейчас, а не про тот миг, когда нажали.
+    expect(screen.queryByRole('alert') === null).toBe(true);
+    expect(headerDelete()).toBeDefined();
+  });
+
+  it('does not bring the running-answer notice back on the next turn of the same conversation', async () => {
+    let finishFirst: () => void = () => {};
+    streamTurn = (onEvent) => {
+      onEvent({ kind: 'delta', text: 'ответ' });
+      return new Promise<void>((resolve) => {
+        finishFirst = resolve;
+      });
+    };
+    const view = await openScreen();
+    fireEvent.change(within(view.container).getByLabelText(MESSAGE_FIELD_LABEL), {
+      target: { value: 'как я спал?' },
+    });
+    await act(async () => {
+      fireEvent.click(within(view.container).getAllByRole('button', { name: SEND_LABEL })[0]);
+    });
+    // Нажали «Удалить», пока идёт первый ход — ответ сервера объяснён, а не
+    // предложен как вопрос «да/нет».
+    fireEvent.click(headerDelete());
+    expect(screen.getByRole('alert').textContent).toBe(RUNNING_NOTICE);
+
+    await act(async () => {
+      finishFirst();
+    });
+    expect(screen.queryByRole('alert') === null).toBe(true);
+
+    // Второй ход того же разговора снова делает `answerRunning` истинным —
+    // но никто не нажимал «Удалить» на этом ходу, и alert не должен вернуться
+    // сам по себе.
+    streamTurn = (onEvent) => {
+      onEvent({ kind: 'delta', text: 'ещё ответ' });
+      return new Promise<void>(() => {});
+    };
+    fireEvent.change(within(view.container).getByLabelText(MESSAGE_FIELD_LABEL), {
+      target: { value: 'а что дальше?' },
+    });
+    await act(async () => {
+      fireEvent.click(within(view.container).getAllByRole('button', { name: SEND_LABEL })[0]);
+    });
+
     expect(screen.queryByRole('alert') === null).toBe(true);
     expect(headerDelete()).toBeDefined();
   });
