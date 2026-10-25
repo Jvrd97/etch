@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { CreateCategoryOp, OnboardingPlan, PlanOperation } from '@/lib/api';
+import type { CategoryTemplate, CreateCategoryOp, OnboardingPlan, PlanOperation } from '@/lib/api';
 
 function createOp(overrides: Partial<CreateCategoryOp> = {}): CreateCategoryOp {
   return {
@@ -23,8 +23,27 @@ const ADD_FIELD_OP: PlanOperation = {
   field: { name: 'Pulse', field_type: 'number', is_required: false, order: 0 },
 };
 
+const SUPPLEMENTS: CategoryTemplate = {
+  key: 'supplements',
+  name: 'Supplements',
+  display_mode: 'checklist',
+  streak_mode: 'build',
+  added: false,
+  fields: [{ name: 'Vitamin D', field_type: 'boolean', order: 1 }],
+};
+
+const WATER: CategoryTemplate = {
+  key: 'water',
+  name: 'Water',
+  display_mode: 'form',
+  streak_mode: 'build',
+  added: false,
+  fields: [{ name: 'Volume', field_type: 'number', order: 1, unit: 'ml' }],
+};
+
 let draft: ReturnType<typeof mock>;
 let applyBatch: ReturnType<typeof mock>;
+let applyTemplates: ReturnType<typeof mock>;
 let push: ReturnType<typeof mock>;
 
 // Declares the whole surface on purpose: bun fixes a module's export names the
@@ -134,6 +153,8 @@ mock.module('@/lib/api', () => ({
     update: () => Promise.resolve(null),
     delete: () => Promise.resolve(undefined),
     applyBatch: (operations: PlanOperation[]) => applyBatch(operations),
+    listTemplates: () => Promise.resolve([SUPPLEMENTS, WATER]),
+    applyTemplates: (keys: string[]) => applyTemplates(keys),
   },
   entriesAPI: {
     getAll: () => Promise.resolve([]),
@@ -173,11 +194,80 @@ async function renderWithPlan(plan: OnboardingPlan) {
 beforeEach(() => {
   draft = mock(() => Promise.resolve({ operations: [createOp()] }));
   applyBatch = mock(() => Promise.resolve({ categories: [], fields: [] }));
+  applyTemplates = mock(() => Promise.resolve({ categories: [], skipped: [] }));
   push = mock(() => {});
 });
 
 afterEach(() => {
   cleanup();
+});
+
+describe('/m/onboarding templates', () => {
+  it('offers the catalog and creates nothing until the person asks', async () => {
+    render(<MobileOnboardingPage />);
+
+    expect(await screen.findByLabelText(/Supplements/)).toBeDefined();
+    expect(screen.getByLabelText(/Water/)).toBeDefined();
+    expect(applyTemplates).not.toHaveBeenCalled();
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it('applies only the ticked templates and says which were skipped', async () => {
+    applyTemplates = mock(() =>
+      Promise.resolve({
+        categories: [{ id: 7, name: 'Water' }],
+        skipped: ['supplements'],
+      })
+    );
+    render(<MobileOnboardingPage />);
+
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByLabelText(/Supplements/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    const status = await screen.findByRole('status');
+    expect(applyTemplates).toHaveBeenCalledWith(['water', 'supplements']);
+    expect(status.textContent).toContain('Добавлено: Water');
+    expect(status.textContent).toContain('Supplements');
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('leaves the voice builder usable after taking a template', async () => {
+    render(<MobileOnboardingPage />);
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+    await screen.findByRole('status');
+
+    fireEvent.change(screen.getByLabelText('Что отслеживать'), { target: { value: 'трекать сон' } });
+    fireEvent.click(screen.getByRole('button', { name: /Сгенерировать план/ }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Создать выбранное/ })).toBeDefined()
+    );
+    expect(draft).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the mobile categories list only on request', async () => {
+    applyTemplates = mock(() => Promise.resolve({ categories: [{ id: 7, name: 'Water' }], skipped: [] }));
+    render(<MobileOnboardingPage />);
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Открыть категории/ }));
+
+    expect(push).toHaveBeenCalledWith('/m/categories');
+  });
+
+  it('lets the person skip the templates and go straight to the conversation', async () => {
+    render(<MobileOnboardingPage />);
+    await screen.findByLabelText(/Water/);
+
+    fireEvent.click(screen.getByRole('button', { name: /Пропустить шаблоны/ }));
+
+    expect(screen.queryByLabelText(/Water/)).toBeNull();
+    expect(applyTemplates).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /Сгенерировать план/ })).toBeDefined();
+  });
 });
 
 describe('/m/onboarding', () => {
@@ -282,8 +372,10 @@ describe('/m/onboarding', () => {
 
     // The desktop preview packs the checkbox, the name input and the conflict
     // badge into one row; at 375pt that is what pushes the page sideways.
-    const columns = document.body.querySelectorAll(
-      '[class*="grid-cols-2"], [class*="grid-cols-3"]'
+    // Only always-on columns count: the template picker's `md:grid-cols-2`
+    // collapses to one column below the md breakpoint.
+    const columns = [...document.body.querySelectorAll('[class*="grid-cols-"]')].filter((el) =>
+      el.className.split(/\s+/).some((token) => /^grid-cols-[23]$/.test(token))
     );
     expect(columns).toHaveLength(0);
   });

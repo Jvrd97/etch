@@ -1,11 +1,12 @@
 'use client';
 // [review:need-review] PHASE-01/62-mobile-onboarding-twin
-// summary: mobile voice-category-builder — same useOnboardingPlan flow as the desktop page, laid out for a 375pt screen: one card per operation with every control stacked on its own 44pt row
+// summary: mobile voice-category-builder with the built-in template step above it (#219) — same useOnboardingPlan flow as the desktop page, laid out for a 375pt screen: one card per operation with every control stacked on its own 44pt row
 
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, Sparkles } from 'lucide-react';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import OnboardingTemplates from '@/components/onboarding/OnboardingTemplates';
 import { useOnboardingPlan, type OpState } from '@/hooks/useOnboardingPlan';
 import type { PlanField, PlanOperation } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
@@ -119,6 +120,8 @@ export default function MobileOnboardingPage() {
 
   return (
     <div className="space-y-4 animate-fade-rise">
+      <OnboardingTemplates onOpenCategories={() => router.push(`${MOBILE_PATH_PREFIX}/categories`)} />
+
       <p className="text-sm text-text-secondary">
         Опишите словами, что хотите отслеживать — получите план и создайте выбранное одним
         нажатием.

@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { CategoryTemplate, CategoryTemplateApplyResponse } from '@/lib/api';
-import TemplatePicker, { type TemplateClient } from './TemplatePicker';
+import TemplatePicker, { type TemplateClient, type TemplatePickerProps } from './TemplatePicker';
 
 const SUPPLEMENTS: CategoryTemplate = {
   key: 'supplements',
@@ -72,6 +72,18 @@ describe('TemplatePicker', () => {
 
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(apply).toHaveBeenCalledWith(['supplements']);
+  });
+
+  it('hands the catalog it showed to onApplied, so the caller can name skipped keys', async () => {
+    const { client } = makeClient([SUPPLEMENTS, WATER]);
+    const onApplied = mock<TemplatePickerProps['onApplied']>(() => {});
+
+    render(<TemplatePicker client={client} onApplied={onApplied} />);
+    fireEvent.click(await screen.findByLabelText(/Supplements/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(onApplied.mock.calls[0][1]).toEqual([SUPPLEMENTS, WATER]);
   });
 
   it('shows an already added template as taken and cannot tick it', async () => {

@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-01/178-builtin-category-templates
-// summary: picker for the built-in category catalog; applies only the templates the user ticked, never on its own
+// summary: picker for the built-in category catalog; applies only the templates the user ticked, never on its own; onApplied also receives the catalog so skipped keys can be named
 
 import { useEffect, useState } from 'react';
 import * as api from '@/lib/api';
@@ -23,9 +23,10 @@ const apiClient: TemplateClient = {
 const LOAD_TEMPLATES_ERROR = 'Failed to load templates';
 const APPLY_TEMPLATES_ERROR = 'Failed to add templates';
 
-interface TemplatePickerProps {
+export interface TemplatePickerProps {
   client?: TemplateClient;
-  onApplied: (result: CategoryTemplateApplyResponse) => void;
+  /** Gets the catalog the picker showed too: `skipped` carries keys, a caller names them from it. */
+  onApplied: (result: CategoryTemplateApplyResponse, templates: CategoryTemplate[]) => void;
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -70,7 +71,7 @@ export default function TemplatePicker({ client = apiClient, onApplied }: Templa
     setApplying(true);
     setError(null);
     try {
-      onApplied(await client.applyTemplates([...selected]));
+      onApplied(await client.applyTemplates([...selected]), templates);
     } catch (err) {
       setError(errorMessage(err, APPLY_TEMPLATES_ERROR));
     } finally {

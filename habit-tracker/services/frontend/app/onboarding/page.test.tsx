@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { OnboardingPlan, PlanOperation } from '@/lib/api';
+import type { CategoryTemplate, OnboardingPlan, PlanOperation } from '@/lib/api';
 
 const PLAN: OnboardingPlan = {
   operations: [
@@ -41,8 +41,27 @@ const PLAN: OnboardingPlan = {
   ],
 };
 
+const SUPPLEMENTS: CategoryTemplate = {
+  key: 'supplements',
+  name: 'Supplements',
+  display_mode: 'checklist',
+  streak_mode: 'build',
+  added: false,
+  fields: [{ name: 'Vitamin D', field_type: 'boolean', order: 1 }],
+};
+
+const WATER: CategoryTemplate = {
+  key: 'water',
+  name: 'Water',
+  display_mode: 'form',
+  streak_mode: 'build',
+  added: false,
+  fields: [{ name: 'Volume', field_type: 'number', order: 1, unit: 'ml' }],
+};
+
 let draft: ReturnType<typeof mock>;
 let applyBatch: ReturnType<typeof mock>;
+let applyTemplates: ReturnType<typeof mock>;
 let pushRoute: ReturnType<typeof mock>;
 
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
@@ -156,6 +175,8 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(undefined),
     addField: () => Promise.resolve(null),
     applyBatch: (operations: PlanOperation[]) => applyBatch(operations),
+    listTemplates: () => Promise.resolve([SUPPLEMENTS, WATER]),
+    applyTemplates: (keys: string[]) => applyTemplates(keys),
   },
   entriesAPI: {
     getAll: () => Promise.resolve([]),
@@ -195,11 +216,78 @@ async function renderWithPlan() {
 beforeEach(() => {
   draft = mock(() => Promise.resolve(PLAN));
   applyBatch = mock(() => Promise.resolve({ categories: [], fields: [] }));
+  applyTemplates = mock(() => Promise.resolve({ categories: [], skipped: [] }));
   pushRoute = mock(() => {});
 });
 
 afterEach(() => {
   cleanup();
+});
+
+describe('/onboarding templates', () => {
+  it('offers the catalog and creates nothing until the person asks', async () => {
+    render(<OnboardingPage />);
+
+    expect(await screen.findByLabelText(/Supplements/)).toBeDefined();
+    expect(screen.getByLabelText(/Water/)).toBeDefined();
+    expect(applyTemplates).not.toHaveBeenCalled();
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it('applies only the ticked templates and says which were skipped', async () => {
+    applyTemplates = mock(() =>
+      Promise.resolve({
+        categories: [{ id: 7, name: 'Water' }],
+        skipped: ['supplements'],
+      })
+    );
+    render(<OnboardingPage />);
+
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByLabelText(/Supplements/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    const status = await screen.findByRole('status');
+    expect(applyTemplates).toHaveBeenCalledWith(['water', 'supplements']);
+    expect(status.textContent).toContain('Добавлено: Water');
+    expect(status.textContent).toContain('Supplements');
+    expect(pushRoute).not.toHaveBeenCalled();
+  });
+
+  it('leaves the voice builder usable after taking a template', async () => {
+    render(<OnboardingPage />);
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+    await screen.findByRole('status');
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'track sleep' } });
+    fireEvent.click(screen.getByRole('button', { name: /Сгенерировать план/ }));
+
+    await waitFor(() => expect(screen.getByLabelText('Создать категорию Sleep')).toBeDefined());
+    expect(draft).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the categories list only on request', async () => {
+    applyTemplates = mock(() => Promise.resolve({ categories: [{ id: 7, name: 'Water' }], skipped: [] }));
+    render(<OnboardingPage />);
+    fireEvent.click(await screen.findByLabelText(/Water/));
+    fireEvent.click(screen.getByRole('button', { name: /add selected/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Открыть категории/ }));
+
+    expect(pushRoute).toHaveBeenCalledWith('/categories');
+  });
+
+  it('lets the person skip the templates and go straight to the conversation', async () => {
+    render(<OnboardingPage />);
+    await screen.findByLabelText(/Water/);
+
+    fireEvent.click(screen.getByRole('button', { name: /Пропустить шаблоны/ }));
+
+    expect(screen.queryByLabelText(/Water/)).toBeNull();
+    expect(applyTemplates).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /Сгенерировать план/ })).toBeDefined();
+  });
 });
 
 describe('/onboarding plan preview', () => {
