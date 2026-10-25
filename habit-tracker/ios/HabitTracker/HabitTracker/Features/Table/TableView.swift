@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/11-ios-read-cache
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/11-ios-read-cache, PHASE-01/208
 // summary: Table screen — Lime Tech dark restyle: contributions-style grid, lime-tinted filled cells, neon loader; offline banner atop when the window came from the read cache
 import SwiftUI
 
@@ -17,16 +17,14 @@ struct TableView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if let offlineAsOf = viewModel.offlineAsOf {
-                    OfflineBanner(updatedAt: offlineAsOf)
-                }
-                content
+        VStack(spacing: 0) {
+            if let offlineAsOf = viewModel.offlineAsOf {
+                OfflineBanner(updatedAt: offlineAsOf)
             }
-            .navigationTitle("Table")
-            .dsScreenBackground()
+            content
         }
+        .navigationTitle("Table")
+        .dsScreenBackground()
         .task {
             if case .idle = viewModel.state {
                 await viewModel.load()

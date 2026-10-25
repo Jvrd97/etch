@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/06-ios-table-view, PHASE-01/11-ios-read-cache
+// [review:need-review] PHASE-01/06-ios-table-view, PHASE-01/11-ios-read-cache, PHASE-01/208
 // summary: Table screen state — loads GET /table (default 30 days) through the read cache (serves last window + offline flag when the network is down), paginates older, fetches cell details
 import Foundation
 
@@ -73,7 +73,7 @@ final class TableViewModel: ObservableObject {
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> TableViewModel {
         TableViewModel(
-            apiProvider: { EntryMutationLive.makeAPIClient() },
+            apiProvider: { APIClient.live() },
             cacheStore: ReadCacheLive.shared
         )
     }

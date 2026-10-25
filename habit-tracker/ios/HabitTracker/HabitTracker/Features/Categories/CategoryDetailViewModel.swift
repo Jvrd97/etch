@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/36-ios-category-charts
+// [review:need-review] PHASE-01/36-ios-category-charts, PHASE-01/208
 // summary: Single-category detail state — entries + quick-add + shared mutation surface, plus chart state (table history, period/mode toggles, line series, checklist bars, streaks)
 import Foundation
 import os
@@ -62,7 +62,7 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
     /// Builds the production view model for a category from stored Settings.
     static func live(category: CategoryDTO) -> CategoryDetailViewModel {
         CategoryDetailViewModel(
-            category: category, apiProvider: { EntryMutationLive.makeAPIClient() }
+            category: category, apiProvider: { APIClient.live() }
         )
     }
 

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/35-ios-category-detail
+// [review:need-review] PHASE-01/35-ios-category-detail, PHASE-01/208
 // summary: Entries history state — load list + categories, category filter; grouping/edit/delete come from the shared EntryMutating surface
 import Foundation
 
@@ -29,7 +29,7 @@ final class EntriesViewModel: ObservableObject, EntryMutating {
 
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> EntriesViewModel {
-        EntriesViewModel(apiProvider: { EntryMutationLive.makeAPIClient() })
+        EntriesViewModel(apiProvider: { APIClient.live() })
     }
 
     func mutationAPI() -> EntryMutationAPI? { apiProvider() }

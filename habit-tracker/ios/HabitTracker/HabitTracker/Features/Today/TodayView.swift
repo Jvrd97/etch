@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208
 // summary: Today screen — habit cards + quick-entry sheet; avoid categories show "N days clean" streak card + "It happened" relapse form; offline banner + "N entries waiting to send" outbox badge atop when data came from the read cache / a save was queued offline
 import SwiftUI
 
@@ -12,19 +12,17 @@ struct TodayView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if let offlineAsOf = viewModel.offlineAsOf {
-                    OfflineBanner(updatedAt: offlineAsOf)
-                }
-                if viewModel.pendingUploadCount > 0 {
-                    PendingUploadsBadge(count: viewModel.pendingUploadCount)
-                }
-                content
+        VStack(spacing: 0) {
+            if let offlineAsOf = viewModel.offlineAsOf {
+                OfflineBanner(updatedAt: offlineAsOf)
             }
-            .navigationTitle("Today")
-            .dsScreenBackground()
+            if viewModel.pendingUploadCount > 0 {
+                PendingUploadsBadge(count: viewModel.pendingUploadCount)
+            }
+            content
         }
+        .navigationTitle("Today")
+        .dsScreenBackground()
         .task {
             await viewModel.load()
         }

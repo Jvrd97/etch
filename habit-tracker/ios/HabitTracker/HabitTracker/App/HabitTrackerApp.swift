@@ -1,80 +1,18 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-02/65
-// summary: app entry point and tabs, including Health access that starts only when its tab appears
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-02/65, PHASE-01/208
+// summary: app entry point — Lime Tech UIKit appearance and the RootView tab bar
 import SwiftUI
 import UIKit
 
-/// Tabs of the root `TabView`. Tags let the Dashboard jump to another tab programmatically.
-enum AppTab: Hashable {
-    case dashboard
-    case today
-    case table
-    case history
-    case journal
-    case categories
-    case insights
-    case health
-    case settings
-}
-
 @main
 struct HabitTrackerApp: App {
-    @State private var selectedTab: AppTab = .dashboard
-
     init() {
         Self.configureAppearance()
     }
 
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $selectedTab) {
-                DashboardView(viewModel: .live()) { selectedTab = $0 }
-                    .tabItem {
-                        Label("Dashboard", systemImage: "square.grid.2x2")
-                    }
-                    .tag(AppTab.dashboard)
-                TodayView(viewModel: .live())
-                    .tabItem {
-                        Label("Today", systemImage: "checkmark.circle")
-                    }
-                    .tag(AppTab.today)
-                TableView(viewModel: .live())
-                    .tabItem {
-                        Label("Table", systemImage: "tablecells")
-                    }
-                    .tag(AppTab.table)
-                EntriesView(viewModel: .live())
-                    .tabItem {
-                        Label("History", systemImage: "clock.arrow.circlepath")
-                    }
-                    .tag(AppTab.history)
-                JournalView(viewModel: .live())
-                    .tabItem {
-                        Label("Journal", systemImage: "book")
-                    }
-                    .tag(AppTab.journal)
-                CategoriesView(viewModel: .live())
-                    .tabItem {
-                        Label("Categories", systemImage: "folder")
-                    }
-                    .tag(AppTab.categories)
-                InsightsView(viewModel: .live())
-                    .tabItem {
-                        Label("Insights", systemImage: "sparkles")
-                    }
-                    .tag(AppTab.insights)
-                HealthSyncView(viewModel: .live())
-                    .tabItem {
-                        Label("Health", systemImage: "heart.text.square")
-                    }
-                    .tag(AppTab.health)
-                SettingsView()
-                    .tabItem {
-                        Label("Settings", systemImage: "gear")
-                    }
-                    .tag(AppTab.settings)
-            }
-            .tint(DS.Palette.lime)
-            .preferredColorScheme(.dark)
+            RootView()
+                .preferredColorScheme(.dark)
         }
     }
 

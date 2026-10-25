@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/208
 // summary: Journal screen — Lime Tech dark restyle: card feed rows, lime tags, neon loader, DS error/empty states; compose sheet + swipe-delete
 import SwiftUI
 
@@ -11,21 +11,19 @@ struct JournalView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Journal")
-                .dsScreenBackground()
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            viewModel.beginComposing()
-                        } label: {
-                            Image(systemName: "square.and.pencil")
-                                .accessibilityLabel("New journal entry")
-                        }
+        content
+            .navigationTitle("Journal")
+            .dsScreenBackground()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        viewModel.beginComposing()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .accessibilityLabel("New journal entry")
                     }
                 }
-        }
+            }
         .task { await viewModel.load() }
         .sheet(isPresented: $viewModel.isComposing) {
             JournalComposeView(viewModel: viewModel)

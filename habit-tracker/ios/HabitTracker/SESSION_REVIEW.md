@@ -296,3 +296,23 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `HabitTrackerTests/HealthSyncViewModelTests.swift` — new: каталог, один запрос разрешения и чтение всех типов.
 - `HabitTracker/App/HabitTrackerApp.swift` — mod: вход в раздел через отдельную вкладку.
 - `project.yml`, `HabitTracker/Info.plist`, `HabitTracker/HabitTracker.entitlements` — mod/new: HealthKit capability и описание чтения без разрешения на запись.
+
+## 2026-10-25 — PHASE-01/208: фундамент iOS-порта
+
+Одна фабрика клиента, пять вкладок как в мобильном вебе, подпись под личной командой и цель сборки на телефон. Тронуто 36 файлов: 10 `new`, 26 `mod`.
+
+- `HabitTracker/API/APIClient.swift` — mod: `APIClient.live()` вместо четырёх копий фабрики; помощники запросов и `session` стали `internal` для `APIClient+<Фича>.swift`.
+- `HabitTracker/App/AppNavigation.swift` — new: `AppTab` (Today, Day, Chat, Health, More), `MoreDestination`, `AppNavigation.open`.
+- `HabitTracker/App/RootView.swift` — new: таб-бар, по одному `NavigationStack` на вкладку, список More с inline-заголовками.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: точка входа рисует `RootView`.
+- `HabitTracker/Features/{Day,Chat,QuickMarks,DailySummary}/*View.swift` — new: заглушки «скоро» с `init()` без аргументов.
+- `HabitTracker/Features/{Dashboard,Today,Table,Entries,Journal,Categories,Insights,HealthSync,Settings}/*View.swift` — mod: снята внешняя обёртка `NavigationStack`, Dashboard прыгает через `AppDestination`.
+- `HabitTracker/Features/{Journal,Dashboard,Categories}/*ViewModel.swift`, `Shared/EntryMutation.swift` — mod: копии фабрики удалены.
+- `Cache/OutboxQueue.swift`, `Features/{Insights,Entries,Today,Table}/*ViewModel.swift`, `Features/Categories/CategoryDetailViewModel.swift` — mod: одна строка, вызов `APIClient.live()`.
+- `HabitTracker/Features/Settings/SettingsViewModel.swift` — mod: проверка связи через `APIClient.live`, ключи настроек `nonisolated`.
+- `project.yml`, `HabitTracker/Info.plist`, `HabitTracker/HabitTracker.entitlements` — mod: `DEVELOPMENT_TEAM`, `CODE_SIGN_STYLE`, строки микрофона, речи и Face ID, фоновая доставка HealthKit.
+- `HabitTrackerTests/APIClientLiveTests.swift`, `HabitTrackerTests/AppNavigationTests.swift` — new: 12 тестов фабрики и навигации.
+- `../scripts/install-device.sh`, `../../Makefile` — new/mod: `make ios-device`.
+- `README.md` — new: правила для тикетов экранов и установка на телефон.
+
+Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.

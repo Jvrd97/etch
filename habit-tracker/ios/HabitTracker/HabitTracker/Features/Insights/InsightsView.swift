@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/37-ios-insights
+// [review:need-review] PHASE-01/37-ios-insights, PHASE-01/208
 // summary: Insights screen — period selector + "разбор периода" with neon loader, 503 hint, Markdown report render, history list with detail sheet
 import SwiftUI
 
@@ -10,11 +10,9 @@ struct InsightsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Insights")
-                .dsScreenBackground()
-        }
+        content
+            .navigationTitle("Insights")
+            .dsScreenBackground()
         .task { await viewModel.load() }
         .sheet(item: $viewModel.openedReport) { report in
             InsightReportView(report: report)

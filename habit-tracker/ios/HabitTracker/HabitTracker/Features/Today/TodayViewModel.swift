@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208
 // summary: Today screen state — loads categories + entries + avoid streaks through the read cache (serves last snapshot + offline flag when the network is down); POST for form, idempotent checklist PUT; a form POST that fails offline is queued to the outbox and shown as a pending entry, with the badge bound reactively to the outbox so a background flush clears it (and its optimistic rows) without a manual refresh; logRelapse posts count + reloads streak
 import Combine
 import Foundation
@@ -122,7 +122,7 @@ final class TodayViewModel: ObservableObject {
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> TodayViewModel {
         TodayViewModel(
-            apiProvider: { EntryMutationLive.makeAPIClient() },
+            apiProvider: { APIClient.live() },
             cacheStore: ReadCacheLive.shared,
             outbox: OutboxLive.shared
         )

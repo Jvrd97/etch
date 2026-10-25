@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/208
 // summary: Settings screen — Lime Tech dark restyle: card form rows, neon status indicator, lime accents; server address + API key + connection check
 import SwiftUI
 
@@ -6,39 +6,37 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Server") {
-                    TextField("http://100.x.x.x:8000", text: $viewModel.serverAddress)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("API key", text: $viewModel.apiKey)
-                }
-                .listRowBackground(DS.Palette.card)
-                Section {
-                    Button {
-                        Task { await viewModel.checkConnection() }
-                    } label: {
-                        HStack {
-                            Text("Check connection")
-                                .foregroundStyle(DS.Palette.lime)
-                            Spacer()
-                            statusIndicator
-                        }
-                    }
-                    .disabled(viewModel.connectionState == .checking)
-                } footer: {
-                    if case .failure(let message) = viewModel.connectionState {
-                        Text(message)
-                            .foregroundStyle(DS.Palette.danger)
-                    }
-                }
-                .listRowBackground(DS.Palette.card)
+        Form {
+            Section("Server") {
+                TextField("http://100.x.x.x:8000", text: $viewModel.serverAddress)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("API key", text: $viewModel.apiKey)
             }
-            .navigationTitle("Settings")
-            .dsScreenBackground()
+            .listRowBackground(DS.Palette.card)
+            Section {
+                Button {
+                    Task { await viewModel.checkConnection() }
+                } label: {
+                    HStack {
+                        Text("Check connection")
+                            .foregroundStyle(DS.Palette.lime)
+                        Spacer()
+                        statusIndicator
+                    }
+                }
+                .disabled(viewModel.connectionState == .checking)
+            } footer: {
+                if case .failure(let message) = viewModel.connectionState {
+                    Text(message)
+                        .foregroundStyle(DS.Palette.danger)
+                }
+            }
+            .listRowBackground(DS.Palette.card)
         }
+        .navigationTitle("Settings")
+        .dsScreenBackground()
     }
 
     @ViewBuilder

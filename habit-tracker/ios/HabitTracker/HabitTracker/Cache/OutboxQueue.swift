@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208
 // summary: offline outbox for POST /entries — PendingEntry model + OutboxStore (in-memory + SwiftData), OutboxQueue that enqueues on connectivity failure and flushes in order (delete-after-success; replays carry PendingEntry.id as Idempotency-Key so a lost-ack retry returns the original entry, not a duplicate), and an NWPathMonitor-backed auto-flush wiring
 import Foundation
 import Network
@@ -375,7 +375,7 @@ enum OutboxLive {
         let queue = OutboxQueue(store: store)
         queue.startAutoFlush(
             monitor: NWPathNetworkMonitor(),
-            posterProvider: { EntryMutationLive.makeAPIClient() }
+            posterProvider: { APIClient.live() }
         )
         return queue
     }()

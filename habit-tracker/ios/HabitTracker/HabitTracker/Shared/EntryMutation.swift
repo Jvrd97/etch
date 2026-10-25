@@ -1,7 +1,6 @@
-// [review:need-review] PHASE-01/35-ios-category-detail, PHASE-01/37-ios-insights
-// summary: Shared entry-mutation surface — EntryEditDraft/LoadState/DayGroup models, EntryMutating protocol+extension (group/edit/delete/requireAPI), live() APIClient factory (optional timeout override)
+// [review:need-review] PHASE-01/35-ios-category-detail, PHASE-01/37-ios-insights, PHASE-01/208
+// summary: Shared entry-mutation surface — EntryEditDraft/LoadState/DayGroup models, EntryMutating protocol+extension (group/edit/delete/requireAPI)
 import Foundation
-import os
 
 /// A single entry being edited in a history form. `values` is keyed by field id
 /// so the form can bind each of the category's fields to its current value; it is
@@ -142,43 +141,5 @@ extension EntryMutating {
             return nil
         }
         return api
-    }
-}
-
-/// Builds the production `APIClient` from stored Settings (UserDefaults + Keychain).
-/// Shared by the entry-mutation view models' `live()` factories so the wiring —
-/// base-URL parsing, Keychain read, and the 401-on-Keychain-failure fallback —
-/// lives in exactly one place.
-enum EntryMutationLive {
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "EntryMutationLive"
-    )
-
-    /// `timeout` defaults to the client's standard budget; callers that hit a slow
-    /// synchronous endpoint (e.g. AI insights, which block on the LLM) pass a longer one.
-    static func makeAPIClient(timeout: TimeInterval = APIClient.defaultTimeout) -> APIClient? {
-        let address = UserDefaults.standard
-            .string(forKey: SettingsViewModel.serverAddressDefaultsKey) ?? ""
-        guard let baseURL = APIClient.makeBaseURL(from: address) else {
-            return nil
-        }
-        let keychain = KeychainStore()
-        return APIClient(
-            baseURL: baseURL,
-            apiKeyProvider: {
-                do {
-                    return try keychain.read(SettingsViewModel.apiKeyKeychainKey)
-                } catch {
-                    // A Keychain failure must not crash a background request:
-                    // send it without a key and let the backend answer 401,
-                    // which surfaces as a visible error. Logged (no secrets).
-                    Self.logger.error(
-                        "Keychain read for API key failed: \(String(describing: error))"
-                    )
-                    return nil
-                }
-            },
-            timeout: timeout
-        )
     }
 }

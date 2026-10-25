@@ -1,7 +1,6 @@
-// [review:need-review] PHASE-01/07-ios-categories-crud
+// [review:need-review] PHASE-01/07-ios-categories-crud, PHASE-01/208
 // summary: Categories screen state — list load, draft validation (empty name, select w/o options), create/update/delete
 import Foundation
-import os
 
 /// A field being edited in the category form. `options` is the raw list the user
 /// types for a `select` field; it is serialized to the backend's JSON-array string
@@ -101,36 +100,9 @@ final class CategoriesViewModel: ObservableObject {
         self.init(apiProvider: { api })
     }
 
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "CategoriesViewModel"
-    )
-
     /// Builds the production view model from stored Settings (UserDefaults + Keychain).
     static func live() -> CategoriesViewModel {
-        CategoriesViewModel(apiProvider: {
-            let address = UserDefaults.standard
-                .string(forKey: SettingsViewModel.serverAddressDefaultsKey) ?? ""
-            guard let baseURL = APIClient.makeBaseURL(from: address) else {
-                return nil
-            }
-            let keychain = KeychainStore()
-            return APIClient(
-                baseURL: baseURL,
-                apiKeyProvider: {
-                    do {
-                        return try keychain.read(SettingsViewModel.apiKeyKeychainKey)
-                    } catch {
-                        // A Keychain failure must not crash a background request:
-                        // send it without a key and let the backend answer 401,
-                        // which surfaces as a visible error. Logged (no secrets).
-                        Self.logger.error(
-                            "Keychain read for API key failed: \(String(describing: error))"
-                        )
-                        return nil
-                    }
-                }
-            )
-        })
+        CategoriesViewModel(apiProvider: { APIClient.live() })
     }
 
     /// Loads every category (active and archived) so the management screen shows all.

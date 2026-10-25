@@ -1,24 +1,22 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-01/208
 // summary: Dashboard screen — Lime Tech dark restyle: KPI cards, recent-activity feed, lime quick-actions; Insights entry point
 import SwiftUI
 
 struct DashboardView: View {
     @StateObject private var viewModel: DashboardViewModel
 
-    /// Switches the hosting `TabView` to another tab (quick jumps to Today/Journal).
-    private let onNavigate: (AppTab) -> Void
+    /// Quick jumps: Today is a tab, Journal and Insights are pushed on the More stack.
+    private let onNavigate: (AppDestination) -> Void
 
-    init(viewModel: DashboardViewModel, onNavigate: @escaping (AppTab) -> Void) {
+    init(viewModel: DashboardViewModel, onNavigate: @escaping (AppDestination) -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
         self.onNavigate = onNavigate
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Dashboard")
-                .dsScreenBackground()
-        }
+        content
+            .navigationTitle("Dashboard")
+            .dsScreenBackground()
         .task {
             await viewModel.load()
         }
@@ -117,19 +115,19 @@ struct DashboardView: View {
     private var quickActions: some View {
         HStack(spacing: DS.Spacing.md) {
             Button {
-                onNavigate(.today)
+                onNavigate(.tab(.today))
             } label: {
                 Label("Today", systemImage: "checkmark.circle")
             }
             .buttonStyle(LimeButtonStyle(prominent: false))
             Button {
-                onNavigate(.journal)
+                onNavigate(.more(.journal))
             } label: {
                 Label("Journal", systemImage: "book")
             }
             .buttonStyle(LimeButtonStyle(prominent: false))
             Button {
-                onNavigate(.insights)
+                onNavigate(.more(.insights))
             } label: {
                 Label("Insights", systemImage: "sparkles")
             }

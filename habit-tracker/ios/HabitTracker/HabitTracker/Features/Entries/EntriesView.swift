@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/35-ios-category-detail
+// [review:need-review] PHASE-01/35-ios-category-detail, PHASE-01/208
 // summary: Entries history screen — date-sectioned list, filter menu; edit form now the shared generic EntryEditView, summary line from shared EntrySummary
 import SwiftUI
 
@@ -11,16 +11,14 @@ struct EntriesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("History")
-                .dsScreenBackground()
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        filterMenu
-                    }
+        content
+            .navigationTitle("History")
+            .dsScreenBackground()
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    filterMenu
                 }
-        }
+            }
         .task { await viewModel.load() }
         .sheet(item: editingBinding) { draft in
             EntryEditView(
