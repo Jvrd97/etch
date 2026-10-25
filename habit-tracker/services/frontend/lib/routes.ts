@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123, PHASE-03/nav-drawer, #176
+// [review:need-review] PHASE-01/73-daily-summary-metrics-vertical, PHASE-03/86, PHASE-03/93, PHASE-03/94, PHASE-03/111, PHASE-03/118, PHASE-03/125, PHASE-03/134, PHASE-03/152, PHASE-03/123, PHASE-03/nav-drawer, #176, #209
+// summary: Health (#209) joins the registry — desktop /health and its mobile twin reached through "More", filed under Данные
 // summary: screens now carry `section` (День/Данные/Настройка) and `inHeader`, from which the desktop drawer and its two header anchors are derived; `isActiveRoute` marks a screen on its detail routes too
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen but Chat has a mobile twin (#118), Categories owns its nested detail route, Day summary/Goals/Roles/Journal/Table/Insights/Onboarding/Chat reached through "More"; Life owns the timeline and Week its dated detail route
 // summary: single registry of app screens — desktop nav, mobile tab bar, "More" list, mobile header titles and the mobile-route whitelist are all derived from it; every screen has a mobile twin, Categories owns its nested detail route, Day summary/Goals/Journal/Table/Insights/Onboarding/Chat/Quick marks reached through "More"
@@ -320,6 +321,22 @@ export const APP_ROUTES: readonly AppRoute[] = [
     inTabBar: null,
     // «Настройка»: канон дня.
     section: 'setup',
+    inHeader: false,
+  },
+  {
+    id: 'health',
+    name: 'Health',
+    href: '/health',
+    // `/m/health` existed before this registration (#65); joining the registry
+    // is what gives it a click from "More" instead of being reachable only by
+    // typing the address.
+    hasMobile: true,
+    hasMobileNested: false,
+    // Under "More": синк с телефона читают по желанию, не несколько раз в день,
+    // и пять слотов таб-бара заняты.
+    inTabBar: null,
+    // «Данные»: каталог накопленных измерений с телефона.
+    section: 'data',
     inHeader: false,
   },
   {

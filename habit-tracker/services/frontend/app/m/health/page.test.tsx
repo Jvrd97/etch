@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65
-// summary: mobile Health screen tests for server grouping, values, empty metrics, and the Apple settings link
+// [review:need-review] PHASE-02/65, PHASE-03/209
+// summary: mobile Health screen tests for server grouping, values, the Apple settings link, the whole-catalog sync hint and a failed load — all through the shared useHealthMetrics/HealthMetricGroups now behind this page
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -40,13 +40,25 @@ const METRICS: HealthMetric[] = [
   },
 ];
 
+const ALL_EMPTY_METRICS: HealthMetric[] = METRICS.map((metric) => ({ ...metric, days: [] }));
+
+// Mutable so each scenario below can answer the one request this page makes
+// without redeclaring the module mock — the default is the mixed catalog every
+// earlier test already relied on.
+const getMetrics = mock((_dateFrom: string, _dateTo: string) =>
+  Promise.resolve({ metrics: METRICS })
+);
+
 mock.module('@/lib/api', () => ({
-  healthAPI: { getMetrics: () => Promise.resolve({ metrics: METRICS }) },
+  healthAPI: { getMetrics: (...args: [string, string]) => getMetrics(...args) },
 }));
 
 const { default: HealthPage } = await import('./page');
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  getMetrics.mockClear();
+});
 
 describe('/m/health', () => {
   it('groups the server catalog and shows values or the exact empty text', async () => {
@@ -67,6 +79,28 @@ describe('/m/health', () => {
     const link = await screen.findByRole('link', { name: 'Настройки доступа' });
     expect(link.getAttribute('href')).toBe(
       'https://support.apple.com/guide/iphone/share-health-and-fitness-data-iph5ede58c3d/ios'
+    );
+  });
+
+  it('shows the sync hint instead of a wall of empty rows when nothing ever synced', async () => {
+    getMetrics.mockImplementationOnce(() => Promise.resolve({ metrics: ALL_EMPTY_METRICS }));
+    render(<HealthPage />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Данных ещё нет — откройте приложение на телефоне и нажмите синк.')
+      ).toBeDefined()
+    );
+    expect(screen.queryByText('Движение и энергия')).toBeNull();
+    expect(screen.queryByText('Нет данных')).toBeNull();
+  });
+
+  it('reports a failed load instead of hanging on the spinner', async () => {
+    getMetrics.mockImplementationOnce(() => Promise.reject(new Error('network down')));
+    render(<HealthPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Не удалось загрузить данные здоровья')).toBeDefined()
     );
   });
 });
