@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/97
+# [review:need-review] PHASE-03/97, PHASE-03/105
+# summary: PHASE-03/105 turns any failure of a run into a `PollRefused` with a code (never the exception text), records it with its time, keeps the poll of one source in a savepoint so a database error cannot poison the next, checks the credentials file before an adapter runs, and keeps `refresh_stale` going over the sources one failure at a time
 # summary: the inbox contour — the seed of four source stubs, the ClickUp adapter that reads open tasks of the personal workspace by the cursor it keeps, an upsert on the natural key so a second poll of an unchanged workspace adds nothing, and the local date taken from `app.core.daytime` rather than computed here
 """
 Чтение внешних источников и запись сигналов.
@@ -21,18 +22,21 @@ personal-os коммит в 00:01 приписался новому дню, и �
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Protocol
 
 import httpx
-from sqlalchemy import func, literal_column, select
+from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import local_date
+from app.inbox import errors
 from app.inbox.credentials import SecretUnreadable, decrypt_secret, encrypt_secret
 from app.models.inbox import (
     SOURCE_DIRECTION_READ_WRITE,
@@ -43,6 +47,8 @@ from app.models.inbox import (
 
 __all__ = [
     "ExternalItem",
+    "cursor_moment",
+    "has_adapter",
     "may_write_back",
     "set_credentials",
     "SignalSource",
@@ -68,6 +74,8 @@ SEED_SOURCES: tuple[tuple[str, str, str, str | None], ...] = (
     ("telegram", "personal", "read", "TELEGRAM_SESSION_PATH"),
 )
 
+logger = logging.getLogger(__name__)
+
 CLICKUP_API = "https://api.clickup.com/api/v2"
 
 # Переменная окружения с числовым id личного воркспейса. Отдельно от токена:
@@ -82,6 +90,11 @@ POLL_TIMEOUT_SECONDS = 20.0
 # Ключ курсора личного ClickUp: миллисекунды `date_updated` последней виденной
 # задачи. Форма курсора — дело адаптера, снаружи это непрозрачный jsonb (D6).
 CURSOR_UPDATED_MS = "date_updated_gt"
+
+# Провайдеры, у которых учётные данные — файл на диске, а не строка в базе
+# (ADR-0016, D8): OAuth-токен Gmail, сессия Telethon. Путь к файлу лежит в
+# переменной окружения с именем из `credential_ref`.
+FILE_CREDENTIAL_PROVIDERS = frozenset({"gmail", "telegram"})
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,11 @@ class PollRefused(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+    @property
+    def error_class(self) -> str | None:
+        """Класс отказа для экрана; `None` у «выключен», который не ошибка."""
+        return errors.class_of_code(self.code)
 
 
 async def seed_sources(db: AsyncSession) -> None:
@@ -380,17 +398,74 @@ def _adapter_for(source: SignalSource) -> Adapter:
     """
     if not source.is_active:
         raise PollRefused(
-            "source_disabled",
+            errors.CODE_SOURCE_DISABLED,
             "Источник выключен. Включите его прежде, чем читать.",
         )
     adapter = ADAPTERS.get(source.provider)
     if adapter is None:
         raise PollRefused(
-            "no_adapter",
+            errors.CODE_NO_ADAPTER,
             f"У источника {source.provider}/{source.account} нет адаптера: "
             "строка в справочнике есть, читать её нечем.",
         )
     return adapter
+
+
+def has_adapter(source: SignalSource) -> bool:
+    """Есть ли у провайдера этого источника адаптер — или это заготовка."""
+    return source.provider in ADAPTERS
+
+
+def cursor_moment(source: SignalSource) -> datetime | None:
+    """
+    До какого момента источник прочитан — курсор как время, для экрана.
+
+    Курсор непрозрачен для всех, кроме своего адаптера (D6), поэтому знание его
+    ключа живёт здесь, рядом с адаптером, а не в слое API. У источника, который
+    ещё не читали, времени нет; нечитаемый курсор отвечает тем же: экран
+    показывает «не знаю», а не роняет справочник из-за одной строки.
+    """
+    stamp = source.cursor.get(CURSOR_UPDATED_MS)
+    if stamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(stamp) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _require_credential_file(source: SignalSource) -> None:
+    """
+    Файл учётных данных на месте — до того, как адаптер что-то начал.
+
+    Удалённая сессия Telethon или стёртый токен Gmail — это состояние «нужен
+    вход» с понятным следующим шагом, а не авария (ADR-0016, D8). Проверка
+    стоит перед адаптером: без файла он всё равно упадёт, и чем именно — зависит
+    от библиотеки, а не от нас. `credential_ref` называет переменную окружения
+    с путём; сам путь, записанный в строке, тоже принимается.
+    """
+    if source.provider not in FILE_CREDENTIAL_PROVIDERS:
+        return
+    reference = source.credential_ref or ""
+    path = os.environ.get(reference) or (reference if os.sep in reference else "")
+    if not path or not Path(path).is_file():
+        raise PollRefused(
+            errors.CODE_NO_CREDENTIALS,
+            "Файла учётных данных нет. Войдите в источник заново.",
+        )
+
+
+def _refusal_for(error: Exception) -> PollRefused:
+    """
+    Любое исключение прогона как отказ с кодом.
+
+    Текст исключения дальше этой функции не идёт: код собирает
+    `errors.code_of_exception` из типа, а сообщение берётся готовое, по классу.
+    """
+    if isinstance(error, PollRefused):
+        return error
+    code = errors.code_of_exception(error)
+    return PollRefused(code, errors.describe(errors.class_of_code(code)))
 
 
 async def probe_source(
@@ -406,15 +481,23 @@ async def probe_source(
     После него вопрос «а ключ-то рабочий» тем же способом уже не задать —
     второй опрос честно вернёт ноль нового, и ноль будет неотличим от поломки.
 
-    Проба не берёт сессию базы вовсе, и это не экономия, а граница: функции без
+    Проба не берёт сессию базы вовсе, и это не усердие, а граница: функции без
     сессии нечем записать даже по недосмотру. Курсор снимается (`full=True`),
     поэтому дважды нажатая кнопка дважды покажет одно и то же.
 
     Отказы те же и с теми же кодами, что у опроса, — включая главный: у
-    выключенного источника наружу не уходит ни одного запроса.
+    выключенного источника наружу не уходит ни одного запроса. Неожиданное
+    исключение адаптера тоже приезжает отказом, а не белым экраном.
     """
     adapter = _adapter_for(source)
-    return await adapter(source, transport, full=True)
+    try:
+        _require_credential_file(source)
+        return await adapter(source, transport, full=True)
+    except Exception as error:
+        refusal = _refusal_for(error)
+        if refusal is error:
+            raise
+        raise refusal from None
 
 
 def _is_stale(source: SignalSource, now: datetime) -> bool:
@@ -443,22 +526,31 @@ async def refresh_stale(
     задачам», а не «сходи в ClickUp и потом ответь». Кнопка «перечитать»
     остаётся для «хочу прямо сейчас», но разговор от неё больше не зависит.
 
-    **Отказ провайдера не бросается наружу.** Освежение — удобство поверх
-    чтения, а не его условие: упавший ClickUp обязан деградировать до «читаю,
-    что есть», а не ронять разговор о дне. Код уходит в возврат для лога и
-    остаётся в `last_error_code`, как после ручного опроса.
+    **Отказ одного источника не бросается наружу и не останавливает остальных.**
+    Освежение — удобство поверх чтения, а не его условие: упавший ClickUp обязан
+    деградировать до «читаю, что есть», а не ронять разговор о дне. Любое
+    исключение прогона `poll_source` уже превратил в `PollRefused`, поэтому
+    цикл ловит ровно его. Код уходит в возврат для лога и остаётся в
+    `last_error_code`, как после ручного опроса.
 
     Источники обходятся по одному, а не разом: у них общая сессия базы, и
-    параллельная запись в неё — это не ускорение, а гонка.
+    параллельная запись в неё — это не ускорение, а гонка. Порядок по `id`:
+    «кто идёт первым» не должен зависеть от того, как Postgres решил вернуть
+    строки.
     """
     moment = now if now is not None else datetime.now(timezone.utc)
     result = await db.execute(
-        select(SignalSource).where(SignalSource.is_active.is_(True))
+        select(SignalSource)
+        .where(SignalSource.is_active.is_(True))
+        .order_by(SignalSource.id)
     )
+    due = [
+        source
+        for source in result.scalars().all()
+        if source.provider in ADAPTERS and _is_stale(source, moment)
+    ]
     refusals: list[str] = []
-    for source in result.scalars().all():
-        if source.provider not in ADAPTERS or not _is_stale(source, moment):
-            continue
+    for source in due:
         try:
             await poll_source(db, source, transport=transport)
         except PollRefused as refusal:
@@ -478,69 +570,120 @@ async def poll_source(
     Порядок отказов — от самого дешёвого к самому дорогому: выключенный источник
     и источник без адаптера не доходят до сети вовсе. Это не оптимизация, а
     свойство: «выключен» обязано означать, что наружу не ушло ни одного запроса.
+
+    **Наружу выходит только `PollRefused`.** Что бы ни бросил адаптер или запись
+    — разобранный не как надо JSON, оборванное соединение, ошибка базы, — отказ
+    записывается кодом и временем, а вызывающий получает то же, что и от
+    предусмотренных отказов. Поэтому у ручной кнопки и у цикла по расписанию
+    один и тот же способ упасть.
     """
     adapter = _adapter_for(source)
-
+    # Идентификатор и имя берутся заранее: отказ записи оставляет объект
+    # источника в состоянии, из которого их уже не прочитать без запроса.
+    source_id = source.id
+    name = f"{source.provider}/{source.account}"
     try:
+        _require_credential_file(source)
         items = await adapter(source, transport)
-    except PollRefused as refusal:
-        source.last_error_code = refusal.code
-        await db.commit()
-        raise
+        return await _store(db, source, items)
+    except Exception as error:
+        refusal = _refusal_for(error)
+        # В лог идёт имя источника и код: ни текста исключения, ни трассировки,
+        # в которой он повторился бы.
+        logger.warning("inbox source %s refused a run: %s", name, refusal.code)
+        await _record_failure(db, source, source_id, refusal.code)
+        if refusal is error:
+            raise
+        raise refusal from None
 
+
+async def _record_failure(
+    db: AsyncSession, source: SignalSource, source_id: int, code: str
+) -> None:
+    """
+    Записать отказ: код и момент, не трогая курсор и время удачного прогона.
+
+    Запись идёт отдельным `UPDATE` по идентификатору, а не присваиванием полей
+    объекту: после сбоя записи объект мог остаться в состоянии «истёк», и
+    присваивание в асинхронной сессии упало бы второй, уже неинформативной
+    ошибкой.
+    """
+    await db.execute(
+        update(SignalSource)
+        .where(SignalSource.id == source_id)
+        .values(last_error_code=code, last_error_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
+    await db.refresh(source)
+
+
+async def _store(
+    db: AsyncSession, source: SignalSource, items: list[ExternalItem]
+) -> PollOutcome:
+    """
+    Записать сигналы прогона и сдвинуть курсор.
+
+    Запись идёт в точке сохранения: ошибка базы на одной строке откатывает
+    только её. Без неё сессия остаётся в состоянии «ждёт rollback», и следующий
+    источник цикла падает не по своей вине.
+    """
     ingested = 0
     updated = 0
     newest_ms = source.cursor.get(CURSOR_UPDATED_MS)
-    for item in items:
-        # `ON CONFLICT DO UPDATE` по естественному ключу: повторно увиденная
-        # задача обновляет снимок. `xmax = 0` в Postgres отличает вставку от
-        # обновления — иначе «сколько приехало нового» пришлось бы считать
-        # вторым запросом.
-        # Аннотация нужна mypy: `returning()` возвращает generic, который
-        # из литерала колонки вывести нельзя.
-        statement: ReturningInsert[tuple[int, bool]] = (
-            pg_insert(InboundSignal)
-            .values(
-                source_id=source.id,
-                external_id=item.external_id,
-                title=item.title,
-                external_url=item.external_url,
-                occurred_at=item.occurred_at,
-                local_date=local_date(item.occurred_at),
-                content_hash=item.content_hash,
+    async with db.begin_nested():
+        for item in items:
+            # `ON CONFLICT DO UPDATE` по естественному ключу: повторно увиденная
+            # задача обновляет снимок. `xmax = 0` в Postgres отличает вставку от
+            # обновления — иначе «сколько приехало нового» пришлось бы считать
+            # вторым запросом.
+            # Аннотация нужна mypy: `returning()` возвращает generic, который
+            # из литерала колонки вывести нельзя.
+            statement: ReturningInsert[tuple[int, bool]] = (
+                pg_insert(InboundSignal)
+                .values(
+                    source_id=source.id,
+                    external_id=item.external_id,
+                    title=item.title,
+                    external_url=item.external_url,
+                    occurred_at=item.occurred_at,
+                    local_date=local_date(item.occurred_at),
+                    content_hash=item.content_hash,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_inbound_signal_natural_key",
+                    set_={
+                        "title": item.title,
+                        "external_url": item.external_url,
+                        "occurred_at": item.occurred_at,
+                        "local_date": local_date(item.occurred_at),
+                        "content_hash": item.content_hash,
+                        "updated_at": func.now(),
+                    },
+                )
+                # `xmax = 0` — постгресовый способ отличить вставку от обновления
+                # в одном `INSERT ... ON CONFLICT`: у вставленной версии строки
+                # нет удаляющей транзакции. Сравнение `created_at = updated_at`
+                # тут не работает — `onupdate` до upsert-а не доходит, и
+                # обновление считалось бы вставкой.
+                .returning(InboundSignal.id, literal_column("xmax = 0"))
             )
-            .on_conflict_do_update(
-                constraint="uq_inbound_signal_natural_key",
-                set_={
-                    "title": item.title,
-                    "external_url": item.external_url,
-                    "occurred_at": item.occurred_at,
-                    "local_date": local_date(item.occurred_at),
-                    "content_hash": item.content_hash,
-                    "updated_at": func.now(),
-                },
-            )
-            # `xmax = 0` — постгресовый способ отличить вставку от обновления в
-            # одном `INSERT ... ON CONFLICT`: у вставленной версии строки нет
-            # удаляющей транзакции. Сравнение `created_at = updated_at` тут не
-            # работает — `onupdate` до upsert-а не доходит, и обновление
-            # считалось бы вставкой.
-            .returning(InboundSignal.id, literal_column("xmax = 0"))
-        )
-        row = (await db.execute(statement)).one()
-        if row[1]:
-            ingested += 1
-        else:
-            updated += 1
+            row = (await db.execute(statement)).one()
+            if row[1]:
+                ingested += 1
+            else:
+                updated += 1
 
-        stamp = int(item.occurred_at.timestamp() * 1000)
-        if newest_ms is None or stamp > int(newest_ms):
-            newest_ms = stamp
+            stamp = int(item.occurred_at.timestamp() * 1000)
+            if newest_ms is None or stamp > int(newest_ms):
+                newest_ms = stamp
 
     # Курсор двигается только после успешной записи: сдвинутый раньше означал бы
-    # пропущенные задачи, если запись упала.
+    # пропущенные задачи, если запись упала. Поля источника меняются уже вне
+    # точки сохранения — откат строки не должен отменять и их, и наоборот.
     source.cursor = {**source.cursor, CURSOR_UPDATED_MS: newest_ms}
     source.last_polled_at = datetime.now(timezone.utc)
+    source.last_ingested = ingested
     source.last_error_code = None
+    source.last_error_at = None
     await db.commit()
     return PollOutcome(ingested=ingested, updated=updated)

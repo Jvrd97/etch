@@ -4,6 +4,8 @@
 // [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — edits one line of the plan at a time, marks the anchors of a day by kind, writes its training, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, resets a stuck dialogue, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it, the button entered, patched, reordered and deleted by hand, one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
+// [review:need-review] PHASE-03/105
+// summary: SignalSource carries the adapter flag, the cursor moment, the count of the last good run and the class and time of the last failure
 import { loginRedirectTarget } from './auth';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
@@ -3463,9 +3465,29 @@ export interface SignalSource {
   has_secret: boolean;
   /** Настройки адаптера без секретов: `team_id` у ClickUp, лейблы у почты. */
   settings: Record<string, string>;
+  /** Есть ли у провайдера адаптер. `false` — заготовка: «не подключён». */
+  has_adapter: boolean;
+  /** Последний УСПЕШНЫЙ прогон. Отказ его не двигает. */
   last_polled_at: string | null;
+  /** До какого момента источник прочитан; `null` — ещё не читали. */
+  cursor_at: string | null;
+  /** Новых сигналов в последнем успешном прогоне; `null` — прогонов не было. */
+  last_ingested: number | null;
+  /** Детальный машинный код последнего отказа. Текста исключения здесь нет. */
   last_error_code: string | null;
+  /** Класс отказа для экрана: что делать, а не что сказал провайдер. */
+  last_error_class: SourceErrorClass | null;
+  last_error_at: string | null;
 }
+
+/** Шесть устойчивых классов отказа источника (`app/inbox/errors.py`). */
+export type SourceErrorClass =
+  | 'auth_expired'
+  | 'needs_login'
+  | 'rate_limited'
+  | 'network'
+  | 'remote_error'
+  | 'not_implemented';
 
 /** Чем кончился ручной прогон источника. */
 export interface PollOutcome {

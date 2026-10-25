@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/97
+# [review:need-review] PHASE-03/97, PHASE-03/105
+# summary: PHASE-03/105 adds to a source whether it has an adapter, how far it has been read, how many new signals the last good run brought, and the class and time of the last failure
 # summary: wire types of the inbox — a source with its state and the name (not the value) of the credential it needs, a signal with the link back and no field into which a body could ever fit, and the outcome of one poll as two counts
 """
 Наружные типы контура входящих.
@@ -35,8 +36,22 @@ class SourceResponse(BaseModel):
     # Настройки адаптера без секретов: id воркспейса, лейблы. Их человек и
     # вводил, показывать их обратно — правильно.
     settings: dict[str, str]
+    # Есть ли у провайдера адаптер. `False` — заготовка: экран говорит «не
+    # подключён», а не «пусто» и не «сломалось».
+    has_adapter: bool
+    # Последний успешный прогон. Отказ его не двигает: «опрошен вчера, ошибка
+    # сегодня» отличает сломанный источник от тихого дня.
     last_polled_at: datetime | None
+    # До какого момента источник прочитан. `None` — ещё не читали.
+    cursor_at: datetime | None
+    # Новых сигналов в последнем успешном прогоне. `None` — прогонов не было.
+    last_ingested: int | None
+    # Детальный машинный код последнего отказа и его класс для экрана
+    # (`auth_expired`, `needs_login`, `rate_limited`, `network`, `remote_error`,
+    # `not_implemented`). Текста исключения здесь нет и быть не может.
     last_error_code: str | None
+    last_error_class: str | None
+    last_error_at: datetime | None
 
 
 class SignalResponse(BaseModel):

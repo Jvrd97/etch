@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/97, PHASE-03/191
+# [review:need-review] PHASE-03/97, PHASE-03/191, PHASE-03/105
+# summary: PHASE-03/105 gives the source directory its adapter flag, cursor moment, last count and the class and time of the last failure, and gives every refusal of poll and probe the same class the directory shows
 # summary: PHASE-03/191 adds POST /inbox/sources/{id}/probe — the adapter is run with the cursor off and its result shown, nothing is written, so "is the key working" has an answer that does not consume the very rows it is proving
 # summary: the inbox endpoints — the feed of signals with the same 366-day range limit table and health use, the source directory, and the manual poll a person presses (and the mac agent calls) until the worker of #99 exists
 """
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.crud import inbox as inbox_crud
+from app.inbox import errors
 from app.models.inbox import SignalSource
 from app.schemas.inbox import (
     PROBE_MAX_ITEMS,
@@ -108,9 +110,26 @@ def _as_source(row: SignalSource) -> SourceResponse:
         credential_ref=row.credential_ref,
         has_secret=row.secret_ciphertext is not None,
         settings={str(k): str(v) for k, v in (row.settings or {}).items()},
+        has_adapter=inbox_crud.has_adapter(row),
         last_polled_at=row.last_polled_at,
+        cursor_at=inbox_crud.cursor_moment(row),
+        last_ingested=row.last_ingested,
         last_error_code=row.last_error_code,
+        last_error_class=errors.class_of_code(row.last_error_code),
+        last_error_at=row.last_error_at,
     )
+
+
+def _refusal_detail(refusal: inbox_crud.PollRefused) -> dict[str, str | None]:
+    """
+    Тело 409: код, класс и фраза. Кнопка «перечитать» и справочник говорят
+    одним и тем же классом — экран не гадает, как назвать отказ.
+    """
+    return {
+        "code": refusal.code,
+        "error_class": refusal.error_class,
+        "message": refusal.message,
+    }
 
 
 @router.put("/sources/{source_id}/credentials", response_model=SourceResponse)
@@ -182,7 +201,7 @@ async def probe_source(
     except inbox_crud.PollRefused as refusal:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": refusal.code, "message": refusal.message},
+            detail=_refusal_detail(refusal),
         ) from refusal
     return ProbeResponse(
         count=len(items),
@@ -219,6 +238,6 @@ async def poll_source(
     except inbox_crud.PollRefused as refusal:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": refusal.code, "message": refusal.message},
+            detail=_refusal_detail(refusal),
         ) from refusal
     return PollResponse(ingested=outcome.ingested, updated=outcome.updated)

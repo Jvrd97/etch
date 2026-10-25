@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/97
+// [review:need-review] PHASE-03/97, PHASE-03/105
+// summary: PHASE-03/105 takes «has an adapter» from the server instead of a list of providers kept in the screen
 // summary: /inbox screen — every source as a card whose key is typed in here rather than into a file on the server, the feed of signals with the link that takes a person back to the task, and the states a source can be in told apart instead of collapsed into one grey row
 
 import { ExternalLink, Inbox } from 'lucide-react';
@@ -14,18 +15,6 @@ const SUBTITLE =
   'Задачи и письма, пришедшие снаружи. Тела сообщений здесь не хранятся — только ссылка обратно.';
 
 const EMPTY_FEED = 'Ничего не приехало. Нажмите «перечитать» у источника.';
-const POLL_LABEL = 'перечитать';
-const DISABLED_HINT = 'не подключён';
-const NO_ADAPTER_HINT = 'адаптера нет';
-
-/**
- * Провайдеры, у которых есть адаптер.
- *
- * По провайдеру, а не по паре с аккаунтом: личный и рабочий ClickUp — один и
- * тот же API, различаются ключом и id воркспейса. Gmail и Telegram ждут своих
- * тикетов, и карточка говорит об этом прямо вместо молчаливой серой строки.
- */
-const READABLE_PROVIDERS = new Set(['clickup']);
 
 export default function InboxPage() {
   const {
@@ -61,7 +50,7 @@ export default function InboxPage() {
           <SourceCard
             key={source.id}
             source={source}
-            readable={READABLE_PROVIDERS.has(source.provider)}
+            readable={source.has_adapter}
             busy={polling !== null}
             onSave={(secret, settings) => void saveCredentials(source.id, secret, settings)}
             onToggle={(active) => void toggle(source.id, active)}

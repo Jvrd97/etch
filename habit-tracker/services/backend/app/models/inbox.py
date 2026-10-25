@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/97
+# [review:need-review] PHASE-03/97, PHASE-03/105
+# summary: PHASE-03/105 adds `last_error_at` and `last_ingested` to a source — when it last failed and how many new signals its last good run brought
 # summary: the five tables of ADR-0016 — `signal_sources` with its opaque jsonb cursor, the allowlist `signal_scopes`, the source-agnostic envelope `inbound_signals` whose privacy is expressed by the columns it does not have, the derived `commitments`, and the journal `signal_mirror_ops` of what was written back
 """
 Входящие сигналы: ClickUp, Telegram, Gmail — одним слоем.
@@ -164,8 +165,17 @@ class SignalSource(Base):
         DateTime(timezone=True), nullable=True
     )
     # Машинный код последнего отказа, без текста ответа: диагностика не имеет
-    # права стать местом, куда протекает содержимое чужого ящика.
+    # права стать местом, куда протекает содержимое чужого ящика. Класс отказа
+    # (`app/inbox/errors.py`) из кода выводится и в базе не хранится.
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Когда случился этот отказ. Пара с `last_polled_at`: тот — последний
+    # успешный прогон, этот — последний неудачный, и по паре видно, что новее.
+    last_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Сколько новых сигналов принёс последний успешный прогон. `NULL` — ещё не
+    # читали; `0` — читали, и нового не было, а это другой ответ.
+    last_ingested: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

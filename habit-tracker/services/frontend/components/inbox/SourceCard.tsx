@@ -1,11 +1,20 @@
 'use client';
-// [review:need-review] PHASE-03/98, PHASE-03/191
+// [review:need-review] PHASE-03/98, PHASE-03/191, PHASE-03/105
+// summary: PHASE-03/105 puts a word on the state of the source («не подключён», «нужен вход», «сломалось»), shows the time of the last good run with the count it brought, and the class and time of the last failure with its next step — the bare error code is gone from the header
 // summary: one source card — the key typed into the interface instead of into a file on the server, shown as «ключ задан» and never echoed back, the adapter's own setting beside it, the switch that turns the source on, and the reasons a source can be silent told apart
 
 import { useState } from 'react';
-import { Check, KeyRound, RefreshCw, Stethoscope } from 'lucide-react';
+import { KeyRound, RefreshCw, Stethoscope } from 'lucide-react';
 import type { SignalSource } from '@/lib/api';
 import type { ProbeState } from '@/hooks/useInbox';
+import {
+  CLASS_HINT,
+  NEVER_POLLED,
+  STATE_LABEL,
+  moment,
+  sourceState,
+  type SourceState,
+} from '@/components/inbox/source-state';
 import { entryInputClass } from '@/lib/ui-constants';
 
 export const SECRET_SET = 'ключ задан';
@@ -28,6 +37,13 @@ export const NEEDS_SECRET = 'ключа нет — задайте его пол�
 export const NOT_INGESTED =
   'это ещё не в трекере: проба только смотрит. Нажмите «перечитать», чтобы записать.';
 export const NO_ADAPTER = 'адаптера нет — источник ждёт своего тикета';
+
+/** Цвет слова о состоянии: заготовка тихая, вход ждёт человека, поломка — красная. */
+const STATE_STYLE: Record<SourceState, string> = {
+  not_connected: 'text-text-disabled',
+  needs_login: 'text-amber-400',
+  broken: 'text-danger',
+};
 
 /** Подпись поля настройки, по провайдеру: у каждого адаптера она своя. */
 const SETTING_LABEL: Record<string, string> = {
@@ -80,6 +96,7 @@ export default function SourceCard({
   const [setting, setSetting] = useState(source.settings[settingKey] ?? '');
 
   const name = source.label ?? `${source.provider}/${source.account}`;
+  const state = sourceState(source, readable);
   const settingUnchanged = setting.trim() === (source.settings[settingKey] ?? '');
   // Что стоит на пути у чтения, либо `null` — ничего.
   const blocked = !source.is_active
@@ -103,8 +120,13 @@ export default function SourceCard({
         >
           {source.has_secret ? SECRET_SET : SECRET_MISSING}
         </span>
-        {source.last_error_code !== null && (
-          <span className="text-xs text-warning">{source.last_error_code}</span>
+        {state !== null && (
+          <span
+            data-testid={`state-${source.id}`}
+            className={`text-xs font-medium ${STATE_STYLE[state]}`}
+          >
+            {STATE_LABEL[state]}
+          </span>
         )}
         <label className="ml-auto inline-flex items-center gap-2 text-sm text-text-secondary">
           <input
@@ -190,13 +212,30 @@ export default function SourceCard({
               {PROBE_LABEL}
             </button>
 
-            {source.last_polled_at !== null && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-text-disabled">
-                <Check className="w-3.5 h-3.5" strokeWidth={2} />
-                читали
-              </span>
-            )}
           </div>
+
+          {/* Когда читали в последний раз — успешно — и что принёс тот прогон.
+              Пустая лента с сегодняшним временем — тихий день; пустая лента с
+              вчерашним временем и ошибкой ниже — сломанный источник. */}
+          <p className="mt-3 text-xs text-text-secondary" data-testid={`runs-${source.id}`}>
+            {source.last_polled_at !== null
+              ? `последний успешный прогон: ${moment(source.last_polled_at)}`
+              : NEVER_POLLED}
+            {source.last_ingested !== null && ` · принёс новых: ${source.last_ingested}`}
+          </p>
+
+          {source.last_error_class !== null && (
+            <p
+              className={`mt-1 text-xs ${state === 'broken' ? 'text-danger' : 'text-amber-400'}`}
+              data-testid={`error-${source.id}`}
+              title={source.last_error_code ?? undefined}
+            >
+              <span className="font-mono">{source.last_error_class}</span>
+              {source.last_error_at !== null && ` · ${moment(source.last_error_at)}`}
+              {' — '}
+              {CLASS_HINT[source.last_error_class]}
+            </p>
+          )}
 
           {/* Проба под ключом и настройкой, а не над ними: сначала вводят, потом
               проверяют. Блок появляется только после нажатия — пустая рамка на
