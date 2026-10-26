@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/213
-// summary: day-summary flow state — dictation into an editable text, the draft from the server, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan; nothing reaches the server except the draft request until the person confirms
+// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write; nothing reaches the server except the draft request until the person confirms
 import Foundation
 
 @MainActor
@@ -32,22 +32,30 @@ final class DailySummaryViewModel: ObservableObject {
     @Published private(set) var speechMessage: String?
     @Published private(set) var draftState: DraftState = .idle
     @Published private(set) var applyState: ApplyState = .idle
+    /// The day the retelling is filed under (`YYYY-MM-DD`), today unless the person moved it.
+    @Published private(set) var entryDate: String
     @Published private(set) var metricEnabled: [Bool] = []
     @Published private(set) var checkEnabled: [Bool] = []
     /// The day's text ships by default: appending or creating loses nothing.
-    @Published var journalEnabled = true
+    @Published private(set) var journalEnabled = true
     /// Replacing drops the old text, so it is off until the person turns it on.
-    @Published var journalReplace = false
+    @Published private(set) var journalReplace = false
     @Published private(set) var categories: [CategoryDTO] = []
+    /// A write got no answer (timeout, dropped connection): it may have landed. The plan stays
+    /// exactly as it was sent until a retry under the same key is answered.
+    @Published private(set) var applyIsUnconfirmed = false
 
     private let apiProvider: () -> DailySummaryAPI?
     private let speech: SpeechDictating
     private let dateFormatter: DateFormatter
     private let now: () -> Date
     private let onApplied: () -> Void
-    private var planDate = ""
     private var applyKey = UUID().uuidString
     private var listenTask: Task<Void, Never>?
+    private var draftTask: Task<Void, Never>?
+    private var isStartingDictation = false
+    /// Bumped by every stop, so a start still waiting on the permission prompt knows it was withdrawn.
+    private var dictationToken = 0
 
     init(
         apiProvider: @escaping () -> DailySummaryAPI?,
@@ -65,6 +73,7 @@ final class DailySummaryViewModel: ObservableObject {
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         self.dateFormatter = formatter
+        self.entryDate = formatter.string(from: now())
     }
 
     static func live(onApplied: @escaping () -> Void = {}) -> DailySummaryViewModel {
@@ -78,9 +87,15 @@ final class DailySummaryViewModel: ObservableObject {
     // MARK: - Dictation
 
     func startDictation() async {
-        guard !isListening else { return }
+        guard !isListening, !isStartingDictation else { return }
+        isStartingDictation = true
+        defer { isStartingDictation = false }
         speechMessage = nil
-        switch await speech.requestAccess() {
+        let token = dictationToken
+        let access = await speech.requestAccess()
+        // The sheet was closed or the app left while the system prompt was up.
+        guard token == dictationToken else { return }
+        switch access {
         case .granted:
             break
         case .speechDenied:
@@ -95,7 +110,7 @@ final class DailySummaryViewModel: ObservableObject {
         }
         // The previous session may still be delivering its last phrase; let it land first.
         await dictationFinished()
-        guard !isListening else { return }
+        guard token == dictationToken else { return }
         let stream: AsyncThrowingStream<String, Error>
         do {
             stream = try speech.start()
@@ -110,6 +125,8 @@ final class DailySummaryViewModel: ObservableObject {
                 for try await phrase in stream {
                     self?.interim = phrase
                 }
+            } catch SpeechDictationError.interrupted {
+                self?.speechMessage = "Диктовка прервалась: звонок, другое приложение или смена микрофона. Услышанное сохранено. Нажмите «Говорить», чтобы продолжить."
             } catch {
                 self?.speechMessage = "Распознавание прервалось. Услышанное сохранено, проверьте текст."
             }
@@ -119,9 +136,18 @@ final class DailySummaryViewModel: ObservableObject {
     }
 
     func stopDictation() {
+        dictationToken += 1
         guard isListening else { return }
         speech.stop()
         isListening = false
+    }
+
+    /// The app left the foreground: the system takes the microphone, so say why dictation stopped.
+    func stopDictationForBackground() {
+        // Not listening yet means the permission prompt is up, which also leaves the foreground.
+        guard isListening else { return }
+        stopDictation()
+        speechMessage = "Диктовка остановлена: приложение ушло в фон. Услышанное сохранено."
     }
 
     /// Resolves once the recognizer has delivered its last phrase into `transcript`.
@@ -141,14 +167,50 @@ final class DailySummaryViewModel: ObservableObject {
         transcript = existing.isEmpty ? phrase : "\(existing) \(phrase)"
     }
 
+    // MARK: - Day
+
+    private var today: String { dateFormatter.string(from: now()) }
+
+    var isToday: Bool { entryDate == today }
+
+    /// Moving the day while a request is in flight or after an unanswered write would file the plan
+    /// under a day nobody confirmed.
+    var canChangeDay: Bool {
+        draftState != .loading && applyState != .applying && !applyIsUnconfirmed && applyState != .applied
+    }
+
+    var canShowNextDay: Bool { canChangeDay && entryDate < today }
+
+    func showPreviousDay() {
+        if let moved = DayFormat.shift(entryDate, by: -1) { setEntryDate(moved) }
+    }
+
+    func showNextDay() {
+        guard entryDate < today, let moved = DayFormat.shift(entryDate, by: 1) else { return }
+        setEntryDate(moved)
+    }
+
+    func showToday() {
+        setEntryDate(today)
+    }
+
+    /// A key belongs to one day: the plan filed under another day is another write.
+    private func setEntryDate(_ date: String) {
+        guard canChangeDay, date != entryDate, date <= today else { return }
+        entryDate = date
+        applyKey = UUID().uuidString
+    }
+
     // MARK: - Draft
 
     var canGenerate: Bool {
         if case .loading = draftState { return false }
+        guard applyState != .applying, !applyIsUnconfirmed, applyState != .applied else { return false }
         return !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isListening
     }
 
     func generate() async {
+        guard canGenerate else { return }
         // A half-said sentence is not a day: finish listening, and let the last phrase land first.
         if isListening {
             stopDictation()
@@ -160,14 +222,29 @@ final class DailySummaryViewModel: ObservableObject {
             draftState = .failure(Self.notConfiguredMessage)
             return
         }
+        let previous = draftState
         draftState = .loading
-        applyState = .idle
-        let date = dateFormatter.string(from: now())
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runDraft(api: api, text: text, previous: previous)
+        }
+        draftTask = task
+        await task.value
+        draftTask = nil
+    }
+
+    /// Gives up on the draft in flight. The text stays, and so does the plan that was on screen.
+    func cancelDraft() {
+        draftTask?.cancel()
+    }
+
+    private func runDraft(api: DailySummaryAPI, text: String, previous: DraftState) async {
         do {
             let plan = try await api.draftDailySummary(
-                DailySummaryDraftRequestDTO(transcript: text, entryDate: date)
+                DailySummaryDraftRequestDTO(transcript: text, entryDate: entryDate)
             )
-            planDate = date
+            try Task.checkCancellation()
+            applyState = .idle
             metricEnabled = plan.metrics.map { !$0.uncertain && !$0.implausible }
             checkEnabled = plan.checklist.map { !$0.uncertain }
             // A plan is one intent to write one day; a retry of it keeps the key, a new plan does not.
@@ -176,8 +253,21 @@ final class DailySummaryViewModel: ObservableObject {
             journalReplace = false
             draftState = .done(plan)
         } catch {
-            draftState = .failure(Self.draftMessage(for: error))
+            if Self.isCancellation(error) {
+                if case .done = previous { draftState = previous } else { draftState = .idle }
+            } else {
+                draftState = .failure(Self.draftMessage(for: error))
+            }
         }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        if case .transport(let code)? = error as? APIClientError {
+            return code == URLError.cancelled.rawValue
+        }
+        return false
     }
 
     // MARK: - Preview
@@ -187,26 +277,47 @@ final class DailySummaryViewModel: ObservableObject {
         return nil
     }
 
+    /// Rows, journal mode and the day can change only while nothing is being written and no write
+    /// is waiting for its answer.
+    var canEditPlan: Bool {
+        plan != nil && applyState != .applying && !applyIsUnconfirmed && applyState != .applied
+    }
+
     func setMetric(_ index: Int, enabled: Bool) {
-        guard metricEnabled.indices.contains(index) else { return }
+        guard canEditPlan, metricEnabled.indices.contains(index) else { return }
         metricEnabled[index] = enabled
     }
 
     func setCheck(_ index: Int, enabled: Bool) {
-        guard checkEnabled.indices.contains(index) else { return }
+        guard canEditPlan, checkEnabled.indices.contains(index) else { return }
         checkEnabled[index] = enabled
+    }
+
+    func setJournalEnabled(_ enabled: Bool) {
+        guard canEditPlan else { return }
+        journalEnabled = enabled
+    }
+
+    func setJournalReplace(_ replace: Bool) {
+        guard canEditPlan, canReplaceJournal else { return }
+        journalReplace = replace
     }
 
     var canReplaceJournal: Bool {
         plan?.journal?.existingEntryId != nil
     }
 
+    /// The journal text will overwrite what the day holds, not add to it.
+    var isReplacingJournal: Bool {
+        journalEnabled && journalReplace && canReplaceJournal
+    }
+
     /// The journal operation as it would be sent, or nil when it is off. A replace the day cannot
     /// honour (nothing to replace) changes nothing.
     private var journalToSend: JournalOpDTO? {
         guard journalEnabled, var journal = plan?.journal else { return nil }
-        if journalReplace && canReplaceJournal {
-            journal.mode = JournalOpDTO.modeReplace
+        if isReplacingJournal {
+            journal.mode = .replace
         }
         return journal
     }
@@ -218,6 +329,7 @@ final class DailySummaryViewModel: ObservableObject {
     }
 
     var canApply: Bool {
+        guard !isListening else { return false }
         switch (draftState, applyState) {
         case (.done, .idle), (.done, .failure):
             return enabledCount > 0
@@ -244,7 +356,7 @@ final class DailySummaryViewModel: ObservableObject {
     func apply() async {
         guard canApply, let plan, let api = apiProvider() else { return }
         let request = DailySummaryApplyRequestDTO(
-            entryDate: planDate,
+            entryDate: entryDate,
             metrics: zip(plan.metrics, metricEnabled).filter { $0.1 }.map(\.0),
             checklist: zip(plan.checklist, checkEnabled).filter { $0.1 }.map(\.0),
             journal: journalToSend
@@ -252,9 +364,11 @@ final class DailySummaryViewModel: ObservableObject {
         applyState = .applying
         do {
             _ = try await api.applyDailySummary(request, idempotencyKey: applyKey)
+            applyIsUnconfirmed = false
             applyState = .applied
             onApplied()
         } catch {
+            applyIsUnconfirmed = Self.leavesWriteUnconfirmed(error)
             applyState = .failure(Self.applyMessage(for: error))
         }
     }
@@ -262,20 +376,33 @@ final class DailySummaryViewModel: ObservableObject {
     /// Back to an empty screen for the next day's retelling.
     func reset() {
         stopDictation()
+        cancelDraft()
         transcript = ""
         interim = ""
         speechMessage = nil
         draftState = .idle
         applyState = .idle
+        applyIsUnconfirmed = false
         metricEnabled = []
         checkEnabled = []
         journalEnabled = true
         journalReplace = false
+        entryDate = today
+        applyKey = UUID().uuidString
     }
 
     // MARK: - Messages
 
-    private static let offlineMessage = "Нет связи с сервером. Текст сохранён, попробуйте ещё раз."
+    /// The server answered "no" and wrote nothing, so the plan may change. Any other failure
+    /// (no answer, a broken answer, a server error) may hide a write that went through.
+    private static func leavesWriteUnconfirmed(_ error: Error) -> Bool {
+        switch error as? APIClientError {
+        case .unexpectedStatus(400), .unexpectedStatus(409), .unexpectedStatus(422), .unauthorized, .invalidBaseURL:
+            return false
+        default:
+            return true
+        }
+    }
 
     private static func draftMessage(for error: Error) -> String {
         switch error as? APIClientError {
@@ -284,7 +411,7 @@ final class DailySummaryViewModel: ObservableObject {
         case .unexpectedStatus(502):
             return "Не удалось разобрать день: модель ответила с ошибкой. Текст сохранён, попробуйте ещё раз."
         case .timeout, .transport:
-            return offlineMessage
+            return "Нет связи с сервером. Текст сохранён, попробуйте ещё раз."
         case .some(let known):
             return "Не удалось разобрать день. \(known.userMessage)"
         case nil:
@@ -294,14 +421,14 @@ final class DailySummaryViewModel: ObservableObject {
 
     private static func applyMessage(for error: Error) -> String {
         switch error as? APIClientError {
-        case .unexpectedStatus(400), .unexpectedStatus(409), .unexpectedStatus(422):
-            return "Сервер не принял план: категория или поле изменились. Разберите день заново."
-        case .timeout, .transport:
-            return "Нет связи с сервером. Ничего не записано или запись уже прошла: повторите, дубля не будет."
-        case .some(let known):
-            return "Не удалось записать день. \(known.userMessage)"
-        case nil:
-            return "Не удалось записать день"
+        case .unexpectedStatus(409):
+            return "Сервер вернул конфликт: для этого дня уже есть запись с другим составом. Проверьте записи за день и разберите день заново."
+        case .unexpectedStatus(400), .unexpectedStatus(422):
+            return "Сервер не принял план: категория или поле изменились. Ничего не записано. Разберите день заново."
+        case .some(.unauthorized), .some(.invalidBaseURL):
+            return "Не удалось записать день. \((error as? APIClientError)?.userMessage ?? "")"
+        case nil, .some:
+            return "Нет ответа от сервера: запись могла пройти. Нажмите «Повторить запись», дубля не будет. Пока ответа нет, план менять нельзя."
         }
     }
 }

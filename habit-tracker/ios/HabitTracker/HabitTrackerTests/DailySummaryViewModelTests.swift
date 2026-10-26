@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/213
-// summary: tests for DailySummaryViewModel with a faked recognizer and API — dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request
+// summary: tests for DailySummaryViewModel with a faked recognizer and API — the day (today, another day, a key per day), a plan frozen after an unanswered write, a cancellable draft, dictation stopped by a call or the background, dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request
 import Speech
 import XCTest
 @testable import HabitTracker
@@ -13,6 +13,9 @@ final class MockDailySummaryAPI: DailySummaryAPI {
         DailySummaryApplyResponseDTO(entryIds: [1], journalEntryId: nil)
     )
     var categoriesResult: Result<[CategoryDTO], Error> = .success([])
+    /// Makes a request wait, so a test can act while it is in flight; a cancelled wait throws.
+    var draftDelay: Duration?
+    var applyDelay: Duration?
     private(set) var drafts: [DailySummaryDraftRequestDTO] = []
     private(set) var applies: [(request: DailySummaryApplyRequestDTO, key: String)] = []
 
@@ -20,6 +23,7 @@ final class MockDailySummaryAPI: DailySummaryAPI {
         _ request: DailySummaryDraftRequestDTO
     ) async throws -> DailySummaryDraftDTO {
         drafts.append(request)
+        if let draftDelay { try await Task.sleep(for: draftDelay) }
         return try draftResult.get()
     }
 
@@ -27,6 +31,7 @@ final class MockDailySummaryAPI: DailySummaryAPI {
         _ request: DailySummaryApplyRequestDTO, idempotencyKey: String
     ) async throws -> DailySummaryApplyResponseDTO {
         applies.append((request, idempotencyKey))
+        if let applyDelay { try await Task.sleep(for: applyDelay) }
         return try applyResult.get()
     }
 
@@ -44,7 +49,23 @@ final class FakeSpeech: SpeechDictating {
     private(set) var stopCount = 0
     private var continuation: AsyncThrowingStream<String, Error>.Continuation?
 
-    func requestAccess() async -> SpeechAccess { access }
+    /// While set, the permission prompt "is up" until the test calls `answerPrompt()`.
+    var holdsPrompt = false
+    private var prompt: CheckedContinuation<Void, Never>?
+
+    func requestAccess() async -> SpeechAccess {
+        if holdsPrompt {
+            await withCheckedContinuation { prompt = $0 }
+        }
+        return access
+    }
+
+    var promptIsUp: Bool { prompt != nil }
+
+    func answerPrompt() {
+        prompt?.resume()
+        prompt = nil
+    }
 
     func start() throws -> AsyncThrowingStream<String, Error> {
         startCount += 1
@@ -79,7 +100,7 @@ final class DailySummaryViewModelTests: XCTestCase {
         CheckOpDTO(categoryId: 7, fieldId: 21, sourceText: source, uncertain: uncertain)
     }
 
-    private func journal(mode: String, existing: Int? = nil) -> JournalOpDTO {
+    private func journal(mode: JournalOpDTO.Mode, existing: Int? = nil) -> JournalOpDTO {
         JournalOpDTO(
             title: nil, content: "Хороший день", mood: nil, tags: nil, mode: mode,
             existingEntryId: existing
@@ -232,7 +253,7 @@ final class DailySummaryViewModelTests: XCTestCase {
     func testDraftNeverWritesAnything() async {
         let h = makeHarness()
         h.viewModel.transcript = "отжался 30 раз"
-        h.api.draftResult = .success(plan(metrics: [metric()], journal: journal(mode: "create")))
+        h.api.draftResult = .success(plan(metrics: [metric()], journal: journal(mode: .create)))
         await h.viewModel.generate()
         XCTAssertTrue(h.api.applies.isEmpty, "a draft is a preview; only the confirm writes")
         XCTAssertEqual(h.applied.count, 0)
@@ -247,7 +268,7 @@ final class DailySummaryViewModelTests: XCTestCase {
                 metric("300 отжиманий", implausible: true), metric("борщ", estimated: true),
             ],
             checklist: [check("витамины"), check("зарядка?", uncertain: true)],
-            journal: journal(mode: "create")
+            journal: journal(mode: .create)
         ))
 
         await h.viewModel.generate()
@@ -291,11 +312,11 @@ final class DailySummaryViewModelTests: XCTestCase {
         let kept = metric("отжался 30 раз")
         h.api.draftResult = .success(plan(
             metrics: [kept, metric("не уверен", uncertain: true)],
-            checklist: [check("витамины")], journal: journal(mode: "create")
+            checklist: [check("витамины")], journal: journal(mode: .create)
         ))
         await h.viewModel.generate()
         h.viewModel.setCheck(0, enabled: false)
-        h.viewModel.journalEnabled = false
+        h.viewModel.setJournalEnabled(false)
 
         await h.viewModel.apply()
 
@@ -311,10 +332,10 @@ final class DailySummaryViewModelTests: XCTestCase {
     func testApplyWithEverythingOffSendsNothing() async {
         let h = makeHarness()
         h.viewModel.transcript = "день"
-        h.api.draftResult = .success(plan(metrics: [metric()], journal: journal(mode: "create")))
+        h.api.draftResult = .success(plan(metrics: [metric()], journal: journal(mode: .create)))
         await h.viewModel.generate()
         h.viewModel.setMetric(0, enabled: false)
-        h.viewModel.journalEnabled = false
+        h.viewModel.setJournalEnabled(false)
 
         XCTAssertFalse(h.viewModel.canApply)
         await h.viewModel.apply()
@@ -338,6 +359,8 @@ final class DailySummaryViewModelTests: XCTestCase {
         XCTAssertEqual(h.api.applies[0].key, h.api.applies[1].key, "a retry is the same write")
         XCTAssertEqual(h.applied.count, 1)
 
+        h.viewModel.reset()
+        h.viewModel.transcript = "день"
         await h.viewModel.generate()
         await h.viewModel.apply()
         XCTAssertNotEqual(h.api.applies[2].key, h.api.applies[0].key, "a fresh plan is a fresh intent")
@@ -362,26 +385,28 @@ final class DailySummaryViewModelTests: XCTestCase {
     func testJournalModeIsTheServersUnlessReplaceIsAskedForAndPossible() async {
         let h = makeHarness()
         h.viewModel.transcript = "день"
-        h.api.draftResult = .success(plan(journal: journal(mode: "append", existing: 55)))
+        h.api.draftResult = .success(plan(journal: journal(mode: .append, existing: 55)))
         await h.viewModel.generate()
 
         XCTAssertTrue(h.viewModel.canReplaceJournal)
         await h.viewModel.apply()
-        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, "append")
+        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, .append)
 
         h.viewModel.reset()
         h.viewModel.transcript = "день"
         await h.viewModel.generate()
-        h.viewModel.journalReplace = true
+        h.viewModel.setJournalReplace(true)
         await h.viewModel.apply()
-        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, "replace")
+        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, .replace)
 
-        h.api.draftResult = .success(plan(journal: journal(mode: "create")))
+        h.viewModel.reset()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(journal: journal(mode: .create)))
         await h.viewModel.generate()
         XCTAssertFalse(h.viewModel.canReplaceJournal)
-        h.viewModel.journalReplace = true
+        h.viewModel.setJournalReplace(true)
         await h.viewModel.apply()
-        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, "create", "no text to replace")
+        XCTAssertEqual(h.api.applies.last?.request.journal?.mode, .create, "no text to replace")
     }
 
     func testAnAppliedDayCannotBeAppliedTwice() async {
@@ -433,6 +458,270 @@ final class DailySummaryViewModelTests: XCTestCase {
         h.api.categoriesResult = .failure(Boom())
         await h.viewModel.loadCategories()
         XCTAssertEqual(h.viewModel.names(categoryId: 4, fieldId: 9), "категория #4 · поле #9")
+    }
+
+    // MARK: - Helpers for in-flight states
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<2000 where !condition() {
+            await Task.yield()
+        }
+    }
+
+    // MARK: - Day
+
+    func testTheDayIsTodayUntilMovedAndAKeyBelongsToOneDay() async {
+        let h = makeHarness()
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-25")
+        XCTAssertTrue(h.viewModel.isToday)
+        XCTAssertFalse(h.viewModel.canShowNextDay, "the day cannot be told ahead of time")
+        h.viewModel.showNextDay()
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-25")
+
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        XCTAssertEqual(h.api.drafts.last?.entryDate, "2026-10-25")
+
+        h.viewModel.showPreviousDay()
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-24")
+        h.api.applyResult = .failure(APIClientError.unexpectedStatus(400))
+        await h.viewModel.apply()
+        h.viewModel.showToday()
+        await h.viewModel.apply()
+
+        XCTAssertEqual(h.api.applies.map(\.request.entryDate), ["2026-10-24", "2026-10-25"])
+        XCTAssertNotEqual(h.api.applies[0].key, h.api.applies[1].key, "another day is another write")
+    }
+
+    func testADraftIsFiledUnderTheChosenDay() async {
+        let h = makeHarness()
+        h.viewModel.showPreviousDay()
+        h.viewModel.transcript = "вчера бегал"
+        await h.viewModel.generate()
+        XCTAssertEqual(h.api.drafts.last?.entryDate, "2026-10-24")
+    }
+
+    // MARK: - After an unanswered write
+
+    private func harnessWithPlanAndFailedWrite(_ error: Error) async -> Harness {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(
+            metrics: [metric()], journal: journal(mode: .append, existing: 55)
+        ))
+        await h.viewModel.generate()
+        h.api.applyResult = .failure(error)
+        await h.viewModel.apply()
+        return h
+    }
+
+    func testAnUnansweredWriteFreezesThePlanUntilTheRetryIsAnswered() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.timeout)
+
+        XCTAssertTrue(h.viewModel.applyIsUnconfirmed)
+        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("Повторить запись"), message)
+
+        h.viewModel.setMetric(0, enabled: false)
+        h.viewModel.setJournalEnabled(false)
+        h.viewModel.setJournalReplace(true)
+        h.viewModel.showPreviousDay()
+        XCTAssertEqual(h.viewModel.metricEnabled, [true])
+        XCTAssertTrue(h.viewModel.journalEnabled)
+        XCTAssertFalse(h.viewModel.journalReplace)
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-25")
+        XCTAssertFalse(h.viewModel.canGenerate, "rebuilding the plan would orphan the write that may have landed")
+        await h.viewModel.generate()
+        XCTAssertEqual(h.api.drafts.count, 1)
+
+        h.api.applyResult = .success(DailySummaryApplyResponseDTO(entryIds: [1], journalEntryId: 55))
+        await h.viewModel.apply()
+
+        XCTAssertFalse(h.viewModel.applyIsUnconfirmed)
+        XCTAssertEqual(h.viewModel.applyState, .applied)
+        XCTAssertEqual(h.api.applies.count, 2)
+        XCTAssertEqual(h.api.applies[0].key, h.api.applies[1].key)
+        XCTAssertEqual(h.api.applies[0].request, h.api.applies[1].request, "the retry is the same write")
+    }
+
+    func testABrokenAnswerIsTreatedAsUnconfirmedToo() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.invalidResponse)
+        XCTAssertTrue(h.viewModel.applyIsUnconfirmed)
+        let server = await harnessWithPlanAndFailedWrite(APIClientError.unexpectedStatus(500))
+        XCTAssertTrue(server.viewModel.applyIsUnconfirmed)
+    }
+
+    func testARefusalThatWroteNothingLeavesThePlanEditable() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.unexpectedStatus(422))
+
+        XCTAssertFalse(h.viewModel.applyIsUnconfirmed)
+        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("Ничего не записано"), message)
+        h.viewModel.setMetric(0, enabled: false)
+        XCTAssertEqual(h.viewModel.metricEnabled, [false])
+    }
+
+    func testAConflictHasItsOwnTextAndDoesNotBlameTheCategory() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.unexpectedStatus(409))
+
+        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("конфликт"), message)
+        XCTAssertFalse(message.contains("категория"), message)
+        XCTAssertFalse(h.viewModel.applyIsUnconfirmed)
+    }
+
+    func testWhileTheWriteIsInFlightThePlanAndRebuildAreLocked() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        h.api.applyDelay = .seconds(30)
+
+        let writing = Task { await h.viewModel.apply() }
+        await waitUntil { h.viewModel.applyState == .applying }
+
+        XCTAssertEqual(h.viewModel.applyState, .applying)
+        XCTAssertFalse(h.viewModel.canGenerate)
+        h.viewModel.setMetric(0, enabled: false)
+        XCTAssertEqual(h.viewModel.metricEnabled, [true])
+        await h.viewModel.generate()
+        XCTAssertEqual(h.api.drafts.count, 1)
+
+        writing.cancel()
+        await writing.value
+    }
+
+    // MARK: - Cancelling the draft
+
+    func testCancellingTheDraftReturnsToIdleAndKeepsTheText() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftDelay = .seconds(30)
+
+        let drafting = Task { await h.viewModel.generate() }
+        await waitUntil { h.viewModel.draftState == .loading }
+        h.viewModel.cancelDraft()
+        await drafting.value
+
+        XCTAssertEqual(h.viewModel.draftState, .idle)
+        XCTAssertEqual(h.viewModel.transcript, "день")
+    }
+
+    func testCancellingARebuildBringsTheOldPlanBack() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        let first = plan(metrics: [metric()])
+        h.api.draftResult = .success(first)
+        await h.viewModel.generate()
+        h.api.draftDelay = .seconds(30)
+
+        let drafting = Task { await h.viewModel.generate() }
+        await waitUntil { h.viewModel.draftState == .loading }
+        h.viewModel.cancelDraft()
+        await drafting.value
+
+        XCTAssertEqual(h.viewModel.draftState, .done(first))
+    }
+
+    func testAURLCancellationIsNotReportedAsNoConnection() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        for error in [
+            URLError(.cancelled) as Error,
+            APIClientError.transport(code: URLError.cancelled.rawValue),
+            CancellationError(),
+        ] {
+            h.api.draftResult = .failure(error)
+            await h.viewModel.generate()
+            XCTAssertEqual(h.viewModel.draftState, .idle, "\(error)")
+        }
+    }
+
+    // MARK: - Dictation edges
+
+    func testACallDuringDictationKeepsWhatWasHeardAndExplains() async {
+        let h = makeHarness()
+        await h.viewModel.startDictation()
+        h.speech.emit("съел борщ")
+        h.speech.fail(SpeechDictationError.interrupted)
+        await h.viewModel.dictationFinished()
+
+        XCTAssertEqual(h.viewModel.transcript, "съел борщ")
+        XCTAssertFalse(h.viewModel.isListening)
+        XCTAssertTrue(h.viewModel.speechMessage?.contains("прервалась") == true)
+    }
+
+    func testLeavingTheForegroundStopsDictationAndSaysWhy() async {
+        let h = makeHarness()
+        await h.viewModel.startDictation()
+        h.speech.emit("съел борщ")
+
+        h.viewModel.stopDictationForBackground()
+        await h.viewModel.dictationFinished()
+
+        XCTAssertEqual(h.speech.stopCount, 1)
+        XCTAssertEqual(h.viewModel.transcript, "съел борщ")
+        XCTAssertTrue(h.viewModel.speechMessage?.contains("в фон") == true)
+    }
+
+    func testTwoTapsOnSpeakDuringThePromptStartOneEngine() async {
+        let h = makeHarness()
+        h.speech.holdsPrompt = true
+        let first = Task { await h.viewModel.startDictation() }
+        await waitUntil { h.speech.promptIsUp }
+        let second = Task { await h.viewModel.startDictation() }
+        await Task.yield()
+        h.speech.answerPrompt()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(h.speech.startCount, 1)
+    }
+
+    func testClosingTheScreenDuringThePromptNeverStartsTheMicrophone() async {
+        let h = makeHarness()
+        h.speech.holdsPrompt = true
+        let starting = Task { await h.viewModel.startDictation() }
+        await waitUntil { h.speech.promptIsUp }
+
+        h.viewModel.stopDictation()
+        h.speech.answerPrompt()
+        await starting.value
+
+        XCTAssertEqual(h.speech.startCount, 0)
+        XCTAssertFalse(h.viewModel.isListening)
+    }
+
+    func testTheWriteWaitsForTheMicrophone() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        XCTAssertTrue(h.viewModel.canApply)
+
+        await h.viewModel.startDictation()
+        XCTAssertFalse(h.viewModel.canApply)
+        h.viewModel.stopDictation()
+        await h.viewModel.dictationFinished()
+        XCTAssertTrue(h.viewModel.canApply)
+    }
+
+    // MARK: - Wording and numbers
+
+    func testAReplacementSaysTheOldTextIsGone() {
+        XCTAssertTrue(DayPlanPreview.journalCaption(for: .append, replacing: true).contains("пропадёт"))
+        XCTAssertFalse(DayPlanPreview.journalCaption(for: .append, replacing: true).contains("ничего не пропадёт"))
+        XCTAssertTrue(DayPlanPreview.journalTitle(for: .append, replacing: true).contains("Заменить"))
+        XCTAssertTrue(DayPlanPreview.journalCaption(for: .append, replacing: false).contains("ничего не пропадёт"))
+        XCTAssertEqual(DayPlanPreview.journalTitle(for: .create, replacing: false), "Создать запись дня")
+    }
+
+    func testANumberFromTheModelNeverCrashesTheFormatter() {
+        XCTAssertEqual(DayPlanPreview.format(30), "30")
+        XCTAssertFalse(DayPlanPreview.format(1e20).isEmpty)
+        XCTAssertFalse(DayPlanPreview.format(Double.greatestFiniteMagnitude).isEmpty)
+        XCTAssertFalse(DayPlanPreview.format(-1e300).isEmpty)
     }
 
     // MARK: - Real recognizer request

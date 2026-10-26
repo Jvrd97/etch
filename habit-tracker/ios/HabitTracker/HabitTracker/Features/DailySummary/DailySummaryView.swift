@@ -1,10 +1,11 @@
 // [review:need-review] PHASE-01/213, PHASE-01/208
-// summary: day-summary screen — speak or type the day, parse it into a draft, review it with every row switchable, then write the checked part; no NavigationStack of its own, init() takes no required arguments so RootView is unchanged
+// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; no NavigationStack of its own, init() takes no required arguments so RootView is unchanged
 import SwiftUI
 
 struct DailySummaryView: View {
     @StateObject private var viewModel: DailySummaryViewModel
     @FocusState private var textFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
     init(onApplied: @escaping () -> Void = {}) {
         _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
@@ -20,6 +21,7 @@ struct DailySummaryView: View {
                 if viewModel.applyState == .applied {
                     appliedCard
                 } else {
+                    dayNavigator
                     dictationControls
                     transcriptField
                     draftSection
@@ -32,7 +34,45 @@ struct DailySummaryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .dsScreenBackground()
         .task { await viewModel.loadCategories() }
-        .onDisappear { viewModel.stopDictation() }
+        .onDisappear {
+            viewModel.stopDictation()
+            viewModel.cancelDraft()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { viewModel.stopDictationForBackground() }
+        }
+    }
+
+    // MARK: - Day
+
+    private var dayNavigator: some View {
+        HStack {
+            Button { viewModel.showPreviousDay() } label: {
+                Image(systemName: "chevron.left").frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(!viewModel.canChangeDay)
+            .accessibilityLabel("Предыдущий день")
+            Spacer()
+            VStack(spacing: DS.Spacing.xs) {
+                Text(DayFormat.title(of: viewModel.entryDate))
+                    .font(DS.Typography.card)
+                    .foregroundStyle(DS.Palette.textPrimary)
+                if !viewModel.isToday {
+                    Button("Сегодня") { viewModel.showToday() }
+                        .font(DS.Typography.caption)
+                        .disabled(!viewModel.canChangeDay)
+                }
+            }
+            Spacer()
+            Button { viewModel.showNextDay() } label: {
+                Image(systemName: "chevron.right").frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(!viewModel.canShowNextDay)
+            .accessibilityLabel("Следующий день")
+        }
+        .foregroundStyle(DS.Palette.lime)
+        .opacity(viewModel.canChangeDay ? 1 : 0.5)
+        .accessibilityIdentifier("dailySummary.day")
     }
 
     // MARK: - Dictation
@@ -107,9 +147,15 @@ struct DailySummaryView: View {
         case .idle:
             parseButton("Разобрать день")
         case .loading:
-            ProgressView("Разбираю день")
-                .tint(DS.Palette.lime)
-                .frame(maxWidth: .infinity)
+            VStack(spacing: DS.Spacing.md) {
+                ProgressView("Разбираю день")
+                    .tint(DS.Palette.lime)
+                Button("Отменить") { viewModel.cancelDraft() }
+                    .buttonStyle(LimeButtonStyle(prominent: false))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("dailySummary.cancelDraft")
+            }
+            .frame(maxWidth: .infinity)
         case .failure(let message):
             Text(message)
                 .font(DS.Typography.caption)
@@ -150,7 +196,7 @@ struct DailySummaryView: View {
                 .foregroundStyle(DS.Palette.danger)
                 .accessibilityIdentifier("dailySummary.applyError")
         }
-        Button(viewModel.applyState == .applying ? "Записываю" : "Записать (\(viewModel.enabledCount))") {
+        Button(applyTitle) {
             Task { await viewModel.apply() }
         }
         .buttonStyle(LimeButtonStyle())
@@ -158,6 +204,12 @@ struct DailySummaryView: View {
         .disabled(!viewModel.canApply)
         .opacity(viewModel.canApply ? 1 : 0.4)
         .accessibilityIdentifier("dailySummary.apply")
+    }
+
+    private var applyTitle: String {
+        if viewModel.applyState == .applying { return "Записываю" }
+        let verb = viewModel.applyIsUnconfirmed ? "Повторить запись" : "Записать"
+        return "\(verb) (\(viewModel.enabledCount))"
     }
 
     private var appliedCard: some View {

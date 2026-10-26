@@ -39,16 +39,20 @@ struct UnresolvedMetricDTO: Codable, Equatable {
 /// The day written out as text, with what the server decided to do with it.
 /// `existingEntryId` is context for the preview and is never trusted by the apply.
 struct JournalOpDTO: Codable, Equatable {
-    static let modeAppend = "append"
-    static let modeCreate = "create"
-    static let modeReplace = "replace"
+    /// How the text meets what the day already holds. The server only proposes append or create;
+    /// replace is chosen by the person.
+    enum Mode: String, Codable, Equatable {
+        case append
+        case create
+        case replace
+    }
 
     var op = "write_journal"
     let title: String?
     let content: String
     let mood: String?
     let tags: String?
-    var mode: String
+    var mode: Mode
     let existingEntryId: Int?
 }
 

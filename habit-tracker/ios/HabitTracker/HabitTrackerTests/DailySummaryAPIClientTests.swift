@@ -69,7 +69,7 @@ final class DailySummaryAPIClientTests: XCTestCase {
         XCTAssertEqual(plan.metrics.first?.estimated, true)
         XCTAssertEqual(plan.checklist.first?.uncertain, true)
         XCTAssertEqual(plan.unresolved.first?.text, "прошёл 12 тысяч шагов")
-        XCTAssertEqual(plan.journal?.mode, JournalOpDTO.modeAppend)
+        XCTAssertEqual(plan.journal?.mode, JournalOpDTO.Mode.append)
         XCTAssertEqual(plan.journal?.existingEntryId, 55)
     }
 
@@ -85,7 +85,7 @@ final class DailySummaryAPIClientTests: XCTestCase {
         )
         let journal = JournalOpDTO(
             title: nil, content: "Хороший день", mood: nil, tags: nil,
-            mode: JournalOpDTO.modeCreate, existingEntryId: nil
+            mode: JournalOpDTO.Mode.create, existingEntryId: nil
         )
 
         let answer = try await client.applyDailySummary(
