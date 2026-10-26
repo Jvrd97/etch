@@ -2707,3 +2707,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgentTests/IdleTests.swift` — mod: 3 новых теста-перебора.
 
 Проверки круга 3: `xcodebuild test -destination 'platform=macOS'` — 123 passed (3 прогона; в одном `QueueTests.testTheStoreWritesNothingOutsideTheDirectoryItWasGiven` упал один раз и не повторился: он сравнивает общую временную папку до и после, и в ней пишут соседние прогоны роя). Не проверено: реальные уведомления сна и блокировки, `CGSSessionScreenIsLocked` на заблокированном экране, поведение под App Nap, замер `powermetrics`.
+
+## 2026-10-26 — PHASE-03/162: режимы дня, расписание и ручной переключатель
+
+Режим дня стал данными: `GET|PUT|DELETE /api/v1/day-mode/{date}` и `GET|PUT /api/v1/mode-schedule`. Разрешение режима не писалось заново: ручная строка `day_mode` перебивает `mode_schedule`, а этим правилом уже пользуется разметка ролей, поэтому `app.crud.activity.day_mode` переиспользован. `GET /agent/config` отдавал `day_mode` и раньше (#159), его ETag меняется вместе с режимом, третьего опроса нет. Ревизий Alembic нет. `kind` и `nocode` ортогональны: `PUT` требует оба поля. Расписание — ровно семь разных дней недели (0 = воскресенье), иначе 422 и старое расписание остаётся. Правка расписания не трогает `day_mode`, поэтому дни с ручным решением не меняются. Веб: `DayModeBadge` на Today (вид дня списком, no-code переключателем, источник, возврат к расписанию), экран `/agent/mode-schedule`, методы в `agentAPI`. Мак: `ModeSwitcher` в плавающем окне, окно выросло с 248 до 296 pt.
+
+- `habit-tracker/services/backend/app/{crud,schemas,api}/day_mode.py` — new.
+- `habit-tracker/services/backend/app/main.py` — mod: регистрация роутера.
+- `habit-tracker/services/backend/tests/test_day_mode.py` — new: 16 тестов.
+- `habit-tracker/services/frontend/lib/day-mode.ts`, `hooks/useDayMode.ts`, `components/agent/{DayModeBadge,ModeScheduleEditor}.tsx`, `app/agent/mode-schedule/page.tsx` и их тесты — new.
+- `habit-tracker/services/frontend/lib/api.ts`, `app/today/page.tsx`, `app/today/page.test.tsx` — mod (добавлением).
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/ModeSwitcher.swift`, `HabitAgentTests/DayModeTests.swift` — new.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/{PanelConfig,PanelAPIClient,PanelModel,PanelView,FloatingPanelController}.swift`, `App/PanelHost.swift` — mod.
+
+Не проверено: вид окна и бейджа глазами (отрисовка SwiftUI и высота окна 296 pt подобраны без просмотра), `~/.claude/nocode/config` и хук не тронуты (отдельная работа в personal-os).

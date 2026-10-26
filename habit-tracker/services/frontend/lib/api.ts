@@ -2420,6 +2420,37 @@ export interface AgentStatus {
   today: string;
 }
 
+// [review:need-review] PHASE-03/162
+// summary: day-mode types and agentAPI.dayMode / setDayMode / clearDayMode / modeSchedule / saveModeSchedule — the kind of a day and its no-code flag as two orthogonal fields, who decided (schedule or hand), and the week schedule saved as one piece
+/** The four kinds of day; `nocode` is a separate flag, so a working Tuesday can be no-code. */
+export type DayModeKind = 'work' | 'dayoff' | 'vacation' | 'sick';
+
+/** `GET /day-mode/{date}`: the mode, and whether the schedule or a person said so. */
+export interface DayMode {
+  date: string;
+  kind: DayModeKind;
+  nocode: boolean;
+  source: 'schedule' | 'manual';
+}
+
+/** What a person decides for one date. */
+export interface DayModeDraft {
+  kind: DayModeKind;
+  nocode: boolean;
+  note?: string | null;
+}
+
+/** One weekday of the default week; 0 is Sunday, 6 is Saturday. */
+export interface ModeScheduleDay {
+  weekday: number;
+  kind: DayModeKind;
+  nocode: boolean;
+}
+
+export interface ModeSchedule {
+  days: ModeScheduleDay[];
+}
+
 export const agentAPI = {
   /** Где прошёл день — тремя срезами сразу, потому что порознь они врут. */
   day: async (date: string) => {
@@ -2490,6 +2521,35 @@ export const agentAPI = {
   /** Which agents are alive, permitted and caught up (#164). */
   status: async () => {
     return fetcher<AgentStatus>('/agent/status');
+  },
+
+  /** Which kind of day it is, and who said so (#162). */
+  dayMode: async (date: string) => {
+    return fetcher<DayMode>(`/day-mode/${date}`);
+  },
+
+  /** Decide one date by hand; the schedule is overridden for that date only. */
+  setDayMode: async (date: string, draft: DayModeDraft) => {
+    return fetcher<DayMode>(`/day-mode/${date}`, {
+      method: 'PUT',
+      body: JSON.stringify(draft),
+    });
+  },
+
+  /** Give the date back to the schedule; answers with the mode it returned to. */
+  clearDayMode: async (date: string) => {
+    return fetcher<DayMode>(`/day-mode/${date}`, { method: 'DELETE' });
+  },
+
+  modeSchedule: async () => {
+    return fetcher<ModeSchedule>('/mode-schedule');
+  },
+
+  saveModeSchedule: async (schedule: ModeSchedule) => {
+    return fetcher<ModeSchedule>('/mode-schedule', {
+      method: 'PUT',
+      body: JSON.stringify(schedule),
+    });
   },
 };
 
