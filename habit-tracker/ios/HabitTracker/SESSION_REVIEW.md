@@ -359,3 +359,16 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `HabitTrackerTests/{QuickMarkTapQueueTests,QuickMarksViewModelTests,RelapseAnalysisTests,TodayDetailViewModelsTests,TodayScreenAPITests,TodayViewModelTests}.swift` — new/mod: view model на подделанном `URLProtocol`, офлайн-нажатия, одна выборка серий.
 
 Проверки: `xcodebuild test` на симуляторе av06-iPhone17Pro (iOS 26) с подписью симулятора — 227 из 227. Не проверено: живой бэкенд (охранный хук не пускает миграцию живой базы роя, экран шёл только на подделке API), вёрстка глазами, Face ID, график и анализ срывов на реальных данных, поведение на телефоне (для #215).
+
+## 2026-10-26 — PHASE-01/213: голосом рассказать день на iOS
+
+Экран «Рассказать день»: диктовка или текст, черновик плана, предпросмотр с переключателями, запись выбранного одним `apply`. Тронуто 10 файлов: 8 `new`, 2 `mod`.
+
+- `HabitTracker/API/APIClient+DailySummary.swift`, `HabitTracker/API/DTOs+DailySummary.swift` — new: `draft` и `apply` (с `Idempotency-Key`), операции плана с `source_text` и флагами `uncertain`/`implausible`/`estimated`, журнал с режимом `append`/`create`/`replace`.
+- `HabitTracker/Features/DailySummary/DailySummaryViewModel.swift` — new: диктовка в редактируемый текст, черновик за сегодняшнюю дату, сомнительные строки выключены, один ключ на план (повтор после сбоя — та же запись), `replace` только по просьбе и только если за день есть текст.
+- `HabitTracker/Features/DailySummary/SpeechDictation.swift` — new: шов `SpeechDictating` и системная реализация на `SFSpeechRecognizer` + `AVAudioEngine`, `requiresOnDeviceRecognition` включается, если распознаватель умеет на устройстве.
+- `HabitTracker/Features/DailySummary/DailySummaryView.swift` — mod: заглушка заменена экраном и `VoiceDayButton` (лист с собственным стеком). `DayPlanPreview.swift` — new: карточки плана.
+- `HabitTracker/Features/Today/TodayView.swift` — mod: одна строка `VoiceDayButton` на месте `TODO(#213)`, после записи Today читает день заново.
+- `HabitTrackerTests/DailySummaryAPIClientTests.swift`, `DailySummaryViewModelTests.swift` — new: формат запросов, диктовка на подделанном распознавателе, отказ в доступе сохраняет набранный текст, до подтверждения на сервер уходит только `draft`.
+
+Проверки: `xcodebuild test` на av09-iPhone17Pro с подписью симулятора — 290 из 290 (+31 тест). Тела запросов сверены с `app/schemas/daily_summary.py` через pydantic (`extra=forbid` у метрики и галки). Не проверено: живой бэкенд (охранный хук не пустил создание живой базы роя с миграцией), вёрстка глазами, всё, что требует телефона — для #215: запросы разрешений на микрофон и речь, звук, сама диктовка, `supportsOnDeviceRecognition` для ru-RU (без него звук уходит в Apple), лимит около минуты на фразу, звонок или смена аудиомаршрута во время диктовки, реальный разбор моделью.

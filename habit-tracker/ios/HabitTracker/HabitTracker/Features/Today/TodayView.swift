@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner + queued-uploads badge atop when data came from the read cache / a save was queued offline
 import SwiftUI
 
@@ -107,7 +107,7 @@ struct TodayView: View {
                             .foregroundStyle(DS.Palette.danger)
                             .accessibilityIdentifier("today.error")
                     }
-                    // TODO(#213): the voice-day button goes on the next line.
+                    VoiceDayButton { Task { await reload() } }
                     if !quickMarks.marks.isEmpty {
                         sectionLabel("Быстрые отметки")
                         QuickMarksSection(viewModel: quickMarks) { openDaySheet(for: $0) }
