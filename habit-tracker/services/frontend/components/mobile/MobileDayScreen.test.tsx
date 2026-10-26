@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-03/147, PHASE-03/148, PHASE-03/164
+// [review:need-review] PHASE-03/147, PHASE-03/148, PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the Claude Code block stands on this shell, is asked for the day of the screen (the server's, not the browser's) and says nothing when it has no answer
 // summary: PHASE-03/164 — the agent banner stands on today's screen when the agent is silent and is absent on any other day
 // summary: tests for the mobile day screen — the day with no plan carries the same button out of it as the desktop shell does, the button is gone the moment there is a plan, and a plan the skeleton assembled says so and says why
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { AgentStatus, DayDetail, PlanViolation } from '@/lib/api';
+import type { AgentStatus, ClaudeUsageDay, DayDetail, PlanViolation } from '@/lib/api';
 import { DAY, PLAN } from '@/test-fixtures/day';
 import { BUILD_PLAN_LABEL } from '@/components/day/PlanBuilder';
 import { FALLBACK_REASON_LABELS, planAuthorLabel } from '@/lib/plan-violations';
@@ -30,10 +31,23 @@ mock.module('@/hooks/useAgentStatus', () => ({
   useAgentStatus: () => agent,
 }));
 
+// The Claude Code block reads its own hook; the date it is asked for is recorded,
+// because the day must come from the screen's detail and not from the browser clock.
+let claude: ClaudeUsageDay | null = null;
+const claudeAsked: Array<string | null> = [];
+mock.module('@/hooks/useClaudeUsage', () => ({
+  useClaudeUsage: (date: string | null) => {
+    claudeAsked.push(date);
+    return claude;
+  },
+}));
+
 const { default: MobileDayScreen } = await import('./MobileDayScreen');
 
 beforeEach(() => {
   agent = null;
+  claude = null;
+  claudeAsked.length = 0;
   state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
 });
 
@@ -125,5 +139,49 @@ describe('MobileDayScreen and the agent banner', () => {
     render(<MobileDayScreen date="2026-08-30" />);
 
     expect(screen.queryByText(/Агент молчит/)).toBeNull();
+  });
+});
+
+const CLAUDE_TODAY: ClaudeUsageDay = {
+  date: SERVER_TODAY,
+  today: SERVER_TODAY,
+  sessions: 3,
+  assistant_turns: 42,
+  input_tokens: 12_400,
+  output_tokens: 3_100,
+  cache_read_tokens: 1_250_000,
+  cache_creation_tokens: 80_000,
+  sessions_past_boundary: 1,
+};
+
+describe('MobileDayScreen and the Claude Code block', () => {
+  it('shows the sessions, turns and tokens of the day', () => {
+    claude = CLAUDE_TODAY;
+    state = { ...state, detail: { ...DAY, day: { ...DAY.day, date: SERVER_TODAY } } };
+    render(<MobileDayScreen date={SERVER_TODAY} />);
+
+    const block = screen.getByRole('region', { name: 'Claude Code' });
+    expect(block.textContent).toContain('42');
+    expect(block.textContent).toContain('12,4 тыс вход');
+    expect(block.textContent).toContain('целиком на день начала');
+  });
+
+  it('asks for the day the server named, at 01:00 local when the browser is a day ahead', () => {
+    claude = CLAUDE_TODAY;
+    state = { ...state, detail: { ...DAY, day: { ...DAY.day, date: SERVER_TODAY } } };
+    setSystemTime(new Date(2026, 9, 27, 1, 0, 0));
+    try {
+      render(<MobileDayScreen date={null} />);
+      expect(claudeAsked).toContain(SERVER_TODAY);
+      expect(claudeAsked).not.toContain('2026-10-27');
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('draws no block before the answer', () => {
+    render(<MobileDayScreen date={SERVER_TODAY} />);
+
+    expect(screen.queryByRole('region', { name: 'Claude Code' })).toBeNull();
   });
 });

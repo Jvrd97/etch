@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the Claude Code block (sessions, assistant turns, tokens of the day on screen) stands under the agent banner, drawn from useClaudeUsage
 // summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date on the day the server is in (status.today), drawn from useAgentStatus
 // summary: PHASE-03/200 — a plan line linked to a category carries its fact card, and the day is re-read after a fact or a new link so the mark and the counts follow
 // summary: mobile day screen — markup only, all state comes from useDay and useDayMarks (shared with the desktop shell); one column, the plan with its schedule and marks in compact form, the same button that builds a plan when there is none, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict and its two closing touches, the notebook, the rule as a plain list, no text below text-sm
@@ -9,6 +10,7 @@ import { useMemo } from 'react';
 import { CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import AgentStatusBanner from '@/components/agent/AgentStatusBanner';
+import ClaudeUsageBlock from '@/components/agent/ClaudeUsageBlock';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
 import ProfileProposal from '@/components/day/ProfileProposal';
@@ -40,6 +42,7 @@ import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
+import { useClaudeUsage } from '@/hooks/useClaudeUsage';
 import {
   dayAPI,
   type AnchorState,
@@ -101,6 +104,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   const { detail, loading, error, violations, reload } = useDay(date, true);
   // Read once per screen and never an error out: a banner about the agent must not break the day.
   const agentStatus = useAgentStatus();
+  // The day on screen, which the server named; never the browser's calendar date.
+  const claudeUsage = useClaudeUsage(detail?.day.date ?? null);
   const marks = useMemo(() => detail?.marks ?? NO_MARKS, [detail]);
   const brokenByItem = useMemo(() => violationsByItem(violations), [violations]);
   // Violations that name no line: a health anchor that is not in the plan, a
@@ -170,6 +175,7 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
       </div>
 
       <AgentStatusBanner status={agentStatus} date={day.date} />
+      <ClaudeUsageBlock usage={claudeUsage} compact />
 
       {plan === null ? (
         // Тот же выход, что на большом экране, и тем же компонентом: две копии

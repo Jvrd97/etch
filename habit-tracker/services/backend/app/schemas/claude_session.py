@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/165
-# summary: wire types of the Claude Code session aggregates — a session as counters and identifiers only, with extra fields forbidden so message text is refused rather than ignored, a batch capped at 200, and the day listing
+# [review:need-review] PHASE-03/165, PHASE-03/220
+# summary: wire types of the Claude Code session aggregates — a session as counters and identifiers only, with extra fields forbidden so message text is refused rather than ignored, a batch capped at 200, the day listing, and (since #220) the day's totals for the block on the day screen
 """
 Wire types of the Claude Code session metrics.
 
@@ -105,6 +105,27 @@ class ClaudeSessionListResponse(BaseModel):
     """The sessions of a range of days, oldest first."""
 
     sessions: list[ClaudeSessionResponse]
+
+
+# A field called `date` would shadow the type inside its own class body.
+CalendarDay = date
+
+
+class ClaudeUsageDayResponse(BaseModel):
+    """What the day screen shows: the day's totals, never a project, a branch or a goal."""
+
+    date: CalendarDay
+    # The day the server is in now, so the web polls only the day that is still growing.
+    today: CalendarDay
+    sessions: int
+    assistant_turns: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    # Sessions that began on this day and ended on a later one. They count whole
+    # here, so the totals of a day can include work done after its boundary.
+    sessions_past_boundary: int
 
 
 def check_range(date_from: date, date_to: date) -> None:

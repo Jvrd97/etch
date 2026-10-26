@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217, PHASE-03/172
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217, PHASE-03/172, PHASE-03/220
 // summary: samples the foreground app on a timer (5 s, 30 s while idle) and on every switch, builds intervals and queues them on disk; stops for sleep and a locked screen (and resumes if the wake notification is lost); the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
+// summary: PHASE-03/220 — the heartbeat's last_error also carries the Claude Code metrics reader's code (claude_format) when no flush error stands ahead of it, and a change of that code is reported at once
 import AppKit
 import Combine
 import Foundation
@@ -29,9 +30,11 @@ final class ActivitySampler: ObservableObject {
     private(set) var store: OutboxStore?
     private var flusher: Flusher?
     private var queueNote = ""
-    private var heartbeat: HeartbeatReporter?
+    /// Internal for tests, which hand in a reporter that records instead of sending.
+    var heartbeat: HeartbeatReporter?
     private var lastFlushAt: Date?
     private var lastError: HeartbeatErrorCode?
+    private var claudeMetricsError: HeartbeatErrorCode?
 
     init(queueDirectory: URL = AgentPaths.directory, idle: IdleMonitor = IdleMonitor()) {
         self.queueDirectory = queueDirectory
@@ -165,13 +168,7 @@ final class ActivitySampler: ObservableObject {
         if heartbeat == nil {
             heartbeat = HeartbeatReporter.live(
                 samplingSeconds: Int(IdleMonitor.activePeriod),
-                state: { [weak self] in
-                    HeartbeatState(
-                        queueDepth: self?.store?.count ?? 0,
-                        lastFlushAt: self?.lastFlushAt,
-                        lastError: self?.lastError
-                    )
-                },
+                state: { [weak self] in self?.heartbeatState ?? HeartbeatState() },
                 client: { [weak self] in
                     guard let self, let apiKey = keychain.read(), !serverAddress.isEmpty else { return nil }
                     return HeartbeatClient(serverAddress: serverAddress, apiKey: apiKey)
@@ -181,10 +178,27 @@ final class ActivitySampler: ObservableObject {
         heartbeat?.start()
     }
 
+    /// What a report says: the queue, the last flush, and the one `last_error` slot (a flush's outcome ahead of the metrics reader's).
+    var heartbeatState: HeartbeatState {
+        HeartbeatState(
+            queueDepth: store?.count ?? 0,
+            lastFlushAt: lastFlushAt,
+            lastError: HeartbeatErrorCode.reported(flush: lastError, claudeMetrics: claudeMetricsError)
+        )
+    }
+
     /// A flush that sent something is the last flush; its outcome is the last error, and a clean one clears it.
     private func reportFlush(_ summary: FlushSummary) {
         if summary.sent > 0 { lastFlushAt = Date() }
         lastError = HeartbeatErrorCode(summary: summary)
+        Task { await heartbeat?.beat() }
+    }
+
+    /// The Claude Code metrics reader's code after a pass; a change is worth a report now, not in a minute.
+    func reportClaudeMetrics(code: String?) {
+        let mapped = HeartbeatErrorCode(claudeMetricsCode: code)
+        guard mapped != claudeMetricsError else { return }
+        claudeMetricsError = mapped
         Task { await heartbeat?.beat() }
     }
 

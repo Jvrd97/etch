@@ -2733,6 +2733,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `Metrics/ClaudeMetricsService.swift` — mod: после обхода каталога `forgetDeletedFiles`: запись удалённого файла без вкладов удаляется, с вкладами — остаётся (итоги сессии не уменьшаются) и теряет только сигналы ошибки, поэтому `claude_transcript_unreadable` не висит вечно.
 - `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/assistant_type_drift.jsonl` — mod/new: переименован только `assistant`, `user` читается (красный на коде круга 2); дописывание такого файла к распознанной сессии; удалённый файл с ошибкой снимает код и сохраняет итоги.
 
+## 2026-10-26 — PHASE-03/220: блок Claude Code на экране дня и проводка кода ошибки в heartbeat
+
+- `app/schemas/claude_session.py` — mod: `ClaudeUsageDayResponse` (итоги дня и `sessions_past_boundary`, без проектов, веток и целей).
+- `app/crud/claude_session.py` — mod: `claude_usage_for_day` — суммы по сессиям дня; сессия, пересёкшая границу суток, считается целиком на день начала, число таких сессий отдельным полем.
+- `app/api/agent.py` — mod (добавлением в конец): `GET /agent/claude-usage/{on}`; ответ несёт серверный `today`.
+- `tests/test_claude_sessions.py` — mod: суммы, чужой день, граница суток, ответ без текста, битая дата, точный набор ключей ответа.
+- Фронтенд (блок, хук, баннер `claude_format`) — в `frontend/SESSION_REVIEW.md`.
+- `mac/.../Queue/Heartbeat.swift` — mod: `HeartbeatErrorCode(claudeMetricsCode:)` и `reported(flush:claudeMetrics:)`; `Metrics/ClaudeMetricsService.swift` — mod: `observeErrorCode`; `Activity/ActivitySampler.swift`, `App/HabitAgentApp.swift` — mod (вне перечня доски, минимальная вставка: код метрик попадает в слот `last_error`); `HabitAgentTests/{HeartbeatTests,ClaudeCodeTests}.swift` — mod (в том числе тесты на удалённый транскрипт из слабого места #165: запись выбрасывается из сохранённого состояния, сигналы очищаются на диске и после перезапуска, итоги сессии не пересылаются).
+
+Миграций нет. Не проверено: настоящий мак-агент с живым `claude`, дневная граница на настоящей базе с засеянным планом (экраны дня шли через заглушку ответа `/day`, ручки агента — настоящие, на `habit_test_220`).
+
 ## 2026-10-26 — PHASE-03/162: режимы дня, расписание и ручной переключатель
 
 Режим дня стал данными: `GET|PUT|DELETE /api/v1/day-mode/{date}` и `GET|PUT /api/v1/mode-schedule`. Разрешение режима не писалось заново: ручная строка `day_mode` перебивает `mode_schedule`, а этим правилом уже пользуется разметка ролей, поэтому `app.crud.activity.day_mode` переиспользован. `GET /agent/config` отдавал `day_mode` и раньше (#159), его ETag меняется вместе с режимом, третьего опроса нет. Ревизий Alembic нет. `kind` и `nocode` ортогональны: `PUT` требует оба поля. Расписание — ровно семь разных дней недели (0 = воскресенье), иначе 422 и старое расписание остаётся. Правка расписания не трогает `day_mode`, поэтому дни с ручным решением не меняются. Веб: `DayModeBadge` на Today (вид дня списком, no-code переключателем, источник, возврат к расписанию), экран `/agent/mode-schedule`, методы в `agentAPI`. Мак: `ModeSwitcher` в плавающем окне, окно выросло с 248 до 296 pt.

@@ -1,9 +1,11 @@
-// [review:need-review] PHASE-03/164
+// [review:need-review] PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the agent's last_error claude_format has its own banner worded for a person (the Claude Code logs are no longer recognised, the block of the day may show less), it is not drawn for a silent agent, and the codes the banner has no words for stay out
 // summary: tests of the agent banners — silence is worded in minutes, hours and days, a silent agent gets the silence banner only (its other flags are old news), a live one gets one banner per cause, the switch is not worded as an error, an unknown flag (null) draws no banner while a refused one does, and two macs are told apart
 
 import { describe, expect, it } from 'bun:test';
 import type { AgentStatus, AgentStatusItem } from '@/lib/api';
 import {
+  CLAUDE_FORMAT_BANNER_TITLE,
   SILENT_BANNER_NOTE,
   TITLES_OFF_NOT_AN_ERROR,
   bannersFor,
@@ -43,6 +45,38 @@ describe('formatSilence', () => {
 
   it('never says zero minutes', () => {
     expect(formatSilence(10)).toBe('1 мин');
+  });
+});
+
+describe('bannersFor and the Claude Code log format', () => {
+  it('words claude_format for a person, without the code or a path', () => {
+    const [banner] = bannersFor(status(agent({ last_error: 'claude_format' })));
+
+    expect(banner.kind).toBe('claude_format');
+    expect(banner.title).toBe(CLAUDE_FORMAT_BANNER_TITLE);
+    expect(banner.body).toContain('Claude Code');
+    expect(banner.body).toContain('Блок');
+    expect(`${banner.title} ${banner.body}`).not.toContain('claude_format');
+  });
+
+  it('sits next to the other causes of a live agent', () => {
+    const kinds = bannersFor(
+      status(agent({ last_error: 'claude_format', titles_enabled: false }))
+    ).map((banner) => banner.kind);
+
+    expect(kinds).toEqual(['titles_off', 'claude_format']);
+  });
+
+  it('keeps a silent agent to the silence banner', () => {
+    const banners = bannersFor(
+      status(agent({ last_error: 'claude_format', is_silent: true, silent_for_seconds: 3 * HOUR }))
+    );
+
+    expect(banners.map((banner) => banner.kind)).toEqual(['silent']);
+  });
+
+  it('has no words for the codes of the interval queue and stays quiet for them', () => {
+    expect(bannersFor(status(agent({ last_error: 'network' })))).toEqual([]);
   });
 });
 

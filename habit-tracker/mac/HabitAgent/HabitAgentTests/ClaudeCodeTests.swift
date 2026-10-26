@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/165
+// [review:need-review] PHASE-03/165, PHASE-03/220
+// summary: PHASE-03/220 — a deleted transcript is released from the saved state (dropped when it counted nothing, its signals cleared when it counted something, in memory and after a restart), and the service tells its listener the error code after every pass
 // summary: proves the Claude Code transcript scanner on .jsonl fixtures — turns and tokens counted once per message, unknown record types skipped silently, an error code (not silence) when a non-empty file yields nothing readable, resuming from a saved offset without re-reading, a half-written last line left for the next pass — and that the session payload carries counters only
 import XCTest
 @testable import HabitAgent
@@ -360,6 +361,76 @@ final class ClaudeMetricsServiceTests: XCTestCase {
         XCTAssertNil(cleared)
         let batches = await sent.batches
         XCTAssertEqual(batches.last?.first?.assistantTurns, 2, "history of a deleted transcript stays in the totals")
+    }
+
+    /// The saved state of one transcript, found by name: the service keys by the resolved path
+    /// (`/private/var/...`), which is not the string the test built for the temporary directory.
+    private func savedFile(named name: String) throws -> FileScanState? {
+        let files = try JSONDecoder().decode(ClaudeMetricsState.self, from: Data(contentsOf: stateURL)).files
+        return files.first { $0.key.hasSuffix("/\(name)") }?.value
+    }
+
+    func testADeletedFileThatCountedNothingIsDroppedFromTheSavedState() async throws {
+        try install("garbage", as: "junk.jsonl")
+        let junk = projects.appendingPathComponent("junk.jsonl").path
+        let service = makeService()
+        await service.runPass()
+        let raised = await service.errorCode
+        XCTAssertEqual(raised, TranscriptScanner.unreadableCode)
+        XCTAssertNotNil(try savedFile(named: "junk.jsonl"), "the unreadable file is tracked while it exists")
+
+        try FileManager.default.removeItem(atPath: junk)
+        await service.runPass()
+
+        let cleared = await service.errorCode
+        XCTAssertNil(cleared)
+        XCTAssertNil(try savedFile(named: "junk.jsonl"), "nothing of a deleted, empty transcript stays in the state")
+        let restarted = await makeService().errorCode
+        XCTAssertNil(restarted, "a restart does not bring the error back")
+    }
+
+    func testADeletedFileWithHistoryKeepsItsTotalsAndLosesOnlyItsSignalsOnDisk() async throws {
+        try install("assistant_type_drift", as: "renamed.jsonl")
+        let renamed = projects.appendingPathComponent("renamed.jsonl").path
+        let service = makeService()
+        await service.runPass()
+        let beforeDeletion = try XCTUnwrap(try savedFile(named: "renamed.jsonl"))
+        XCTAssertGreaterThan(beforeDeletion.renamed, 0)
+        let sentBefore = await sent.batches.count
+
+        try FileManager.default.removeItem(atPath: renamed)
+        await service.runPass()
+        await service.runPass()
+
+        let after = try XCTUnwrap(try savedFile(named: "renamed.jsonl"), "the history stays, or the session would be restated smaller")
+        XCTAssertEqual(after.contributions, beforeDeletion.contributions)
+        XCTAssertEqual(after.renamed, 0)
+        XCTAssertEqual(after.suspect, 0)
+        let restarted = await makeService().errorCode
+        XCTAssertNil(restarted)
+        let sentAfter = await sent.batches.count
+        XCTAssertEqual(sentAfter, sentBefore, "deleting a file restates nothing")
+    }
+
+    /// Collects what the service reports after each pass.
+    private final class Codes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen: [String?] = []
+        func add(_ code: String?) { lock.lock(); seen.append(code); lock.unlock() }
+        var all: [String?] { lock.lock(); defer { lock.unlock() }; return seen }
+    }
+
+    func testTheListenerHearsTheErrorCodeAfterEveryPassAndTheClearing() async throws {
+        try install("garbage", as: "junk.jsonl")
+        let codes = Codes()
+        let service = makeService()
+        await service.observeErrorCode { codes.add($0) }
+
+        await service.runPass()
+        try FileManager.default.removeItem(at: projects.appendingPathComponent("junk.jsonl"))
+        await service.runPass()
+
+        XCTAssertEqual(codes.all, [TranscriptScanner.unreadableCode, nil])
     }
 
     func testTwoFilesOfOneSessionAreSummed() async throws {

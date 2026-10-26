@@ -250,3 +250,113 @@ class TestClaudeSessionList:
         )
 
         assert response.status_code == 422
+
+
+USAGE_URL = "/api/v1/agent/claude-usage"
+
+
+class TestClaudeUsageOfTheDay:
+    """The day block reads totals; it never needs the list of sessions."""
+
+    async def test_the_day_sums_sessions_turns_and_tokens(
+        self, client: AsyncClient
+    ) -> None:
+        await client.post(
+            URL,
+            json={
+                "sessions": [
+                    session_payload("uid-a", turns=3),
+                    session_payload("uid-b", turns=5),
+                ]
+            },
+        )
+
+        day = today_local().isoformat()
+        body = (await client.get(f"{USAGE_URL}/{day}")).json()
+
+        assert body["date"] == day
+        assert body["sessions"] == 2
+        assert body["assistant_turns"] == 8
+        assert body["input_tokens"] == 800
+        assert body["output_tokens"] == 400
+        assert body["cache_read_tokens"] == 8000
+        assert body["cache_creation_tokens"] == 80
+
+    async def test_the_answer_names_the_servers_today(
+        self, client: AsyncClient
+    ) -> None:
+        other = (today_local() - timedelta(days=3)).isoformat()
+
+        body = (await client.get(f"{USAGE_URL}/{other}")).json()
+
+        assert body["today"] == today_local().isoformat()
+        assert body["sessions"] == 0
+        assert body["assistant_turns"] == 0
+        assert body["input_tokens"] == 0
+
+    async def test_another_day_is_not_counted(self, client: AsyncClient) -> None:
+        await client.post(URL, json={"sessions": [session_payload()]})
+
+        other = (today_local() - timedelta(days=1)).isoformat()
+        body = (await client.get(f"{USAGE_URL}/{other}")).json()
+
+        assert body["sessions"] == 0
+
+    async def test_a_session_across_the_boundary_stays_whole_on_its_start_day(
+        self, client: AsyncClient
+    ) -> None:
+        # Ends 25 hours after 10:00 — on the next logical day under any boundary hour.
+        await client.post(
+            URL,
+            json={
+                "sessions": [
+                    session_payload("uid-long", turns=4, ended_minutes=25 * 60),
+                    session_payload("uid-short", turns=2),
+                ]
+            },
+        )
+
+        day = today_local().isoformat()
+        body = (await client.get(f"{USAGE_URL}/{day}")).json()
+        next_day = (today_local() + timedelta(days=1)).isoformat()
+        after = (await client.get(f"{USAGE_URL}/{next_day}")).json()
+
+        assert body["sessions"] == 2
+        assert body["assistant_turns"] == 6
+        assert body["sessions_past_boundary"] == 1
+        assert after["sessions"] == 0
+
+    async def test_the_answer_has_counters_and_no_text(
+        self, client: AsyncClient
+    ) -> None:
+        await client.post(
+            URL, json={"sessions": [session_payload(cwd="/p/secret", goal="Секрет")]}
+        )
+
+        day = today_local().isoformat()
+        response = await client.get(f"{USAGE_URL}/{day}")
+
+        assert "/p/secret" not in response.text
+        assert "Секрет" not in response.text
+
+    async def test_the_answer_has_exactly_these_keys(self, client: AsyncClient) -> None:
+        # A new field has to be added here by someone who asked what it can leak.
+        day = today_local().isoformat()
+        body = (await client.get(f"{USAGE_URL}/{day}")).json()
+
+        assert set(body) == {
+            "date",
+            "today",
+            "sessions",
+            "assistant_turns",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "sessions_past_boundary",
+        }
+
+    async def test_a_malformed_day_is_refused(self, client: AsyncClient) -> None:
+        response = await client.get(f"{USAGE_URL}/not-a-day")
+
+        assert response.status_code == 422

@@ -2420,6 +2420,23 @@ export interface AgentStatus {
   today: string;
 }
 
+// [review:need-review] PHASE-03/220
+// summary: ClaudeUsageDay is the day's Claude Code totals (counters only, no text) that agentAPI.claudeUsage reads
+/** The day's Claude Code totals as `GET /agent/claude-usage/{date}` answers (#220). */
+export interface ClaudeUsageDay {
+  date: string;
+  /** `YYYY-MM-DD` of the day the server is in; only that day is still growing. */
+  today: string;
+  sessions: number;
+  assistant_turns: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  /** Sessions begun on this day that ended on a later one; they count whole here. */
+  sessions_past_boundary: number;
+}
+
 // [review:need-review] PHASE-03/162
 // summary: day-mode types and agentAPI.dayMode / setDayMode / clearDayMode / modeSchedule / saveModeSchedule — the kind of a day and its no-code flag as two orthogonal fields, who decided (schedule or hand), and the week schedule saved as one piece
 /** The four kinds of day; `nocode` is a separate flag, so a working Tuesday can be no-code. */
@@ -2521,6 +2538,10 @@ export const agentAPI = {
   /** Which agents are alive, permitted and caught up (#164). */
   status: async () => {
     return fetcher<AgentStatus>('/agent/status');
+  },
+  /** Claude Code totals of one day for the block on the day screen (#220). */
+  claudeUsage: async (date: string) => {
+    return fetcher<ClaudeUsageDay>(`/agent/claude-usage/${date}`);
   },
 
   /** Which kind of day it is, and who said so (#162). */

@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/164
+// [review:need-review] PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — adds the banner for last_error claude_format (the Claude Code logs are no longer recognised), worded for a person
 // summary: turns the agent status into the banners of the day screen — one for silence (and only that one for a silent agent), one for a refused Accessibility (not for an unknown one), one for the titles switch worded as a setting — with the words, the link and the key each one needs
 
 import type { AgentStatus, AgentStatusItem } from '@/lib/api';
 
-export type AgentBannerKind = 'silent' | 'accessibility' | 'titles_off';
+export type AgentBannerKind = 'silent' | 'accessibility' | 'titles_off' | 'claude_format';
 
 export interface AgentBanner {
   /** Stable across renders: the agent and the cause. */
@@ -29,6 +30,9 @@ export const SILENT_BANNER_ACTION =
 export const ACCESSIBILITY_BANNER_TITLE = 'У агента нет доступа Accessibility';
 export const ACCESSIBILITY_BANNER_BODY =
   'Заголовки окон не собираются, интервалы приходят урезанными: только приложение и время. Включите Habit Agent в Системных настройках: Конфиденциальность и безопасность, Универсальный доступ.';
+export const CLAUDE_FORMAT_BANNER_TITLE = 'Агент не читает журналы Claude Code';
+export const CLAUDE_FORMAT_BANNER_BODY =
+  'Журналы найдены, но записей в них агент не узнаёт: формат мог измениться после обновления Claude Code. Блок «Claude Code» на экране дня показывает меньше, чем было на деле. Обновите Habit Agent.';
 export const TITLES_OFF_BANNER_TITLE = 'Заголовки окон выключены';
 export const TITLES_OFF_NOT_AN_ERROR = 'Это настройка, а не сбой';
 export const TITLES_OFF_BANNER_BODY = `${TITLES_OFF_NOT_AN_ERROR}: рубильник заголовков выключен, интервалы приходят без заголовков, и в списке «где прошёл день» они пустые.`;
@@ -86,6 +90,11 @@ function bannersOf(agent: AgentStatusItem, label: string | null): AgentBanner[] 
         href: TITLE_RULES_HREF,
       })
     );
+  }
+  // The one code of the vocabulary with words for a person; the queue's codes
+  // (network, expired, ...) describe intervals in transit and have none here.
+  if (agent.last_error === 'claude_format') {
+    banners.push(make('claude_format', CLAUDE_FORMAT_BANNER_TITLE, CLAUDE_FORMAT_BANNER_BODY));
   }
   return banners;
 }

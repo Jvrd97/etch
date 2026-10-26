@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/164
+// [review:need-review] PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the Claude Code log format error is on the banner in words, with no code, on the server's today
 // summary: component tests of the agent banner on the day screen — three distinct states with their own words, none for a healthy agent, none on a day that is not the server's today (also at 01:00 local, when the browser's date is already tomorrow), and the silence banner telling the intervals may be missing
 
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -108,6 +109,15 @@ describe('AgentStatusBanner', () => {
     const link = screen.getByRole('link');
     expect(link.getAttribute('href')).toBe('/agent/title-rules');
     expect(screen.queryByText(/Агент молчит/)).toBeNull();
+  });
+
+  it('says in words that the Claude Code logs are not recognised', () => {
+    const { container } = show(agent({ last_error: 'claude_format' }));
+
+    expect(screen.getByText('Агент не читает журналы Claude Code')).toBeTruthy();
+    expect(screen.getByText(/формат мог измениться/)).toBeTruthy();
+    expect(container.textContent).not.toContain('claude_format');
+    expect(container.querySelector('[data-banner="claude_format"]')?.getAttribute('role')).toBe('status');
   });
 
   it('stays quiet on a day that is not today: silence now says nothing about it', () => {
