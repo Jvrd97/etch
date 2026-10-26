@@ -1,5 +1,7 @@
-# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160
-# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges; since #159 the config also names the task the day is on right now and the path of the day page, and answers 304 to a poll whose ETag still matches
+# [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160, PHASE-03/164
+# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges; since #159 the config also names the task the day is on right now and the path of the day page, and answers 304 to a poll whose ETag still matches; since #164 the agent reports itself on POST /agent/heartbeat and the web reads every known agent, with the silent ones marked, on GET /agent/status
+# [review:need-review] PHASE-03/165
+# summary: since #165 POST /agent/claude-sessions takes the session aggregates of Claude Code (counters only, no message text) and GET /agent/claude-sessions lists a range of days
 """
 HTTP surface of the macOS agent.
 
@@ -28,14 +30,17 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.daytime import local_date, now_utc, today_local
 from app.crud import activity as activity_crud
+from app.crud import agent_heartbeat as heartbeat_crud
+from app.crud import claude_session as claude_session_crud
 from app.models.activity import ACTIVITY_SOURCE_MANUAL, ActivityInterval
 from app.roles import classify
+from app.schemas import claude_session as claude_session_schemas
 from app.schemas.activity import (
     ActivityAppSlice,
     ActivityBatchIn,
@@ -55,6 +60,7 @@ from app.schemas.activity import (
     TitleRulePatch,
     TitleRuleResponse,
 )
+from app.schemas.agent_heartbeat import AgentHeartbeatIn, AgentStatusResponse
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -627,3 +633,70 @@ async def get_config(
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": tag})
     response.headers["ETag"] = tag
     return body
+
+
+@router.post("/heartbeat", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def post_heartbeat(
+    heartbeat: AgentHeartbeatIn, db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Принять отчёт агента о себе: жив, разрешён ли Accessibility, сколько ждёт в очереди.
+
+    Строка агента — его последнее слово, поэтому повтор того же `agent_id` не
+    заводит вторую. Момент отчёта ставит сервер: часы мака в «молчит» не участвуют.
+    `last_error` — слово из словаря, путь или текст ошибки отвергаются 422.
+    """
+    await heartbeat_crud.upsert_heartbeat(db, heartbeat, now_utc())
+    await db.commit()
+
+
+@router.get("/status", response_model=AgentStatusResponse)
+async def get_status(db: AsyncSession = Depends(get_db)) -> AgentStatusResponse:
+    """Все известные агенты и признак молчания; веб рисует по нему баннер."""
+    return await heartbeat_crud.agent_status(db, now_utc())
+
+
+@router.post(
+    "/claude-sessions",
+    response_model=claude_session_schemas.ClaudeSessionBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_claude_sessions(
+    batch: claude_session_schemas.ClaudeSessionBatchIn,
+    db: AsyncSession = Depends(get_db),
+) -> claude_session_schemas.ClaudeSessionBatchResponse:
+    """
+    Принять агрегаты сессий Claude Code: счётчики и идентификаторы, без текста.
+
+    Сессия присылается целиком каждый раз и ложится на свою строку по
+    `session_uid`; повтор пачки ничего не удваивает. Поле, которого нет в схеме,
+    — 422: тело с текстом сообщения не принимается, а не обрезается.
+    """
+    written = await claude_session_crud.upsert_claude_sessions(db, batch.sessions)
+    await db.commit()
+    return claude_session_schemas.ClaudeSessionBatchResponse(sessions_written=written)
+
+
+@router.get(
+    "/claude-sessions",
+    response_model=claude_session_schemas.ClaudeSessionListResponse,
+)
+async def get_claude_sessions(
+    date_from: date_type = Query(),
+    date_to: date_type = Query(),
+    db: AsyncSession = Depends(get_db),
+) -> claude_session_schemas.ClaudeSessionListResponse:
+    """Сессии Claude Code за дни `[date_from, date_to]` для блока на экране дня."""
+    try:
+        claude_session_schemas.check_range(date_from, date_to)
+    except ValueError as invalid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(invalid)
+        ) from invalid
+    rows = await claude_session_crud.list_claude_sessions(db, date_from, date_to)
+    return claude_session_schemas.ClaudeSessionListResponse(
+        sessions=[
+            claude_session_schemas.ClaudeSessionResponse.model_validate(row)
+            for row in rows
+        ]
+    )

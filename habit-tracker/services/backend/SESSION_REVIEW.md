@@ -2628,6 +2628,25 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 
 Проверки: `ruff check`/`ruff format --check` — чисто; `mypy app` — чисто; `alembic heads` — одна строка `c3e5a7b9d1f4`; `pytest tests/` — см. сдачу; `xcodebuild test -destination 'platform=macOS'` — 66 passed, 0 failed. Живьём не проверено (как и в круге 1): окно поверх полноэкранного приложения, фокус при клике, переход между Spaces.
 
+## 2026-10-25 — PHASE-03/164: heartbeat агента и баннер «агент молчит»
+
+Сервер принимает отчёт агента о себе (`POST /agent/heartbeat`, upsert по `agent_id`, момент отчёта ставит сервер) и отдаёт всех известных агентов с признаком молчания (`GET /agent/status`, порог 30 минут). `last_error` — слово из закрытого словаря (`AgentErrorCode`), путь и текст исключения отвергаются 422. Таблица `agent_heartbeat` заведена миграцией `e1d3f5a7c9b0`, новой ревизии нет. Веб рисует три баннера на экране сегодняшнего дня, мак шлёт отчёт раз в минуту и после каждого флаша.
+
+- `app/schemas/agent_heartbeat.py`, `app/crud/agent_heartbeat.py`, `tests/test_agent_heartbeat.py` — new.
+- `app/api/agent.py` — mod: два обработчика в конце файла, импорты.
+- `habit-tracker/services/frontend/lib/agent-status.ts`, `hooks/useAgentStatus.ts`, `components/agent/AgentStatusBanner.tsx` и три теста к ним — new.
+- `habit-tracker/services/frontend/components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`, `lib/api.ts` (типы и `agentAPI.status`) и их тесты `DayScreen.test.tsx`, `MobileDayScreen.test.tsx` — mod.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/Heartbeat.swift`, `HabitAgentTests/HeartbeatTests.swift` — new; `HabitAgent/Activity/ActivitySampler.swift` — mod: запуск отчёта и три поля состояния.
+
+Не проверено вживую: настоящий мак-агент против сервера, снятая галка Accessibility в системных настройках.
+
+### PHASE-03/164, круг 2
+
+- **«Сегодня» по часам сервера.** `GET /agent/status` отдаёт `today` (`daytime.local_date(now)`), баннер сравнивает день на экране с ним, а не с `todayISO()` браузера: с 00:00 до 04:00 они расходились, и баннер пропадал на настоящем текущем дне. Тест на 01:00 локального времени есть на бэкенде (`TestToday`), в `AgentStatusBanner.test.tsx` и в обоих `DayScreen`-тестах (с `setSystemTime`).
+- **Замечания ревью.** `queue_depth` ограничен `QUEUE_DEPTH_MAX = 2**31-1` (422 вместо 500); `last_flush_at` — `AwareDatetime`; строки старше `FORGOTTEN_AFTER` (14 дней без отчёта) не показываются; heartbeat читает `/agent/config` с `If-None-Match` (304 оставляет известное значение); пока рубильник заголовков неизвестен, мак шлёт `titles_enabled: null`; `ActivitySampler.stop()` останавливает reporter всегда, цикл `Heartbeat.start()` выходит, когда reporter освобождён.
+- **Баннер Accessibility скрыт по решению владельца («скрыть сейчас»).** Мак шлёт `accessibility_granted: null` (поле и колонка nullable), веб рисует баннер только на `false`; баннер появится сам, когда агент начнёт слать `true`/`false`. **Рубильник привязан к #156/#157** (заголовки окон ещё не собираются, `AXIsProcessTrusted()` пока у всех false): тогда в `HeartbeatReporter.live` вместо `{ nil }` вернуть `AXIsProcessTrusted()`. Логику самого баннера не менял. Для nullable заведена ревизия Alembic `d6f8a0b2c4e5` (от `3f721bfb0123`; обе колонки `accessibility_granted` и `titles_enabled` — nullable, без default `false`; downgrade превращает null в false).
+- Файлы: `app/schemas/agent_heartbeat.py`, `app/crud/agent_heartbeat.py`, `app/models/activity.py`, `alembic/versions/2026_10_25_2330-d6f8a0b2c4e5_agent_heartbeat_unknown_flags.py`, `tests/test_agent_heartbeat.py` — mod/new; фронт: `lib/agent-status.ts`, `lib/api.ts`, `components/agent/AgentStatusBanner.tsx`, `DayScreen.tsx`, `mobile/MobileDayScreen.tsx` и их тесты — mod; мак: `Queue/Heartbeat.swift`, `Activity/ActivitySampler.swift`, `HeartbeatTests.swift` — mod.
+
 ## 2026-10-25 — PHASE-01/83: ответ draft всегда несёт четыре поля плана
 
 Тронут 1 файл.
@@ -2658,3 +2677,58 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Фронт: `components/categories/TemplatePicker.tsx` (+ тест) — new; `app/categories/page.tsx` — mod (кнопки «From template» и «Start from a template»); `lib/api.ts` — mod (типы и два метода внутри `categoriesAPI`); `app/categories/page.test.tsx` — mod.
 
 Решения без согласования с человеком (тикет их оставлял открытыми): каталог — четыре вещи из тикета; Supplements — чек-лист с boolean-полем на добавку; вход — панель на странице категорий, а не онбординг (его пути вне периметра задачи). Мобильная `/m/categories` и онбординг шаблонов пока не показывают.
+
+## 2026-10-25 — PHASE-03/172: mac-агент, энергия: адаптивный опрос, простой, сон и блокировка
+
+Что поменялось: период опроса 5 с, при простое дольше 60 с — 30 с (одноразовый таймер; глобальный монитор мыши возвращает 5 с сразу); сон, сон дисплея и блокировка экрана останавливают сбор, открытый интервал закрывается по последнему вводу; отсутствие 10 минут закрывает интервал по последнему вводу; `idle_seconds` считает паузы дольше 60 с внутри интервала. Окно тишины сборщика стало 45 с (было 30), иначе опрос раз в 30 с рвал бы интервал. Серверной части нет.
+
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IdleMonitor.swift` — new: пороги и `samplingPeriod(idleSeconds:)`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/PowerObserver.swift` — new: сон/пробуждение/блокировка в один сигнал paused.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `AppSighting.idleSeconds`, `silenceWindow`, `finish(at:lastInput:)`, подсчёт `idle_seconds`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: адаптивный таймер, `setPaused`, монитор мыши.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Queue/OutboxStore.swift` — mod: `QueuedInterval.idleSeconds` (с умолчанием 0, старая очередь открывается).
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IdleTests.swift` — new; `IntervalBuilderTests.swift` — mod (окно тишины).
+- `docs/PHASE-03/how-to/agent-energy-measurement.md` — new: команда замера `powermetrics`.
+
+Проверки: `xcodebuild test -destination 'platform=macOS'` — 114 passed. Не проверено: замер `powermetrics` (нужен sudo и человек), реальные уведомления сна и блокировки, глобальный монитор мыши, открытие старой очереди на диске со SwiftData-миграцией.
+
+Круг 2 (#172). Блокер круга 1: `checkpoint()` резал интервал посреди паузы по `lastSeen`, и время после последнего ввода уходило на сервер как работа (работа 0..720 с и уход на 40 минут давали конец 1205 вместо 720). Выбран способ «не резать, пока идёт пауза»: `checkpoint()` ждёт при `pauseCounted > 0` (простой дольше 60 с). Пауза короче 60 с режется как раньше и остаётся работой. Резать по последнему вводу и продолжать оттуда не стал: нужен перенос `idle`/`pauseCounted` в продолжение и второй порог возраста, а выигрыш — только при kill во время паузы, и он ограничен 10 минутами до срабатывания правила ухода. Тесты: `CheckpointDuringPauseTests` (сборщик) и `SamplerPauseTests` через шов `sample(bundleID:at:idle:)` — 12 минут работы и 40 минут ухода без блокировки, затем `setPaused(true)` через 10 минут после ввода; в обоих последний `endedAt` равен моменту последнего ввода. До исправления оба падали (1205 вместо 720).
+
+Предупреждения круга 1: (а) числа вынесены в `IdleMonitor.timerToleranceFraction` и `IntervalBuilder.silenceMargin`; запас окна тишины был 15 с минус допуск таймера 6 с, то есть 9 с на App Nap, теперь `silenceMargin` = 30 с, окно тишины 60 с, запас 24 с; (б) пауза без парного уведомления пробуждения снимается: пока сбор на паузе, раз в 15 с (`pausedProbePeriod`, допуск 20 %) `resumeIfPauseIsStale()` проверяет простой меньше 5 с (`freshInputThreshold`) и экран не заблокирован (`CGSessionCopyCurrentDictionary`, ключ `CGSSessionScreenIsLocked`; ключ не пришёл — считается разблокированным), сбрасывает причины в `PowerObserver.clearReasons()` и возобновляет сбор; переход «пауза/работа» пишется в `Logger` без PII (только слова paused/running); таймер не работает в системном сне, ночью стоимость нулевая; (в) `stop()` закрывает интервал по последнему вводу.
+
+Для слияния с #164: `ActivitySampler.samplingInterval` удалена; замена — `samplingSeconds: Int(IdleMonitor.activePeriod)` (5 с при активности; период простоя — `IdleMonitor.idlePeriod`, 30 с).
+
+Проверки круга 2: `xcodebuild test -destination 'platform=macOS'` — 120 passed. Не проверено: реальные уведомления сна и блокировки, `CGSSessionScreenIsLocked` на заблокированном экране, поведение под App Nap, замер `powermetrics`.
+
+Круг 3 (#172). Блокер круга 2: `checkpoint()` с условием `pauseCounted == 0` резал интервал на границе паузы, пока простой не дошёл до 60 с. Срез по `lastSeen` лежит после последнего ввода, и до 60 с ухода уходили как работа (перебор момента последнего ввода 300…1500 с шагом 5 с: лишнее время в 48 из 241 уходов, максимум 60 с). Тесты круга 2 ставили последний ввод на 720 с, между срезами 600 и 900, и границу не проверяли. Исправление: `OpenInterval.lastIdle` хранит простой последнего отсчёта, `checkpoint()` режет только при `lastIdle < IdleMonitor.activePeriod`, то есть на свежем вводе. Потеря работы при kill прежняя, около 295 с. Тесты ловят класс: `CheckpointDuringPauseTests.testNoLastInputMomentLetsTheCheckpointSendTheTimeAfterItAsWork` (сборщик, сетка 300…1500 с шагом 5 с) и в `SamplerPauseTests` два теста через `sample(bundleID:at:idle:)` на сетке одного цикла чекпойнта 300…600 с (путь `setPaused(true)` → `finish(lastInput:)` и путь правила ухода); последний `endedAt` не позже момента последнего ввода и не раньше него больше чем на период опроса. На коде круга 2 все три красные (92 и 2 × 46 нарушений), на новом зелёные. Мелочи: `pausedProbePeriod` равен `idlePeriod` (30 с вместо 15), пауза не будит мак чаще, чем простой; `probeTimer` снимается при возобновлении независимо от `started`; шапка `IntervalBuilder.swift` и комментарий к `isScreenLocked()` уточнены (kill теряет около 5 минут работы, но не простоя; нет ключа `CGSSessionScreenIsLocked` значит не заблокирован).
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift` — mod: `lastIdle`, условие `checkpoint()`, комментарии.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/IdleMonitor.swift` — mod: `pausedProbePeriod = idlePeriod`, комментарий к `isScreenLocked()`.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Activity/ActivitySampler.swift` — mod: отмена `probeTimer` вне ветки `started`.
+- `habit-tracker/mac/HabitAgent/HabitAgentTests/IdleTests.swift` — mod: 3 новых теста-перебора.
+
+Проверки круга 3: `xcodebuild test -destination 'platform=macOS'` — 123 passed (3 прогона; в одном `QueueTests.testTheStoreWritesNothingOutsideTheDirectoryItWasGiven` упал один раз и не повторился: он сравнивает общую временную папку до и после, и в ней пишут соседние прогоны роя). Не проверено: реальные уведомления сна и блокировки, `CGSSessionScreenIsLocked` на заблокированном экране, поведение под App Nap, замер `powermetrics`.
+## 2026-10-25 — PHASE-03/165: метрики Claude Code (мак-парсер + приём агрегатов)
+
+- `app/schemas/claude_session.py` — new: `ClaudeSessionIn` с `extra="forbid"` (поле под текст — 422, а не молчаливый пропуск), пачка до 200, ответ и список; `check_range` (диапазон дней не больше 92).
+- `app/crud/claude_session.py` — new: `upsert_claude_sessions` — `ON CONFLICT (session_uid) DO UPDATE ... WHERE ended_at <= excluded.ended_at` (запоздавшая пачка не откатывает длинную сессию назад), `local_date` берётся из `daytime.local_date(started_at)`, а не от клиента; `list_claude_sessions`.
+- `app/api/agent.py` — mod (добавлением в конец): `POST` и `GET /agent/claude-sessions`; три строки импортов.
+- `tests/test_claude_sessions.py` — new: upsert одной строки на `session_uid`, повтор пачки, устаревший повтор, цель, потолок пачки, `ended_at < started_at`, лишнее поле, набор колонок таблицы, список за день.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Metrics/` — new (`TranscriptScanner`, `SessionAggregator`, `ClaudeSessionsAPI`, `ClaudeMetricsService`); `App/HabitAgentApp.swift` — mod (запуск прохода при старте); `HabitAgentTests/ClaudeCodeTests.swift` и `Fixtures/*.jsonl` — new.
+
+Миграции нет: `claude_session` заведена ревизией `e1d3f5a7c9b0` (#155). Не сделано: блок на экране дня (`ClaudeUsageBlock.tsx`, `today/page.tsx`, `lib/api.ts`) — путь вне границ записи #165 на доске; проводка `last_error` в heartbeat — за #164 (`ClaudeMetricsService.errorCode`).
+
+### Круг 2 — PHASE-03/165
+
+- `app/schemas/claude_session.py` — mod: у счётчиков верхняя граница по колонке (`MAX_TURNS = 2**31 - 1` для Integer-ходов, `MAX_TOKENS = 2**63 - 1` для BigInteger-токенов) — число сверх колонки даёт 422, а не 500; комментарий про диапазон исправлен (константа 92 дня, не «неделя»).
+- `tests/test_claude_sessions.py` — mod: параметризованный отказ на каждом из шести счётчиков, запись на границе колонки.
+- `Metrics/ClaudeMetricsService.swift` — mod: адрес сервера читается на главном акторе (`@MainActor @Sendable` замыкание, `await`) через `sender(...)`; проход идёт `Task(priority: .utility)` с `Task.yield()` между файлами; `save()` создаёт каталог с правами 0700; ошибка открытия/seek/чтения не пишет `size`/`mtime` файла (его перечитают) и поднимает код в `errorCode`.
+- `Metrics/TranscriptScanner.swift` — mod: незнакомый `type` при `message.role` assistant/user считается подозрительным (`api-request-blob` — известная бухгалтерия, не дрейф).
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/turn_type_drift.jsonl` — mod/new: дрейф `type`, блоб запроса, нечитаемый файл читается заново, каталог 0700, приоритет `.utility`, отправитель читает адрес на главном потоке, отказ без адреса или ключа.
+
+Не сделано (вынесено в отдельный тикет): блок на экране дня и проводка `errorCode` в heartbeat.
+
+### Круг 3 — PHASE-03/165
+
+- `Metrics/TranscriptScanner.swift` — mod: в `FileScanState` отдельный счётчик `renamed` (незнакомый `type`, но `message.role` assistant/user, кроме `api-request-blob`); `errorCode` поднимается при `renamed > 0` независимо от `readable`, так что переименование одного из двух типов и возобновлённая сессия больше не проходят молча. `clearSignals()` обнуляет `suspect` и `renamed` у удалённого файла.
+- `Metrics/ClaudeMetricsService.swift` — mod: после обхода каталога `forgetDeletedFiles`: запись удалённого файла без вкладов удаляется, с вкладами — остаётся (итоги сессии не уменьшаются) и теряет только сигналы ошибки, поэтому `claude_transcript_unreadable` не висит вечно.
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/assistant_type_drift.jsonl` — mod/new: переименован только `assistant`, `user` читается (красный на коде круга 2); дописывание такого файла к распознанной сессии; удалённый файл с ошибкой снимает код и сохраняет итоги.

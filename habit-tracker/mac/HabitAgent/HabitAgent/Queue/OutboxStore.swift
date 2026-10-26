@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/163, PHASE-03/217
+// [review:need-review] PHASE-03/163, PHASE-03/217, PHASE-03/172
 // summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with the code kept in the agent state — the last one and a tally per code
 import Foundation
 import SwiftData
@@ -58,6 +58,8 @@ final class QueuedInterval {
     var localDate: String
     var utcOffsetMinutes: Int
     var switchCount: Int
+    /// A default, so a queue written before the field existed opens as is.
+    var idleSeconds: Int = 0
 
     init(_ interval: ActivityInterval) {
         id = UUID()
@@ -67,12 +69,14 @@ final class QueuedInterval {
         localDate = interval.localDate
         utcOffsetMinutes = interval.utcOffsetMinutes
         switchCount = interval.switchCount
+        idleSeconds = interval.idleSeconds
     }
 
     var interval: ActivityInterval {
         ActivityInterval(
             bundleID: bundleID, startedAt: startedAt, endedAt: endedAt,
-            localDate: localDate, utcOffsetMinutes: utcOffsetMinutes, switchCount: switchCount
+            localDate: localDate, utcOffsetMinutes: utcOffsetMinutes, switchCount: switchCount,
+            idleSeconds: idleSeconds
         )
     }
 }
