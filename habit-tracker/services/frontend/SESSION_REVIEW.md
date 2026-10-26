@@ -2302,3 +2302,16 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `app/onboarding/page.test.tsx`, `app/m/onboarding/page.test.tsx` — mod: моки `categoriesAPI` дополнены `listTemplates`/`applyTemplates`; по пять тестов на шаблоны на каждом шелле; в мобильном тесте «нет двух колонок» учитываются только безусловные `grid-cols-2/3`, а не `md:grid-cols-2` пикера.
 
 Проверки: `tsc --noEmit` чисто, ESLint 0 ошибок (18 предупреждений в чужих файлах), `bun test` — 1832 pass, 0 fail. Вживую: заглушка API на 8819 и `next dev` на 3819, headless Chrome — шаг шаблонов виден на `/onboarding` (1280 px), список, «Пропустить шаблоны» и поле разговора на месте. Ширину 390 px headless Chrome не отдаёт (макет шире окна, так же обрезана нетронутая `/m/categories`), нажатия в браузере не делались — их покрывают тесты. Реальный бэкенд и база не использовались.
+
+## 2026-10-26 — PHASE-03/220: блок Claude Code на экране дня
+
+Тронуто 18 файлов.
+
+- `components/agent/ClaudeUsageBlock.tsx` + тест — new: сессии, ходы ассистента и токены дня, только счётчики; ноль «пока не было» на серверном сегодня, на пустом прошлом дне блока нет; подпись «считается целиком на день начала»; `useId` для заголовка региона.
+- `hooks/useClaudeUsage.ts` + тест — new: читает день экрана, обновляет раз в минуту только серверный today, чужой ответ не показывает, сбой (в том числе синхронный) оставляет блок скрытым.
+- `lib/claude-usage.ts` + тест — new: компактные токены и подпись про границу суток.
+- `lib/agent-status.ts` + тест, `components/agent/AgentStatusBanner.test.tsx` — mod: баннер `claude_format` словами.
+- `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx` + тесты — mod: блок под баннером агента, день из `detail.day.date`.
+- `lib/api.ts` — mod (добавлением): тип `ClaudeUsageDay`, `agentAPI.claudeUsage`.
+
+Живая проверка: настоящий бэкенд на `habit_test_220` и dev-фронт, ответ `/day` подменён заглушкой; оба шелла в headless Chrome. Не проверено: настоящий мак-агент.

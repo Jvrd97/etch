@@ -99,4 +99,17 @@ describe('useClaudeUsage', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(result.current).toBeNull();
   });
+
+  it('survives a source that throws before it returns a promise', async () => {
+    const source = {
+      read: (): Promise<ClaudeUsageDay> => {
+        throw new Error('sync boom');
+      },
+      refreshMs: 60_000,
+    };
+    const { result } = renderHook(() => useClaudeUsage('2026-10-26', source));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(result.current).toBeNull();
+  });
 });

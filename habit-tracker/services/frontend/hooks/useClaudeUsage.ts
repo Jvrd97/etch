@@ -34,8 +34,9 @@ export function useClaudeUsage(
     let alive = true;
     let timer: ReturnType<typeof setInterval> | null = null;
     const load = () => {
-      source
-        .read(date)
+      // `then`, not a bare call: a source that throws before it returns a promise is caught too.
+      Promise.resolve()
+        .then(() => source.read(date))
         .then((body) => {
           if (!alive) return;
           setUsage(body);

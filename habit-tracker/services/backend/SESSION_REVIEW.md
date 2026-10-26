@@ -2738,8 +2738,8 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/schemas/claude_session.py` — mod: `ClaudeUsageDayResponse` (итоги дня и `sessions_past_boundary`, без проектов, веток и целей).
 - `app/crud/claude_session.py` — mod: `claude_usage_for_day` — суммы по сессиям дня; сессия, пересёкшая границу суток, считается целиком на день начала, число таких сессий отдельным полем.
 - `app/api/agent.py` — mod (добавлением в конец): `GET /agent/claude-usage/{on}`; ответ несёт серверный `today`.
-- `tests/test_claude_sessions.py` — mod: суммы, чужой день, граница суток, ответ без текста, битая дата.
-- `frontend/components/agent/ClaudeUsageBlock.tsx`, `hooks/useClaudeUsage.ts`, `lib/claude-usage.ts` — new; `components/DayScreen.tsx`, `components/mobile/MobileDayScreen.tsx`, `lib/api.ts`, `lib/agent-status.ts` — mod (блок под баннером агента, баннер `claude_format`); тесты рядом.
+- `tests/test_claude_sessions.py` — mod: суммы, чужой день, граница суток, ответ без текста, битая дата, точный набор ключей ответа.
+- Фронтенд (блок, хук, баннер `claude_format`) — в `frontend/SESSION_REVIEW.md`.
 - `mac/.../Queue/Heartbeat.swift` — mod: `HeartbeatErrorCode(claudeMetricsCode:)` и `reported(flush:claudeMetrics:)`; `Metrics/ClaudeMetricsService.swift` — mod: `observeErrorCode`; `Activity/ActivitySampler.swift`, `App/HabitAgentApp.swift` — mod (вне перечня доски, минимальная вставка: код метрик попадает в слот `last_error`); `HabitAgentTests/{HeartbeatTests,ClaudeCodeTests}.swift` — mod (в том числе тесты на удалённый транскрипт из слабого места #165: запись выбрасывается из сохранённого состояния, сигналы очищаются на диске и после перезапуска, итоги сессии не пересылаются).
 
 Миграций нет. Не проверено: настоящий мак-агент с живым `claude`, дневная граница на настоящей базе с засеянным планом (экраны дня шли через заглушку ответа `/day`, ручки агента — настоящие, на `habit_test_220`).

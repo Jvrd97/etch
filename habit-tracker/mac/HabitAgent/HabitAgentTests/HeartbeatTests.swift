@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/164, PHASE-03/220
-// summary: PHASE-03/220 — the metrics reader's error code reaches the heartbeat as claude_format (a refusal of its sessions as invalid_batch, anything else as nothing), and a flush's own outcome keeps the single last_error slot
+// summary: PHASE-03/220 — the sampler keeps the metrics reader's code in the heartbeat state, an unchanged code sends nothing and a changed one sends at once; the metrics reader's error code reaches the heartbeat as claude_format (a refusal of its sessions as invalid_batch, anything else as nothing), and a flush's own outcome keeps the single last_error slot
 // summary: verifies the heartbeat the agent sends — the body's snake_case keys and ISO dates, the error codes matching the server's closed vocabulary, what a flush summary says as a code, unknown flags written as null, a titles poll that carries the last ETag and treats 304 as «unchanged», a report built from live state, a lost send that costs nothing, a request for a beat during a send that is answered with fresh state, and the minute timer that starts at once and stops
 import XCTest
 @testable import HabitAgent
@@ -278,5 +278,69 @@ final class HeartbeatTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(afterStop, 2)
         XCTAssertEqual(recorder.sent.count, afterStop)
+    }
+
+    // MARK: sampler wiring of the metrics reader's code
+
+    private func wiredSampler(_ recorder: Recorder) -> ActivitySampler {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-sampler-\(UUID().uuidString)")
+        let sampler = ActivitySampler(queueDirectory: directory)
+        sampler.heartbeat = reporter(recorder, state: { [unowned sampler] in sampler.heartbeatState })
+        return sampler
+    }
+
+    private func settle() async {
+        try? await Task.sleep(nanoseconds: 150_000_000)
+    }
+
+    func testTheSamplerPutsTheMetricsCodeIntoTheHeartbeatState() async {
+        let recorder = Recorder()
+        let sampler = wiredSampler(recorder)
+        XCTAssertNil(sampler.heartbeatState.lastError)
+
+        sampler.reportClaudeMetrics(code: TranscriptScanner.unreadableCode)
+        await settle()
+
+        XCTAssertEqual(sampler.heartbeatState.lastError, .claudeFormat)
+        XCTAssertEqual(recorder.sent.last?.lastError, .claudeFormat)
+    }
+
+    func testTheSameMetricsCodeDoesNotBeatAgain() async {
+        let recorder = Recorder()
+        let sampler = wiredSampler(recorder)
+        sampler.reportClaudeMetrics(code: TranscriptScanner.unreadableCode)
+        await settle()
+        let afterFirst = recorder.sent.count
+
+        sampler.reportClaudeMetrics(code: TranscriptScanner.unreadableCode)
+        sampler.reportClaudeMetrics(code: TranscriptScanner.unreadableCode)
+        await settle()
+
+        XCTAssertEqual(afterFirst, 1)
+        XCTAssertEqual(recorder.sent.count, afterFirst, "a pass that finds the same failure again says nothing new")
+
+        // A code the server has no word for maps to nothing, so it is no change while nothing was reported.
+        let quiet = wiredSampler(recorder)
+        quiet.reportClaudeMetrics(code: "NSURLErrorDomain -1004")
+        await settle()
+        XCTAssertEqual(recorder.sent.count, afterFirst)
+    }
+
+    func testAChangedMetricsCodeBeatsAtOnceAndClearsWhenTheReaderRecovers() async {
+        let recorder = Recorder()
+        let sampler = wiredSampler(recorder)
+
+        sampler.reportClaudeMetrics(code: ClaudeMetricsService.rejectedCode)
+        await settle()
+        XCTAssertEqual(recorder.sent.map(\.lastError), [.invalidBatch])
+
+        sampler.reportClaudeMetrics(code: TranscriptScanner.unreadableCode)
+        await settle()
+        XCTAssertEqual(recorder.sent.map(\.lastError), [.invalidBatch, .claudeFormat])
+
+        sampler.reportClaudeMetrics(code: nil)
+        await settle()
+        XCTAssertEqual(recorder.sent.last?.lastError, nil)
+        XCTAssertEqual(recorder.sent.count, 3)
     }
 }

@@ -61,7 +61,7 @@ describe('ClaudeUsageBlock', () => {
       />
     );
 
-    expect(screen.getByText('Сегодня сессий Claude Code не было')).toBeTruthy();
+    expect(screen.getByText('Сегодня сессий Claude Code пока не было')).toBeTruthy();
     expect(screen.queryByText('Токены')).toBeNull();
   });
 
@@ -78,5 +78,24 @@ describe('ClaudeUsageBlock', () => {
 
     expect(screen.getByRole('region', { name: 'Claude Code' })).toBeTruthy();
     expect(screen.queryByText(/Сегодня/)).toBeNull();
+  });
+
+  it('gives two blocks on one screen their own heading ids', () => {
+    render(
+      <>
+        <ClaudeUsageBlock usage={usage()} />
+        <ClaudeUsageBlock usage={usage()} />
+      </>
+    );
+
+    const ids = screen.getAllByRole('region', { name: 'Claude Code' }).map((region) => region.getAttribute('aria-labelledby'));
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('keeps each token figure whole when the row wraps', () => {
+    render(<ClaudeUsageBlock usage={usage()} />);
+
+    const part = screen.getByText('3,1 тыс выход');
+    expect(part.className).toContain('whitespace-nowrap');
   });
 });

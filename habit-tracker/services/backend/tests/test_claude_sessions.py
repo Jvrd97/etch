@@ -339,6 +339,23 @@ class TestClaudeUsageOfTheDay:
         assert "/p/secret" not in response.text
         assert "Секрет" not in response.text
 
+    async def test_the_answer_has_exactly_these_keys(self, client: AsyncClient) -> None:
+        # A new field has to be added here by someone who asked what it can leak.
+        day = today_local().isoformat()
+        body = (await client.get(f"{USAGE_URL}/{day}")).json()
+
+        assert set(body) == {
+            "date",
+            "today",
+            "sessions",
+            "assistant_turns",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "sessions_past_boundary",
+        }
+
     async def test_a_malformed_day_is_refused(self, client: AsyncClient) -> None:
         response = await client.get(f"{USAGE_URL}/not-a-day")
 
