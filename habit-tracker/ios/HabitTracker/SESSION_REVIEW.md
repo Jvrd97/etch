@@ -317,6 +317,23 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 Проверки: `xcodebuild test` на симуляторе iPhone 17 Pro (iOS 26) с подписью симулятора — 168 из 168. С `CODE_SIGNING_ALLOWED=NO` — 152 из 168: 16 тестов Keychain, Settings и `APIClientLiveTests` падают с `-34018`. Глазами на симуляторе: приложение открывается на Today, внизу пять вкладок. Список More и переходы из Dashboard глазами не проверены. Установка на телефон не проверена: `install-device.sh` остановился на шаге «поиск телефона», телефон недоступен.
 
+## 2026-10-25 — PHASE-01/211 (iOS: экран дня и плана)
+
+Файлы (9 new, 1 mod):
+
+- `HabitTracker/API/DTOs+Day.swift` — new: DTO ответа `GET /day` (план деревом, отметки, факты по категориям, итог) и тела запросов.
+- `HabitTracker/API/APIClient+Day.swift` — new: `DayAPI` — чтение дня, отметка, факты (POST с `Idempotency-Key`, PUT, DELETE `?mark=unmark`), блокнот, `close/review`, `close/final`.
+- `HabitTracker/Features/Day/DayView.swift` — mod: заглушка заменена экраном (`init()` без аргументов): шапка со стрелками дней, план, карточки фактов, итог, блокнот.
+- `HabitTracker/Features/Day/DayViewModel.swift` — new: состояние экрана, оптимистичная отметка с откатом, ключи повтора, тихое перечитывание дня после записи.
+- `HabitTracker/Features/Day/PlanFactLogic.swift` — new: правила пункта с категорией (разбор «3,5» и «1:30», отметка `done`/`unmark`, тексты прогресса).
+- `HabitTracker/Features/Day/DayFormat.swift` — new: окна плана в часовом поясе правила, шаг дня, подписи отметок и вердикта.
+- `HabitTrackerTests/{DayAPIClientTests,DayViewModelTests,DayLogicTests,DayFixtures}.swift` — new: 44 теста.
+
+Проверки: `xcodebuild test` на iPhone 17 Pro с подписью симулятора — 212 из 212 (44 новых). Живой бэкенд не поднимался: ответы бэкенда в `DayFixtures` собраны по схемам `DayDetailResponse`, `PlanResponse`, `PlanItemFactsResponse`, `DaySummaryResponse`, а не сняты с работающего сервера.
+
+Не проверено глазами и на телефоне (для #215): вёрстка экрана на симуляторе и телефоне, длинное нажатие на кружок (меню «пропущено»/«снять»), клавиатура с запятой в поле факта, `TextEditor` блокнота под клавиатурой, pull-to-refresh, переход между днями на реальных данных.
+Не вошло в порт (есть в мобильном вебе): переопределение вердикта, правка и перенос пунктов плана, якоря, тренировка, интервалы работы, карта дня, отчёт дня, создание плана, диф плана.
+
 ## 2026-10-25 — PHASE-01/214: Face ID при входе
 
 Экран блокировки при запуске и после 5 минут в фоне; ключ API в Keychain под `.biometryCurrentSet` (запасной код устройства — выбор в Settings). Тронуто 11 файлов: 6 `new`, 5 `mod`.
@@ -385,3 +402,18 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `ChatViewModelTests.swift` — +16 тестов: оба сценария замечания, ошибка «Новый разговор» в `.empty`/`.failed`, повтор, гонки (A→B, старый ход против нового), `reset`, ответ без копии, ошибки плана.
 
 Проверки: `xcodebuild test` на симуляторе HT212 с подписью симулятора — 335 из 335. Не проверено: живой бэкенд (охранный хук), вёрстка строки замечания глазами.
+## 2026-10-26 — PHASE-01/211, круг 2 (iOS: экран дня и плана)
+
+Решение владельца: время пунктов плана показывается в часовом поясе устройства (`TimeZone.current`), как мобильный веб (`frontend/lib/time.ts`, приёмка 5.7), а не в `rule.timezone`. Сервер отдаёт UTC-момент; пояс стал параметром `DayFormat.clock/window(in:)`, по умолчанию `.current`.
+
+Файлы (0 new, 6 mod):
+
+- `HabitTracker/Features/Day/DayFormat.swift` — mod: `clock/window(in: TimeZone)` вместо `timeZoneID`; `anchorsHint`.
+- `HabitTracker/Features/Day/DayView.swift` — mod: окно плана без `timeZoneID`; подсказка «якоря отмечаются в вебе» над «Закрыть день».
+- `HabitTracker/Features/Day/DayViewModel.swift` — mod: черновик блокнота по дню (в памяти) вместо молчаливой потери при смене дня; `saveNotebook` не отмечает чужой день сохранённым.
+- `HabitTracker/API/DTOs+Day.swift` — mod: только комментарий к `DayRuleDTO`.
+- `HabitTrackerTests/{DayLogicTests,DayViewModelTests,DayFixtures}.swift` — mod: тесты пояса с подменой (Берлин, Нью-Йорк, UTC), таблица done/unmark из `frontend/lib/plan-facts.test.ts` (9 тестов, включая 100→120 при цели 300), три теста черновика блокнота, `DayFixtures.day(date:notebook:)`.
+
+Проверки: `xcodebuild test` на симуляторе av04-iPhone17Pro с подписью симулятора — 321 из 321 после слияния main. Живой бэкенд не поднимался; пункт Acceptance «живая копия бэкенда» остаётся `[ ]` — проверит человек / #215.
+
+Не проверено глазами: подсказка про якоря и возврат черновика блокнота на экране. Известный предел: черновик живёт в памяти и не переживает перезапуск; черновик итога дня (минуты, текст) при смене дня по-прежнему сбрасывается.
