@@ -1,9 +1,9 @@
 // [review:need-review] PHASE-03/159
-// summary: the content of the floating window — date and a stale marker, the current task, the timer with start and stop, the button that opens the day in the browser, and an empty band kept for the quick marks of #170
+// summary: the content of the floating window — date and a stale marker, the current task, the timer with start and stop, the button that opens the day in the browser, an empty band kept for the quick marks of #170, and (since #162) the day-mode switcher
 import SwiftUI
 
-/// The window is a column of sections. A new one (the day mode of #162, the quick
-/// marks of #170) is one more line in `PanelView.body`, not a change to the others.
+/// The window is a column of sections. A new one (the day mode of #162 is one;
+/// the quick marks of #170 are next) is one more line in `PanelView.body`, not a change to the others.
 struct PanelView: View {
     @ObservedObject var model: PanelModel
     let onMinimize: () -> Void
@@ -13,6 +13,7 @@ struct PanelView: View {
             PanelHeader(model: model, onMinimize: onMinimize)
             TaskSection(model: model)
             TimerSection(timer: model.timer, onToggle: model.toggleTimer)
+            ModeSwitcher(model: model)
             Spacer(minLength: 0)
             QuickMarksSlot()
             Button(action: model.openDayInBrowser) {

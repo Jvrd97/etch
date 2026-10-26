@@ -1,3 +1,5 @@
+// [review:need-review] PHASE-03/162
+// summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read
 // [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
 // summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers, and the sets behind a quick-mark card — the dialog of every set opened from the card's name and counter, the plus and the key that still add one without opening it, the day's records read again after every tap, and a set taken back from the list lowering the card's counter
 
@@ -53,6 +55,9 @@ const WATER_MARK: QuickMark = {
   plan_item_id: null,
 };
 
+/** The mode the stub of the server answers for any date: a working no-code day by the schedule. */
+const TUESDAY_MODE = { date: '2026-07-30', kind: 'work', nocode: true, source: 'schedule' };
+
 let getCategories: ReturnType<typeof mock>;
 let getEntries: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
@@ -86,6 +91,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => Promise.resolve(TUESDAY_MODE),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -301,6 +307,16 @@ const OPEN_WATER_SETS = 'Подходы за сегодня — +250 мл';
 function fiveSets(): QuickMarkDayEvent[] {
   return [1, 2, 3, 4, 5].map((n) => waterSet(n, `2026-07-30T0${n}:00:00Z`, n === 5));
 }
+
+describe('the day mode on /today', () => {
+  it('draws the mode of the day with who decided it', async () => {
+    await renderToday();
+
+    await waitFor(() => expect(screen.getByLabelText('Вид дня')).toBeDefined());
+    expect((screen.getByLabelText('no-code') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText('по расписанию')).toBeDefined();
+  });
+});
 
 describe('the sets behind a quick-mark card on /today', () => {
   it('opens the dialog with every set from the name and counter of the card', async () => {

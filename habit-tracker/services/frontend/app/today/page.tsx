@@ -1,4 +1,6 @@
 'use client';
+// [review:need-review] PHASE-03/162
+// summary: desktop Today page — the day-mode badge with its switch sits under the title
 // [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
@@ -16,6 +18,7 @@ import TodayDayEntriesList from '@/components/TodayDayEntriesList';
 import HotkeyLegend from '@/components/HotkeyLegend';
 import EntryForm from '@/components/EntryForm';
 import AskAboutDayButton from '@/components/chat/AskAboutDayButton';
+import DayModeBadge from '@/components/agent/DayModeBadge';
 import { booleanFields } from '@/lib/today-categories';
 import { categoriesWithQuickMark } from '@/lib/quick-marks';
 import { dayEntriesForCategory, isFieldChecked, numberFieldSum } from '@/lib/today-entries';
@@ -24,6 +27,7 @@ import { useQuickMarks } from '@/hooks/useQuickMarks';
 import { useToday } from '@/hooks/useToday';
 import { useTodayList } from '@/hooks/useTodayList';
 import { useQuickMarkHotkeys } from '@/hooks/useQuickMarkHotkeys';
+import { useDayMode } from '@/hooks/useDayMode';
 import { Check, Keyboard, Sun } from 'lucide-react';
 
 export default function TodayPage() {
@@ -57,6 +61,8 @@ export default function TodayPage() {
   const dayList = useTodayList(categories, quickMarks.marks);
   const [editing, setEditing] = useState<{ category: Category; entry: Entry | null } | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
+  // Режим дня (#162): бейдж с переключателем. Прочитать его не вышло — бейджа нет, день цел.
+  const dayMode = useDayMode(date);
 
   const markByKey = useCallback((id: number) => void quickMarks.tap(id), [quickMarks]);
   const openLegend = useCallback(() => setLegendOpen(true), []);
@@ -104,6 +110,14 @@ export default function TodayPage() {
         {/* Рядом с заголовком, а не внизу экрана: разговор идёт про день целиком,
             а не про какую-то одну его карточку. */}
         <AskAboutDayButton date={date} onError={setError} />
+
+        <DayModeBadge
+          mode={dayMode.mode}
+          saving={dayMode.saving}
+          error={dayMode.error}
+          onDecide={(kind, nocode) => void dayMode.decide(kind, nocode)}
+          onReset={() => void dayMode.reset()}
+        />
 
         {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
