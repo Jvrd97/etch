@@ -2707,3 +2707,28 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgentTests/IdleTests.swift` — mod: 3 новых теста-перебора.
 
 Проверки круга 3: `xcodebuild test -destination 'platform=macOS'` — 123 passed (3 прогона; в одном `QueueTests.testTheStoreWritesNothingOutsideTheDirectoryItWasGiven` упал один раз и не повторился: он сравнивает общую временную папку до и после, и в ней пишут соседние прогоны роя). Не проверено: реальные уведомления сна и блокировки, `CGSSessionScreenIsLocked` на заблокированном экране, поведение под App Nap, замер `powermetrics`.
+## 2026-10-25 — PHASE-03/165: метрики Claude Code (мак-парсер + приём агрегатов)
+
+- `app/schemas/claude_session.py` — new: `ClaudeSessionIn` с `extra="forbid"` (поле под текст — 422, а не молчаливый пропуск), пачка до 200, ответ и список; `check_range` (диапазон дней не больше 92).
+- `app/crud/claude_session.py` — new: `upsert_claude_sessions` — `ON CONFLICT (session_uid) DO UPDATE ... WHERE ended_at <= excluded.ended_at` (запоздавшая пачка не откатывает длинную сессию назад), `local_date` берётся из `daytime.local_date(started_at)`, а не от клиента; `list_claude_sessions`.
+- `app/api/agent.py` — mod (добавлением в конец): `POST` и `GET /agent/claude-sessions`; три строки импортов.
+- `tests/test_claude_sessions.py` — new: upsert одной строки на `session_uid`, повтор пачки, устаревший повтор, цель, потолок пачки, `ended_at < started_at`, лишнее поле, набор колонок таблицы, список за день.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Metrics/` — new (`TranscriptScanner`, `SessionAggregator`, `ClaudeSessionsAPI`, `ClaudeMetricsService`); `App/HabitAgentApp.swift` — mod (запуск прохода при старте); `HabitAgentTests/ClaudeCodeTests.swift` и `Fixtures/*.jsonl` — new.
+
+Миграции нет: `claude_session` заведена ревизией `e1d3f5a7c9b0` (#155). Не сделано: блок на экране дня (`ClaudeUsageBlock.tsx`, `today/page.tsx`, `lib/api.ts`) — путь вне границ записи #165 на доске; проводка `last_error` в heartbeat — за #164 (`ClaudeMetricsService.errorCode`).
+
+### Круг 2 — PHASE-03/165
+
+- `app/schemas/claude_session.py` — mod: у счётчиков верхняя граница по колонке (`MAX_TURNS = 2**31 - 1` для Integer-ходов, `MAX_TOKENS = 2**63 - 1` для BigInteger-токенов) — число сверх колонки даёт 422, а не 500; комментарий про диапазон исправлен (константа 92 дня, не «неделя»).
+- `tests/test_claude_sessions.py` — mod: параметризованный отказ на каждом из шести счётчиков, запись на границе колонки.
+- `Metrics/ClaudeMetricsService.swift` — mod: адрес сервера читается на главном акторе (`@MainActor @Sendable` замыкание, `await`) через `sender(...)`; проход идёт `Task(priority: .utility)` с `Task.yield()` между файлами; `save()` создаёт каталог с правами 0700; ошибка открытия/seek/чтения не пишет `size`/`mtime` файла (его перечитают) и поднимает код в `errorCode`.
+- `Metrics/TranscriptScanner.swift` — mod: незнакомый `type` при `message.role` assistant/user считается подозрительным (`api-request-blob` — известная бухгалтерия, не дрейф).
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/turn_type_drift.jsonl` — mod/new: дрейф `type`, блоб запроса, нечитаемый файл читается заново, каталог 0700, приоритет `.utility`, отправитель читает адрес на главном потоке, отказ без адреса или ключа.
+
+Не сделано (вынесено в отдельный тикет): блок на экране дня и проводка `errorCode` в heartbeat.
+
+### Круг 3 — PHASE-03/165
+
+- `Metrics/TranscriptScanner.swift` — mod: в `FileScanState` отдельный счётчик `renamed` (незнакомый `type`, но `message.role` assistant/user, кроме `api-request-blob`); `errorCode` поднимается при `renamed > 0` независимо от `readable`, так что переименование одного из двух типов и возобновлённая сессия больше не проходят молча. `clearSignals()` обнуляет `suspect` и `renamed` у удалённого файла.
+- `Metrics/ClaudeMetricsService.swift` — mod: после обхода каталога `forgetDeletedFiles`: запись удалённого файла без вкладов удаляется, с вкладами — остаётся (итоги сессии не уменьшаются) и теряет только сигналы ошибки, поэтому `claude_transcript_unreadable` не висит вечно.
+- `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/assistant_type_drift.jsonl` — mod/new: переименован только `assistant`, `user` читается (красный на коде круга 2); дописывание такого файла к распознанной сессии; удалённый файл с ошибкой снимает код и сохраняет итоги.
