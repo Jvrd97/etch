@@ -97,13 +97,17 @@ enum DayFixtures {
 
     /// The fixture day as the server would answer after a write: same plan, new marks/facts/summary.
     static func day(
+        date: String? = nil, notebook: String?? = nil,
         marks: [DayMarkDTO]? = nil, planFacts: [PlanItemFactsDTO]? = nil, summary: DaySummaryDTO? = nil
     ) throws -> DayDetailDTO {
         let base = try day()
+        let head = date.map {
+            DayHeadDTO(date: $0, kind: base.day.kind, isNocode: base.day.isNocode, openedAt: base.day.openedAt)
+        } ?? base.day
         return DayDetailDTO(
-            day: base.day, rule: base.rule, plan: base.plan, hasPlan: base.hasPlan,
+            day: head, rule: base.rule, plan: base.plan, hasPlan: base.hasPlan,
             marks: marks ?? base.marks, planFacts: planFacts ?? base.planFacts, taskCounts: base.taskCounts,
-            notebook: base.notebook, summary: summary ?? base.summary
+            notebook: notebook ?? base.notebook, summary: summary ?? base.summary
         )
     }
 

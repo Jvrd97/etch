@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211
-// summary: Day screen (replaces the #208 placeholder) — day stepper, plan sections with tap-to-cycle marks and plan windows, category-linked fact cards (target, fact, unit; record/correct/remove), the two closing touches with the verdict, the notebook; the app's own calendar is not used, days are stepped with arrows
+// summary: Day screen (replaces the #208 placeholder) — day stepper, plan sections with tap-to-cycle marks and plan windows, category-linked fact cards (target, fact, unit; record/correct/remove), the two closing touches with the verdict, the notebook with a per-day draft, a hint that anchors are marked on the web; the app's own calendar is not used, days are stepped with arrows
 import SwiftUI
 
 struct DayView: View {
@@ -135,10 +135,7 @@ private struct DayPlanSection: View {
                                     .foregroundStyle(DS.Palette.textPrimary)
                             }
                             ForEach(section.items) { item in
-                                PlanItemRow(
-                                    viewModel: viewModel, item: item,
-                                    timeZoneID: detail.rule.timezone, depth: 0
-                                )
+                                PlanItemRow(viewModel: viewModel, item: item, depth: 0)
                             }
                         }
                     }
@@ -158,7 +155,6 @@ private struct DayPlanSection: View {
 private struct PlanItemRow: View {
     @ObservedObject var viewModel: DayViewModel
     let item: DayPlanItemDTO
-    let timeZoneID: String
     let depth: Int
 
     private var markState: String? { viewModel.state(of: item.id) }
@@ -185,7 +181,7 @@ private struct PlanItemRow: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    if let window = DayFormat.window(start: item.startsAt, end: item.endsAt, timeZoneID: timeZoneID) {
+                    if let window = DayFormat.window(start: item.startsAt, end: item.endsAt) {
                         Text(window)
                             .font(DS.Typography.caption)
                             .foregroundStyle(DS.Palette.textSecondary)
@@ -203,7 +199,7 @@ private struct PlanItemRow: View {
             }
 
             ForEach(item.children) { child in
-                PlanItemRow(viewModel: viewModel, item: child, timeZoneID: timeZoneID, depth: depth + 1)
+                PlanItemRow(viewModel: viewModel, item: child, depth: depth + 1)
                     .padding(.leading, DS.Spacing.xl)
             }
         }
@@ -383,6 +379,10 @@ private struct DayClosingCard: View {
                 }
                 .buttonStyle(LimeButtonStyle(prominent: false))
                 .disabled(viewModel.isClosing)
+
+                Text(DayFormat.anchorsHint)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.textSecondary)
 
                 Button(viewModel.summary?.closed == true ? "Закрыть день заново" : "Закрыть день") {
                     Task { await viewModel.closeDay() }

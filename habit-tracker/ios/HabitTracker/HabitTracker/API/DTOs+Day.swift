@@ -24,8 +24,8 @@ struct DayHeadDTO: Codable, Equatable {
     let openedAt: String?
 }
 
-/// The slice of the day's rule the screen needs: the zone plan windows are read in
-/// and the bar the task counter is shown against.
+/// The slice of the day's rule the screen needs: the bar the task counter is shown against.
+/// `timezone` is decoded for completeness; plan windows are read in the device's zone.
 struct DayRuleDTO: Codable, Equatable {
     let timezone: String
     let maxWorkTasks: Int

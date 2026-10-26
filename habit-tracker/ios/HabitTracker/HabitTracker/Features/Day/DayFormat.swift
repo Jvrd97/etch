@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211
-// summary: pure helpers of the Day screen — day-string arithmetic (yyyy-MM-dd), plan window text read in the rule's timezone, the mark cycle (none -> done -> failed -> none), Russian labels of marks, task counts, closing stage/verdict and verdict reason
+// summary: pure helpers of the Day screen — day-string arithmetic (yyyy-MM-dd), plan window text read in the device's timezone, the mark cycle (none -> done -> failed -> none), Russian labels of marks, task counts, closing stage/verdict and verdict reason
 import Foundation
 
 enum DayFormat {
@@ -63,19 +63,21 @@ enum DayFormat {
         return fractional.date(from: iso)
     }
 
-    /// The `HH:mm` of a timestamp on the wall clock of the day's rule. The server sends
-    /// instants (UTC), and "06:00" only means something in the zone the plan was written in.
-    static func clock(_ iso: String, timeZoneID: String) -> String? {
+    /// The `HH:mm` of a timestamp on the wall clock of the reader's device. The server sends
+    /// instants (UTC) and decides which day they belong to; what the clock shows is the
+    /// reader's own zone, as on the mobile web (`frontend/lib/time.ts`, acceptance 5.7).
+    /// `timeZone` is a parameter so tests do not depend on the machine's setting.
+    static func clock(_ iso: String, in timeZone: TimeZone = .current) -> String? {
         guard let date = parseTimestamp(iso) else { return nil }
         let formatter = dayFormatter(dateFormat: "HH:mm")
-        formatter.timeZone = TimeZone(identifier: timeZoneID) ?? .current
+        formatter.timeZone = timeZone
         return formatter.string(from: date)
     }
 
     /// "06:00" for a point, "09:00–11:30" for a window, nil for an unscheduled line.
-    static func window(start: String?, end: String?, timeZoneID: String) -> String? {
-        guard let start, let from = clock(start, timeZoneID: timeZoneID) else { return nil }
-        guard let end, let to = clock(end, timeZoneID: timeZoneID) else { return from }
+    static func window(start: String?, end: String?, in timeZone: TimeZone = .current) -> String? {
+        guard let start, let from = clock(start, in: timeZone) else { return nil }
+        guard let end, let to = clock(end, in: timeZone) else { return from }
         return "\(from)–\(to)"
     }
 
@@ -99,6 +101,10 @@ enum DayFormat {
         default: return "День не закрыт"
         }
     }
+
+    /// Shown above "Закрыть день": the app has no anchors, yet closing counts them, so a day
+    /// can come out "проигран" for `anchors`.
+    static let anchorsHint = "Якоря отмечаются в вебе: здесь их нет, а закрытие дня их учитывает."
 
     static func reasonLabel(_ code: String) -> String {
         switch code {

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211
-// summary: Day screen state — loads GET /day for the server's today or a stepped date, optimistic mark cycle with rollback, category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write refreshes counts and the verdict
+// summary: Day screen state — loads GET /day for the server's today or a stepped date, optimistic mark cycle with rollback, category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook save with a per-day draft kept across stepping, two-touch closing (review 15:40, final evening); silent re-read after each write refreshes counts and the verdict
 import Foundation
 
 @MainActor
@@ -50,6 +50,9 @@ final class DayViewModel: ObservableObject {
     private let apiProvider: () -> DayAPI?
     private var loadedDate: String?
     private var loadGeneration = 0
+    /// Unsaved notebook text of days the person stepped away from, by `yyyy-MM-dd`.
+    /// In memory only: it survives stepping between days, not a relaunch.
+    private var notebookDrafts: [String: String] = [:]
     /// Keys of writes that have not been answered yet: a retry of the same body goes
     /// under the same key, so a lost answer cannot record a fact or a touch twice.
     private var factKeys: [UUID: (body: PlanFactRequestDTO, key: String)] = [:]
@@ -108,9 +111,13 @@ final class DayViewModel: ObservableObject {
         // Drafts are seeded when a different day arrives, never on a re-read:
         // text typed and not yet saved must survive the refresh after a mark.
         if loadedDate != fetched.day.date {
+            // Leaving a day with unsaved notebook text keeps it as that day's draft;
+            // coming back restores it over the server's text.
+            if let leaving = loadedDate, isNotebookDirty { notebookDrafts[leaving] = notebook }
             loadedDate = fetched.day.date
-            notebook = fetched.notebook ?? ""
-            savedNotebook = notebook
+            savedNotebook = fetched.notebook ?? ""
+            let draft = notebookDrafts.removeValue(forKey: fetched.day.date)
+            notebook = draft.flatMap { $0 == savedNotebook ? nil : $0 } ?? savedNotebook
             closingBody = fetched.summary.bodyMd
             closingMinutes = fetched.summary.workMinutes.map(String.init) ?? ""
             factKeys = [:]
@@ -254,9 +261,11 @@ final class DayViewModel: ObservableObject {
         guard let date = shownDate, !isSavingNotebook else { return }
         isSavingNotebook = true
         defer { isSavingNotebook = false }
+        let text = notebook
         do {
-            try await api.saveNotebook(date: date, content: notebook)
-            savedNotebook = notebook
+            try await api.saveNotebook(date: date, content: text)
+            // The person may have stepped to another day while this was in flight.
+            if shownDate == date { savedNotebook = text }
         } catch {
             actionError = Self.message(for: error, fallback: Self.notebookFailedMessage)
         }

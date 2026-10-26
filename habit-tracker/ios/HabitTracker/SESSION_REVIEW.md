@@ -376,3 +376,19 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `HabitTrackerTests/{QuickMarkTapQueueTests,QuickMarksViewModelTests,RelapseAnalysisTests,TodayDetailViewModelsTests,TodayScreenAPITests,TodayViewModelTests}.swift` — new/mod: view model на подделанном `URLProtocol`, офлайн-нажатия, одна выборка серий.
 
 Проверки: `xcodebuild test` на симуляторе av06-iPhone17Pro (iOS 26) с подписью симулятора — 227 из 227. Не проверено: живой бэкенд (охранный хук не пускает миграцию живой базы роя, экран шёл только на подделке API), вёрстка глазами, Face ID, график и анализ срывов на реальных данных, поведение на телефоне (для #215).
+
+## 2026-10-26 — PHASE-01/211, круг 2 (iOS: экран дня и плана)
+
+Решение владельца: время пунктов плана показывается в часовом поясе устройства (`TimeZone.current`), как мобильный веб (`frontend/lib/time.ts`, приёмка 5.7), а не в `rule.timezone`. Сервер отдаёт UTC-момент; пояс стал параметром `DayFormat.clock/window(in:)`, по умолчанию `.current`.
+
+Файлы (0 new, 6 mod):
+
+- `HabitTracker/Features/Day/DayFormat.swift` — mod: `clock/window(in: TimeZone)` вместо `timeZoneID`; `anchorsHint`.
+- `HabitTracker/Features/Day/DayView.swift` — mod: окно плана без `timeZoneID`; подсказка «якоря отмечаются в вебе» над «Закрыть день».
+- `HabitTracker/Features/Day/DayViewModel.swift` — mod: черновик блокнота по дню (в памяти) вместо молчаливой потери при смене дня; `saveNotebook` не отмечает чужой день сохранённым.
+- `HabitTracker/API/DTOs+Day.swift` — mod: только комментарий к `DayRuleDTO`.
+- `HabitTrackerTests/{DayLogicTests,DayViewModelTests,DayFixtures}.swift` — mod: тесты пояса с подменой (Берлин, Нью-Йорк, UTC), таблица done/unmark из `frontend/lib/plan-facts.test.ts` (9 тестов, включая 100→120 при цели 300), три теста черновика блокнота, `DayFixtures.day(date:notebook:)`.
+
+Проверки: `xcodebuild test` на симуляторе av04-iPhone17Pro с подписью симулятора — 321 из 321 после слияния main. Живой бэкенд не поднимался; пункт Acceptance «живая копия бэкенда» остаётся `[ ]` — проверит человек / #215.
+
+Не проверено глазами: подсказка про якоря и возврат черновика блокнота на экране. Известный предел: черновик живёт в памяти и не переживает перезапуск; черновик итога дня (минуты, текст) при смене дня по-прежнему сбрасывается.

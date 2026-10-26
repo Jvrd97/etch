@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211
-// summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking, two-touch closing with keys and validation
+// summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking and per-day drafts, two-touch closing with keys and validation
 import XCTest
 @testable import HabitTracker
 
@@ -274,6 +274,50 @@ final class DayViewModelTests: XCTestCase {
         await viewModel.cycleMark(DayFixtures.minimumID)
 
         XCTAssertEqual(viewModel.notebook, "Ещё не сохранил")
+    }
+
+    func testSteppingAwayKeepsUnsavedNotebookTextAsADraftOfThatDay() async throws {
+        await viewModel.load()
+        viewModel.notebook = "Не сохранил вчера"
+        api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24", notebook: .some("Старая запись")))]
+
+        await viewModel.showPreviousDay()
+
+        XCTAssertEqual(viewModel.shownDate, "2026-10-24")
+        XCTAssertEqual(viewModel.notebook, "Старая запись", "the other day shows its own text")
+        XCTAssertFalse(viewModel.isNotebookDirty)
+
+        api.fetchResults = [.success(try DayFixtures.day())]
+        await viewModel.showNextDay()
+
+        XCTAssertEqual(viewModel.shownDate, "2026-10-25")
+        XCTAssertEqual(viewModel.notebook, "Не сохранил вчера", "the draft came back with its day")
+        XCTAssertTrue(viewModel.isNotebookDirty, "still unsaved, the Save button stays live")
+    }
+
+    func testSavedNotebookLeavesNoDraftBehind() async throws {
+        await viewModel.load()
+        viewModel.notebook = "Сохранил"
+        await viewModel.saveNotebook()
+        api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24", notebook: .some("Другое")))]
+        await viewModel.showPreviousDay()
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Сохранил")))]
+        await viewModel.showNextDay()
+
+        XCTAssertEqual(viewModel.notebook, "Сохранил")
+        XCTAssertFalse(viewModel.isNotebookDirty)
+    }
+
+    func testADraftBackToTheServerTextIsNotKept() async throws {
+        await viewModel.load()
+        viewModel.notebook = "Правка"
+        viewModel.notebook = "Заметка дня"
+        api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24"))]
+        await viewModel.showPreviousDay()
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Заметка с сервера")))]
+        await viewModel.showNextDay()
+
+        XCTAssertEqual(viewModel.notebook, "Заметка с сервера", "an unchanged text is not a draft")
     }
 
     // MARK: Closing
