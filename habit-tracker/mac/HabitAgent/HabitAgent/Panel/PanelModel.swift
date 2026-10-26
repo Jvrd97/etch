@@ -1,19 +1,25 @@
 // [review:need-review] PHASE-03/159
-// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows
+// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the next config
 import Combine
 import Foundation
 
 @MainActor
 final class PanelModel: ObservableObject {
+    /// Writes a change of the day mode for a date; throws when the server refused or was unreachable.
+    typealias ModeWrite = (_ date: String, _ change: ModeChange) async throws -> Void
+
     let config: ConditionalPoller<PanelConfig>
     let timer: TaskTimer
     /// The config part of the window has been silent longer than its threshold.
     @Published private(set) var configIsStale = false
+    /// The last write of the day mode did not go through; the mode shown is the old one.
+    @Published private(set) var modeWriteFailed = false
 
     private let outbox: ManualIntervalOutbox?
     private let serverAddress: () -> String?
     private let openURL: (URL) -> Void
     private let now: () -> Date
+    private let modeWrite: ModeWrite?
     private var observers: [AnyCancellable] = []
 
     init(
@@ -22,7 +28,8 @@ final class PanelModel: ObservableObject {
         outbox: ManualIntervalOutbox? = nil,
         serverAddress: @escaping () -> String?,
         openURL: @escaping (URL) -> Void,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        modeWrite: ModeWrite? = nil
     ) {
         self.config = config
         self.timer = timer
@@ -30,6 +37,7 @@ final class PanelModel: ObservableObject {
         self.serverAddress = serverAddress
         self.openURL = openURL
         self.now = now
+        self.modeWrite = modeWrite
         // The poller is a nested object: its changes reach the view through here.
         observers = [
             config.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
@@ -38,6 +46,8 @@ final class PanelModel: ObservableObject {
     }
 
     var currentTask: PanelConfig.Task? { config.value?.currentTask }
+
+    var dayMode: PanelDayMode? { config.value?.dayMode }
 
     var dateLabel: String? { config.value?.dateLabel }
 
@@ -62,6 +72,16 @@ final class PanelModel: ObservableObject {
         }
     }
 
+    /// Decides the mode of the date the window shows. Both fields go: the kind and no-code are independent.
+    func decideMode(kind: String, nocode: Bool) async {
+        await write(.decide(kind: kind, nocode: nocode))
+    }
+
+    /// Gives the date the window shows back to the schedule.
+    func resetMode() async {
+        await write(.reset)
+    }
+
     func openDayInBrowser() {
         guard let url = dayPageURL else { return }
         openURL(url)
@@ -80,6 +100,18 @@ final class PanelModel: ObservableObject {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+
+    /// The window repaints from the server's own answer, not from what was asked for.
+    private func write(_ change: ModeChange) async {
+        guard let date = config.value?.date, let modeWrite else { return }
+        do {
+            try await modeWrite(date, change)
+            modeWriteFailed = false
+            await config.pollOnce()
+        } catch {
+            modeWriteFailed = true
+        }
+    }
 
     private var dayPageURL: URL? {
         guard let config = config.value, let address = serverAddress() else { return nil }

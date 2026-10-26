@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/159
-// summary: puts the floating panel together and runs it — the config poller, the one-second tick, the window, the outbox of timer intervals — and stops the timer when the app quits
+// summary: puts the floating panel together and runs it (since #162 also the write of the day mode through the same client) — the config poller, the one-second tick, the window, the outbox of timer intervals — and stops the timer when the app quits
 import AppKit
 import Combine
 import Foundation
@@ -56,7 +56,8 @@ final class PanelHost: ObservableObject {
             timer: TaskTimer(emit: { outbox.enqueue($0) }),
             outbox: outbox,
             serverAddress: serverAddress,
-            openURL: { NSWorkspace.shared.open($0) }
+            openURL: { NSWorkspace.shared.open($0) },
+            modeWrite: { date, change in try await client().change(mode: change, date: date) }
         )
     }
 

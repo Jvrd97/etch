@@ -1,3 +1,5 @@
+// [review:need-review] PHASE-03/162
+// summary: the window grew taller (248 to 296) to make room for the day-mode switcher
 // [review:need-review] PHASE-03/159
 // summary: the floating window — a non-activating NSPanel that floats over full-screen apps and follows the person between Spaces, draggable by any part, remembers its frame to the pixel, and is hidden into and shown from the menu bar without losing the timer
 import AppKit
@@ -19,7 +21,7 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 final class FloatingPanelController {
     nonisolated static let frameAutosaveName = "HabitAgentFloatingPanel"
     static let visibleDefaultsKey = "panel-visible"
-    static let contentSize = NSSize(width: 264, height: 248)
+    static let contentSize = NSSize(width: 264, height: 296)
     private static let screenMargin: CGFloat = 16
 
     let panel: FloatingPanel

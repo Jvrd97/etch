@@ -2732,3 +2732,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `Metrics/TranscriptScanner.swift` — mod: в `FileScanState` отдельный счётчик `renamed` (незнакомый `type`, но `message.role` assistant/user, кроме `api-request-blob`); `errorCode` поднимается при `renamed > 0` независимо от `readable`, так что переименование одного из двух типов и возобновлённая сессия больше не проходят молча. `clearSignals()` обнуляет `suspect` и `renamed` у удалённого файла.
 - `Metrics/ClaudeMetricsService.swift` — mod: после обхода каталога `forgetDeletedFiles`: запись удалённого файла без вкладов удаляется, с вкладами — остаётся (итоги сессии не уменьшаются) и теряет только сигналы ошибки, поэтому `claude_transcript_unreadable` не висит вечно.
 - `HabitAgentTests/ClaudeCodeTests.swift` + `Fixtures/assistant_type_drift.jsonl` — mod/new: переименован только `assistant`, `user` читается (красный на коде круга 2); дописывание такого файла к распознанной сессии; удалённый файл с ошибкой снимает код и сохраняет итоги.
+
+## 2026-10-26 — PHASE-03/162: режимы дня, расписание и ручной переключатель
+
+Режим дня стал данными: `GET|PUT|DELETE /api/v1/day-mode/{date}` и `GET|PUT /api/v1/mode-schedule`. Разрешение режима не писалось заново: ручная строка `day_mode` перебивает `mode_schedule`, а этим правилом уже пользуется разметка ролей, поэтому `app.crud.activity.day_mode` переиспользован. `GET /agent/config` отдавал `day_mode` и раньше (#159), его ETag меняется вместе с режимом, третьего опроса нет. Ревизий Alembic нет. `kind` и `nocode` ортогональны: `PUT` требует оба поля. Расписание — ровно семь разных дней недели (0 = воскресенье), иначе 422 и старое расписание остаётся. Правка расписания не трогает `day_mode`, поэтому дни с ручным решением не меняются. Веб: `DayModeBadge` на Today (вид дня списком, no-code переключателем, источник, возврат к расписанию), экран `/agent/mode-schedule`, методы в `agentAPI`. Мак: `ModeSwitcher` в плавающем окне, окно выросло с 248 до 296 pt.
+
+- `habit-tracker/services/backend/app/{crud,schemas,api}/day_mode.py` — new.
+- `habit-tracker/services/backend/app/main.py` — mod: регистрация роутера.
+- `habit-tracker/services/backend/tests/test_day_mode.py` — new: 16 тестов.
+- `habit-tracker/services/frontend/lib/day-mode.ts`, `hooks/useDayMode.ts`, `components/agent/{DayModeBadge,ModeScheduleEditor}.tsx`, `app/agent/mode-schedule/page.tsx` и их тесты — new.
+- `habit-tracker/services/frontend/lib/api.ts`, `app/today/page.tsx`, `app/today/page.test.tsx` — mod (добавлением).
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/ModeSwitcher.swift`, `HabitAgentTests/DayModeTests.swift` — new.
+- `habit-tracker/mac/HabitAgent/HabitAgent/Panel/{PanelConfig,PanelAPIClient,PanelModel,PanelView,FloatingPanelController}.swift`, `App/PanelHost.swift` — mod.
+
+Не проверено: вид окна и бейджа глазами (отрисовка SwiftUI и высота окна 296 pt подобраны без просмотра), `~/.claude/nocode/config` и хук не тронуты (отдельная работа в personal-os).

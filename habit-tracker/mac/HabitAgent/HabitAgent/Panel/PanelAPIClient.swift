@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/159
-// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client; only 422 and 409 are final, every other 4xx (401/403/404 included) goes back to the outbox's Backoff
+// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client; only 422 and 409 are final, every other 4xx (401/403/404 included) goes back to the outbox's Backoff; since #162 also PUT/DELETE /day-mode/{date}, the switch of the day mode
 import Foundation
 
 enum PanelAPIError: Error, Equatable {
@@ -21,6 +21,7 @@ struct PanelAPIClient {
     static let requestTimeout: TimeInterval = 10
     private static let configPath = "/api/v1/agent/config"
     private static let manualPath = "/api/v1/agent/activity/manual"
+    private static let dayModePath = "/api/v1/day-mode"
     private static let notModified = 304
     private static let finalClientErrors: Set<Int> = [409, 422]
 
@@ -83,6 +84,22 @@ struct PanelAPIClient {
         guard (200..<300).contains(response.statusCode) else { throw Self.error(status: response.statusCode) }
     }
 
+    /// Decides the mode of one date by hand (both fields go: they are independent) or hands the date back to the schedule.
+    func change(mode: ModeChange, date: String) async throws {
+        guard let url = Self.endpoint(for: serverAddress, path: "\(Self.dayModePath)/\(date)") else { throw PanelAPIError.notConfigured }
+        var request = authorized(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.requestTimeout))
+        switch mode {
+        case let .decide(kind, nocode):
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(DecisionBody(kind: kind, nocode: nocode))
+        case .reset:
+            request.httpMethod = "DELETE"
+        }
+        let (_, response) = try await data(for: request)
+        guard (200..<300).contains(response.statusCode) else { throw Self.error(status: response.statusCode) }
+    }
+
     static func error(status: Int) -> PanelAPIError {
         finalClientErrors.contains(status) ? .rejected(status: status) : .http(status: status)
     }
@@ -97,6 +114,11 @@ struct PanelAPIClient {
         let (body, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         return (body, response)
+    }
+
+    private struct DecisionBody: Encodable {
+        let kind: String
+        let nocode: Bool
     }
 
     /// The task title travels in `note`: the interval then reads on the day's tape

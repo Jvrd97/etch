@@ -1,6 +1,37 @@
 // [review:need-review] PHASE-03/159
-// summary: the part of GET /agent/config the floating panel draws — the task the day is on, the date and the path of the day page — decoded from the server's answer
+// summary: the part of GET /agent/config the floating panel draws — the task the day is on, the date and the path of the day page — decoded from the server's answer; since #162 also the day mode with who decided it
 import Foundation
+
+/// Which kind of day it is and who said so. `kind` stays the server's word: a kind
+/// the window does not know yet is shown as it came, not dropped.
+struct PanelDayMode: Equatable, Decodable {
+    enum Source: String, Equatable, Decodable {
+        case schedule
+        case manual
+    }
+
+    let kind: String
+    let nocode: Bool
+    let source: Source
+
+    /// Kinds in the order the switcher lists them.
+    static let kinds: [String] = ["work", "dayoff", "vacation", "sick"]
+
+    static func label(of kind: String) -> String {
+        switch kind {
+        case "work": return "Рабочий"
+        case "dayoff": return "Выходной"
+        case "vacation": return "Отпуск"
+        case "sick": return "Болезнь"
+        default: return kind
+        }
+    }
+
+    /// «по расписанию» and «вручную» are the same day and two different facts.
+    var sourceText: String {
+        source == .manual ? "вручную" : "по расписанию"
+    }
+}
 
 struct PanelConfig: Equatable, Decodable {
     struct Task: Equatable, Decodable {
@@ -22,6 +53,8 @@ struct PanelConfig: Equatable, Decodable {
     /// The day the server means by today, `yyyy-MM-dd`. The window labels itself
     /// with it and the button opens `dayPath`, both from this one response.
     let date: String
+    /// Nil when the server does not send the mode (an older one): the window then has no switcher.
+    let dayMode: PanelDayMode?
 
     private enum CodingKeys: String, CodingKey {
         case currentTask = "current_task"
@@ -30,21 +63,29 @@ struct PanelConfig: Equatable, Decodable {
     }
 
     private enum DayModeKeys: String, CodingKey {
-        case date
+        case date, kind, nocode, source
     }
 
-    init(currentTask: Task?, dayPath: String, date: String) {
+    init(currentTask: Task?, dayPath: String, date: String, dayMode: PanelDayMode? = nil) {
         self.currentTask = currentTask
         self.dayPath = dayPath
         self.date = date
+        self.dayMode = dayMode
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         currentTask = try container.decodeIfPresent(Task.self, forKey: .currentTask)
         dayPath = try container.decode(String.self, forKey: .dayPath)
-        date = try container.nestedContainer(keyedBy: DayModeKeys.self, forKey: .dayMode)
-            .decode(String.self, forKey: .date)
+        let mode = try container.nestedContainer(keyedBy: DayModeKeys.self, forKey: .dayMode)
+        date = try mode.decode(String.self, forKey: .date)
+        if let kind = try mode.decodeIfPresent(String.self, forKey: .kind),
+           let nocode = try mode.decodeIfPresent(Bool.self, forKey: .nocode),
+           let source = try mode.decodeIfPresent(PanelDayMode.Source.self, forKey: .source) {
+            dayMode = PanelDayMode(kind: kind, nocode: nocode, source: source)
+        } else {
+            dayMode = nil
+        }
     }
 
     /// «25 октября» for the header; nil when the server sent something that is not a date.
