@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94, PHASE-03/164
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/94, PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the Claude Code block stands on this shell, is asked for the day of the screen (the server's, not the browser's) and says nothing when it has no answer
 // summary: PHASE-03/164 — the agent banner stands on today's screen when the agent is silent and is absent on any other day
 // summary: tests for the day screen — a day with no plan says so and offers the button that builds one instead of rendering a dead end, the button is gone the moment there is a plan, a plan the skeleton assembled says so and says why, the rules a plan broke are visible beside it, the rule the day is judged by is on the screen, a day nobody opened says so, and the notebook and the итог of the day are there
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
-import type { AgentStatus, DayDetail, PlanViolation } from '@/lib/api';
+import type { AgentStatus, ClaudeUsageDay, DayDetail, PlanViolation } from '@/lib/api';
 import { DAY, PLAN } from '@/test-fixtures/day';
 import { NOTEBOOK_TITLE } from '@/components/day/DayNotebook';
 import { NO_PLAN_TEXT } from '@/lib/day-format';
@@ -45,10 +46,23 @@ mock.module('@/hooks/useAgentStatus', () => ({
   useAgentStatus: () => agent,
 }));
 
+// The Claude Code block reads its own hook; the date it is asked for is recorded,
+// because the day must come from the screen's detail and not from the browser clock.
+let claude: ClaudeUsageDay | null = null;
+const claudeAsked: Array<string | null> = [];
+mock.module('@/hooks/useClaudeUsage', () => ({
+  useClaudeUsage: (date: string | null) => {
+    claudeAsked.push(date);
+    return claude;
+  },
+}));
+
 const { default: DayScreen } = await import('./DayScreen');
 
 beforeEach(() => {
   agent = null;
+  claude = null;
+  claudeAsked.length = 0;
   state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
 });
 
@@ -284,5 +298,49 @@ describe('DayScreen and the agent banner', () => {
     render(<DayScreen date="2026-08-30" />);
 
     expect(screen.queryByText(/Агент молчит/)).toBeNull();
+  });
+});
+
+const CLAUDE_TODAY: ClaudeUsageDay = {
+  date: SERVER_TODAY,
+  today: SERVER_TODAY,
+  sessions: 3,
+  assistant_turns: 42,
+  input_tokens: 12_400,
+  output_tokens: 3_100,
+  cache_read_tokens: 1_250_000,
+  cache_creation_tokens: 80_000,
+  sessions_past_boundary: 1,
+};
+
+describe('DayScreen and the Claude Code block', () => {
+  it('shows the sessions, turns and tokens of the day', () => {
+    claude = CLAUDE_TODAY;
+    state = { ...state, detail: { ...DAY, day: { ...DAY.day, date: SERVER_TODAY } } };
+    render(<DayScreen date={SERVER_TODAY} />);
+
+    const block = screen.getByRole('region', { name: 'Claude Code' });
+    expect(block.textContent).toContain('42');
+    expect(block.textContent).toContain('12,4 тыс вход');
+    expect(block.textContent).toContain('целиком на день начала');
+  });
+
+  it('asks for the day the server named, at 01:00 local when the browser is a day ahead', () => {
+    claude = CLAUDE_TODAY;
+    state = { ...state, detail: { ...DAY, day: { ...DAY.day, date: SERVER_TODAY } } };
+    setSystemTime(new Date(2026, 9, 27, 1, 0, 0));
+    try {
+      render(<DayScreen date={null} />);
+      expect(claudeAsked).toContain(SERVER_TODAY);
+      expect(claudeAsked).not.toContain('2026-10-27');
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('draws no block before the answer', () => {
+    render(<DayScreen date={SERVER_TODAY} />);
+
+    expect(screen.queryByRole('region', { name: 'Claude Code' })).toBeNull();
   });
 });

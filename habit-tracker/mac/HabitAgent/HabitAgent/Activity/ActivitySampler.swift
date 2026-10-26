@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217, PHASE-03/172
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/164, PHASE-03/217, PHASE-03/172, PHASE-03/220
 // summary: samples the foreground app on a timer (5 s, 30 s while idle) and on every switch, builds intervals and queues them on disk; stops for sleep and a locked screen (and resumes if the wake notification is lost); the flusher sends them; since #164 it also starts the heartbeat reporter and hands it the queue depth, the last flush and the code of the last flush's outcome
+// summary: PHASE-03/220 — the heartbeat's last_error also carries the Claude Code metrics reader's code (claude_format) when no flush error stands ahead of it, and a change of that code is reported at once
 import AppKit
 import Combine
 import Foundation
@@ -32,6 +33,7 @@ final class ActivitySampler: ObservableObject {
     private var heartbeat: HeartbeatReporter?
     private var lastFlushAt: Date?
     private var lastError: HeartbeatErrorCode?
+    private var claudeMetricsError: HeartbeatErrorCode?
 
     init(queueDirectory: URL = AgentPaths.directory, idle: IdleMonitor = IdleMonitor()) {
         self.queueDirectory = queueDirectory
@@ -169,7 +171,7 @@ final class ActivitySampler: ObservableObject {
                     HeartbeatState(
                         queueDepth: self?.store?.count ?? 0,
                         lastFlushAt: self?.lastFlushAt,
-                        lastError: self?.lastError
+                        lastError: HeartbeatErrorCode.reported(flush: self?.lastError, claudeMetrics: self?.claudeMetricsError)
                     )
                 },
                 client: { [weak self] in
@@ -185,6 +187,14 @@ final class ActivitySampler: ObservableObject {
     private func reportFlush(_ summary: FlushSummary) {
         if summary.sent > 0 { lastFlushAt = Date() }
         lastError = HeartbeatErrorCode(summary: summary)
+        Task { await heartbeat?.beat() }
+    }
+
+    /// The Claude Code metrics reader's code after a pass; a change is worth a report now, not in a minute.
+    func reportClaudeMetrics(code: String?) {
+        let mapped = HeartbeatErrorCode(claudeMetricsCode: code)
+        guard mapped != claudeMetricsError else { return }
+        claudeMetricsError = mapped
         Task { await heartbeat?.beat() }
     }
 

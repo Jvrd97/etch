@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/164
+// [review:need-review] PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the metrics reader's error code is said to the server as claude_format (a refused session as invalid_batch, any other failure as nothing), behind a flush's own outcome in the single last_error slot
 // summary: the agent's heartbeat — what it says about itself (alive, Accessibility, the titles switch read from the server — each null while unknown, queue depth, last flush, one error code from the server's closed vocabulary), the request that carries it, and the reporter that sends it at once, every minute and after each flush, losing nothing when a send is lost
 import Foundation
 import os
@@ -38,6 +39,24 @@ enum HeartbeatErrorCode: String, CaseIterable, Encodable {
         } else {
             return nil
         }
+    }
+}
+
+extension HeartbeatErrorCode {
+    /// The word for the Claude Code metrics reader's failure. Its raw code can name a domain and a
+    /// number (`NSURLErrorDomain -1004`) that the server's closed list has no place for: those say
+    /// nothing here, and the interval flush already reports a server that cannot be reached.
+    init?(claudeMetricsCode code: String?) {
+        switch code {
+        case TranscriptScanner.unreadableCode: self = .claudeFormat
+        case ClaudeMetricsService.rejectedCode: self = .invalidBatch
+        default: return nil
+        }
+    }
+
+    /// One slot goes to the server, so the failure that loses intervals goes first.
+    static func reported(flush: HeartbeatErrorCode?, claudeMetrics: HeartbeatErrorCode?) -> HeartbeatErrorCode? {
+        flush ?? claudeMetrics
     }
 }
 

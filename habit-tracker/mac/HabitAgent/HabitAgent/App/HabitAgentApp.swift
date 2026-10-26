@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/155, PHASE-03/159, PHASE-03/165
-// summary: menu bar app with server and API key settings for the activity sampler; quitting sends what is pending first; since #159 it also opens the floating task-and-timer window at launch and lets the menu hide and show it; since #165 it starts the Claude Code metrics pass at launch
+// [review:need-review] PHASE-03/155, PHASE-03/159, PHASE-03/165, PHASE-03/220
+// summary: menu bar app with server and API key settings for the activity sampler; quitting sends what is pending first; since #159 it also opens the floating task-and-timer window at launch and lets the menu hide and show it; since #165 it starts the Claude Code metrics pass at launch; since #220 the pass reports its error code to the sampler, which puts it into the heartbeat
 import SwiftUI
 
 @main
@@ -26,7 +26,12 @@ struct HabitAgentApp: App {
             apiKey: { keychain.read() }
         )
         self.metrics = metrics
-        Task { await metrics?.start() }
+        Task {
+            await metrics?.observeErrorCode { [weak sampler] code in
+                Task { @MainActor in sampler?.reportClaudeMetrics(code: code) }
+            }
+            await metrics?.start()
+        }
         // After the launch has finished, not inside `init`.
         Task { @MainActor in panel.start() }
     }

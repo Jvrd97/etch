@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/165
-# summary: database access for Claude Code session aggregates — an upsert on session_uid that a stale restatement cannot roll back, with the day taken from the server's own boundary, and the read of a range of days
+# [review:need-review] PHASE-03/165, PHASE-03/220
+# summary: database access for Claude Code session aggregates — an upsert on session_uid that a stale restatement cannot roll back, with the day taken from the server's own boundary, the read of a range of days, and (since #220) the day's totals with the count of sessions that ran past the boundary
 """
 Database access for the Claude Code session aggregates.
 
@@ -23,9 +23,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.daytime import local_date
+from app.core.daytime import local_date, today_local
 from app.models.activity import ClaudeSession
-from app.schemas.claude_session import ClaudeSessionIn
+from app.schemas.claude_session import ClaudeSessionIn, ClaudeUsageDayResponse
 
 
 async def upsert_claude_sessions(
@@ -81,3 +81,19 @@ async def list_claude_sessions(
         .order_by(ClaudeSession.started_at, ClaudeSession.id)
     )
     return list(rows.scalars())
+
+
+async def claude_usage_for_day(db: AsyncSession, on: date) -> ClaudeUsageDayResponse:
+    """Totals of the sessions that began on `on`; a session counts whole on its start day."""
+    rows = await list_claude_sessions(db, on, on)
+    return ClaudeUsageDayResponse(
+        date=on,
+        today=today_local(),
+        sessions=len(rows),
+        assistant_turns=sum(row.assistant_turns for row in rows),
+        input_tokens=sum(row.input_tokens for row in rows),
+        output_tokens=sum(row.output_tokens for row in rows),
+        cache_read_tokens=sum(row.cache_read_tokens for row in rows),
+        cache_creation_tokens=sum(row.cache_creation_tokens for row in rows),
+        sessions_past_boundary=sum(1 for row in rows if local_date(row.ended_at) > on),
+    )

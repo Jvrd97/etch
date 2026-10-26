@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/164
+// [review:need-review] PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the metrics reader's error code reaches the heartbeat as claude_format (a refusal of its sessions as invalid_batch, anything else as nothing), and a flush's own outcome keeps the single last_error slot
 // summary: verifies the heartbeat the agent sends — the body's snake_case keys and ISO dates, the error codes matching the server's closed vocabulary, what a flush summary says as a code, unknown flags written as null, a titles poll that carries the last ETag and treats 304 as «unchanged», a report built from live state, a lost send that costs nothing, a request for a beat during a send that is answered with fresh state, and the minute timer that starts at once and stops
 import XCTest
 @testable import HabitAgent
@@ -61,6 +62,20 @@ final class HeartbeatTests: XCTestCase {
         XCTAssertEqual(HeartbeatErrorCode(summary: FlushSummary(droppedBundles: ["com.example.app"])), .unknownApp)
         XCTAssertEqual(HeartbeatErrorCode(summary: FlushSummary(droppedInvalid: 1)), .invalidBatch)
         XCTAssertEqual(HeartbeatErrorCode(summary: FlushSummary(expired: 3)), .expired)
+    }
+
+    func testTheMetricsReadersCodeIsSaidAsTheServersWord() {
+        XCTAssertEqual(HeartbeatErrorCode(claudeMetricsCode: TranscriptScanner.unreadableCode), .claudeFormat)
+        XCTAssertEqual(HeartbeatErrorCode(claudeMetricsCode: ClaudeMetricsService.rejectedCode), .invalidBatch)
+        XCTAssertNil(HeartbeatErrorCode(claudeMetricsCode: nil))
+        // A failed read or send names a domain and a number; the server has no word for it.
+        XCTAssertNil(HeartbeatErrorCode(claudeMetricsCode: "NSURLErrorDomain -1004"))
+    }
+
+    func testAFlushOutcomeKeepsTheSingleSlotAheadOfTheMetricsOne() {
+        XCTAssertEqual(HeartbeatErrorCode.reported(flush: .network, claudeMetrics: .claudeFormat), .network)
+        XCTAssertEqual(HeartbeatErrorCode.reported(flush: nil, claudeMetrics: .claudeFormat), .claudeFormat)
+        XCTAssertNil(HeartbeatErrorCode.reported(flush: nil, claudeMetrics: nil))
     }
 
     func testTheCodeNeverCarriesAPathOrTitle() {

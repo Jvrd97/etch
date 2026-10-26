@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/220 — the Claude Code block (sessions, assistant turns, tokens of the day on screen) stands under the agent banner, drawn from useClaudeUsage
 // summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date on the day the server is in (status.today), drawn from useAgentStatus
 // summary: PHASE-03/200 — a plan line linked to a category carries its fact card, and the day is re-read after a fact or a new link so the mark and the counts follow
 // summary: desktop day screen — date, kind of day, the plan in sections with its schedule, its collisions and its marks, the map of the day the rule draws beside it, the intervals of measured work with their sum, the итог with the verdict, the condition it failed on and its two closing touches, the notebook of the day, an explicit "плана нет" with the button that builds one when there is none, the rule this particular day is judged by, and the shared day navigation beside it
@@ -9,6 +10,7 @@ import { useMemo } from 'react';
 import { CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import AgentStatusBanner from '@/components/agent/AgentStatusBanner';
+import ClaudeUsageBlock from '@/components/agent/ClaudeUsageBlock';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
 import ProfileProposal from '@/components/day/ProfileProposal';
@@ -42,6 +44,7 @@ import { usePlanItemEdit } from '@/hooks/usePlanItemEdit';
 import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
+import { useClaudeUsage } from '@/hooks/useClaudeUsage';
 import {
   dayAPI,
   type AnchorState,
@@ -103,6 +106,8 @@ export default function DayScreen({ date }: DayScreenProps) {
   const { detail, loading, error, violations, reload } = useDay(date, true);
   // Read once per screen and never an error out: a banner about the agent must not break the day.
   const agentStatus = useAgentStatus();
+  // The day on screen, which the server named; never the browser's calendar date.
+  const claudeUsage = useClaudeUsage(detail?.day.date ?? null);
   // Справочник ролей: два необязательных поля в редакторе пункта и подпись
   // «что закроет эта галочка» на строке (#140). Не приехал — план тот же.
   const roles = useRoleDirectory();
@@ -181,6 +186,7 @@ export default function DayScreen({ date }: DayScreenProps) {
       </div>
 
       <AgentStatusBanner status={agentStatus} date={day.date} />
+      <ClaudeUsageBlock usage={claudeUsage} />
 
       {plan === null ? (
         // Не тупик: день без плана — это состояние, из которого есть выход, и

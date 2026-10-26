@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/165
-// summary: the pass that turns ~/.claude/projects into session aggregates — reads only files whose size or mtime moved, and only past the saved offset, keeps the scan state on disk between launches, forgets transcripts deleted from disk (their totals stay, their error signals go), and sends the sessions that changed since the last successful send; failures leave them to the next pass (a file that could not be read keeps its old size and mtime, so it is read again). Runs at utility priority and yields between files
+// [review:need-review] PHASE-03/165, PHASE-03/220
+// summary: the pass that turns ~/.claude/projects into session aggregates — reads only files whose size or mtime moved, and only past the saved offset, keeps the scan state on disk between launches, forgets transcripts deleted from disk (their totals stay, their error signals go), and sends the sessions that changed since the last successful send; failures leave them to the next pass (a file that could not be read keeps its old size and mtime, so it is read again). Runs at utility priority and yields between files; since #220 it tells a listener its error code after every pass, for the heartbeat
 import Foundation
 
 /// The last thing sent for a session; a session is sent again only when this differs.
@@ -40,6 +40,7 @@ actor ClaudeMetricsService {
     private var isPassing = false
     private var pushErrorCode: String?
     private var readErrorCode: String?
+    private var errorListener: (@Sendable (String?) -> Void)?
 
     init(projectsDirectory: URL, goalsDirectory: URL, stateURL: URL?, send: @escaping Send) {
         self.projectsDirectory = projectsDirectory
@@ -81,6 +82,11 @@ actor ClaudeMetricsService {
         state.files.values.contains { $0.errorCode != nil } ? TranscriptScanner.unreadableCode : readErrorCode ?? pushErrorCode
     }
 
+    /// Called with `errorCode` at the end of every pass, so a failure that appears and one that clears both arrive.
+    func observeErrorCode(_ listener: @escaping @Sendable (String?) -> Void) {
+        errorListener = listener
+    }
+
     func start() {
         guard task == nil else { return }
         // Utility: the first pass walks gigabytes and must not compete with the app the person is using.
@@ -106,6 +112,7 @@ actor ClaudeMetricsService {
         await scanFiles(into: &report)
         await push(into: &report)
         save()
+        errorListener?(errorCode)
         return report
     }
 
