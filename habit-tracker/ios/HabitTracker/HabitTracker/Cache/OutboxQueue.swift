@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242, PHASE-03/256
+// summary: PHASE-03/256 — a failed TLS handshake is "never left", not "may have landed"
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
-// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, and a proxy's 502/504 sets it too; a retry that would write over a newer write of the same object says so
+// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, a proxy's 502/504 sets it in the replay, and a direct Day mark that gets a 502/504 reads the day instead of rolling back blindly; a failed TLS handshake never carried the body; a retry that would write over a newer write of the same object says so
 // [review:need-review] PHASE-03/240
 // summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
 import Combine
@@ -652,7 +653,7 @@ final class OutboxQueue: ObservableObject {
 
     /// Whether a failed attempt may still have reached the server: its answer was lost on the way
     /// (a timeout, a dropped connection, a proxy's 502 or 504 in front of a backend that may have
-    /// written), rather than the request never leaving (no connection, no host).
+    /// written), rather than the request never leaving (no connection, no host, a failed TLS handshake).
     nonisolated static func mayHaveLanded(after error: Error) -> Bool {
         switch error as? APIClientError {
         case .timeout?:
@@ -672,6 +673,8 @@ final class OutboxQueue: ObservableObject {
     nonisolated private static let neverLeftCodes: Set<Int> = [
         URLError.notConnectedToInternet.rawValue, URLError.cannotConnectToHost.rawValue,
         URLError.cannotFindHost.rawValue, URLError.dnsLookupFailed.rawValue,
+        // The handshake failed: no request body is sent before it completes.
+        URLError.secureConnectionFailed.rawValue,
     ]
 
     private static func outcome(of error: Error, for action: OutboxAction) -> Outcome {

@@ -1,4 +1,6 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/248, 256 — a save that ended on another day rebases the draft typed over its base (no false conflict on coming back); an older answer is swapped for the saved text only when it holds the base or that text, a third text is a conflict beside the saved one; the cache keeps the newest read of each key; a direct mark refused with 502/504 reads the day before it apologises
+// summary: PHASE-03/248, 256 round 2 — a third text stays a conflict until the person picks a side (typed over the base, not over itself); a queued save the server did not take is not remembered as written; a direct mark refused with 502/504 is queued as one that may have landed; the cache copy put back keeps the stamp of its read, and `newestCached` holds at most 8 days
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
@@ -121,9 +123,16 @@ final class DayViewModel: ObservableObject {
     /// Bumped when a notebook save starts and when it ends. A re-read that was sent before
     /// either must not bring its notebook text: it may predate the save.
     private var notebookSaveEpoch = 0
-    /// The last text a save of each day put on the server, with the save's start epoch. A re-read of
-    /// that day sent no later than that epoch is older than the save, whatever day is on screen now.
-    private var savedNotebooks: [String: (text: String, epoch: Int)] = [:]
+    /// The last text a save of each day put on the server, the text it was typed over and the save's start
+    /// epoch. A re-read of that day sent no later than that epoch is older than the save, whatever day is
+    /// on screen now.
+    private var savedNotebooks: [String: (text: String, base: String, epoch: Int)] = [:]
+    /// The newest read whose answer went into the read cache, per key, with that answer. A load writes the
+    /// cache itself when its answer arrives, so an older load answering late puts this copy back.
+    private var newestCached: [String: (read: Int, day: DayDetailDTO, at: Date)] = [:]
+    /// Days kept in `newestCached`: the screen steps through days one at a time, and only the ones it
+    /// has just left can still have a load in flight.
+    private static let newestCachedLimit = 8
 
     /// Text typed over a server value, with the server value it was typed on.
     private struct Typed: Equatable {
@@ -257,16 +266,12 @@ final class DayViewModel: ObservableObject {
                 // than what the screen shows after a write.
                 outcome = .fresh(try await api.fetchDay(date: requested))
             }
+            // Before the checks below: the cache must end up with the newest answer of the key even when
+            // this answer is dropped for the screen (the person stepped to another day meanwhile).
+            if case .fresh(let day) = outcome { settleCache(key: key, read: read, day: day, loadWroteIt: showFailure) }
             // A newer load (stepped to another day) has taken over: drop this answer.
-            guard generation == loadGeneration else { return }
-            guard read > readShown else {
-                // A read sent later is on screen. The load already put this older answer in the cache:
-                // put the day on screen back there.
-                if case .fresh = outcome, let shown = detail { cache.store.save(shown, forKey: key, updatedAt: cache.now()) }
-                return
-            }
+            guard generation == loadGeneration, read > readShown else { return }
             readShown = read
-            if !showFailure, case .fresh(let day) = outcome { cache.store.save(day, forKey: key, updatedAt: cache.now()) }
             let fetched: DayDetailDTO
             switch outcome {
             case .fresh(let day):
@@ -280,8 +285,8 @@ final class DayViewModel: ObservableObject {
             // notebook stale for the day on screen; everything else in it is still current.
             let notebookIsStale = isSavingNotebook || notebookSaveEpoch != epochAtSend
             // Another day on screen cannot keep its notebook, but the text its save wrote outranks an older answer.
-            let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0.text : nil }
-            apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, serverNotebook: savedSince)
+            let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0 : nil }
+            apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, savedSince: savedSince)
             state = .loaded
         } catch {
             // A newer answer is on screen, or the screen asked for another day since: nothing to say.
@@ -294,9 +299,29 @@ final class DayViewModel: ObservableObject {
         }
     }
 
+    /// Keeps the read cache at the answer of the newest read of `key`. A read that is not the newest
+    /// writes nothing; a load that is not the newest put its answer there itself, so the newest comes back.
+    private func settleCache(key: String, read: Int, day: DayDetailDTO, loadWroteIt: Bool) {
+        if let newest = newestCached[key], newest.read > read {
+            // The copy keeps the stamp of the read it came from, not the moment it is put back.
+            if loadWroteIt { cache.store.save(newest.day, forKey: key, updatedAt: newest.at) }
+            return
+        }
+        let at = cache.now()
+        newestCached[key] = (read, day, at)
+        if newestCached.count > Self.newestCachedLimit,
+           let oldest = newestCached.min(by: { $0.value.read < $1.value.read })?.key {
+            newestCached[oldest] = nil
+        }
+        if !loadWroteIt { cache.store.save(day, forKey: key, updatedAt: at) }
+    }
+
     /// Writes still in the queue are not on the server yet: their marks and notebook are laid on top.
-    /// `serverNotebook` stands in for the answer's notebook text when that answer is known to be older.
-    private func apply(_ fetched: DayDetailDTO, keepingNotebook: Bool, serverNotebook: String?) {
+    /// `savedSince` is the save of this day that an older answer predates: the answer's notebook text is
+    /// swapped for the saved one when it is what the save was typed over or the saved text itself.
+    private func apply(
+        _ fetched: DayDetailDTO, keepingNotebook: Bool, savedSince: (text: String, base: String, epoch: Int)?
+    ) {
         detail = fetched
         let waiting = waitingActions
         marks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
@@ -326,8 +351,19 @@ final class DayViewModel: ObservableObject {
         }
         let queuedNotebook = waiting.compactMap { $0.queuedNotebook(of: date) }.last
         if !keepingNotebook {
-            seedNotebook(server: queuedNotebook ?? serverNotebook ?? fetched.notebook ?? "", unsaved: notebookEdit)
-            if let replacedNote, notebookConflict == nil {
+            var server = queuedNotebook ?? fetched.notebook ?? ""
+            if queuedNotebook == nil, let saved = savedSince {
+                if server == saved.base || server == saved.text {
+                    server = saved.text
+                } else if notebookEdit == nil {
+                    // A third text: somebody wrote it elsewhere. The saved text stays on screen beside it.
+                    // Typed over the base, so the next re-read hands over the same text and finds the conflict
+                    // still there: it ends when the person picks a side, not when the server repeats itself.
+                    notebookEdit = Typed(text: saved.text, base: saved.base)
+                }
+            }
+            seedNotebook(server: server, unsaved: notebookEdit)
+            if let replacedNote, replacedNote != server, notebookConflict == nil {
                 // Only "Понятно" takes the note away, not the next re-read.
                 notebookConflict = replacedNote
                 notebookConflictOverwritten = true
@@ -448,9 +484,10 @@ final class DayViewModel: ObservableObject {
             marks[itemID] = stored
             await reloadSilently()
         } catch {
-            if let outbox, Self.isOffline(error) {
+            // A proxy's 502/504 is a lost answer as much as a timeout: the backend may have written the mark.
+            if let outbox, Self.isOffline(error) || OutboxQueue.mayHaveLanded(after: error) {
                 // The tick stays: it is on the phone and reaches the server with the state it was made over.
-                // A timeout may have written it already: a later mark replacing it accepts that state.
+                // A later mark replacing it accepts the state it may have written.
                 outbox.enqueue(
                     .setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»",
                     mayHaveLanded: OutboxQueue.mayHaveLanded(after: error)
@@ -578,13 +615,17 @@ final class DayViewModel: ObservableObject {
             notebookSaveEpoch += 1
         }
         let text = notebook
-        let queued = OutboxAction.saveNotebook(QueuedNotebook(date: date, content: text, expected: savedNotebook))
+        let base = savedNotebook
+        let queued = OutboxAction.saveNotebook(QueuedNotebook(date: date, content: text, expected: base))
         let label = "Блокнот за \(DayFormat.title(of: date))"
         do {
+            var reachedServer = true
             if let outbox, outbox.hasPending(sameTargetAs: queued) {
                 // An older save of this day still waits: the new one replaces it and goes out now if it can.
                 outbox.enqueue(queued, label: label)
                 await outbox.flush()
+                // Still waiting, or refused and listed as not sent: the server did not take this text.
+                reachedServer = !outbox.writes.contains { $0.action.target == queued.target }
             } else {
                 do {
                     try await api.saveNotebook(date: date, content: text)
@@ -592,9 +633,11 @@ final class DayViewModel: ObservableObject {
                     // Kept on the phone as saved; the replay checks the server still holds what it was typed over
                     // (or this text, when the attempt may have landed and a later save replaces it).
                     outbox?.enqueue(queued, label: label, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
+                    reachedServer = false
                 }
             }
-            savedNotebooks[date] = (text, startEpoch)
+            // Only a text the server took is remembered against older answers; a queued one is laid over them by the queue.
+            if reachedServer { savedNotebooks[date] = (text, base, startEpoch) }
             // The person may have stepped to another day while this was in flight.
             if shownDate == date {
                 savedNotebook = text
@@ -604,8 +647,14 @@ final class DayViewModel: ObservableObject {
                     // The save replaced a server text the person was still weighing: keep it in view.
                     notebookConflictOverwritten = true
                 }
-            } else if notebookDrafts[date]?.text == text {
-                notebookDrafts[date] = nil
+            } else if let draft = notebookDrafts[date] {
+                // The save ended while another day was on screen. A draft of the same text is saved; one typed
+                // on the same base with more text is now typed over the saved text, which is not another person's.
+                if draft.text == text {
+                    notebookDrafts[date] = nil
+                } else if draft.base == base {
+                    notebookDrafts[date] = Typed(text: draft.text, base: text)
+                }
             }
         } catch {
             actionError = Self.failure("Блокнот за \(DayFormat.title(of: date)) не сохранился", error)

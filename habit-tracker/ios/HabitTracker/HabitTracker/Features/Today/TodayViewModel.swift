@@ -1,4 +1,6 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/248 — a second load keeps the loaded screen and reports its failure as a line; PHASE-03/256 — the cache stamp after a re-read of the records stays the age of the categories and streaks it keeps
+// summary: PHASE-03/248 round 2 — the line a failed refresh wrote is taken back by the next refresh that works, and only that line
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it, and its records are dropped when a re-read started by a delivery is already newer on screen (the cache keeps the newer records, no offline label over them); a failed re-read after a background delivery leaves no error
 // summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
@@ -50,6 +52,7 @@ final class TodayViewModel: ObservableObject {
     }
 
     static let notConfiguredMessage = "Set the server address in Settings"
+    static let refreshFailedMessage = "Экран не обновился"
     static let streaksFailedMessage = "Не удалось загрузить серии."
     static let relapseFailedMessage = "Не удалось записать срыв"
     static let undoRelapseFailedMessage = "Не удалось отменить срыв"
@@ -177,10 +180,13 @@ final class TodayViewModel: ObservableObject {
     /// Waiting writes go out alongside the read, so a pull-to-refresh is also a retry of the queue; a
     /// slow send does not hold the screen back (waiting rows are drawn from the queue, a delivery
     /// reads the day again).
+    /// The loader replaces the screen only while there is nothing to show: a second load (pull-to-refresh,
+    /// a closed sheet) keeps the loaded screen and its scroll position, and its failure is a line of text.
     func load() async {
-        state = .loading
+        let showsData = state == .loaded
+        if !showsData { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(Self.notConfiguredMessage)
+            failLoad(Self.notConfiguredMessage, showsData: showsData)
             return
         }
         let flushing = Task { await outbox?.flush() }
@@ -218,12 +224,31 @@ final class TodayViewModel: ObservableObject {
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
             state = .loaded
+            clearRefreshFailure()
         } catch let error as APIClientError {
-            state = .failure(error.userMessage)
+            failLoad(error.userMessage, showsData: showsData)
         } catch {
-            state = .failure("Unexpected error")
+            failLoad("Unexpected error", showsData: showsData)
         }
         await flushing.value
+    }
+
+    /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
+    private var refreshFailureLine: String?
+
+    private func failLoad(_ reason: String, showsData: Bool) {
+        if showsData {
+            let line = "\(Self.refreshFailedMessage): \(reason)"
+            saveErrorMessage = line
+            refreshFailureLine = line
+        } else {
+            state = .failure(reason)
+        }
+    }
+
+    private func clearRefreshFailure() {
+        if saveErrorMessage == refreshFailureLine { saveErrorMessage = nil }
+        refreshFailureLine = nil
     }
 
     /// Publishes a snapshot, recording whether it came from the network or the cache. Saves
@@ -246,13 +271,15 @@ final class TodayViewModel: ObservableObject {
     }
 
     /// The cached snapshot gets the server's records now on screen, so an offline start shows them.
+    /// Its categories and streaks keep their age, and so does the "data as of" stamp: it must not
+    /// claim a moment later than the oldest part of the snapshot.
     private func cacheShownEntries() {
         guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
         let snapshot = TodaySnapshot(
             categories: cached.value.categories, entries: todayEntries.filter { !$0.isPending },
             streaks: cached.value.streaks
         )
-        cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cache.now())
+        cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
     }
 
     private func nextEntriesRead() -> Int {
