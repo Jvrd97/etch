@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/225, PHASE-03/242
+// [review:need-review] PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/256 — a load answered after a step does not roll back the day cache; a direct mark refused with 502/504 reads the day (landed: no error, not landed: rolled back)
 // summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00); a load's read answered after a delivery's re-read replaces neither the day nor the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is no conflict for the next one
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
 import XCTest
@@ -30,6 +31,11 @@ final class DayOfflineTests: XCTestCase {
         cache = InMemoryCacheStore()
         viewModel = makeViewModel()
         await viewModel.load()
+    }
+
+    /// A hook a test set and the code never reached would leave its assertions vacuous.
+    override func tearDown() async throws {
+        XCTAssertEqual(api.hooksNeverRun, [], "a hook the test set never ran")
     }
 
     private func makeViewModel(now: Date = Date(timeIntervalSince1970: 1_792_918_800)) -> DayViewModel {
@@ -291,6 +297,37 @@ final class DayOfflineTests: XCTestCase {
         XCTAssertNil(fresh.actionError)
     }
 
+    func testALoadAnsweredAfterAStepToAnotherDayDoesNotRollBackTheCacheOfTheDayBefore() async throws {
+        let marked = [DayFixtures.mark(DayFixtures.minimumID, "done")]
+        // Answers in the order they are given: the re-read after the mark, the step's day, then the load's old read.
+        api.fetchResults = [
+            .success(try DayFixtures.day(notebook: .some("Свежий"), marks: marked)),
+            .success(try DayFixtures.day(date: "2026-10-24")),
+            .success(try DayFixtures.day(notebook: .some("Старый"))),
+        ]
+        var loadIsInFlight = false
+        var loadGate: CheckedContinuation<Void, Never>?
+        api.duringFetch = {
+            loadIsInFlight = true
+            await withCheckedContinuation { loadGate = $0 }
+        }
+        let load = Task { [viewModel] in await viewModel!.load() }
+        while !loadIsInFlight { await Task.yield() }
+        api.markResult = .success(marked[0])
+        await viewModel.setMark(DayFixtures.minimumID, state: "done")
+        await viewModel.showPreviousDay()
+        XCTAssertEqual(viewModel.shownDate, "2026-10-24")
+
+        loadGate?.resume()
+        await load.value
+
+        XCTAssertEqual(
+            cache.load(DayDetailDTO.self, forKey: "day.today")?.value.notebook, "Свежий",
+            "the load's older answer does not stay in the cache of the day the screen left"
+        )
+        XCTAssertEqual(viewModel.shownDate, "2026-10-24", "and the screen stays on the day it stepped to")
+    }
+
     // MARK: A direct write that lost its answer
 
     func testAMarkWhoseDirectAnswerWasLostIsNoConflictForTheNextMark() async throws {
@@ -323,5 +360,40 @@ final class DayOfflineTests: XCTestCase {
 
         XCTAssertTrue(outbox.writes.isEmpty, "the server holding the lost save is not a change made elsewhere")
         XCTAssertEqual(api.notebookCalls.last, "один и два")
+    }
+
+    func testAMarkRefusedWith504ThatHadLandedShowsTheServersMarkWithoutAnError() async throws {
+        api.markResult = .failure(APIClientError.unexpectedStatus(504))
+        let landed = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
+        api.fetchResults = [.success(try DayFixtures.day(marks: [landed]))]
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+
+        XCTAssertNil(viewModel.actionError, "the proxy timed out after the backend wrote the mark")
+        XCTAssertEqual(viewModel.state(of: DayFixtures.minimumID), "done")
+        XCTAssertEqual(viewModel.queuedItems, [], "nothing is queued: the read settled it")
+    }
+
+    func testAMarkRefusedWith502ThatDidNotLandIsRolledBackAfterReadingTheDayAgain() async throws {
+        api.markResult = .failure(APIClientError.unexpectedStatus(502))
+        api.fetchResults = [.success(try DayFixtures.day())]
+        let readsBefore = api.fetchedDates.count
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+
+        XCTAssertEqual(api.fetchedDates.count, readsBefore + 1, "the day is read to learn whether the mark landed")
+        XCTAssertNil(viewModel.state(of: DayFixtures.minimumID))
+        XCTAssertEqual(viewModel.actionError, DayViewModel.markFailedMessage)
+    }
+
+    func testAMarkRefusedWith500IsRolledBackWithoutAReread() async {
+        api.markResult = .failure(APIClientError.unexpectedStatus(500))
+        let readsBefore = api.fetchedDates.count
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+
+        XCTAssertEqual(api.fetchedDates.count, readsBefore, "a refusal of the backend itself wrote nothing")
+        XCTAssertNil(viewModel.state(of: DayFixtures.minimumID))
+        XCTAssertEqual(viewModel.actionError, DayViewModel.markFailedMessage)
     }
 }

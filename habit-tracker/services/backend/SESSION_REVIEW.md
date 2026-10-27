@@ -2881,3 +2881,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 
 - `app/api/quick_marks.py` — mod: ветка гонки по `IntegrityError` перечитывает кнопку после `db.rollback()`. Откат делает объект кнопки устаревшим, и обращение к его полям в асинхронной сессии падало с `MissingGreenlet`. Ошибка была и до #236: повтор, проигравший гонку на уникальном ключе, получал 500 вместо 200. Её нашёл новый тест.
 - `tests/test_quick_mark_occurred_at.py` — mod: гонка через `monkeypatch` поиска по ключу (первый раз «не найдено», вставка падает на уникальном ключе). Та же кнопка — 200, другая — 409.
+
+
+## 2026-10-27 — PHASE-03/256: гонка по ключу быстрой отметки
+
+Тронуто 2 файла кода (оба `mod`), миграций нет.
+
+- `app/api/quick_marks.py` — mod: после отката проигранной вставки кнопка читается `get_quick_mark`, а не `db.refresh`. Кнопка, удалённая между вставкой и чтением, даёт 404, а не 500 (`InvalidRequestError`).
+- `tests/test_quick_mark_occurred_at.py` — mod: проигранная гонка не меняет итог дня спрашивающей кнопки (обе ветки, `same-button` и `other-button`); новый тест удаляет кнопку B между вставкой и чтением и ждёт 404.
+
+Проверки: `pytest tests/` на `habit_test_248` — 2124 passed, 2 skipped (12 мин); `ruff check`, `ruff format --check`, `mypy --strict app` — чисто; `alembic heads` — одна строка.

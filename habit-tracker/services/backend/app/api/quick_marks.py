@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206, PHASE-03/236
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206, PHASE-03/236, PHASE-03/256
+# summary: PHASE-03/256 — a button deleted between the lost insert race and the read-back is 404, not a failed refresh (500)
 # summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API, and the sets of one category's day are read back from the journal on the same clock
 # summary: PHASE-03/236 — a tap may carry `occurred_at` (a press replayed from an offline queue lands on its own day; future or older than 7 days is 422 in the list form), and a recorded Idempotency-Key answers before any day or window check — 409 when it is another button's tap, also after a lost race on the unique key (the button is read again after the rollback)
 """
@@ -285,9 +286,15 @@ async def create_quick_mark_event(
         if winner is None:
             raise
         # The rollback expired `mark`; reading its attributes in an async session would
-        # need lazy IO and fail, so the button is loaded again before the answer.
-        await db.refresh(mark)
-        return await _replay(db, response, mark, winner)
+        # need lazy IO and fail, so the button is loaded again before the answer. A button
+        # deleted since the insert is gone for this client too: 404, not a failed refresh.
+        reread = await quick_mark_crud.get_quick_mark(db, quick_mark_id)
+        if reread is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Quick mark with id {quick_mark_id} not found",
+            )
+        return await _replay(db, response, reread, winner)
 
     return _to_event_response(recorded)
 

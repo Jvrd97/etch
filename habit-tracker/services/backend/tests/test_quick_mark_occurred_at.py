@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/236
+# [review:need-review] PHASE-03/236, PHASE-03/256
+# summary: PHASE-03/256 — a key found after a lost race leaves the day total of the asking button as it was, and a button deleted between the insert and the read-back is 404, not 500
 # summary: PHASE-03/236 round 3 — a key of another button's tap is 409 also when it is found only after the insert lost the race on the unique key
 # summary: the moment of a press in the body of a quick-mark tap — a press delivered after the day turned lands on the day it was made (calendar midnight and the 04:00 boundary), no field keeps the old behaviour, the future and anything older than the window are 422, a replayed key answers 200 even after the day or the window moved on, and the statements of a tap do not grow with the field
 """
@@ -23,12 +24,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import event
+from sqlalchemy import delete, event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api import quick_marks as quick_marks_api
 from app.crud import quick_mark as quick_mark_crud
-from app.models.quick_mark import QuickMarkEvent
+from app.models.quick_mark import QuickMark, QuickMarkEvent
 from app.core import daytime
 from app.core.daytime import DayBoundary
 
@@ -76,6 +77,17 @@ async def tap(
         f"{QUICK_MARKS_URL}/{mark_id}/events", json=body, headers=headers
     )
     return response.status_code, response.json()
+
+
+async def day_total(client: AsyncClient, mark_id: int) -> float | None:
+    """The day total the directory shows next to the button, for the day of `NOW`."""
+    response = await client.get(
+        QUICK_MARKS_URL, params={"date": NOW.date().isoformat()}
+    )
+    assert response.status_code == 200, response.text
+    (listed,) = [one for one in response.json() if one["id"] == mark_id]
+    total = listed["today_total"]
+    return None if total is None else float(total)
 
 
 @contextmanager
@@ -368,6 +380,7 @@ async def test_a_key_found_only_after_a_lost_race_answers_like_a_replay(
     second_id = first_id if same_button else await make_mark(client, water)
     serve_at(monkeypatch, NOW)
     await tap(client, first_id, key="k-race")
+    total_before = await day_total(client, second_id)
     real_lookup = quick_mark_crud.event_by_idempotency_key
     calls = 0
 
@@ -382,6 +395,42 @@ async def test_a_key_found_only_after_a_lost_race_answers_like_a_replay(
 
     assert calls == 2, "the insert hit the unique key and the winner was read back"
     assert status_code == expected_status, body
+    total_after = await day_total(client, second_id)
+    assert total_after == total_before, "the rolled-back insert changed the day total"
+
+
+@pytest.mark.asyncio
+async def test_a_button_deleted_after_a_lost_race_is_404_not_500(
+    client: AsyncClient, water: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Кнопку B удалили между упавшей вставкой и повторным чтением: 404, а не 500."""
+    first_id = await make_mark(client, water)
+    second_id = await make_mark(client, water)
+    serve_at(monkeypatch, NOW)
+    await tap(client, first_id, key="k-gone")
+    real_lookup = quick_mark_crud.event_by_idempotency_key
+    calls = 0
+
+    async def deletes_the_button_after_the_loss(
+        db: AsyncSession, key: str
+    ) -> QuickMarkEvent | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        winner = await real_lookup(db, key)
+        await db.execute(delete(QuickMark).where(QuickMark.id == second_id))
+        await db.commit()
+        return winner
+
+    monkeypatch.setattr(
+        quick_mark_crud, "event_by_idempotency_key", deletes_the_button_after_the_loss
+    )
+
+    status_code, body = await tap(client, second_id, key="k-gone")
+
+    assert calls == 2, "the loss was reached: the winner was read back"
+    assert status_code == 404, body
 
 
 # --- cost -------------------------------------------------------------------

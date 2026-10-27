@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225, PHASE-03/236, PHASE-03/242
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225, PHASE-03/236, PHASE-03/242, PHASE-03/256
+// summary: PHASE-03/256 — secureConnectionFailed is among the failures that never left
 // summary: PHASE-03/236, 242 — a press carries its moment and no day, a 422 on the moment is "not sent" with "write to today", a stored press without a moment still decodes; a write replacing one that landed with its answer lost is not a conflict, a state none of them made still is, nor one of a write that never left; which failures may have landed (timeout, dropped connection, 502/504) and which never left; a store written before the flag opens with it off; a retry over a newer write says so
 // summary: tests for the one offline write queue — airplane mode → write → network back → one record on a server that dedupes by key; a send cut mid-way is repeated under the same key; a relaunch with a non-empty queue; order across kinds; 5xx kept (only five in a row give up, a dead network resets the count), 4xx in the visible "not sent" list with a reason, 401 waits and says so; an unreadable answer of the replay check refuses instead of passing for delivered; a 409 of a press without a day is not called a day turn; retry sends at once; a newer "set" replaces the waiting one; retry and discard from the list; the day a write was made survives midnight (explicit dates stay, a quick-mark press is refused instead of landing in the next day); a stale notebook or mark is refused instead of overwriting fresher server data; one-time import of the two old queues
 import Combine
@@ -470,11 +471,11 @@ final class OutboxQueueTests: XCTestCase {
         func transport(_ code: URLError.Code) -> Error { APIClientError.transport(code: code.rawValue) }
         let neverLeft: [Error] = [
             transport(.notConnectedToInternet), transport(.cannotConnectToHost), transport(.cannotFindHost),
-            transport(.dnsLookupFailed), APIClientError.unexpectedStatus(500), APIClientError.unexpectedStatus(503),
+            transport(.dnsLookupFailed), transport(.secureConnectionFailed), APIClientError.unexpectedStatus(500), APIClientError.unexpectedStatus(503),
             APIClientError.unexpectedStatus(409), APIClientError.unauthorized, OutboxConflict(reason: "x"),
         ]
         let mayHaveLanded: [Error] = [
-            APIClientError.timeout, transport(.networkConnectionLost), transport(.secureConnectionFailed),
+            APIClientError.timeout, transport(.networkConnectionLost),
             APIClientError.unexpectedStatus(502), APIClientError.unexpectedStatus(504),
         ]
         for error in neverLeft { XCTAssertFalse(OutboxQueue.mayHaveLanded(after: error), "\(error)") }

@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/256 — a re-read of the records leaves the cache stamp at the age of the categories; a second load keeps the loaded screen (no loader, a failure is a line of text)
 // summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
@@ -767,6 +768,87 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore)
         XCTAssertFalse(viewModel.todayEntries.contains(where: \.isPending))
         XCTAssertFalse(states.contains(.loading), "a background delivery re-reads quietly, no loader")
+    }
+
+    func testARereadsCacheStampIsNotNewerThanTheCategoriesAndStreaksItKeeps() async throws {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let cache = InMemoryCacheStore()
+        let server = FakeOutboxServer()
+        let outbox = OutboxQueue(
+            store: InMemoryOutboxStore(), sender: { OutboxReplay(entries: api, quickMarks: server, day: server) }
+        )
+        let loadedAt = makeFixedDate()
+        var clock = loadedAt
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: cache, outbox: outbox, timeZone: TimeZone(identifier: "UTC")!, now: { clock }
+        )
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        api.createEntryResult = .success(delivered)
+        api.entriesResult = .success([delivered])
+        clock = loadedAt.addingTimeInterval(600)
+
+        let monitor = MockNetworkMonitor()
+        outbox.startAutoFlush(monitor: monitor)
+        await monitor.simulateOnline()
+        for _ in 0..<100 where cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.entries != [delivered] {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let cached = cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)
+        XCTAssertEqual(cached?.value.entries, [delivered], "the re-read's records reached the cache")
+        XCTAssertEqual(cached?.updatedAt, loadedAt, "the categories in it are from the load: \"data as of\" must not say later")
+    }
+
+    func testASecondLoadKeepsTheLoadedScreenWhileItsAnswerIsOnItsWay() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .loaded)
+        var inFlight = false
+        var gate: CheckedContinuation<Void, Never>?
+        api.duringFetchEntries = {
+            inFlight = true
+            await withCheckedContinuation { gate = $0 }
+        }
+
+        let second = Task { await viewModel.load() }
+        while !inFlight { await Task.yield() }
+
+        XCTAssertEqual(viewModel.state, .loaded, "a full-screen loader would drop the scroll position")
+        XCTAssertEqual(viewModel.categories.map(\.id), [1])
+        gate?.resume()
+        await second.value
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testAFailedSecondLoadLeavesTheShownDataAndSaysSoInALine() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.categories.map(\.id), [1], "the screen keeps what it showed")
+        XCTAssertEqual(viewModel.saveErrorMessage, "\(TodayViewModel.refreshFailedMessage): \(APIClientError.unauthorized.userMessage)")
+    }
+
+    func testAFailedFirstLoadStillTurnsTheScreenIntoTheErrorState() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .failure(APIClientError.unauthorized.userMessage))
+        XCTAssertNil(viewModel.saveErrorMessage)
     }
 
     func testAFailedBackgroundReReadSaysNothingNobodyAskedFor() async throws {

@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/248 — false conflict after A→B→A, a third text in a stale answer, cancelled pull-to-refresh, a re-read answered while another day loads is not shown, the replaced-text card is not restored over the same server text; every hook a test sets must run
 // summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking and per-day drafts and conflicts with a changed server text, closing fields across days, re-read on foreground and time zone change (a failed pull-to-refresh says so, the others stay quiet), saved notebook text remembered per day against late answers,  two-touch closing with keys and validation
 import Combine
 import XCTest
@@ -15,8 +16,13 @@ final class DayViewModelTests: XCTestCase {
         viewModel = DayViewModel(api: api)
     }
 
-    private func factsWrite(total: Double, markState: String?) -> PlanFactWriteDTO {
-        let day = try! DayFixtures.day()
+    /// A hook a test set and the code never reached would leave its assertions vacuous.
+    override func tearDown() async throws {
+        XCTAssertEqual(api.hooksNeverRun, [], "a hook the test set never ran")
+    }
+
+    private func factsWrite(total: Double, markState: String?) throws -> PlanFactWriteDTO {
+        let day = try DayFixtures.day()
         let base = day.planFacts[0]
         let facts = PlanItemFactsDTO(
             itemId: base.itemId, link: base.link, entries: base.entries, total: total,
@@ -129,7 +135,7 @@ final class DayViewModelTests: XCTestCase {
 
     func testReachingTheTargetRecordsTheFactWithDoneMark() async throws {
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 300, markState: "done"))
+        api.factResult = .success(try factsWrite(total: 300, markState: "done"))
         api.fetchResults = [.success(try doneLine())]
 
         let saved = await viewModel.saveFact(DayFixtures.pushupsID, input: .text("200"))
@@ -144,9 +150,9 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.state(of: DayFixtures.pushupsID), "done")
     }
 
-    func testPartialFactDoesNotMarkTheLineDone() async {
+    func testPartialFactDoesNotMarkTheLineDone() async throws {
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 150, markState: nil))
+        api.factResult = .success(try factsWrite(total: 150, markState: nil))
 
         _ = await viewModel.saveFact(DayFixtures.pushupsID, input: .text("50"))
 
@@ -176,9 +182,9 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertNotEqual(api.recordCalls[1].key, api.recordCalls[2].key)
     }
 
-    func testBoxFactSendsAFlagWithoutUnit() async {
+    func testBoxFactSendsAFlagWithoutUnit() async throws {
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 0, markState: "done"))
+        api.factResult = .success(try factsWrite(total: 0, markState: "done"))
 
         _ = await viewModel.saveFact(DayFixtures.readingID, input: .flag(true))
 
@@ -194,7 +200,7 @@ final class DayViewModelTests: XCTestCase {
         let withTwo = try doneLine()
         api.fetchResults = [.success(withTwo)]
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 250, markState: nil))
+        api.factResult = .success(try factsWrite(total: 250, markState: nil))
 
         _ = await viewModel.saveFact(DayFixtures.pushupsID, input: .text("150"), correcting: 502)
 
@@ -206,7 +212,7 @@ final class DayViewModelTests: XCTestCase {
     func testRemovingTheLastEntryOfADoneLineAsksForUnmark() async throws {
         api.fetchResults = [.success(try doneLine())]
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 100, markState: nil))
+        api.factResult = .success(try factsWrite(total: 100, markState: nil))
 
         await viewModel.removeFact(DayFixtures.pushupsID, entryID: 502)
 
@@ -214,9 +220,9 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertTrue(api.removeCalls[0].unmark)
     }
 
-    func testRemovingAnEntryOfAShortLineLeavesTheMarkAlone() async {
+    func testRemovingAnEntryOfAShortLineLeavesTheMarkAlone() async throws {
         await viewModel.load()
-        api.factResult = .success(factsWrite(total: 0, markState: nil))
+        api.factResult = .success(try factsWrite(total: 0, markState: nil))
 
         await viewModel.removeFact(DayFixtures.pushupsID, entryID: 501)
 
@@ -479,7 +485,7 @@ final class DayViewModelTests: XCTestCase {
         // Stepping away and back during the save brings the server's text beside the typed one.
         api.duringNotebookSave = { [viewModel, api] in
             await viewModel!.showPreviousDay()
-            api!.fetchResults = [.success(try! DayFixtures.day(notebook: .some("Чужой")))]
+            api!.fetchResults = [.success(try DayFixtures.day(notebook: .some("Чужой")))]
             await viewModel!.showNextDay()
         }
 
@@ -498,7 +504,7 @@ final class DayViewModelTests: XCTestCase {
         viewModel.notebook = "T"
         api.fetchResults = [
             .success(try DayFixtures.day(date: "2026-10-24", notebook: .some("Про 24-е"))),
-            .success(try DayFixtures.day(notebook: .some("Старый"))),
+            .success(try DayFixtures.day()),
         ]
         var stepBack: Task<Void, Never>?
         var readIsInFlight = false
@@ -525,6 +531,61 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.notebookConflict)
     }
 
+    func testASaveThatEndedOnAnotherDayRebasesTheDraftSoComingBackRaisesNoFalseConflict() async throws {
+        await viewModel.load()
+        viewModel.notebook = "T"
+        api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24"))]
+        // T2 is typed while the save of T runs, then the person steps away: the save ends on the other day.
+        api.duringNotebookSave = { [viewModel] in
+            viewModel!.notebook = "T2"
+            await viewModel!.showPreviousDay()
+        }
+        await viewModel.saveNotebook()
+        api.duringNotebookSave = nil
+        XCTAssertEqual(viewModel.shownDate, "2026-10-24")
+
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("T")))]
+        await viewModel.showNextDay()
+
+        XCTAssertEqual(viewModel.notebook, "T2")
+        XCTAssertNil(viewModel.notebookConflict, "the server holds the person's own T, typed over by T2")
+        XCTAssertTrue(viewModel.isNotebookDirty)
+        XCTAssertFalse(viewModel.isNotebookSaveBlocked)
+    }
+
+    func testAStaleAnswerWithAThirdTextKeepsTheSavedTextAndRaisesAConflictThatBlocksSaving() async throws {
+        await viewModel.load()
+        viewModel.notebook = "T"
+        api.fetchResults = [
+            .success(try DayFixtures.day(date: "2026-10-24", notebook: .some("Про 24-е"))),
+            .success(try DayFixtures.day(notebook: .some("Веб-правка"))),
+        ]
+        var stepBack: Task<Void, Never>?
+        var readIsInFlight = false
+        var answerGate: CheckedContinuation<Void, Never>?
+        api.duringNotebookSave = { [viewModel, api] in
+            await viewModel!.showPreviousDay()
+            api!.duringFetch = {
+                readIsInFlight = true
+                await withCheckedContinuation { answerGate = $0 }
+            }
+            stepBack = Task { await viewModel!.showNextDay() }
+            while !readIsInFlight { await Task.yield() }
+        }
+
+        await viewModel.saveNotebook()
+        answerGate?.resume()
+        await stepBack?.value
+
+        XCTAssertEqual(viewModel.shownDate, "2026-10-25")
+        XCTAssertEqual(viewModel.notebook, "T", "the saved text stays on screen")
+        XCTAssertEqual(viewModel.notebookConflict, "Веб-правка", "a text that is neither the base nor the saved one was written elsewhere")
+        XCTAssertTrue(viewModel.isNotebookSaveBlocked)
+        let callsBefore = api.notebookCalls.count
+        await viewModel.saveNotebook()
+        XCTAssertEqual(api.notebookCalls.count, callsBefore, "saving waits until the person picks a side")
+    }
+
     func testAnAnswerSentAfterTheSaveBringsTheServersTextAgain() async throws {
         await viewModel.load()
         viewModel.notebook = "T"
@@ -545,7 +606,7 @@ final class DayViewModelTests: XCTestCase {
         viewModel.notebook = "T"
         api.duringNotebookSave = { [viewModel, api] in
             viewModel!.notebook = "T2"
-            api!.fetchResults = [.success(try! DayFixtures.day(notebook: .some("T")))]
+            api!.fetchResults = [.success(try DayFixtures.day(notebook: .some("T")))]
             await viewModel!.rereadInPlace()
             // The end of the save would clear a conflict over "T" by itself, so look while it is in flight.
             XCTAssertNil(viewModel!.notebookConflict, "the server holds the text being saved, not a change made elsewhere")
@@ -565,7 +626,7 @@ final class DayViewModelTests: XCTestCase {
         api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24"))]
         api.duringNotebookSave = { [viewModel, api] in
             await viewModel!.showPreviousDay()
-            api!.fetchResults = [.success(try! DayFixtures.day(notebook: .some("Чужой")))]
+            api!.fetchResults = [.success(try DayFixtures.day(notebook: .some("Чужой")))]
             await viewModel!.showNextDay()
         }
         await viewModel.saveNotebook()
@@ -583,13 +644,35 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.notebookConflict)
     }
 
+    func testTheNoteThatASaveReplacedTheServerTextIsNotRestoredWhenTheServerHoldsThatTextAgain() async throws {
+        await viewModel.load()
+        viewModel.notebook = "Мой"
+        api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24"))]
+        api.duringNotebookSave = { [viewModel, api] in
+            await viewModel!.showPreviousDay()
+            api!.fetchResults = [.success(try DayFixtures.day(notebook: .some("Чужой")))]
+            await viewModel!.showNextDay()
+        }
+        await viewModel.saveNotebook()
+        api.duringNotebookSave = nil
+        XCTAssertEqual(viewModel.notebookConflict, "Чужой")
+
+        // Somebody put that very text back: there is nothing left that the save replaced.
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Чужой")))]
+        await viewModel.rereadInPlace()
+
+        XCTAssertEqual(viewModel.notebook, "Чужой")
+        XCTAssertNil(viewModel.notebookConflict)
+        XCTAssertFalse(viewModel.notebookConflictOverwritten)
+    }
+
     func testTheNoteThatASaveReplacedTheServerTextGoesWithTheDay() async throws {
         await viewModel.load()
         viewModel.notebook = "Мой"
         api.fetchResults = [.success(try DayFixtures.day(date: "2026-10-24"))]
         api.duringNotebookSave = { [viewModel, api] in
             await viewModel!.showPreviousDay()
-            api!.fetchResults = [.success(try! DayFixtures.day(notebook: .some("Чужой")))]
+            api!.fetchResults = [.success(try DayFixtures.day(notebook: .some("Чужой")))]
             await viewModel!.showNextDay()
         }
         await viewModel.saveNotebook()
@@ -743,7 +826,7 @@ final class DayViewModelTests: XCTestCase {
         viewModel.closingBody = "Итог дня"
         api.closingResult = .success(DayFixtures.summary(bodyMd: "Итог дня", workMinutes: nil))
         api.duringClosing = { [viewModel, api] in
-            api!.fetchResults = [.success(try! DayFixtures.day(summary: DayFixtures.summary(bodyMd: "Из веба", workMinutes: nil)))]
+            api!.fetchResults = [.success(try DayFixtures.day(summary: DayFixtures.summary(bodyMd: "Из веба", workMinutes: nil)))]
             await viewModel!.rereadInPlace()
             XCTAssertNotNil(viewModel!.closingConflict, "the read raised a conflict under the text being sent")
             api!.fetchResults = [.failure(APIClientError.timeout)]
@@ -844,6 +927,57 @@ final class DayViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.actionError)
         XCTAssertEqual(viewModel.state(of: DayFixtures.taskID), "failed")
+    }
+
+    func testACancelledPullToRefreshSaysNothing() async {
+        await viewModel.load()
+        api.fetchResults = [.failure(CancellationError())]
+
+        // The person let go of the screen: the task is cancelled before the read answers.
+        let refresh = Task { await viewModel.rereadInPlace(reportingFailure: true) }
+        refresh.cancel()
+        await refresh.value
+
+        XCTAssertEqual(api.fetchedDates.count, 2, "the read was attempted")
+        XCTAssertNil(viewModel.actionError, "a cancelled refresh is not a failure")
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testARereadAnsweredWhileAnotherDayLoadsIsNotShown() async throws {
+        await viewModel.load()
+        api.fetchResults = [
+            .success(try DayFixtures.day(marks: [DayFixtures.mark(DayFixtures.taskID, "failed")])),
+            .success(try DayFixtures.day(date: "2026-10-24")),
+        ]
+        var rereadIsInFlight = false
+        var rereadGate: CheckedContinuation<Void, Never>?
+        api.duringFetch = {
+            rereadIsInFlight = true
+            await withCheckedContinuation { rereadGate = $0 }
+        }
+        let reread = Task { [viewModel] in await viewModel!.rereadInPlace() }
+        while !rereadIsInFlight { await Task.yield() }
+        var stepIsInFlight = false
+        var stepGate: CheckedContinuation<Void, Never>?
+        api.duringFetch = {
+            stepIsInFlight = true
+            await withCheckedContinuation { stepGate = $0 }
+        }
+        let step = Task { [viewModel] in await viewModel!.showPreviousDay() }
+        while !stepIsInFlight { await Task.yield() }
+
+        // The re-read of day A left before the step and is numbered ahead of what is shown, but the
+        // screen asked for another day since: its answer is for what was asked earlier.
+        rereadGate?.resume()
+        await reread.value
+
+        XCTAssertEqual(viewModel.state, .loading, "the step to the other day is still the screen's question")
+        XCTAssertEqual(viewModel.state(of: DayFixtures.taskID), "done", "the old day's answer changed nothing")
+
+        stepGate?.resume()
+        await step.value
+        XCTAssertEqual(viewModel.shownDate, "2026-10-24")
+        XCTAssertEqual(viewModel.state, .loaded)
     }
 
     func testARereadInTheSameZoneDoesNotRepublishIt() async {
