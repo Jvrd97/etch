@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/246
 # summary: orchestration of the health advice — the prompt is rendered from the finished summary (no database, no recomputation), carries supplement names but never doses, forbids diagnoses and doses, and the not-medical-advice disclaimer is appended in code when the model omits it
 """
 The words of the health advice (`#223`).
@@ -31,11 +31,27 @@ _DISCLAIMER = re.compile(
     r"не\s+(?:является\s+)?медицинск\w*\s+(?:рекомендаци\w*|совет\w*)",
     re.IGNORECASE,
 )
-# A number glued to a dose unit: «200 мг», «5000 МЕ», «2 капсулы». The model is
-# told never to name one; this is the net under the instruction.
+# A number glued to a dose unit: «200 мг», «1 г.», «400 миллиграммов», «5000 ед.»,
+# «400 µg», «две капсулы». The model is told never to name one; this is the net
+# under the instruction. `µ` is the micro sign (U+00B5), `μ` the Greek mu (U+03BC).
+_DOSE_UNIT = (
+    r"(?:мг|мкг|ме|iu|mg|mcg|[µμ]\s?[gг]|мл|ml|милли?грамм\w*|микро?грамм\w*|"
+    r"грамм\w*|гр|ед(?:иниц\w*)?|таблет\w*|капсул\w*|[gг])"
+)
+# Bare «г» is also the abbreviation of «год»: «в 2026 г, когда…» is not a dose.
+_YEAR_AS_YEARS = r"(?:19|20)\d{2}\s*[gг](?!\w)"
+_NUMBER_WORDS = (
+    r"(?:ноль|нуль|один|одна|одну|одно|одного|одной|два|две|двух|три|трёх|трех|"
+    r"четыре|четырёх|четырех|пять|пяти|шесть|шести|семь|семи|восемь|восьми|"
+    r"девять|девяти|десять|десяти|одиннадцать|двенадцать|тринадцать|четырнадцать|"
+    r"пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|"
+    r"тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|"
+    r"двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|"
+    r"тысяча|тысячи|тысяч|полтора|полторы)"
+)
 _DOSE = re.compile(
-    r"\d+(?:[.,]\d+)?\s*(?:мг|мкг|ме|iu|mg|mcg|µg|мл|ml|грамм\w*|гр|г(?!\.)|"
-    r"таблет\w*|капсул\w*)(?!\w)",
+    rf"(?<![\d.,])(?!{_YEAR_AS_YEARS})\d+(?:[.,]\d+)?\s*{_DOSE_UNIT}(?!\w)"
+    rf"|\b{_NUMBER_WORDS}\s+{_DOSE_UNIT}(?!\w)",
     re.IGNORECASE,
 )
 

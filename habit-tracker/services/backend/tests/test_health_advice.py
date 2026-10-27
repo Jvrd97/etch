@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/246
 # summary: tests for the health summary and the advice built on it — steps, workout minutes and resting heart rate against the previous window, sleep honestly «данных нет», supplement adherence per day, the window closed by yesterday, a flat SQL statement count, «данных мало» instead of an invented advice, the fixed disclaimer, 422/503/502, and no supplement name or health value in a log line
 """
 Advice from sleep, sport and supplements (`#223`).
@@ -532,6 +532,20 @@ async def test_a_disclaimer_the_model_already_wrote_is_not_doubled(
         "Выпей 2 капсулы утром.",
         "Хватит 1,5 г в день.",
         "Take 200 mg daily.",
+        "Хватит 1 г.",
+        "Пей по 400 миллиграммов.",
+        "Пей по 400 микрограммов.",
+        "Добавь 5000 ед.",
+        "Добавь 5000 единиц витамина D.",
+        "Take 1 g daily.",
+        "Take 400 µg daily.",
+        "Take 400 μg daily.",
+        "Пей 400 μг.",
+        "Выпей две капсулы утром.",
+        "Хватит одного грамма.",
+        "Пей четыреста миллиграммов.",
+        "Добавь пять тысяч единиц.",
+        "Выпей полторы таблетки.",
     ],
 )
 async def test_an_answer_that_names_a_dose_is_502_and_not_shown(
@@ -544,6 +558,23 @@ async def test_an_answer_that_names_a_dose_is_502_and_not_shown(
 
     assert response.status_code == 502
     assert dosed not in response.text
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        "Было так в 2026 г, когда ты ходил меньше.",
+        "Было так в 2026 г., когда ты ходил меньше.",
+        "Три дня подряд и пять тысяч шагов.",
+    ],
+)
+async def test_a_year_and_other_words_of_numbers_are_not_doses(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM, plain: str
+) -> None:
+    await fill_window(db_session)
+    llm.text = plain
+
+    assert (await ask(client)).status_code == 200
 
 
 async def test_numbers_that_are_not_doses_pass(

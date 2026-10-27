@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/246
 # summary: database access for supplements — create/list/edit/archive/restore, and the intake mark that is idempotent on the key and on (supplement, logical day); the list answers taken_today in one extra query
 """
 Database access for the supplement directory and the intake mark (`#223`).
@@ -23,10 +23,10 @@ from app.models.supplement import Supplement, SupplementIntake, SupplementIntake
 from app.schemas.supplement import SupplementCreate, SupplementUpdate
 
 __all__ = [
+    "alias_intake_key",
     "archive_supplement",
     "create_supplement",
     "get_supplement",
-    "alias_intake_key",
     "intake_by_idempotency_key",
     "intake_on_day",
     "list_supplements",
