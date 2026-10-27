@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255
 # summary: Health persistence — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date, and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
@@ -212,7 +212,12 @@ async def metric_days(
     Метрики `keys` с дневными значениями за отрезок, в порядке `HEALTH_SPECS`.
 
     Каталог и дни читаются по одному запросу, сколько бы метрик ни просили.
+    Ключ, которого нет в `HEALTH_SPECS`, — ошибка вызывающего (`ValueError`): молча
+    отброшенная метрика выглядела бы как метрика без данных.
     """
+    unknown = sorted(set(keys) - {spec.key for spec in HEALTH_SPECS})
+    if unknown:
+        raise ValueError(f"unknown health metric keys: {', '.join(unknown)}")
     catalog = {metric.identifier: metric for metric in await get_catalog(db)}
     specs = [spec for spec in HEALTH_SPECS if spec.key in keys]
     present = [catalog[spec.identifier] for spec in specs if spec.identifier in catalog]

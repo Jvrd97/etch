@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221
+// [review:need-review] PHASE-03/221, PHASE-03/255
 // summary: a finished week with three judged days, two roles, one category, one avoid streak and three health figures — the answer the screen and vocabulary tests start from, each test overriding only what it is about
 
 import type { WeekReview } from '@/lib/api';
@@ -13,6 +13,7 @@ export function weekReviewFixture(): WeekReview {
       day_start_hour: 4,
       is_complete: true,
       counted_days: 7,
+      today_counted: false,
       as_of: '2026-08-30',
       previous_iso_code: '2026-W34',
       next_iso_code: '2026-W36',
@@ -49,6 +50,8 @@ export function weekReviewFixture(): WeekReview {
     delta: { won_days: 1, tasks_done: 5, plan_pct: 29, work_minutes: 800, role_minutes: 300 },
     debt_minutes: 0,
     is_won: false,
+    verdict_line:
+      'Неделя выиграна: нет (правило: выиграны все дни недели и нет долга за переработку; выиграно 2 из 3 дней, долг 0 мин).',
     days: [
       day(0, 'won', 4, 4, 100),
       day(1, 'lost', 1, 4, 25),
@@ -103,6 +106,7 @@ export function weekReviewFixture(): WeekReview {
         total: null,
         avg_per_day: null,
         days_with_data: 0,
+        previous_days_with_data: 0,
         previous_avg_per_day: null,
         delta_avg_per_day: null,
         daily: [null, null, null, null, null, null, null],
@@ -115,6 +119,7 @@ export function weekReviewFixture(): WeekReview {
         total: 12000,
         avg_per_day: 6000,
         days_with_data: 2,
+        previous_days_with_data: 1,
         previous_avg_per_day: 3000,
         delta_avg_per_day: 3000,
         daily: [8000, 4000, null, null, null, null, null],
@@ -127,6 +132,7 @@ export function weekReviewFixture(): WeekReview {
         total: 45,
         avg_per_day: 45,
         days_with_data: 1,
+        previous_days_with_data: 0,
         previous_avg_per_day: null,
         delta_avg_per_day: null,
         daily: [null, null, null, null, null, null, 45],

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/246
+# [review:need-review] PHASE-03/246, PHASE-03/251
 # summary: /supplements — add, list (with taken_today), edit, archive, restore, and POST /{id}/intakes, the idempotent «принял» mark on the logical day; no name or dose in any log line
 from datetime import date
 
@@ -132,7 +132,9 @@ async def _settle_race(
         await db.rollback()
         by_key = await supplement_crud.intake_by_idempotency_key(db, idempotency_key)
         if by_key is None:
-            return None
+            # The alias collided on something other than the key: the day's mark
+            # is still the answer, re-read after the rollback.
+            return await supplement_crud.intake_on_day(db, supplement_id, day)
         winner = by_key
     return _owned_by(winner, supplement_id)
 

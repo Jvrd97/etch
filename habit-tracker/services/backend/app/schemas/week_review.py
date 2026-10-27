@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221
+# [review:need-review] PHASE-03/221, PHASE-03/255
 # summary: wire types of the week review — one answer carrying the window of the week, totals against the previous week, days, role and category time, habit streaks and health, plus the AI narrative response
 """
 Wire types of the week review (`#221`).
@@ -43,6 +43,13 @@ class WeekWindow(BaseModel):
     )
     counted_days: int = Field(
         ..., description="Сколько дней недели учтено в цифрах: 7, если неделя полная"
+    )
+    today_counted: bool = Field(
+        False,
+        description=(
+            "Сегодняшний логический день уже учтён в окне: он закрыт, и неделя его "
+            "содержит. false — день ещё идёт, неделя прошла или не началась"
+        ),
     )
     as_of: date | None = Field(
         None, description="Последний учтённый день; null — ни один день не наступил"
@@ -159,6 +166,13 @@ class WeekHealthMetric(BaseModel):
     total: float | None = None
     avg_per_day: float | None = None
     days_with_data: int = 0
+    previous_days_with_data: int = Field(
+        0,
+        description=(
+            "Дней с данными в окне сравнения (прошлая неделя за столько же дней): "
+            "знаменатель previous_avg_per_day; 0 — нечего сравнивать"
+        ),
+    )
     previous_avg_per_day: float | None = None
     delta_avg_per_day: float | None = None
     daily: list[float | None] = Field(
@@ -181,6 +195,13 @@ class WeekReviewResponse(BaseModel):
         description=(
             "Неделя выиграна по правилу `week_is_won`: все дни выиграны, дни есть, "
             "долга нет. null — неделя ещё идёт, итог не решён"
+        ),
+    )
+    verdict_line: str = Field(
+        ...,
+        description=(
+            "Вердикт недели готовой строкой с правилом и числами: её печатает экран "
+            "и пересказывает модель, второй копии нет"
         ),
     )
     days: list[WeekDayStat]

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/246
+# [review:need-review] PHASE-03/246, PHASE-03/251
 # summary: tests for the supplement directory and the intake mark — add/list/edit/archive/restore, one mark per supplement per logical day, Idempotency-Key replay, the 04:00 boundary, the client-clock check, and no supplement name in any log line
 """
 Supplements: what the person takes, and the tick «принял».
@@ -478,6 +478,42 @@ async def test_the_key_of_a_loser_survives_a_twin_that_wrote_it_first(
     assert response.json()["id"] == first.json()["id"]
     assert await intake_count(db_session) == 1
     assert await key_count(db_session) == 1
+
+
+async def test_a_key_that_loses_the_race_to_another_supplement_is_409(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B's first key lookup misses; the insert then collides with A's key on its primary key."""
+    magnesium = await add(client)
+    zinc = await add(client, name="Цинк")
+    await mark(client, magnesium["id"], key="tap-1")
+    blind_once(monkeypatch, "intake_by_idempotency_key")
+
+    response = await mark(client, zinc["id"], key="tap-1")
+
+    assert response.status_code == 409
+    assert await intake_count(db_session) == 1
+    assert await key_count(db_session) == 1
+
+
+async def test_a_failed_alias_write_without_a_key_behind_it_answers_with_the_day_mark(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alias collides on something that is not the key: the winner is re-read by the day, not a 500."""
+    created = await add(client)
+    first = await mark(client, created["id"])
+    blind_once(monkeypatch, "intake_on_day")
+
+    async def collide(*args: Any, **kwargs: Any) -> None:
+        raise IntegrityError("insert", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr(supplement_crud, "alias_intake_key", collide)
+
+    response = await mark(client, created["id"], key="tap-2")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == first.json()["id"]
+    assert await intake_count(db_session) == 1
 
 
 async def test_an_empty_idempotency_key_is_422_and_stores_nothing(

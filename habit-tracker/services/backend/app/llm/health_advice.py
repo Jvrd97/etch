@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251
 # summary: orchestration of the health advice — the prompt is rendered from the finished summary (no database, no recomputation), carries supplement names but never doses, forbids diagnoses and doses, and the not-medical-advice disclaimer is appended in code when the model omits it
 """
 The words of the health advice (`#223`).
@@ -22,8 +22,14 @@ from __future__ import annotations
 import re
 
 from app.llm.client import LLMClient, LLMError
-from app.llm.health_format import average_basis, health_value, signed_health_delta
+from app.llm.dose_guard import names_a_dose
+from app.llm.health_format import average_basis, comparison_text, health_value
 from app.schemas.supplement_advice import HealthFigure, HealthSummaryResponse
+
+
+class DoseGuardTripped(LLMError):
+    """The model's answer names a dose; the answer is dropped, the error carries none of it."""
+
 
 NOT_MEDICAL_ADVICE = "Это не медицинская рекомендация."
 # «не медицинская рекомендация», «не является медицинской рекомендацией» и т.п.
@@ -31,30 +37,6 @@ _DISCLAIMER = re.compile(
     r"не\s+(?:является\s+)?медицинск\w*\s+(?:рекомендаци\w*|совет\w*)",
     re.IGNORECASE,
 )
-# A number glued to a dose unit: «200 мг», «1 г.», «400 миллиграммов», «5000 ед.»,
-# «400 µg», «две капсулы». The model is told never to name one; this is the net
-# under the instruction. `µ` is the micro sign (U+00B5), `μ` the Greek mu (U+03BC).
-_DOSE_UNIT = (
-    r"(?:мг|мкг|ме|iu|mg|mcg|[µμ]\s?[gг]|мл|ml|милли?грамм\w*|микро?грамм\w*|"
-    r"грамм\w*|гр|ед(?:иниц\w*)?|таблет\w*|капсул\w*|[gг])"
-)
-# Bare «г» is also the abbreviation of «год»: «в 2026 г, когда…» is not a dose.
-_YEAR_AS_YEARS = r"(?:19|20)\d{2}\s*[gг](?!\w)"
-_NUMBER_WORDS = (
-    r"(?:ноль|нуль|один|одна|одну|одно|одного|одной|два|две|двух|три|трёх|трех|"
-    r"четыре|четырёх|четырех|пять|пяти|шесть|шести|семь|семи|восемь|восьми|"
-    r"девять|девяти|десять|десяти|одиннадцать|двенадцать|тринадцать|четырнадцать|"
-    r"пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|"
-    r"тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|"
-    r"двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|"
-    r"тысяча|тысячи|тысяч|полтора|полторы)"
-)
-_DOSE = re.compile(
-    rf"(?<![\d.,])(?!{_YEAR_AS_YEARS})\d+(?:[.,]\d+)?\s*{_DOSE_UNIT}(?!\w)"
-    rf"|\b{_NUMBER_WORDS}\s+{_DOSE_UNIT}(?!\w)",
-    re.IGNORECASE,
-)
-
 HEALTH_ADVICE_SYSTEM_PROMPT = """\
 Ты помощник личного трекера привычек. Тебе дают цифры о движении, пульсе покоя
 и приёме добавок за последние дни и за столько же дней до них. Напиши совет
@@ -77,12 +59,19 @@ def _figure_line(figure: HealthFigure, days: int) -> str:
         return f"{figure.name}: данных нет."
     if not figure.enough_data:
         return f"{figure.name}: данных мало ({figure.days_with_data} дн. из {days})."
-    delta = signed_health_delta(figure.key, figure.unit, figure.delta_avg_per_day)
+    comparison = comparison_text(
+        figure.key,
+        figure.unit,
+        figure.delta_avg_per_day,
+        figure.previous_days_with_data,
+        days,
+        "к прошлому окну",
+    )
     return (
         f"{figure.name}: в среднем "
         f"{health_value(figure.key, figure.unit, figure.avg_per_day or 0)} в день, "
         f"{average_basis(figure.days_with_data, days)} "
-        f"({delta} к предыдущим {days} дн.)."
+        f"({comparison})."
     )
 
 
@@ -134,11 +123,12 @@ async def write_health_advice(llm: LLMClient, summary: HealthSummaryResponse) ->
     """
     The advice with its disclaimer.
 
-    `LLMError` from the client is the caller's; so is the one raised here when the
-    answer names a dose: such an answer is not shown, and the error text carries
-    no part of it.
+    `LLMError` from the client is the caller's; so is `DoseGuardTripped` (an
+    `LLMError` too, so a caller that does not care still catches it) raised here
+    when the answer names a dose: such an answer is not shown, and the error text
+    carries no part of it.
     """
     text = await llm.generate(build_health_advice_prompt(summary))
-    if _DOSE.search(text):
-        raise LLMError("the model named a dose")
+    if names_a_dose(text):
+        raise DoseGuardTripped("the model named a dose")
     return with_disclaimer(text)

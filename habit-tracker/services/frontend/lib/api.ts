@@ -4110,7 +4110,7 @@ export const planFactsAPI = {
 };
 
 // ============ Week review (#221) ============
-// [review:need-review] PHASE-03/221
+// [review:need-review] PHASE-03/221, PHASE-03/255
 // summary: weekReviewAPI reads a whole week in one request — window, totals against the previous week, days, role and category time, avoid streaks, health — and asks the server for the AI narrative of that week
 
 /** Which days the numbers cover and in which clock they were cut. */
@@ -4123,6 +4123,8 @@ export interface WeekReviewWindow {
   /** False while the week runs: the numbers are partial. */
   is_complete: boolean;
   counted_days: number;
+  /** Today's logical day is closed and inside the counted window; false while it is still lived. */
+  today_counted: boolean;
   /** Last counted day; null when no day of the week has come yet. */
   as_of: string | null;
   previous_iso_code: string;
@@ -4210,6 +4212,8 @@ export interface WeekReviewHealth {
   total: number | null;
   avg_per_day: number | null;
   days_with_data: number;
+  /** Days with data behind `previous_avg_per_day`: the denominator of the comparison. */
+  previous_days_with_data: number;
   previous_avg_per_day: number | null;
   delta_avg_per_day: number | null;
   /** Seven values Monday to Sunday; null is "no data", not zero. */
@@ -4225,6 +4229,8 @@ export interface WeekReview {
   debt_minutes: number;
   /** The week verdict by the one rule of the week; null while the week runs. */
   is_won: boolean | null;
+  /** The verdict as one ready line with its rule and numbers; the screen prints it as it is. */
+  verdict_line: string;
   days: WeekReviewDay[];
   best_day: string | null;
   worst_day: string | null;

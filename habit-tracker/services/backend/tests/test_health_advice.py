@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251
 # summary: tests for the health summary and the advice built on it — steps, workout minutes and resting heart rate against the previous window, sleep honestly «данных нет», supplement adherence per day, the window closed by yesterday, a flat SQL statement count, «данных мало» instead of an invented advice, the fixed disclaimer, 422/503/502, and no supplement name or health value in a log line
 """
 Advice from sleep, sport and supplements (`#223`).
@@ -462,9 +462,11 @@ async def test_the_advice_is_written_from_the_numbers_of_the_window(
     )
     (prompt,) = llm.prompts
     assert "8000 шагов" in prompt
-    assert "+1000 шагов" in prompt
+    assert "+1000 шагов к прошлому окну, против 7 из 7 дн." in prompt
     assert "Минуты тренировки: в среднем 0 ч 30 мин" in prompt
-    assert "среднее по дням с данными" in prompt
+    assert "против 2 из 7 дн." in prompt
+    assert "по дням с данными" in prompt
+    assert all(line.count("средн") <= 1 for line in prompt.splitlines())
     assert "Пульс покоя: в среднем 60 уд/мин" in prompt
     assert "-4 уд/мин" in prompt
     assert "Сон: данных нет" in prompt
@@ -561,6 +563,63 @@ async def test_an_answer_that_names_a_dose_is_502_and_not_shown(
     assert dosed not in response.text
 
 
+async def test_a_dropped_answer_says_so_and_is_not_a_model_failure(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    llm: FakeLLM,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    await fill_window(db_session)
+    llm.text = "Пей магний по 400 мг на ночь."
+    dropped = await ask(client)
+    caplog.clear()
+    app.dependency_overrides[get_llm_client] = lambda: FailingLLM()
+    try:
+        failed = await ask(client)
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    assert dropped.status_code == failed.status_code == 502
+    assert dropped.json()["detail"] == "Совет отклонён защитой."
+    assert failed.json()["detail"] == "Модель не ответила."
+    assert "dose guard tripped" not in caplog.text
+
+
+async def test_a_dropped_answer_has_its_own_log_line_without_the_text(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    llm: FakeLLM,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    await fill_window(db_session)
+    llm.text = "Пей Секретный-магний по 400 мг на ночь."
+
+    await ask(client)
+
+    lines = [r.getMessage() for r in caplog.records if "dose guard" in r.getMessage()]
+    assert lines == ["dose guard tripped"]
+    assert "400" not in caplog.text
+    assert "Секретный" not in caplog.text
+    assert "LLM backend failed" not in caplog.text
+
+
+async def test_a_written_advice_leaves_a_line_to_count_the_tripped_ones_against(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    llm: FakeLLM,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    await fill_window(db_session)
+
+    await ask(client)
+
+    ours = [r for r in caplog.records if r.name == "app.api.supplement_advice"]
+    assert [r.getMessage() for r in ours] == ["health advice written"]
+
+
 @pytest.mark.parametrize(
     "plain",
     [
@@ -590,11 +649,11 @@ async def test_numbers_that_are_not_doses_pass(
 async def test_the_data_lines_of_the_prompt_are_not_doses_when_the_model_echoes_them(
     client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
 ) -> None:
-    """«7 дн.» and «среднее по дням с данными: N из M дн.» must not trip the dose net."""
+    """«7 дн.» and «по дням с данными: N из M дн.» must not trip the dose net."""
     await fill_window(db_session)
     await ask(client)
     data = llm.prompts[0].split("Данные:\n", 1)[1]
-    assert "среднее по дням с данными" in data
+    assert "по дням с данными" in data
     llm.text = data
 
     assert (await ask(client)).status_code == 200

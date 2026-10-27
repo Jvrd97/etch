@@ -11,7 +11,7 @@
 этот перекос числом.
 """
 
-# [review:need-review] PHASE-03/138, PHASE-03/239
+# [review:need-review] PHASE-03/138, PHASE-03/239, PHASE-03/255
 # summary: tests for the period summary, and for the public share_pct the week review calls — shares over the sum of working minutes with `unassigned` in the denominator, an empty period answering with an empty summary rather than zeros, the 30% lag flag decided on the ratio at the exact boundary, the markdown block carrying the same numbers as the JSON, acts counted by kind, and one endpoint answering for a week and for a month alike
 from datetime import date, timedelta
 from typing import Any
@@ -402,6 +402,13 @@ class TestSharePct:
     def test_rounds_to_whole_percent(self) -> None:
         assert role_crud.share_pct(1, 3) == 33
         assert role_crud.share_pct(2, 3) == 67
+
+    def test_a_half_rounds_to_the_even_percent(self) -> None:
+        """Banker's rounding, pinned: 12.5 is 12, 37.5 is 38, 62.5 is 62, 87.5 is 88."""
+        assert role_crud.share_pct(1, 8) == 12
+        assert role_crud.share_pct(3, 8) == 38
+        assert role_crud.share_pct(5, 8) == 62
+        assert role_crud.share_pct(7, 8) == 88
 
     def test_an_empty_whole_is_zero_not_a_division(self) -> None:
         assert role_crud.share_pct(0, 0) == 0

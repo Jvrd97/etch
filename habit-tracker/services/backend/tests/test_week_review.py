@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245
+# [review:need-review] PHASE-03/255, PHASE-03/221, PHASE-03/245
 # summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with an absent sleep metric, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
 """
 Weekly review: one answer for the whole week, cut on the day boundary.
@@ -311,6 +311,35 @@ async def test_days_after_today_are_not_counted_even_if_they_hold_data(
     assert body["days"][3]["counted"] is False
 
 
+async def test_the_window_says_whether_today_is_already_counted(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The screen decides its «today joins later» notes by this flag, not by guessing."""
+    noon = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+
+    open_today = (await client.get(URL)).json()["window"]
+    await close_day(db_session, MONDAY + timedelta(days=1), "won", done=1, total=1)
+    closed_today = (await client.get(URL)).json()["window"]
+
+    assert open_today["today_counted"] is False
+    assert closed_today["today_counted"] is True
+
+
+async def test_a_finished_or_a_future_week_does_not_count_today(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    noon = datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+    assert (await get_week(client))["window"]["today_counted"] is False
+
+    later = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: later)
+    assert (await get_week(client))["window"]["today_counted"] is False
+
+
 async def test_a_week_that_has_not_started_is_empty_not_an_error(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -509,6 +538,7 @@ async def test_health_is_compared_day_by_day_and_a_missing_sleep_metric_says_so(
         2,
     )
     assert steps["previous_avg_per_day"] == 3000
+    assert steps["previous_days_with_data"] == 1
     assert steps["delta_avg_per_day"] == 3000
     assert steps["daily"] == [8000, 4000, None, None, None, None, None]
     workouts = health["workouts"]
@@ -518,6 +548,7 @@ async def test_health_is_compared_day_by_day_and_a_missing_sleep_metric_says_so(
     sleep = health["sleep"]
     assert sleep["available"] is False
     assert sleep["total"] is None and sleep["daily"] == [None] * 7
+    assert sleep["previous_days_with_data"] == 0
 
 
 async def test_role_shares_are_the_ones_of_the_weekly_role_summary(
@@ -791,7 +822,63 @@ async def test_the_prompt_names_steps_in_russian_and_workouts_as_the_catalogue_d
     assert "count" not in prompt
     assert "Минуты тренировки: в среднем 0 ч 45 мин" in prompt
     # The denominator of the average is named: days with data, not all days.
-    assert "среднее по дням с данными: 1 из" in prompt
+    assert "по дням с данными: 1 из" in prompt
+
+
+async def test_the_prompt_names_the_days_behind_the_previous_average(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    """«+4000 шагов к прошлой неделе» is only as good as the 2 days of 7 behind it."""
+    await add_health(db_session, STEPS, MONDAY, 8000)
+    await add_health(db_session, STEPS, PREVIOUS_MONDAY, 3000)
+    await add_health(db_session, STEPS, PREVIOUS_MONDAY + timedelta(days=1), 5000)
+
+    await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert "+4000 шагов к прошлой неделе, против 2 из 7 дн." in llm.prompts[0]
+
+
+async def test_the_word_average_is_said_once_per_health_line(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    await add_health(db_session, STEPS, MONDAY, 8000)
+
+    await client.post(f"{URL}/{WEEK}/narrative")
+
+    (line,) = [ln for ln in llm.prompts[0].splitlines() if ln.startswith("Шаги:")]
+    assert line.count("средн") == 1
+
+
+async def test_the_verdict_line_is_the_one_the_prompt_retells(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    """One line for the screen and the model: the server writes it, nobody re-types it."""
+    for offset in range(5):
+        await close_day(
+            db_session, MONDAY + timedelta(days=offset), "won", done=1, total=1
+        )
+    await close_day(db_session, MONDAY + timedelta(days=5), "lost", done=0, total=1)
+
+    body = await get_week(client)
+    await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert body["verdict_line"] == (
+        "Неделя выиграна: нет (правило: выиграны все дни недели и нет долга за "
+        "переработку; выиграно 5 из 6 дней, долг 0 мин)."
+    )
+    assert body["verdict_line"] in llm.prompts[0]
+
+
+async def test_a_running_week_says_its_verdict_is_not_decided(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    noon = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+
+    body = (await client.get(URL)).json()
+
+    assert body["verdict_line"] == "Неделя выиграна: пока не решено, неделя идёт."
 
 
 async def test_a_week_with_only_a_habit_streak_still_has_something_to_say(
