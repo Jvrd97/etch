@@ -1,6 +1,6 @@
 # [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206, PHASE-03/236
 # summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API, and the sets of one category's day are read back from the journal on the same clock
-# summary: PHASE-03/236 — a tap may carry `occurred_at` (a press replayed from an offline queue lands on its own day; future or older than 7 days is 422 in the list form), and a recorded Idempotency-Key answers before any day or window check — 409 when it is another button's tap
+# summary: PHASE-03/236 — a tap may carry `occurred_at` (a press replayed from an offline queue lands on its own day; future or older than 7 days is 422 in the list form), and a recorded Idempotency-Key answers before any day or window check — 409 when it is another button's tap, also after a lost race on the unique key (the button is read again after the rollback)
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -284,6 +284,9 @@ async def create_quick_mark_event(
         winner = await quick_mark_crud.event_by_idempotency_key(db, idempotency_key)
         if winner is None:
             raise
+        # The rollback expired `mark`; reading its attributes in an async session would
+        # need lazy IO and fail, so the button is loaded again before the answer.
+        await db.refresh(mark)
         return await _replay(db, response, mark, winner)
 
     return _to_event_response(recorded)

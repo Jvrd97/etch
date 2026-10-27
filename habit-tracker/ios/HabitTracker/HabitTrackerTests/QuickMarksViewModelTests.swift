@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
-// summary: PHASE-03/236, 242 — an offline press carries its moment (01:00 delivered at 08:00 sends 01:00, no day), waiting presses are said to VoiceOver, the directory is read while the queue still sends; the double sits on the main actor
+// summary: PHASE-03/236, 242 — an offline press carries its moment (01:00 delivered at 08:00 sends 01:00, no day), waiting presses are said to VoiceOver, the directory is read while the queue still sends, and a read answered after the re-read a delivery started replaces neither the buttons nor the cache; the double sits on the main actor
 // summary: tests for QuickMarksViewModel — directory order from the server, a tap repaints from its own answer in one call, an offline tap goes to the shared outbox under the same key with the server's day and is shown at once, a refusal is shown and not queued, undo of the last tap, the day's sets, the cache and the queued taps over a stale directory, a delivered press re-reads the directory; also the scriptable QuickMarksAPI double shared with the Today tests
 import XCTest
 @testable import HabitTracker
@@ -430,7 +430,8 @@ final class QuickMarksViewModelTests: XCTestCase {
     func testADirectoryReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async {
         let api = MockQuickMarksAPI()
         api.marksResult = .success([mark(id: 1, total: 0)])
-        let (viewModel, queue) = makeViewModel(api: api)
+        let cache = InMemoryCacheStore()
+        let (viewModel, queue) = makeViewModel(api: api, cache: cache)
         queue.enqueue(queuedTap(1, day: nil), label: "Mark 1")
         api.tapResults = [.success(.stub(markId: 1, total: 1))]
         // The press lands once the load's read is on its way; from then on the server says 1.
@@ -447,6 +448,10 @@ final class QuickMarksViewModelTests: XCTestCase {
 
         XCTAssertEqual(queue.pendingCount, 0)
         XCTAssertEqual(viewModel.marks.first?.todayTotal, 1, "the older 0 would invite a second press")
+        XCTAssertEqual(
+            cache.load([QuickMarkDTO].self, forKey: QuickMarksViewModel.cacheKey)?.value.first?.todayTotal, 1,
+            "the cache keeps the newer directory, not the older answer"
+        )
     }
 
     func testTheDirectoryIsReadWhileTheQueueIsStillSending() async throws {

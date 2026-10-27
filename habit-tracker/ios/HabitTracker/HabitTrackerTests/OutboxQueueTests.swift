@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225, PHASE-03/236, PHASE-03/242
-// summary: PHASE-03/236, 242 — a press carries its moment and no day, a 422 on the moment is "not sent" with "write to today", a stored press without a moment still decodes; a write replacing one that landed with its answer lost is not a conflict, a state none of them made still is; a retry over a newer write says so
+// summary: PHASE-03/236, 242 — a press carries its moment and no day, a 422 on the moment is "not sent" with "write to today", a stored press without a moment still decodes; a write replacing one that landed with its answer lost is not a conflict, a state none of them made still is, nor one of a write that never left; which failures may have landed (timeout, dropped connection, 502/504) and which never left; a store written before the flag opens with it off; a retry over a newer write says so
 // summary: tests for the one offline write queue — airplane mode → write → network back → one record on a server that dedupes by key; a send cut mid-way is repeated under the same key; a relaunch with a non-empty queue; order across kinds; 5xx kept (only five in a row give up, a dead network resets the count), 4xx in the visible "not sent" list with a reason, 401 waits and says so; an unreadable answer of the replay check refuses instead of passing for delivered; a 409 of a press without a day is not called a day turn; retry sends at once; a newer "set" replaces the waiting one; retry and discard from the list; the day a write was made survives midnight (explicit dates stay, a quick-mark press is refused instead of landing in the next day); a stale notebook or mark is refused instead of overwriting fresher server data; one-time import of the two old queues
 import Combine
 import SwiftData
@@ -102,6 +102,32 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
 
     func saveNotebook(date: String, content: String) async throws {
         try await handle("notebook", key: nil, action: nil) { notebooks[date] = content }
+    }
+}
+
+/// The queue's record as round 2 of #225 stored it, before `mayHaveLanded`: the same entity name, so
+/// SwiftData opens a store written with it under the current model.
+enum OutboxStoreRound2 {
+    @Model
+    final class PendingWriteRecord {
+        @Attribute(.unique) var id: UUID
+        var key: String
+        var action: Data
+        var label: String
+        var createdAt: Date
+        var serverErrors: Int = 0
+        var statusRaw: String
+        var failure: String?
+        var failureKindRaw: String?
+
+        init(key: String, action: Data, label: String) {
+            self.id = UUID()
+            self.key = key
+            self.action = action
+            self.label = label
+            self.createdAt = Date(timeIntervalSince1970: 1_792_990_800)
+            self.statusRaw = PendingStatus.pending.rawValue
+        }
     }
 }
 
@@ -438,6 +464,52 @@ final class OutboxQueueTests: XCTestCase {
 
         XCTAssertEqual(server.marks["2026-10-26"]?[DayFixtures.taskID], "done", "the web's mark is not wiped silently")
         XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.markChangedReason)
+    }
+
+    func testWhichFailuresMayHaveLanded() {
+        func transport(_ code: URLError.Code) -> Error { APIClientError.transport(code: code.rawValue) }
+        let neverLeft: [Error] = [
+            transport(.notConnectedToInternet), transport(.cannotConnectToHost), transport(.cannotFindHost),
+            transport(.dnsLookupFailed), APIClientError.unexpectedStatus(500), APIClientError.unexpectedStatus(503),
+            APIClientError.unexpectedStatus(409), APIClientError.unauthorized, OutboxConflict(reason: "x"),
+        ]
+        let mayHaveLanded: [Error] = [
+            APIClientError.timeout, transport(.networkConnectionLost), transport(.secureConnectionFailed),
+            APIClientError.unexpectedStatus(502), APIClientError.unexpectedStatus(504),
+        ]
+        for error in neverLeft { XCTAssertFalse(OutboxQueue.mayHaveLanded(after: error), "\(error)") }
+        for error in mayHaveLanded { XCTAssertTrue(OutboxQueue.mayHaveLanded(after: error), "\(error)") }
+    }
+
+    func testAProxysGatewayErrorCountsAsAWriteThatMayHaveLanded() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(notebook("один", expected: ""), label: "Блокнот")
+        server.failures = [APIClientError.unexpectedStatus(502)]
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertTrue(queue.pending[0].mayHaveLanded, "the backend behind the proxy may have written it")
+    }
+
+    func testAQueueStoredBeforeTheFlagOpensWithTheFlagOff() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("outbox-r2-\(UUID().uuidString).store")
+        defer { Self.removeStore(at: url) }
+        do {
+            let container = try ModelContainer(
+                for: OutboxStoreRound2.PendingWriteRecord.self, configurations: ModelConfiguration(url: url)
+            )
+            let context = ModelContext(container)
+            let action = try CacheCoding.encoder().encode(notebook("один", expected: ""))
+            context.insert(OutboxStoreRound2.PendingWriteRecord(key: "k-old", action: action, label: "Блокнот"))
+            try context.save()
+        }
+
+        let writes = try SwiftDataOutboxStore(url: url).fetchAll()
+
+        XCTAssertEqual(writes.map(\.key), ["k-old"])
+        XCTAssertEqual(writes.first?.action, notebook("один", expected: ""))
+        XCTAssertEqual(writes.first?.mayHaveLanded, false)
     }
 
     func testADeadNetworkDoesNotCountAsAWriteThatMayHaveLanded() async {

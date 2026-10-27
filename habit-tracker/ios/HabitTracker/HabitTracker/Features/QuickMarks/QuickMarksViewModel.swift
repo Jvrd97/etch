@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
-// summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it; an answer older than the one on screen is dropped), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
+// summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it; an answer older than the one on screen is dropped and the cache keeps the newer directory), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
 import Combine
 import Foundation
 
@@ -146,6 +146,9 @@ final class QuickMarksViewModel: ObservableObject {
                     offlineAsOf = updatedAt
                     show(directory)
                 }
+            } else if case .fresh = outcome {
+                // The cache took this older answer: put back the directory a later read put on screen.
+                cache.store.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now())
             }
             state = .loaded
         } catch let error as APIClientError {
@@ -164,6 +167,7 @@ final class QuickMarksViewModel: ObservableObject {
         if let directory = try? await api.fetchQuickMarks(), isNewest(read) {
             offlineAsOf = nil
             show(directory)
+            cache.store.save(directory, forKey: Self.cacheKey, updatedAt: cache.now())
         }
         categoryIDs.forEach { onDayChanged?($0) }
     }

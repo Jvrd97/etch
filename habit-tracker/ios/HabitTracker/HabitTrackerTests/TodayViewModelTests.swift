@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242
-// summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; the double sits on the main actor
+// summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
 import XCTest
@@ -638,7 +638,9 @@ final class TodayViewModelTests: XCTestCase {
 
     // MARK: Offline
 
-    private func makeOfflineViewModel(api: MockTodayAPI) -> (TodayViewModel, OutboxQueue) {
+    private func makeOfflineViewModel(
+        api: MockTodayAPI, cache: CacheStore = InMemoryCacheStore()
+    ) -> (TodayViewModel, OutboxQueue) {
         let fixed = makeFixedDate()
         let server = FakeOutboxServer()
         let outbox = OutboxQueue(
@@ -646,7 +648,7 @@ final class TodayViewModelTests: XCTestCase {
             sender: { OutboxReplay(entries: api, quickMarks: server, day: server) }
         )
         let viewModel = TodayViewModel(
-            api: api, outbox: outbox, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+            api: api, cacheStore: cache, outbox: outbox, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
         )
         return (viewModel, outbox)
     }
@@ -794,7 +796,8 @@ final class TodayViewModelTests: XCTestCase {
         let api = MockTodayAPI()
         api.categoriesResult = .success([pushups])
         api.createEntryResult = .failure(APIClientError.timeout)
-        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        let cache = InMemoryCacheStore()
+        let (viewModel, outbox) = makeOfflineViewModel(api: api, cache: cache)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
         let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
@@ -814,6 +817,11 @@ final class TodayViewModelTests: XCTestCase {
 
         XCTAssertEqual(outbox.pendingCount, 0)
         XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the older answer would drop the delivered entry")
+        XCTAssertEqual(
+            cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.entries, [delivered],
+            "the cache keeps the newer records, not the older answer"
+        )
+        XCTAssertNil(viewModel.offlineAsOf)
     }
 
     func testASaveOfAChecklistStillWaitingGoesThroughTheQueueSoTheOldOneCannotLandLast() async {
@@ -832,13 +840,5 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": false], ["20": true]], "the old one never follows the new")
         XCTAssertEqual(outbox.pendingCount, 0)
-    }
-}
-
-/// Waits on the main actor until `condition` holds, for at most about two seconds.
-@MainActor
-func waitUntil(_ condition: () -> Bool) async {
-    for _ in 0..<200 where !condition() {
-        try? await Task.sleep(nanoseconds: 10_000_000)
     }
 }

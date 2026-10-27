@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242
-// summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it, and its records are dropped when a re-read started by a delivery is already newer on screen; a failed re-read after a background delivery leaves no error
+// summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it, and its records are dropped when a re-read started by a delivery is already newer on screen (the cache keeps the newer records, no offline label over them); a failed re-read after a background delivery leaves no error
 // summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
@@ -209,7 +209,10 @@ final class TodayViewModel: ObservableObject {
                     categories: active, entries: fetchedEntries, streaks: loadedStreaks
                 )
             }
-            apply(outcome, entriesAreNewest: showsEntries(of: read))
+            let entriesAreNewest = showsEntries(of: read)
+            apply(outcome, entriesAreNewest: entriesAreNewest)
+            // The cache took this answer; its records are older than the ones a re-read put on screen.
+            if !entriesAreNewest, case .fresh = outcome { cacheShownEntries() }
             streaksError = streaksFailed ? Self.streaksFailedMessage : nil
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
@@ -232,12 +235,23 @@ final class TodayViewModel: ObservableObject {
             offlineAsOf = nil
             value = fresh
         case .stale(let stale, let updatedAt):
-            offlineAsOf = updatedAt
+            // A newer read of the records already reached the server: the screen is not offline.
+            offlineAsOf = entriesAreNewest ? updatedAt : nil
             value = stale
         }
         categories = value.categories
         if entriesAreNewest { todayEntries = withQueuedRows(value.entries) }
         streaks = value.streaks
+    }
+
+    /// The cached snapshot gets the server's records now on screen, so an offline start shows them.
+    private func cacheShownEntries() {
+        guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
+        let snapshot = TodaySnapshot(
+            categories: cached.value.categories, entries: todayEntries.filter { !$0.isPending },
+            streaks: cached.value.streaks
+        )
+        cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cache.now())
     }
 
     private func nextEntriesRead() -> Int {
@@ -423,7 +437,10 @@ final class TodayViewModel: ObservableObject {
         let today = todayString
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
-            if showsEntries(of: read) { todayEntries = withQueuedRows(fetched) }
+            if showsEntries(of: read) {
+                todayEntries = withQueuedRows(fetched)
+                cacheShownEntries()
+            }
         } catch {
             if reportsFailure { saveErrorMessage = Self.entriesRefreshFailedMessage }
         }

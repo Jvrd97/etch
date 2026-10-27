@@ -1,4 +1,5 @@
 # [review:need-review] PHASE-03/236
+# summary: PHASE-03/236 round 3 — a key of another button's tap is 409 also when it is found only after the insert lost the race on the unique key
 # summary: the moment of a press in the body of a quick-mark tap — a press delivered after the day turned lands on the day it was made (calendar midnight and the 04:00 boundary), no field keeps the old behaviour, the future and anything older than the window are 422, a replayed key answers 200 even after the day or the window moved on, and the statements of a tap do not grow with the field
 """
 `occurred_at` — когда нажали, а не когда запрос дошёл.
@@ -26,6 +27,8 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api import quick_marks as quick_marks_api
+from app.crud import quick_mark as quick_mark_crud
+from app.models.quick_mark import QuickMarkEvent
 from app.core import daytime
 from app.core.daytime import DayBoundary
 
@@ -339,6 +342,46 @@ async def test_a_key_of_another_buttons_tap_is_409(
 
     assert status_code == 409, body
     assert "another quick mark" in body["detail"]
+
+
+@pytest.mark.parametrize(
+    ("same_button", "expected_status"),
+    [
+        pytest.param(True, 200, id="same-button"),
+        pytest.param(False, 409, id="other-button"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_key_found_only_after_a_lost_race_answers_like_a_replay(
+    client: AsyncClient,
+    water: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    same_button: bool,
+    expected_status: int,
+) -> None:
+    """
+    Гонка: поиск по ключу ещё ничего не нашёл, вставка упала на уникальном ключе.
+
+    Победитель — нажатие кнопки A. Спрашивала A — 200 с её событием; кнопка B — 409.
+    """
+    first_id = await make_mark(client, water)
+    second_id = first_id if same_button else await make_mark(client, water)
+    serve_at(monkeypatch, NOW)
+    await tap(client, first_id, key="k-race")
+    real_lookup = quick_mark_crud.event_by_idempotency_key
+    calls = 0
+
+    async def misses_once(db: AsyncSession, key: str) -> QuickMarkEvent | None:
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else await real_lookup(db, key)
+
+    monkeypatch.setattr(quick_mark_crud, "event_by_idempotency_key", misses_once)
+
+    status_code, body = await tap(client, second_id, key="k-race")
+
+    assert calls == 2, "the insert hit the unique key and the winner was read back"
+    assert status_code == expected_status, body
 
 
 # --- cost -------------------------------------------------------------------

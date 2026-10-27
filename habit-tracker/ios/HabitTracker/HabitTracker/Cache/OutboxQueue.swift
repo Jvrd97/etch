@@ -1,6 +1,6 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
-// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a retry that would write over a newer write of the same object says so
+// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, and a proxy's 502/504 sets it too; a retry that would write over a newer write of the same object says so
 import Combine
 import Foundation
 import Network
@@ -479,7 +479,11 @@ final class OutboxQueue: ObservableObject {
 
     /// Queues a write that could not be sent now. `key` is the key of the attempt that failed.
     /// A whole-state write replaces a waiting one of the same object (unless that one is in flight).
-    func enqueue(_ action: OutboxAction, key: String = UUID().uuidString, label: String) {
+    /// `mayHaveLanded` says the failed direct attempt went out and lost its answer
+    /// (`mayHaveLanded(after:)` of its error): a later write replacing this one accepts its state.
+    func enqueue(
+        _ action: OutboxAction, key: String = UUID().uuidString, label: String, mayHaveLanded: Bool = false
+    ) {
         var action = action
         if action.replacesOlderOfSameTarget {
             for older in pending where older.action.target == action.target && older.id != inFlightID {
@@ -487,7 +491,7 @@ final class OutboxQueue: ObservableObject {
                 store.delete(id: older.id)
             }
         }
-        append(action, key: key, label: label, createdAt: now())
+        append(action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded)
     }
 
     /// Puts back a write carried over from an older queue, with its own key and time.
@@ -495,11 +499,13 @@ final class OutboxQueue: ObservableObject {
         append(action, key: key, label: label, createdAt: createdAt)
     }
 
-    private func append(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
+    private func append(
+        _ action: OutboxAction, key: String, label: String, createdAt: Date, mayHaveLanded: Bool = false
+    ) {
         store.append(
             OutboxWrite(
                 id: UUID(), key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
-                status: .pending, failure: nil, failureKind: nil
+                status: .pending, failure: nil, failureKind: nil, mayHaveLanded: mayHaveLanded
             )
         )
         reload()
@@ -594,6 +600,7 @@ final class OutboxQueue: ObservableObject {
             return false
         case .serverError(let status):
             settled.serverErrors += 1
+            settled.mayHaveLanded = settled.mayHaveLanded || Self.mayHaveLanded(after: error)
             if settled.serverErrors >= Self.maxServerErrorAttempts {
                 settled.status = .failed
                 settled.failure = "Сервер \(settled.serverErrors) раз подряд ответил ошибкой \(status)."
@@ -623,20 +630,26 @@ final class OutboxQueue: ObservableObject {
         case delivered
     }
 
-    /// Whether a failed attempt may still have reached the server: its answer was lost on the way,
-    /// rather than the request never leaving (no connection, no host).
-    private static func mayHaveLanded(after error: Error) -> Bool {
+    /// Whether a failed attempt may still have reached the server: its answer was lost on the way
+    /// (a timeout, a dropped connection, a proxy's 502 or 504 in front of a backend that may have
+    /// written), rather than the request never leaving (no connection, no host).
+    nonisolated static func mayHaveLanded(after error: Error) -> Bool {
         switch error as? APIClientError {
         case .timeout?:
             return true
         case .transport(let code)?:
             return !neverLeftCodes.contains(code)
+        case .unexpectedStatus(let status)?:
+            return proxyStatuses.contains(status)
         default:
             return false
         }
     }
 
-    private static let neverLeftCodes: Set<Int> = [
+    /// A proxy's answers when the backend behind it did not answer in time: the write may be there.
+    nonisolated private static let proxyStatuses: Set<Int> = [502, 504]
+
+    nonisolated private static let neverLeftCodes: Set<Int> = [
         URLError.notConnectedToInternet.rawValue, URLError.cannotConnectToHost.rawValue,
         URLError.cannotFindHost.rawValue, URLError.dnsLookupFailed.rawValue,
     ]
