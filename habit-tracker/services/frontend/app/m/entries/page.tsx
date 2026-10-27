@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, #176, #76
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, #176, #76, PHASE-03/252
 // summary: mobile Entries renders the grouped merged feed with category chips, creation and editing sheets
+// summary: #252 — a new entry opens on the server's day (the sheet may be on screen before the day is read; it follows once it lands)
 
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
@@ -11,6 +12,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import EntryEditorSheet, { UNKNOWN_CATEGORY_NAME } from '@/components/mobile/EntryEditorSheet';
 import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useEntries } from '@/hooks/useEntries';
+import { useServerDay } from '@/hooks/useServerDay';
 import { entriesAPI, type Category, type Entry } from '@/lib/api';
 import { labelledValues } from '@/lib/entry-values';
 import { MOBILE_PATH_PREFIX, newEntryCategoryId, wantsNewEntry } from '@/lib/routes';
@@ -61,6 +63,8 @@ function MobileEntriesPageContent() {
     reload,
     categoryOf,
   } = useEntries();
+  // The day a new entry is filed under: the server's, not the browser's clock.
+  const serverDay = useServerDay();
   // Read once, as the initial state rather than in an effect: the sheet has to
   // be on screen from the first paint, and a later change of the param without
   // a remount is not a thing the shell does.
@@ -182,6 +186,7 @@ function MobileEntriesPageContent() {
           categories={categories}
           initialCategoryId={newEntryCategoryId(searchParams) ?? undefined}
           entry={sheet.kind === 'edit' ? sheet.entry : null}
+          date={serverDay.date !== '' ? serverDay.date : undefined}
           onCancel={() => setSheet(null)}
           onSaved={async () => {
             setSheet(null);

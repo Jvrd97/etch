@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176, #76
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, #176, #76, PHASE-03/252
 // summary: mobile Entries tests cover the merged feed, category chips and editor sheet flows
+// summary: #252 — a new entry is filed under the server's day (browser a day behind), follows it when it lands after a ?new=1 sheet is open, and keeps a date the reader picked
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -7,6 +8,8 @@ import type { Category, Entry, Field } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
+/** The day the server runs while the browser still says `TODAY`. */
+const SERVER_DAY = '2026-07-25';
 
 const HOURS_FIELD: Field = {
   id: 7,
@@ -85,6 +88,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -199,7 +203,10 @@ async function renderPage() {
   await waitFor(() => expect(screen.getByRole('heading', { name: 'Sleep' })).toBeDefined());
 }
 
+let readDayMode: ReturnType<typeof mock>;
+
 beforeEach(() => {
+  readDayMode = mock(() => Promise.resolve({ date: TODAY, kind: 'work', nocode: false, source: 'schedule' }));
   searchParams = new URLSearchParams();
   getAllCategories = mock(() => Promise.resolve([CATEGORY, WATER]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
@@ -216,6 +223,59 @@ it('prefills the category carried by a new-entry deep link', async () => {
   searchParams = new URLSearchParams('new=1&category=2');
   await renderPage();
   expect((screen.getByLabelText('Category') as HTMLSelectElement).value).toBe('2');
+});
+
+describe('/m/entries day', () => {
+  it('files a new entry under the server day while the browser is a day behind', async () => {
+    readDayMode = mock(() =>
+      Promise.resolve({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' })
+    );
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New entry' }));
+    await waitFor(() =>
+      expect((document.getElementById('entry-date') as HTMLInputElement).value).toBe(SERVER_DAY)
+    );
+    fireEvent.change(screen.getByLabelText('Hours'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(createEntry).toHaveBeenCalledTimes(1));
+    expect(createEntry.mock.calls[0][0]).toMatchObject({ entry_date: SERVER_DAY });
+  });
+
+  it('follows the server day when it lands after a ?new=1 sheet is already open', async () => {
+    searchParams = new URLSearchParams('new=1');
+    let release!: (mode: unknown) => void;
+    const pendingDay = new Promise((resolve) => { release = resolve; });
+    readDayMode = mock(() => pendingDay);
+    render(<MobileEntriesPage />);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeDefined());
+    expect((document.getElementById('entry-date') as HTMLInputElement).value).toBe(TODAY);
+
+    release({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' });
+
+    await waitFor(() =>
+      expect((document.getElementById('entry-date') as HTMLInputElement).value).toBe(SERVER_DAY)
+    );
+  });
+
+  it('keeps the date the reader picked when the server day lands', async () => {
+    searchParams = new URLSearchParams('new=1');
+    let release!: (mode: unknown) => void;
+    const pendingDay = new Promise((resolve) => { release = resolve; });
+    readDayMode = mock(() => pendingDay);
+    render(<MobileEntriesPage />);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeDefined());
+    fireEvent.change(document.getElementById('entry-date') as HTMLInputElement, {
+      target: { value: '2026-07-01' },
+    });
+
+    release({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' });
+    await waitFor(() => expect(readDayMode).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect((document.getElementById('entry-date') as HTMLInputElement).value).toBe('2026-07-01');
+  });
 });
 
 describe('/m/entries', () => {

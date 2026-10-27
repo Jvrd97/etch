@@ -1,7 +1,8 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221
+// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221, PHASE-03/252
 // summary: a link from the retro page to the week's review screen (#221)
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
+// summary: #252 — without a pinned `today` the ringed square and the unlived days after it follow the server's day
 
 import Link from 'next/link';
 import OvertimeDebtBlock from '@/components/week/OvertimeDebt';
@@ -11,6 +12,7 @@ import Markdown from '@/components/Markdown';
 import DaySquare from '@/components/life/DaySquare';
 import RoleWeekSummary from '@/components/RoleWeekSummary';
 import { useDays } from '@/hooks/useDays';
+import { useDisplayDate } from '@/hooks/useServerDay';
 import { useRoleSummary } from '@/hooks/useRoleSummary';
 import { LOAD_WEEK_ERROR, useWeek } from '@/hooks/useWeek';
 import { dayStatus, daysByDate, toISODate, WEEKDAY_SHORT } from '@/lib/life';
@@ -33,8 +35,10 @@ export interface WeekScreenProps {
   today?: Date;
 }
 
-export default function WeekScreen({ iso, compact = false, today = new Date() }: WeekScreenProps) {
+export default function WeekScreen({ iso, compact = false, today: pinnedToday }: WeekScreenProps) {
   const { week, loading, error, reload } = useWeek(iso);
+  // The server's day: the squares mark «today» and the unclosed days by it.
+  const today = useDisplayDate(pinnedToday);
   const todayISO = toISODate(today);
 
   // The days are asked for by date rather than taken from the week: the week

@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, PHASE-01/207
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/49-device-acceptance-checklist, PHASE-01/207, PHASE-03/252
 // summary: mobile category detail — same data as the desktop page via useCategoryDetail, links kept inside the /m shell, the category strip scrolling inside itself instead of widening the page, quick-add through the shared EntryEditorSheet locked to this category, and the relapse block of an avoid category
+// summary: #252 — quick-add opens on the server's day
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -14,6 +15,7 @@ import RelapseHistoryCard from '@/components/RelapseHistoryCard';
 import EntryEditorSheet from '@/components/mobile/EntryEditorSheet';
 import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { useCategoryDetail } from '@/hooks/useCategoryDetail';
+import { useServerDay } from '@/hooks/useServerDay';
 import type { Category } from '@/lib/api';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
@@ -33,6 +35,8 @@ export default function MobileCategoryDetailPage() {
   const params = useParams<{ id: string }>();
   const categoryId = Number(params.id);
   const detail = useCategoryDetail(categoryId);
+  // A new entry is filed under the server's day, not the browser's clock.
+  const serverDay = useServerDay();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const {
@@ -160,6 +164,7 @@ export default function MobileCategoryDetailPage() {
               // entry somewhere else by accident.
               categories={categories}
               lockedCategory={category}
+              date={serverDay.date !== '' ? serverDay.date : undefined}
               onCancel={() => setSheetOpen(false)}
               onSaved={() => {
                 setSheetOpen(false);

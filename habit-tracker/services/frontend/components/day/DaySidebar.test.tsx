@@ -1,8 +1,9 @@
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/252
+// summary: #252 — without a pinned day the month that opens is the one of the server's day
 // summary: component tests for the shared day navigation — days are grouped year → month, the month of the day being read is the one that opens, another month opens on a click, and every day is a link with its square in the right state
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DayListItem } from '@/lib/api';
 
 const DAYS: DayListItem[] = [
@@ -18,11 +19,22 @@ mock.module('@/hooks/useDays', () => ({
 }));
 
 const { default: DaySidebar } = await import('./DaySidebar');
+const api = await import('@/lib/api');
 
 const TODAY = new Date(2026, 7, 30);
 
+// The server's day, written onto the shared client and put back after each test, so
+// whatever other suites left in the registry is not disturbed.
+const agent = api.agentAPI as unknown as { dayMode?: () => Promise<unknown> };
+const realDayMode = agent.dayMode;
+
+function serverDayIs(date: string) {
+  agent.dayMode = () => Promise.resolve({ date, kind: 'work', nocode: false, source: 'schedule' });
+}
+
 afterEach(() => {
   cleanup();
+  agent.dayMode = realDayMode;
 });
 
 describe('DaySidebar', () => {
@@ -75,5 +87,29 @@ describe('DaySidebar', () => {
     expect(
       document.querySelector('[data-date="2026-08-30"]')?.getAttribute('data-status')
     ).toBe('open');
+  });
+});
+
+describe('DaySidebar day (#252)', () => {
+  it('opens the month of the server day when no day is pinned and none is named', async () => {
+    serverDayIs('2026-08-30');
+    render(<DaySidebar />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'август' }).getAttribute('aria-expanded')).toBe(
+        'true'
+      )
+    );
+  });
+
+  it('moves with the server day to another month', async () => {
+    serverDayIs('2026-07-31');
+    render(<DaySidebar />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'июль' }).getAttribute('aria-expanded')).toBe(
+        'true'
+      )
+    );
   });
 });

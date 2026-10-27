@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76, #78
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76, #78, PHASE-03/252
 // summary: Dashboard state exposes loaded categories, Continue tracking, the merged recent-activity feed and the Trends block, which loads its own GET /table per period and fails on its own
+// summary: #252 — the hero counts today and yesterday by the server's day (GET /day-mode, read beside the other reads), the two-day window being read for the days around the browser's and cut to those two; a server that cannot name its day leaves the browser's
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -12,6 +13,7 @@ import {
   type CategoryStreak,
   type Entry,
 } from '@/lib/api';
+import { readServerDay } from '@/hooks/useServerDay';
 import { previousDay } from '@/lib/chart-utils';
 import {
   computeDashboardHero,
@@ -20,6 +22,7 @@ import {
   type DashboardStats,
 } from '@/lib/dashboard-stats';
 import { todayISO } from '@/lib/date';
+import { shiftDay } from '@/lib/server-day';
 import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 import { partitionTodayCategories } from '@/lib/today-categories';
 import {
@@ -66,7 +69,10 @@ export interface AvoidStreak {
  * count every entry of the day instead of silently inheriting whatever page
  * size the server defaults to.
  */
-const DAY_WINDOW_LIMIT = 1000;
+export const DAY_WINDOW_LIMIT = 1000;
+
+/** Days on each side of the browser's day the window is read for; the server's day is within a day of it. */
+const DAY_WINDOW_SPREAD_DAYS = 1;
 
 /**
  * Rows in the recent-activity feed. Each source is fetched with the same bound
@@ -151,12 +157,17 @@ export function useDashboard(): UseDashboardResult {
       setLoading(true);
       setError(null);
 
-      // One moment for the whole load: the day boundary, the tip's hour and the
-      // "logged N ago" line all have to agree, and reading the clock three
-      // times can straddle midnight.
+      // One moment for the whole load: the tip's hour and the "logged N ago" line
+      // have to agree, and reading the clock three times can straddle midnight.
+      // Which day it is belongs to the server (the boundary is 04:00, not the
+      // browser's midnight), so it is asked beside the other reads, not before them.
       const now = new Date();
-      const today = todayISO(now);
-      const yesterday = previousDay(today);
+      const browserDay = todayISO(now);
+      // The two-day window the hero counts from is read for the days around the
+      // browser's day, wide enough to hold the server's two days wherever they fall
+      // next to it; a day outside it costs one exact read, never a wrong day.
+      const windowStart = shiftDay(browserDay, -(DAY_WINDOW_SPREAD_DAYS + 1));
+      const windowEnd = shiftDay(browserDay, DAY_WINDOW_SPREAD_DAYS);
 
       // The hero asks two narrow questions instead of scanning the history:
       // the two-day window it counts today from (and reads yesterday off, to
@@ -167,10 +178,11 @@ export function useDashboard(): UseDashboardResult {
         categories,
         entries,
         recentEntries,
-        dayWindow,
+        windowEntries,
         lastWritten,
         journal,
         streaks,
+        serverDay,
       ] = await Promise.all([
         categoriesAPI.getAll(),
         entriesAPI.getAll(),
@@ -178,12 +190,22 @@ export function useDashboard(): UseDashboardResult {
           sort: 'created_at_desc',
           limit: RECENT_ACTIVITY_LIMIT,
         }),
-        entriesAPI.getAll({ startDate: yesterday, endDate: today, limit: DAY_WINDOW_LIMIT }),
+        entriesAPI.getAll({ startDate: windowStart, endDate: windowEnd, limit: DAY_WINDOW_LIMIT }),
         entriesAPI.getAll({ sort: 'created_at_desc', limit: 1 }),
         // One page serves the total, the newest note's date and the feed.
         journalAPI.getAll({ limit: RECENT_ACTIVITY_LIMIT }),
         categoriesAPI.getStreaks('avoid'),
+        // A dashboard is read-only: a server that cannot name its day leaves the
+        // browser's, which is what every number here was counted by before.
+        readServerDay().catch(() => browserDay),
       ]);
+      const today = serverDay;
+      const yesterday = previousDay(today);
+      const windowFits =
+        yesterday >= windowStart && today <= windowEnd && windowEntries.length < DAY_WINDOW_LIMIT;
+      const dayWindow = windowFits
+        ? windowEntries.filter((entry) => entry.entry_date === yesterday || entry.entry_date === today)
+        : await entriesAPI.getAll({ startDate: yesterday, endDate: today, limit: DAY_WINDOW_LIMIT });
 
       const categoriesById = new Map(categories.map((category) => [category.id, category]));
       setAvoidStreaks(
@@ -221,6 +243,7 @@ export function useDashboard(): UseDashboardResult {
           // most recent note the user wrote.
           lastJournalDate: journal.items[0]?.entry_date ?? null,
           now,
+          today,
         })
       );
     } catch (err) {

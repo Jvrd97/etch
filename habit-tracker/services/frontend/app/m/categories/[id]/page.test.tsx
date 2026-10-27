@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207, PHASE-03/252
 // summary: integration tests for /m/categories/[id] — the tab strip that scrolls inside itself instead of widening the page, mobile-side links, the relapse block of an avoid category with the server's relapse days, and the shared EntryEditorSheet locked to this category
+// summary: #252 — quick-add on the mobile category page files the entry under the server's day
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -7,6 +8,7 @@ import type { Category, Entry, Field, RelapseHistory } from '@/lib/api';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
+const SERVER_DAY = '2026-07-25';
 
 const HOURS_FIELD: Field = {
   id: 7,
@@ -97,6 +99,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -206,7 +209,11 @@ async function renderPage() {
   await waitFor(() => expect(screen.getByTestId('category-chart')).toBeDefined());
 }
 
+let readDayMode: ReturnType<typeof mock>;
+
 beforeEach(() => {
+  // The server runs the day after the one the browser (and the fixtures) name.
+  readDayMode = mock(() => Promise.resolve({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' }));
   params = { id: '1' };
   getCategory = mock(() => Promise.resolve(CATEGORY));
   getAllCategories = mock(() => Promise.resolve([CATEGORY, OTHER_CATEGORY]));
@@ -301,6 +308,20 @@ describe('/m/categories/[id]', () => {
     // wrong with.
     expect(createEntry.mock.calls[0][0]).toMatchObject({ category_id: 1 });
     expect(screen.queryByLabelText('Category')).toBeNull();
+  });
+
+  it('files the entry under the server day, not the browser one', async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New entry' }));
+    await waitFor(() =>
+      expect((document.getElementById('entry-date') as HTMLInputElement).value).toBe(SERVER_DAY)
+    );
+    fireEvent.change(screen.getByLabelText(/^Hours/), { target: { value: '8' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    await waitFor(() => expect(createEntry).toHaveBeenCalled());
+    expect(createEntry.mock.calls[0][0]).toMatchObject({ entry_date: SERVER_DAY });
   });
 
   it('refetches the history once an entry was logged', async () => {

@@ -1,11 +1,13 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76, #78
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76, #78, PHASE-03/252
 // summary: tests for useDashboard's hero load, bounded recent-activity feed and Trends - targeted day-window, last-written and recent queries; the hero never reads the history list; trends cost one table request per period and fail on their own
+// summary: #252 — the hero counts today by the server day (browser a day behind or ahead), the window around the browser's day is cut to the server's two days, a day outside it is read exactly, and a server that cannot name its day leaves the browser's
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Category, CategoryStreak, Entry, Field, JournalEntry, TableResponse } from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
+import { shiftDay } from '@/lib/server-day';
 import { trendDateRange } from '@/lib/trends';
 
 const TIMESTAMP = '2026-07-24T09:00:00Z';
@@ -72,6 +74,7 @@ interface EntriesQuery {
 let entriesCalls: EntriesQuery[];
 /** Answer for the day-window query, keyed by nothing — the suite sets it per test. */
 let dayWindow: Entry[];
+let readDayMode: ReturnType<typeof mock>;
 let lastWritten: Entry[];
 let recentEntries: Entry[];
 let journalItems: JournalEntry[];
@@ -108,6 +111,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -224,7 +228,7 @@ mock.module('@/lib/api', () => ({
   },
 }));
 
-const { useDashboard } = await import('./useDashboard');
+const { useDashboard, DAY_WINDOW_LIMIT } = await import('./useDashboard');
 
 function emptyTable(): TableResponse {
   return { categories: [], days: [] };
@@ -243,6 +247,11 @@ function waterTable(dates: string[], amount: string): TableResponse {
   };
 }
 
+/** What `GET /day-mode` answers: the day the server is running. */
+function dayModeOf(date: string) {
+  return { date, kind: 'work', nocode: false, source: 'schedule' };
+}
+
 /** Today exactly as the hook computes it — the local calendar date, not the UTC one. */
 const TODAY = todayISO();
 
@@ -257,6 +266,7 @@ beforeEach(() => {
   categoryHistory = [];
   getAllCategories = mock(() => Promise.resolve([WATER]));
   getStreaksApi = mock(() => Promise.resolve([]));
+  readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
   tableGet = mock(() => Promise.resolve(emptyTable()));
 });
 
@@ -322,8 +332,70 @@ describe('useDashboard hero', () => {
     // The window is stepped with the canonical calendar helper, not with hand
     // arithmetic on milliseconds: across a DST boundary `now - 24h` lands on
     // today or on the day before yesterday, and the run judgement goes with it.
-    expect(dayCall?.endDate).toBe(TODAY);
-    expect(dayCall?.startDate).toBe(previousDay(TODAY));
+    // It is read for the days around the browser's and cut to the server's two.
+    expect(dayCall?.endDate).toBe(shiftDay(TODAY, 1));
+    expect(dayCall?.startDate).toBe(shiftDay(TODAY, -2));
+    expect(entriesCalls.filter((call) => call.startDate !== undefined && call.sort === undefined)).toHaveLength(1);
+  });
+
+  it('counts today by the server day when the browser is a day behind', async () => {
+    const serverDay = shiftDay(TODAY, 1);
+    readDayMode = mock(() => Promise.resolve(dayModeOf(serverDay)));
+    dayWindow = [entry(1, TODAY, '1'), entry(2, serverDay, '2'), entry(3, serverDay, '3')];
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The entry of the browser's day is yesterday for the server, not part of today.
+    expect(result.current.hero.entriesToday).toBe(2);
+  });
+
+  it('counts today by the server day when the browser is a day ahead', async () => {
+    const serverDay = shiftDay(TODAY, -1);
+    readDayMode = mock(() => Promise.resolve(dayModeOf(serverDay)));
+    dayWindow = [entry(1, TODAY, '1'), entry(2, serverDay, '2')];
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.hero.entriesToday).toBe(1);
+  });
+
+  it('asks the day exactly when the server day is outside the window', async () => {
+    const farDay = shiftDay(TODAY, 30);
+    readDayMode = mock(() => Promise.resolve(dayModeOf(farDay)));
+    dayWindow = [entry(1, farDay, '1')];
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const dayCalls = entriesCalls.filter((call) => call.startDate !== undefined && call.sort === undefined);
+    expect(dayCalls.at(-1)).toMatchObject({ startDate: previousDay(farDay), endDate: farDay });
+    expect(result.current.hero.entriesToday).toBe(1);
+  });
+
+  it('reads the two days exactly when the window came back full', async () => {
+    const full = Array.from({ length: DAY_WINDOW_LIMIT }, (_, index) => entry(500 + index, TODAY, '1'));
+    dayWindow = full;
+    entriesCalls = [];
+    let reads = 0;
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    reads = entriesCalls.filter((call) => call.startDate !== undefined && call.sort === undefined).length;
+
+    // The full window is not trusted: the exact two days are read once more.
+    expect(reads).toBe(2);
+    expect(entriesCalls.filter((call) => call.startDate !== undefined).at(-1)).toMatchObject({
+      startDate: previousDay(TODAY),
+      endDate: TODAY,
+    });
+  });
+
+  it('keeps the browser day when the server cannot name its own', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    dayWindow = [entry(1, TODAY, '1')];
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.hero.entriesToday).toBe(1);
+    expect(result.current.error).toBeNull();
   });
 
   it('bounds the day query with an explicit limit, not the server default', async () => {

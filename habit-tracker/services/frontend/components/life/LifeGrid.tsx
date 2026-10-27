@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/144
+// [review:need-review] PHASE-03/94, PHASE-03/144, PHASE-03/252
 // summary: the /life timeline — five views (жизнь → год → месяц → неделя → день) over one range of days, the weeks-lived/weeks-left counter life.html showed, squares in three readable states that link to /day/{date}, the note saying whether the day's verdict was computed or carried over from a record, and a way through to the week page
+// summary: #252 — without a pinned `today` the counter, the squares and the view's starting point stand on the server's day; the view stays where the reader moved it
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -8,6 +9,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import DaySquare, { DaySquareLegend } from '@/components/life/DaySquare';
 import { useDays } from '@/hooks/useDays';
+import { useDisplayDate } from '@/hooks/useServerDay';
 import { verdictOriginLabel } from '@/lib/day-format';
 import { type DayListItem } from '@/lib/api';
 import {
@@ -90,15 +92,19 @@ function writeFrame(frame: Frame): void {
 }
 
 export interface LifeGridProps {
-  /** Pinned in tests; the wall clock everywhere else. */
+  /** Pinned in tests; the server's day everywhere else. */
   today?: Date;
   /** Tighter type scale for the mobile shell. */
   compact?: boolean;
 }
 
-export default function LifeGrid({ today = new Date(), compact = false }: LifeGridProps) {
+export default function LifeGrid({ today: pinnedToday, compact = false }: LifeGridProps) {
+  // The server's day: «today», the open squares and the counter all stand on it.
+  const today = useDisplayDate(pinnedToday);
   const [view, setView] = useState<LifeView>('life');
-  const [cursor, setCursor] = useState<Date>(() => new Date(today));
+  // Until the reader moves it, the view stays on today, wherever the server puts it.
+  const [movedCursor, setCursor] = useState<Date | null>(null);
+  const cursor = movedCursor ?? today;
   const [frame, setFrame] = useState<Frame>(() => readFrame());
 
   const todayISO = toISODate(today);

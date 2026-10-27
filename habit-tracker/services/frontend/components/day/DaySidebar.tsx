@@ -1,11 +1,13 @@
 'use client';
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/252
 // summary: the day navigation shared by /day/{date} and /life — days grouped year → month with the current month open, each day a square in its three states and a link to that day; one component so the two screens cannot drift apart
+// summary: #252 — without a pinned `today` the squares, the open month and the history range stand on the server's day (GET /day-mode), read when the page opens and when the tab comes back
 
 import { useState } from 'react';
 import Link from 'next/link';
 import DaySquare from '@/components/life/DaySquare';
 import { useDays } from '@/hooks/useDays';
+import { useDisplayDate } from '@/hooks/useServerDay';
 import { dayStatus, groupByYearAndMonth, monthKeyOf, monthName, toISODate } from '@/lib/life';
 
 /** How far back the sidebar lists days. The history begins in 2026. */
@@ -19,7 +21,7 @@ export const NO_DAYS_TEXT = 'Дней ещё нет';
 export interface DaySidebarProps {
   /** The day the reader is on, so its square is marked and its month opens. */
   activeDate?: string | null;
-  /** Pinned in tests; the wall clock everywhere else. */
+  /** Pinned in tests; the server's day everywhere else. */
   today?: Date;
 }
 
@@ -31,7 +33,8 @@ export interface DaySidebarProps {
  * until only one of them could tell «не закрыт» from «проигран». Here the grouping,
  * the ordering and the three states are written once.
  */
-export default function DaySidebar({ activeDate = null, today = new Date() }: DaySidebarProps) {
+export default function DaySidebar({ activeDate = null, today: pinnedToday }: DaySidebarProps) {
+  const today = useDisplayDate(pinnedToday);
   const todayISO = toISODate(today);
   const from = `${today.getFullYear() - SIDEBAR_YEARS}-01-01`;
   const { days, loading, error } = useDays(from, todayISO);

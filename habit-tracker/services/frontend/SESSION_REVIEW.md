@@ -2326,6 +2326,19 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 
 Живая проверка: заглушка API на 8882 (день 2031-03-15) и dev-фронт на 3882, headless Chrome с TZ=Pacific/Pago_Pago, десктоп 1280px и `/m/today` 390px. Не проверено: настоящий бэкенд и граница 04:00 (база `habit_test_237` не мигрирована), нажатие на «+» вживую.
 
+## 2026-10-27 — PHASE-03/247, 252, 253: один источник дня сервера на экран и вне Today
+
+Тронуто 28 файлов: 16 кода (2 new: `hooks/useServerDay.ts`, `lib/server-day.ts`) и 12 тестов (1 new: `components/chat/ChatHistorySheet.test.tsx`).
+
+- `hooks/useToday.ts` — mod: одно чтение `GET /day-mode` на момент (снимок, минутный опрос и бейдж режима дня присоединяются к одному); записи просятся окном в три дня вокруг ожидаемого дня параллельно с днём и режутся до дня сервера, вне окна — одно точное чтение; «день не подтверждён» (упавший снимок или три опроса подряд) запрещает галочку и прибавку и говорит об этом баннером один раз; откат галочки только на том же дне; опрос после размонтирования не запускает снимок, тихий повтор первой загрузки не возвращает закрытый баннер; `dayModeClient` для `useDayMode`.
+- `app/today/page.tsx` — mod: `useDayMode(dayModeClient)`, только строка вызова и деструктуризация.
+- `hooks/useServerDay.ts`, `lib/server-day.ts` — new: `readServerDay`/`useServerDay`/`useDisplayDay`/`useDisplayDate` и `shiftDay` для экранов вне Today.
+- `hooks/useDailySummary.ts`, `hooks/useDashboard.ts`, `lib/dashboard-stats.ts`, `hooks/useEntryDraft.ts`, `components/CategoryChart.tsx`, `components/chat/ChatHistorySheet.tsx`, `components/ChallengesSection.tsx`, `components/week/WeekScreen.tsx`, `components/day/DaySidebar.tsx`, `components/life/LifeGrid.tsx`, `app/m/entries/page.tsx`, `app/m/categories/[id]/page.tsx` — mod: «сегодня» берётся у сервера, а не у часов браузера.
+- Тесты: `hooks/useToday.test.ts`, `hooks/useDailySummary.test.ts`, `hooks/useDashboard.test.ts`, `app/today/page.test.tsx`, `app/m/today/page.test.tsx`, `app/m/entries/page.test.tsx`, `app/m/categories/[id]/page.test.tsx`, `components/CategoryChart.test.tsx`, `components/chat/ChatHistorySheet.test.tsx` (new), `components/week/WeekScreen.test.tsx`, `components/day/DaySidebar.test.tsx`, `components/life/LifeGrid.test.tsx` — mod.
+
+Живая проверка: заглушка API на 8892 (день на сутки впереди браузера, 150 мс на ответ) и dev-фронт на 3892, headless Chrome по сырому CDP. Настоящий бэкенд не поднимался: `habit_test_247` пуста (миграции в рое не запускаются).
+||||||| 5d9190c
+
 ## 2026-10-27 — PHASE-03/249: слот записи режима дня (веб)
 
 Тронуто 5 файлов: `hooks/useDayMode.ts`, `hooks/useDayMode.test.ts`, `components/agent/DayModeBadge.tsx`, `components/agent/DayModeBadge.test.tsx` (mod), `app/today/page.tsx` (mod, одна строка `reading=`).
@@ -2335,3 +2348,16 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - Повторное чтение из `finally` не запускается после размонтирования; в `useDayMode.ts` возвращены одинарные кавычки.
 
 Не проверено: браузер (только тесты хука и компонента).
+
+### Круг 2 — PHASE-03/247, 252, 253
+
+Тронуто 12 файлов: 9 кода (1 new: `hooks/useTodayDayModeSync.ts`) и 3 теста. Влит main (конфликт только в этом файле).
+
+- `hooks/useTodayDayModeSync.ts` — new, `app/today/page.tsx` — mod (одна строка вызова): бейдж режима дня перечитывает день, когда шапка ушла на другой день (минутный опрос, `reload()`) и когда день не подтверждён (`dayStale`); чтение присоединяется к идущему, лишнего не просит, если бейдж уже на этом дне. Раньше бейдж оставался на вчера и `decide`/`reset` писали во вчера.
+- `hooks/useToday.ts` — mod: окно записей просится с явным `limit` 1000 (было серверное 100); опрос, чьё чтение не ответило за минуту, считается сбоем и следующий опрос спрашивает заново (зависший `GET /day-mode` поднимает `dayStale`); опрос, присоединившийся к чтению снимка, не запускает второй `loadData`; `dayModeClient.read` после размонтирования не запускает снимок.
+- `hooks/useDashboard.ts` — mod: `DAY_WINDOW_LIMIT` экспортируется для теста полной страницы. `hooks/useDailySummary.ts` — mod: сервер не спрашивается, когда день передан (`today`). `hooks/useServerDay.ts`, `DaySidebar.tsx`, `LifeGrid.tsx`, `WeekScreen.tsx` — mod: маркер `PHASE-03/252` и summary; сказано, что экраны вне Today не догоняют границу дня, пока открыты.
+- Тесты (`hooks/useToday.test.ts`, `hooks/useDashboard.test.ts`, `hooks/useDailySummary.test.ts`): бейдж идёт за днём шапки (fake timers, `renderBoth`), бейдж заперт при неподтверждённом дне, зависшее чтение, полная страница окна (1000 записей → одно точное чтение, чужие дни не показываются; то же в дашборде), один снимок вместо двух, чтение бейджа после размонтирования; мок `@/lib/date` больше не вырезает остальные экспорты (`...realDate`). Мутации «условие полной страницы всегда true», «опрос не считает зависшее», «без синхронизации бейджа», «без защиты от второго снимка» роняют тесты.
+
+Задержка первого круга Today, измерено на заглушке API (не на реальном бэкенде) с ответом 150 мс на запрос, dev-фронт, headless Chrome по CDP: до — запрос записей уходил через ~155 мс после `/day-mode`, два последовательных круга, ~300 мс до готового экрана; после — день, категории, записи и кнопки уходят в один момент, ~150 мс. `GET /day-mode` на загрузку: до 2 (хук и бейдж), после 1. Живой реальной базы нет: `habit_test_247` пуста, миграции в рое не запускаются.
+
+Остатки вне объёма (отдельный тикет, не делались): тренды дашборда (`useDashboard.ts` около 267, `trendDateRange(new Date())`), `todayISO()` в `app/chat/page.tsx:412`, `app/journal/page.tsx:175`, `app/m/journal/page.tsx:181`, `components/roles/RoleRulesScreen.tsx:69` (тот же UTC-баг), `hooks/useCategoryDetail.ts:95`, `hooks/useTable.ts:31-32`, `components/day/WorkIntervals.tsx:93`; бэкенд `GET /entries` без дат не подставляет `today_local()`.
