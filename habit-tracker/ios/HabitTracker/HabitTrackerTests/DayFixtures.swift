@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226
-// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save can run a hook while in flight) for the Day tests
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231
+// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save and closing can run a hook while in flight) for the Day tests
 import Foundation
 @testable import HabitTracker
 
@@ -143,6 +143,8 @@ final class MockDayAPI: DayAPI {
     /// Runs once inside the next `fetchDay`, before its answer: lets a test act while a read is in flight.
     var duringFetch: (@MainActor () async -> Void)?
     var duringNotebookSave: (@MainActor () async -> Void)?
+    /// Runs inside `reviewDay`/`closeDay`, before the answer: lets a test act while the closing is in flight.
+    var duringClosing: (@MainActor () async -> Void)?
     var closingResult: Result<DaySummaryDTO, Error> = .failure(APIClientError.invalidResponse)
     var closingCalls: [(touch: String, body: DayClosingRequestDTO, key: String)] = []
 
@@ -185,11 +187,13 @@ final class MockDayAPI: DayAPI {
 
     func reviewDay(date: String, _ payload: DayClosingRequestDTO, idempotencyKey: String) async throws -> DaySummaryDTO {
         closingCalls.append(("review", payload, idempotencyKey))
+        await duringClosing?()
         return try closingResult.get()
     }
 
     func closeDay(date: String, _ payload: DayClosingRequestDTO, idempotencyKey: String) async throws -> DaySummaryDTO {
         closingCalls.append(("final", payload, idempotencyKey))
+        await duringClosing?()
         return try closingResult.get()
     }
 }
