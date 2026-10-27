@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131
-// summary: HKQuantitySample → HealthSampleDTO mapping (units, UTC instants, the device offset at the sample moment, the sample's own time zone first), the six-field wire shape with no aggregate, and the body the server fixture expects
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// summary: HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (catalogue kinds, HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -34,26 +34,104 @@ final class HealthSampleMappingTests: XCTestCase {
             "HKQuantityTypeIdentifierRestingHeartRate",
         ])
         // Strings the server's unit table knows (`app/health/aggregate.py`, `_UNITS`).
-        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.unit), ["count", "count/min"])
+        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.wireUnit), ["count", "count/min"])
     }
 
-    func testCumulativeSampleKeepsItsIntervalAndValue() {
+    private static func hour(_ start: String, _ end: String, _ steps: Double?) -> HealthHourSum {
+        HealthHourSum(
+            start: instant(start), end: instant(end),
+            sum: steps.map { HKQuantity(unit: .count(), doubleValue: $0) }
+        )
+    }
+
+    private static func catalog(_ identifier: HKQuantityTypeIdentifier) -> HealthMetricDefinition {
+        HealthMetricCatalog.metrics.first { $0.typeIdentifier == identifier }!
+    }
+
+    func testCatalogKindIsHealthKitsOwnAggregationStyle() {
+        // HKStatisticsCollectionQuery refuses `.cumulativeSum` on a discrete type,
+        // and the server folds the day by the same kind (`app/health/catalog.py`).
+        for metric in HealthMetricCatalog.metrics {
+            let healthKitSaysCumulative = HKQuantityType(metric.typeIdentifier).aggregationStyle == .cumulative
+            XCTAssertEqual(metric.kind == .cumulative, healthKitSaysCumulative, metric.identifier)
+        }
+        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.kind), [.cumulative, .discrete])
+    }
+
+    func testEveryWireUnitIsOneTheServerKnowsAndNoneIsPercent() {
+        // `_UNITS` in `app/health/aggregate.py`.
+        let serverUnits: Set<String> = [
+            "m", "kcal", "min", "count/min", "ms", "fraction", "mL/(kg*min)", "kg", "cm", "g", "mL", "count",
+        ]
+        XCTAssertTrue(Set(HealthMetricCatalog.metrics.map(\.wireUnit)).isSubset(of: serverUnits))
+        XCTAssertEqual(
+            HealthMetricCatalog.metrics.filter { $0.unit == "%" }.map(\.typeIdentifier),
+            [.oxygenSaturation, .bodyFatPercentage]
+        )
+    }
+
+    func testPercentIsReadAsTheFractionHealthKitHoldsAndSentAsFraction() {
         let mapper = HealthSampleMapper(timeZone: berlin)
-        let walk = Self.sample(
-            .stepCount, 1200, .count(),
-            start: "2026-10-20T06:50:00.000Z", end: "2026-10-20T07:30:00.000Z"
+        let saturation = Self.catalog(.oxygenSaturation)
+        let reading = HKQuantitySample(
+            type: HKQuantityType(.oxygenSaturation),
+            quantity: HKQuantity(unit: .percent(), doubleValue: 0.97),
+            start: Self.instant("2026-10-20T03:00:00.000Z"),
+            end: Self.instant("2026-10-20T03:00:00.000Z")
         )
 
-        let dto = mapper.dto(walk, metric: steps)
+        let dto = mapper.dto(reading, metric: saturation)
+
+        XCTAssertEqual(dto.unit, "fraction")
+        XCTAssertEqual(dto.value, 0.97, accuracy: 1e-9)
+        XCTAssertEqual(Self.catalog(.bodyFatPercentage).wireUnit, "fraction")
+    }
+
+    func testHourSumBecomesOneRecordSpanningTheWholeHour() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+
+        let dto = mapper.dto(
+            Self.hour("2026-10-20T06:00:00.000Z", "2026-10-20T07:00:00.000Z", 1500), metric: steps
+        )
 
         XCTAssertEqual(dto, HealthSampleDTO(
             identifier: "HKQuantityTypeIdentifierStepCount",
-            value: 1200,
+            value: 1500,
             unit: "count",
-            start: "2026-10-20T06:50:00.000Z",
-            end: "2026-10-20T07:30:00.000Z",
+            start: "2026-10-20T06:00:00.000Z",
+            end: "2026-10-20T07:00:00.000Z",
             utcOffsetMinutes: 120
         ))
+    }
+
+    func testEmptyHourSendsNothingRatherThanZero() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+
+        XCTAssertNil(mapper.dto(
+            Self.hour("2026-10-20T06:00:00.000Z", "2026-10-20T07:00:00.000Z", nil), metric: steps
+        ))
+    }
+
+    func testHoursOnBothSidesOfLocalMidnightStayWholeInTheirOwnDays() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+        // A walk 23:30-00:30 in Berlin: HealthKit has already split it at midnight.
+        let late = mapper.dto(Self.hour("2026-10-19T21:00:00.000Z", "2026-10-19T22:00:00.000Z", 300), metric: steps)
+        let early = mapper.dto(Self.hour("2026-10-19T22:00:00.000Z", "2026-10-19T23:00:00.000Z", 400), metric: steps)
+
+        XCTAssertEqual(late?.end, "2026-10-19T22:00:00.000Z")
+        XCTAssertEqual(early?.start, "2026-10-19T22:00:00.000Z")
+        XCTAssertEqual([late?.value, early?.value], [300, 400])
+        XCTAssertEqual([late?.utcOffsetMinutes, early?.utcOffsetMinutes], [120, 120])
+    }
+
+    func testRepeatedHourOfTheAutumnClockChangeCarriesBothOffsets() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+        // 2026-10-25: 03:00 CEST becomes 02:00 CET, the local hour 02 is lived twice.
+        let summerTime = mapper.dto(Self.hour("2026-10-25T00:00:00.000Z", "2026-10-25T01:00:00.000Z", 10), metric: steps)
+        let winterTime = mapper.dto(Self.hour("2026-10-25T01:00:00.000Z", "2026-10-25T02:00:00.000Z", 20), metric: steps)
+
+        XCTAssertEqual(summerTime?.utcOffsetMinutes, 120)
+        XCTAssertEqual(winterTime?.utcOffsetMinutes, 60)
     }
 
     func testValueIsReadInTheCatalogUnitWhateverUnitItWasStoredIn() {
@@ -106,11 +184,11 @@ final class HealthSampleMappingTests: XCTestCase {
     /// Same values as `DEVICE_BODY` in `services/backend/tests/test_health_device_chunk.py`.
     func testEncodedChunkMatchesTheServerFixture() throws {
         let mapper = HealthSampleMapper(timeZone: berlin)
-        let request = HealthSamplesRequestDTO(samples: [
-            mapper.dto(Self.sample(
-                .stepCount, 1200, .count(),
-                start: "2026-10-20T06:50:00.000Z", end: "2026-10-20T07:30:00.000Z"
-            ), metric: steps),
+        let hours = [
+            Self.hour("2026-10-20T06:00:00.000Z", "2026-10-20T07:00:00.000Z", 300),
+            Self.hour("2026-10-20T07:00:00.000Z", "2026-10-20T08:00:00.000Z", 900),
+        ]
+        let request = HealthSamplesRequestDTO(samples: hours.compactMap { mapper.dto($0, metric: steps) } + [
             mapper.dto(
                 Self.sample(.restingHeartRate, 54, HKUnit(from: "count/min"), start: "2026-10-20T03:00:00.250Z"),
                 metric: restingHeartRate
@@ -121,15 +199,18 @@ final class HealthSampleMappingTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let samples = try XCTUnwrap(json["samples"] as? [[String: Any]])
 
-        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples.count, 3)
         XCTAssertEqual(samples[0]["identifier"] as? String, "HKQuantityTypeIdentifierStepCount")
-        XCTAssertEqual(samples[0]["value"] as? Double, 1200)
+        XCTAssertEqual(samples[0]["value"] as? Double, 300)
         XCTAssertEqual(samples[0]["unit"] as? String, "count")
-        XCTAssertEqual(samples[0]["start"] as? String, "2026-10-20T06:50:00.000Z")
-        XCTAssertEqual(samples[0]["end"] as? String, "2026-10-20T07:30:00.000Z")
+        XCTAssertEqual(samples[0]["start"] as? String, "2026-10-20T06:00:00.000Z")
+        XCTAssertEqual(samples[0]["end"] as? String, "2026-10-20T07:00:00.000Z")
         XCTAssertEqual(samples[0]["utc_offset_minutes"] as? Int, 120)
-        XCTAssertEqual(samples[1]["unit"] as? String, "count/min")
-        XCTAssertEqual(samples[1]["value"] as? Double, 54)
-        XCTAssertEqual(samples[1]["start"] as? String, "2026-10-20T03:00:00.250Z")
+        XCTAssertEqual(samples[1]["value"] as? Double, 900)
+        XCTAssertEqual(samples[1]["start"] as? String, "2026-10-20T07:00:00.000Z")
+        XCTAssertEqual(samples[1]["end"] as? String, "2026-10-20T08:00:00.000Z")
+        XCTAssertEqual(samples[2]["unit"] as? String, "count/min")
+        XCTAssertEqual(samples[2]["value"] as? Double, 54)
+        XCTAssertEqual(samples[2]["start"] as? String, "2026-10-20T03:00:00.250Z")
     }
 }

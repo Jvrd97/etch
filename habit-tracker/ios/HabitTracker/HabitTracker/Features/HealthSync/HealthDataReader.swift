@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65
-// summary: read-only HealthKit authorization and latest-sample queries for every catalog type
+// [review:need-review] PHASE-02/65, PHASE-03/233
+// summary: read-only HealthKit authorization and latest-sample reads for every catalog type, over the same HealthStoreQuerying seam the pump uses
 
 import Foundation
 import HealthKit
@@ -17,36 +17,27 @@ enum HealthDataReaderError: Error {
 
 @MainActor
 final class HealthKitDataReader: HealthDataReading {
-    private let store: HKHealthStore
+    private let store: HealthStoreQuerying
 
-    init(store: HKHealthStore = HKHealthStore()) {
+    init(store: HealthStoreQuerying = HKHealthStore()) {
         self.store = store
     }
 
     func requestReadAuthorization(for identifiers: Set<String>) async throws {
-        guard HKHealthStore.isHealthDataAvailable() else {
+        guard store.healthDataAvailable else {
             throw HealthDataReaderError.healthDataUnavailable
         }
         let selected = HealthMetricCatalog.metrics.filter { identifiers.contains($0.identifier) }
         guard selected.count == identifiers.count else {
             throw HealthDataReaderError.unknownIdentifiers
         }
-        let readTypes: Set<HKObjectType> = Set(
-            selected.map { HKQuantityType($0.typeIdentifier) }
-        )
-        try await store.requestAuthorization(toShare: [], read: readTypes)
+        try await store.requestReadAuthorization(for: Set(selected.map { HKQuantityType($0.typeIdentifier) }))
     }
 
     func readLatestValues(for metrics: [HealthMetricDefinition]) async throws -> [String: Double] {
         var values: [String: Double] = [:]
         for metric in metrics {
-            let type = HKQuantityType(metric.typeIdentifier)
-            let descriptor = HKSampleQueryDescriptor(
-                predicates: [.quantitySample(type: type)],
-                sortDescriptors: [SortDescriptor(\.startDate, order: .reverse)],
-                limit: 1
-            )
-            if let sample = try await descriptor.result(for: store).first {
+            if let sample = try await store.latestSample(of: HKQuantityType(metric.typeIdentifier)) {
                 values[metric.identifier] = sample.quantity.doubleValue(for: HKUnit(from: metric.unit))
             }
         }

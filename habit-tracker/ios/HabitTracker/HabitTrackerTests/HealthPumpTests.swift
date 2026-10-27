@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131
-// summary: HealthPump on a fake HKHealthStore and a fake API — read-only request, the 7-day window, whole metrics per chunk, retry of transient failures only, an identical body on re-send, one run for concurrent callers, a launch run that never shows the permission sheet
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -43,9 +43,9 @@ final class HealthPumpTests: XCTestCase {
     }
 
     private func fillWeek() {
-        store.samples[.stepCount] = [
-            FakeHealthStore.sample(.stepCount, 1200, .count(), "2026-10-19T06:50:00Z", "2026-10-19T07:30:00Z"),
-            FakeHealthStore.sample(.stepCount, 800, .count(), "2026-10-20T06:00:00Z", "2026-10-20T06:20:00Z"),
+        store.hourSums[.stepCount] = [
+            FakeHealthStore.hour(1200, "2026-10-19T06:00:00Z"),
+            FakeHealthStore.hour(800, "2026-10-20T06:00:00Z"),
         ]
         store.samples[.restingHeartRate] = [
             FakeHealthStore.sample(.restingHeartRate, 54, HKUnit(from: "count/min"), "2026-10-20T03:00:00Z"),
@@ -64,11 +64,9 @@ final class HealthPumpTests: XCTestCase {
 
         XCTAssertEqual(outcome, .sent([Self.accepted]))
         XCTAssertEqual(store.authorizationRequests, [stepsAndRestingHeartRate])
-        XCTAssertEqual(store.queries.map(\.type), [
-            HKQuantityTypeIdentifier.stepCount.rawValue,
-            HKQuantityTypeIdentifier.restingHeartRate.rawValue,
-        ])
-        XCTAssertTrue(store.queries.allSatisfy { $0.from == Self.windowStart && $0.to == Self.now })
+        XCTAssertEqual(store.sumQueries.map(\.type), [HKQuantityTypeIdentifier.stepCount.rawValue])
+        XCTAssertEqual(store.queries.map(\.type), [HKQuantityTypeIdentifier.restingHeartRate.rawValue])
+        XCTAssertTrue((store.queries + store.sumQueries).allSatisfy { $0.from == Self.windowStart && $0.to == Self.now })
         XCTAssertEqual(api.posted.count, 1)
         XCTAssertEqual(api.posted.first?.samples.map(\.identifier), [
             HKQuantityTypeIdentifier.stepCount.rawValue,
@@ -92,6 +90,7 @@ final class HealthPumpTests: XCTestCase {
 
         XCTAssertEqual(outcome, .notConfigured)
         XCTAssertTrue(store.queries.isEmpty)
+        XCTAssertTrue(store.sumQueries.isEmpty)
         XCTAssertTrue(api.posted.isEmpty)
     }
 
@@ -104,6 +103,7 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(outcome, .skipped)
         XCTAssertTrue(store.authorizationRequests.isEmpty)
         XCTAssertTrue(store.queries.isEmpty)
+        XCTAssertTrue(store.sumQueries.isEmpty)
         XCTAssertTrue(api.posted.isEmpty)
     }
 
@@ -213,6 +213,77 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(api.posted[0], api.posted[1])
     }
 
+    func testPhoneAndWatchCountingTheSameStepsSendHealthKitsSumOnce() async {
+        // Both devices recorded the same 1000 steps; HealthKit's statistics keep one
+        // source per moment by priority, as the Health app does. Raw samples are not read.
+        store.samples[.stepCount] = [
+            FakeHealthStore.sample(.stepCount, 1000, .count(), "2026-10-20T06:00:00Z", "2026-10-20T06:40:00Z"),
+            FakeHealthStore.sample(.stepCount, 1000, .count(), "2026-10-20T06:05:00Z", "2026-10-20T06:45:00Z"),
+        ]
+        store.hourSums[.stepCount] = [FakeHealthStore.hour(1000, "2026-10-20T06:00:00Z")]
+
+        _ = await makePump().sync()
+
+        let steps = api.posted.first?.samples.filter { $0.identifier == HKQuantityTypeIdentifier.stepCount.rawValue }
+        XCTAssertEqual(steps?.map(\.value), [1000])
+        XCTAssertEqual(steps?.first?.start, "2026-10-20T06:00:00.000Z")
+        XCTAssertEqual(steps?.first?.end, "2026-10-20T07:00:00.000Z")
+        XCTAssertFalse(store.queries.contains { $0.type == HKQuantityTypeIdentifier.stepCount.rawValue })
+    }
+
+    func testEmptyHoursOfTheWindowAreNotSent() async {
+        store.hourSums[.stepCount] = [
+            FakeHealthStore.hour(nil, "2026-10-20T05:00:00Z"),
+            FakeHealthStore.hour(800, "2026-10-20T06:00:00Z"),
+            FakeHealthStore.hour(nil, "2026-10-20T07:00:00Z"),
+        ]
+
+        _ = await makePump().sync()
+
+        XCTAssertEqual(api.posted.first?.samples.map(\.start), ["2026-10-20T06:00:00.000Z"])
+    }
+
+    func testWindowOfOnlyEmptyHoursSendsNothing() async {
+        store.hourSums[.stepCount] = [FakeHealthStore.hour(nil, "2026-10-20T06:00:00Z")]
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .nothingToSend)
+        XCTAssertTrue(api.posted.isEmpty)
+    }
+
+    func testEncodingFailureIsNotANetworkFailureAndIsNotRetried() async {
+        fillWeek()
+        let context = EncodingError.Context(codingPath: [], debugDescription: "non-finite value")
+        api.script = [.failure(EncodingError.invalidValue(Double.nan, context))]
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.encodingFailed))
+        XCTAssertEqual(api.posted.count, 1)
+        XCTAssertTrue(pauses.isEmpty)
+    }
+
+    func testFailedPermissionRequestIsNamedAndNotPassedOffAsMissingHealthData() async {
+        fillWeek()
+        store.authorizationError = HKError(.errorAuthorizationDenied)
+
+        let manual = await makePump().sync()
+        let launch = await makePump().syncIfAuthorized()
+
+        XCTAssertEqual(manual, .failed(.authorizationFailed))
+        XCTAssertEqual(launch, .failed(.authorizationFailed))
+        XCTAssertTrue(api.posted.isEmpty)
+    }
+
+    func testHealthKitReportingNoHealthDataDuringTheRequestStaysUnavailable() async {
+        store.authorizationError = HKError(.errorHealthDataUnavailable)
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.healthDataUnavailable))
+    }
+
     func testConcurrentCallersShareOneRun() async {
         fillWeek()
         store.suspendReads = true
@@ -234,23 +305,34 @@ final class FakeHealthStore: HealthStoreQuerying {
     var available = true
     var requestStatus: HKAuthorizationRequestStatus = .unnecessary
     var samples: [HKQuantityTypeIdentifier: [HKQuantitySample]] = [:]
+    /// What HKStatisticsCollectionQuery would hand back: already deduplicated across sources.
+    var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
+    var latest: [HKQuantityTypeIdentifier: HKQuantitySample] = [:]
     var readError: Error?
+    var authorizationError: Error?
     /// Yields inside every read so a second caller gets a turn mid-run.
     var suspendReads = false
 
     private(set) var authorizationRequests: [Set<String>] = []
     private(set) var statusChecks: [Set<String>] = []
     private(set) var queries: [(type: String, from: Date, to: Date)] = []
+    private(set) var sumQueries: [(type: String, from: Date, to: Date)] = []
 
     var healthDataAvailable: Bool { available }
 
     func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus {
         statusChecks.append(Set(types.map(\.identifier)))
+        if let authorizationError {
+            throw authorizationError
+        }
         return requestStatus
     }
 
     func requestReadAuthorization(for types: Set<HKQuantityType>) async throws {
         authorizationRequests.append(Set(types.map(\.identifier)))
+        if let authorizationError {
+            throw authorizationError
+        }
     }
 
     func quantitySamples(of type: HKQuantityType, from: Date, to: Date) async throws -> [HKQuantitySample] {
@@ -262,6 +344,36 @@ final class FakeHealthStore: HealthStoreQuerying {
             throw readError
         }
         return samples[HKQuantityTypeIdentifier(rawValue: type.identifier)] ?? []
+    }
+
+    func hourlySums(of type: HKQuantityType, from: Date, to: Date) async throws -> [HealthHourSum] {
+        sumQueries.append((type.identifier, from, to))
+        if suspendReads {
+            await Task.yield()
+        }
+        if let readError {
+            throw readError
+        }
+        return hourSums[HKQuantityTypeIdentifier(rawValue: type.identifier)] ?? []
+    }
+
+    func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
+        if let readError {
+            throw readError
+        }
+        return latest[HKQuantityTypeIdentifier(rawValue: type.identifier)]
+    }
+
+    private static let secondsPerHour: TimeInterval = 3600
+
+    /// One hour of steps beginning at `start`; nil is an hour HealthKit has no data for.
+    static func hour(_ steps: Double?, _ start: String) -> HealthHourSum {
+        let begin = ISO8601DateFormatter().date(from: start)!
+        return HealthHourSum(
+            start: begin,
+            end: begin.addingTimeInterval(secondsPerHour),
+            sum: steps.map { HKQuantity(unit: .count(), doubleValue: $0) }
+        )
     }
 
     static func sample(

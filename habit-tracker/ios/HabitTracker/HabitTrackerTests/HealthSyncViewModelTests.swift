@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-02/65, PHASE-03/131
-// summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, empty values, and the sync button with its result text
+// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233
+// summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
 
+import HealthKit
 import XCTest
 @testable import HabitTracker
 
@@ -71,6 +72,61 @@ final class HealthSyncViewModelTests: XCTestCase {
         await viewModel.syncNow()
 
         XCTAssertEqual(viewModel.syncMessage, "Сервер недоступен. Данные остались в «Здоровье», повторите позже")
+    }
+
+    func testButtonThatJoinedTheSkippedLaunchRunSaysWhatToDo() async {
+        let syncer = HealthSyncerSpy()
+        syncer.outcome = .skipped
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
+
+        await viewModel.syncNow()
+
+        XCTAssertEqual(
+            viewModel.syncMessage,
+            "Отправка при запуске ничего не отправила: доступ к «Здоровью» ещё не запрошен. Нажмите ещё раз"
+        )
+    }
+
+    func testFailedPermissionRequestIsNotCalledMissingData() async {
+        let syncer = HealthSyncerSpy()
+        syncer.outcome = .failed(.authorizationFailed)
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
+
+        await viewModel.syncNow()
+
+        XCTAssertEqual(
+            viewModel.syncMessage,
+            "Не удалось запросить доступ к «Здоровью». Проверьте доступ в Настройках и повторите"
+        )
+    }
+
+    func testReaderAsksReadOnlyAndReadsLatestValuesThroughTheSharedSeam() async throws {
+        let store = FakeHealthStore()
+        store.latest[.restingHeartRate] = FakeHealthStore.sample(
+            .restingHeartRate, 54, HKUnit(from: "count/min"), "2026-10-20T03:00:00Z"
+        )
+        let reader = HealthKitDataReader(store: store)
+        let metrics = HealthPump.pumpedMetrics
+
+        try await reader.requestReadAuthorization(for: Set(metrics.map(\.identifier)))
+        let values = try await reader.readLatestValues(for: metrics)
+
+        XCTAssertEqual(store.authorizationRequests, [Set(metrics.map(\.identifier))])
+        XCTAssertEqual(values, [HKQuantityTypeIdentifier.restingHeartRate.rawValue: 54])
+    }
+
+    func testReaderOnADeviceWithoutHealthDataAsksNothing() async {
+        let store = FakeHealthStore()
+        store.available = false
+        let reader = HealthKitDataReader(store: store)
+
+        do {
+            try await reader.requestReadAuthorization(for: [HKQuantityTypeIdentifier.stepCount.rawValue])
+            XCTFail("expected healthDataUnavailable")
+        } catch {
+            XCTAssertEqual(error as? HealthDataReaderError, .healthDataUnavailable)
+        }
+        XCTAssertTrue(store.authorizationRequests.isEmpty)
     }
 }
 

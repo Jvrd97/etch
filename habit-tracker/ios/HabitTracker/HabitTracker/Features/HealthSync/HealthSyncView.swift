@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131
-// summary: Health section that requests access on first entry, shows four groups with honest empty values, and sends the last 7 days to the server with the result in words
+// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233
+// summary: Health section that requests access on first entry, shows four groups with honest empty values, and sends the last 7 days to the server with the result in words, including a joined launch run and a failed permission request
 
 import SwiftUI
 import UIKit
@@ -57,7 +57,7 @@ final class HealthSyncViewModel: ObservableObject {
         case .notConfigured:
             return "Укажите адрес сервера в More → Settings"
         case .skipped:
-            return nil
+            return "Отправка при запуске ничего не отправила: доступ к «Здоровью» ещё не запрошен. Нажмите ещё раз"
         case .failed(let failure):
             return Self.message(for: failure)
         }
@@ -67,6 +67,8 @@ final class HealthSyncViewModel: ObservableObject {
         switch failure {
         case .healthDataUnavailable:
             return "На этом устройстве нет данных «Здоровья»"
+        case .authorizationFailed:
+            return "Не удалось запросить доступ к «Здоровью». Проверьте доступ в Настройках и повторите"
         case .readFailed:
             return "Не удалось прочитать «Здоровье». Разблокируйте телефон и повторите"
         case .chunkTooLarge:
@@ -77,6 +79,8 @@ final class HealthSyncViewModel: ObservableObject {
             return "Сервер не принял ключ API (401)"
         case .rejected:
             return "Сервер отклонил отправку. Повтор не поможет, нужна правка приложения или сервера"
+        case .encodingFailed:
+            return "Приложение не смогло собрать отправку. Повтор не поможет, нужна правка приложения"
         }
     }
 
