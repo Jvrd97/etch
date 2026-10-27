@@ -11,8 +11,8 @@
 этот перекос числом.
 """
 
-# [review:need-review] PHASE-03/138
-# summary: tests for the period summary — shares over the sum of working minutes with `unassigned` in the denominator, an empty period answering with an empty summary rather than zeros, the 30% lag flag decided on the ratio at the exact boundary, the markdown block carrying the same numbers as the JSON, acts counted by kind, and one endpoint answering for a week and for a month alike
+# [review:need-review] PHASE-03/138, PHASE-03/239
+# summary: tests for the period summary, and for the public share_pct the week review calls — shares over the sum of working minutes with `unassigned` in the denominator, an empty period answering with an empty summary rather than zeros, the 30% lag flag decided on the ratio at the exact boundary, the markdown block carrying the same numbers as the JSON, acts counted by kind, and one endpoint answering for a week and for a month alike
 from datetime import date, timedelta
 from typing import Any
 
@@ -394,3 +394,15 @@ class TestTheEndpoint:
         )
 
         assert response.json()["lag_threshold_pct"] == role_crud.UNASSIGNED_LAG_PCT
+
+
+class TestSharePct:
+    """Доля — публичная функция роли: обзор недели берёт её, а не копию."""
+
+    def test_rounds_to_whole_percent(self) -> None:
+        assert role_crud.share_pct(1, 3) == 33
+        assert role_crud.share_pct(2, 3) == 67
+
+    def test_an_empty_whole_is_zero_not_a_division(self) -> None:
+        assert role_crud.share_pct(0, 0) == 0
+        assert role_crud.share_pct(5, 0) == 0

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239
 # summary: orchestration of the week narrative — the prompt is built from the already computed review (no recomputation, no database), and the model is reached only through LLMClient.generate
 """
 The words of the week review (`#221`).
@@ -19,7 +19,8 @@ from datetime import date
 
 from app.core.humanize import hours_and_minutes
 from app.llm.client import LLMClient
-from app.schemas.week_review import WeekHealthMetric, WeekReviewResponse
+from app.llm.health_format import average_basis, health_value, signed_health_delta
+from app.schemas.week_review import WeekReviewResponse
 
 WEEK_REVIEW_SYSTEM_PROMPT = """\
 Ты помощник личного трекера привычек. Тебе дают цифры одной недели и прошлой
@@ -52,26 +53,6 @@ _WEEKDAYS = (
 
 def _weekday(review: WeekReviewResponse, day: date) -> str:
     return _WEEKDAYS[next(d.weekday for d in review.days if d.date == day)]
-
-
-_HEALTH_UNIT_WORDS = {"steps": "шагов"}
-
-
-def _health_value(metric: WeekHealthMetric, value: float) -> str:
-    """Число здоровья со словом единицы по-русски: «7421 шагов», «7 ч 10 мин»."""
-    if metric.unit == "min":
-        return hours_and_minutes(round(value))
-    word = _HEALTH_UNIT_WORDS.get(metric.key, metric.unit or "")
-    return f"{value:g} {word}".strip()
-
-
-def _signed_health(metric: WeekHealthMetric) -> str:
-    delta = metric.delta_avg_per_day
-    if delta is None:
-        return "нет данных для сравнения"
-    return ("+" if delta > 0 else "-" if delta < 0 else "") + _health_value(
-        metric, abs(delta)
-    )
 
 
 def _outcome_line(review: WeekReviewResponse) -> str:
@@ -149,10 +130,12 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"{streak.relapses}."
         )
     for metric in (m for m in review.health if m.days_with_data):
+        change = signed_health_delta(metric.key, metric.unit, metric.delta_avg_per_day)
         lines.append(
-            f"{metric.name}: в среднем {_health_value(metric, metric.avg_per_day or 0)} в день "
-            f"за {metric.days_with_data} дн. "
-            f"({_signed_health(metric)} к прошлой неделе)."
+            f"{metric.name}: в среднем "
+            f"{health_value(metric.key, metric.unit, metric.avg_per_day or 0)} в день, "
+            f"{average_basis(metric.days_with_data, window.counted_days)} "
+            f"({change} к прошлой неделе)."
         )
     return WEEK_REVIEW_SYSTEM_PROMPT + "\n\nДанные:\n" + "\n".join(lines)
 

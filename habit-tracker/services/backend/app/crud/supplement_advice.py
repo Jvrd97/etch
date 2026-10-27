@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/223, PHASE-03/245
 # summary: the health summary behind the advice — steps, workout minutes and resting heart rate over a window of 7-14 closed days against the window before it, sleep honestly absent, supplement adherence per day; four statements whatever the window and the number of supplements
 """
 The summary of sleep, sport and supplements (`#223`).
@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import local_date
 from app.crud import health as health_crud
-from app.models.health import HealthMetric
 from app.models.supplement import Supplement, SupplementIntake
 from app.schemas.supplement_advice import (
     Adherence,
@@ -48,81 +47,41 @@ __all__ = ["MIN_DAYS_WITH_DATA", "build_health_summary"]
 
 # Меньше стольких дней среднее ничего не доказывает: блок «данных мало».
 MIN_DAYS_WITH_DATA = 3
-# Знаков после запятой в среднем за день.
-AVERAGE_DIGITS = 1
 FULL_SHARE_PCT = 100
 
-# Ключ в ответе, подпись на случай отсутствия метрики и идентификатор каталога.
-# Имя метрики, которая в каталоге есть, берётся у каталога.
-HEALTH_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("sleep", "Сон", "HKCategoryTypeIdentifierSleepAnalysis"),
-    ("steps", "Шаги", "HKQuantityTypeIdentifierStepCount"),
-    ("workouts", "Минуты тренировки", "HKQuantityTypeIdentifierAppleExerciseTime"),
-    ("resting_hr", "Пульс покоя", "HKQuantityTypeIdentifierRestingHeartRate"),
-)
+# Ключи метрик здоровья в совете; сами метрики и их расчёт — `app.crud.health`.
+ADVICE_METRICS = ("sleep", "steps", "workouts", "resting_hr")
 
 
 def _dates(start: date, days: int) -> list[date]:
     return [start + timedelta(days=i) for i in range(days)]
 
 
-def _average(values: list[float]) -> float | None:
-    return round(sum(values) / len(values), AVERAGE_DIGITS) if values else None
-
-
 def _figure(
-    key: str,
-    name: str,
-    metric: HealthMetric | None,
-    by_day: dict[date, float],
-    current: list[date],
-    earlier: list[date],
+    item: health_crud.MetricDays, current: list[date], earlier: list[date]
 ) -> HealthFigure:
-    if metric is None:
-        return HealthFigure(key=key, name=name, available=False)
-    now = [by_day[d] for d in current if d in by_day]
-    before = [by_day[d] for d in earlier if d in by_day]
-    avg, previous_avg = _average(now), _average(before)
+    if not item.available:
+        return HealthFigure(key=item.spec.key, name=item.name, available=False)
+    compared = health_crud.compare_windows(item.by_day, current, earlier)
     return HealthFigure(
-        key=key,
-        name=metric.display_name,
-        unit=metric.canonical_unit,
+        key=item.spec.key,
+        name=item.name,
+        unit=item.unit,
         available=True,
-        days_with_data=len(now),
-        enough_data=len(now) >= MIN_DAYS_WITH_DATA,
-        avg_per_day=avg,
-        previous_days_with_data=len(before),
-        previous_avg_per_day=previous_avg,
-        delta_avg_per_day=(
-            None
-            if avg is None or previous_avg is None
-            else round(avg - previous_avg, AVERAGE_DIGITS)
-        ),
+        days_with_data=compared.days_with_data,
+        enough_data=compared.days_with_data >= MIN_DAYS_WITH_DATA,
+        avg_per_day=compared.avg_per_day,
+        previous_days_with_data=compared.previous_days_with_data,
+        previous_avg_per_day=compared.previous_avg_per_day,
+        delta_avg_per_day=compared.delta_avg_per_day,
     )
 
 
 async def _figures(
     db: AsyncSession, current: list[date], earlier: list[date]
 ) -> list[HealthFigure]:
-    catalog = {
-        metric.identifier: metric for metric in await health_crud.get_catalog(db)
-    }
-    present = [
-        catalog[identifier]
-        for _, _, identifier in HEALTH_SPECS
-        if identifier in catalog
-    ]
-    daily = await health_crud.daily_values(db, present, earlier[0], current[-1])
-    figures: list[HealthFigure] = []
-    for key, name, identifier in HEALTH_SPECS:
-        metric = catalog.get(identifier)
-        by_day = (
-            {point.local_date: point.value for point in daily.get(metric.id, [])}
-            if metric
-            else {}
-        )
-        figures.append(_figure(key, name, metric, by_day, current, earlier))
-    return figures
+    items = await health_crud.metric_days(db, ADVICE_METRICS, earlier[0], current[-1])
+    return [_figure(item, current, earlier) for item in items]
 
 
 async def _adherence(db: AsyncSession, current: list[date]) -> Adherence:

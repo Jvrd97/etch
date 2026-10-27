@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: Health persistence — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245
+# summary: Health persistence — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date, and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -24,12 +25,39 @@ from app.health.catalog import SEED_METRICS
 from app.models.health import HealthHourBucket, HealthMetric
 
 
+# Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
+# сон в часах, переведённый из минут, без округления тащил бы хвост из десятков.
+AVERAGE_DIGITS = 1
+
+
 @dataclass(frozen=True)
 class DailyValue:
     """One day of one metric, already folded by the metric's kind."""
 
     local_date: date
     value: float
+
+
+class HealthSpec(NamedTuple):
+    """Метрика, о которой пишут обзор недели и совет: ключ ответа и место в каталоге."""
+
+    key: str
+    name: str
+    identifier: str
+
+
+# Ключ в ответе, подпись на случай отсутствия метрики и идентификатор каталога.
+# Имя метрики, которая в каталоге есть, берётся у каталога: «тренировки» было бы
+# подменой названия `Минуты тренировки`. Метрика, которой в каталоге нет, едет с
+# `available=false`, а не нулями. Когда #238 заведёт сон, правка — только здесь.
+HEALTH_SPECS: tuple[HealthSpec, ...] = (
+    HealthSpec("sleep", "Сон", "HKCategoryTypeIdentifierSleepAnalysis"),
+    HealthSpec("steps", "Шаги", "HKQuantityTypeIdentifierStepCount"),
+    HealthSpec(
+        "workouts", "Минуты тренировки", "HKQuantityTypeIdentifierAppleExerciseTime"
+    ),
+    HealthSpec("resting_hr", "Пульс покоя", "HKQuantityTypeIdentifierRestingHeartRate"),
+)
 
 
 async def seed_catalog(db: AsyncSession) -> None:
@@ -154,3 +182,92 @@ async def daily_values(
             continue
         days[metric_id].append(DailyValue(local_date=local_date, value=value))
     return days
+
+
+@dataclass(frozen=True)
+class MetricDays:
+    """Одна метрика из `HEALTH_SPECS` с её дневными значениями; `metric` пуст, если в каталоге её нет."""
+
+    spec: HealthSpec
+    metric: HealthMetric | None
+    by_day: dict[date, float]
+
+    @property
+    def available(self) -> bool:
+        return self.metric is not None
+
+    @property
+    def name(self) -> str:
+        return self.metric.display_name if self.metric else self.spec.name
+
+    @property
+    def unit(self) -> str | None:
+        return self.metric.canonical_unit if self.metric else None
+
+
+async def metric_days(
+    db: AsyncSession, keys: Sequence[str], date_from: date, date_to: date
+) -> list[MetricDays]:
+    """
+    Метрики `keys` с дневными значениями за отрезок, в порядке `HEALTH_SPECS`.
+
+    Каталог и дни читаются по одному запросу, сколько бы метрик ни просили.
+    """
+    catalog = {metric.identifier: metric for metric in await get_catalog(db)}
+    specs = [spec for spec in HEALTH_SPECS if spec.key in keys]
+    present = [catalog[spec.identifier] for spec in specs if spec.identifier in catalog]
+    daily = await daily_values(db, present, date_from, date_to)
+    result: list[MetricDays] = []
+    for spec in specs:
+        metric = catalog.get(spec.identifier)
+        by_day = (
+            {point.local_date: point.value for point in daily.get(metric.id, [])}
+            if metric
+            else {}
+        )
+        result.append(MetricDays(spec=spec, metric=metric, by_day=by_day))
+    return result
+
+
+@dataclass(frozen=True)
+class WindowComparison:
+    """Метрика за окно против окна до него; пустое окно — `None`, а не ноль."""
+
+    days_with_data: int
+    total: float | None
+    avg_per_day: float | None
+    previous_days_with_data: int
+    previous_avg_per_day: float | None
+    delta_avg_per_day: float | None
+
+
+def _average(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), AVERAGE_DIGITS) if values else None
+
+
+def compare_windows(
+    by_day: dict[date, float], current: Sequence[date], earlier: Sequence[date]
+) -> WindowComparison:
+    """
+    Среднее за день в окне `current` против окна `earlier`.
+
+    **Знаменатель — дни с данными.** День без корзин не входит ни в числитель, ни
+    в знаменатель: «нет данных» — не нуль шагов и не нуль минут тренировки. Среднее
+    за день, в котором ничего не записано, не определено, а не равно нулю. Сколько
+    дней стоит за средним, говорит `days_with_data`, и промпты называют его вслух.
+    """
+    now = [by_day[d] for d in current if d in by_day]
+    before = [by_day[d] for d in earlier if d in by_day]
+    avg, previous_avg = _average(now), _average(before)
+    return WindowComparison(
+        days_with_data=len(now),
+        total=sum(now) if now else None,
+        avg_per_day=avg,
+        previous_days_with_data=len(before),
+        previous_avg_per_day=previous_avg,
+        delta_avg_per_day=(
+            None
+            if avg is None or previous_avg is None
+            else round(avg - previous_avg, AVERAGE_DIGITS)
+        ),
+    )

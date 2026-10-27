@@ -2823,3 +2823,18 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `backend/app/api/day_mode.py`, `tests/test_day_mode.py` — mod: 422 на дату вне календаря в стандартной списочной форме (`RequestValidationError`, `loc: [path, on]`), исправлена арифметика в docstring теста.
 - `mac/.../DayModeTests.swift` — mod: тесты ответа записи при упавшем опросе и синхронного слота; тест view зависит от того, что SwiftUI macOS 14+ отдаёт контролы как `NSControl`, окно закрывается после теста.
 - Принято: `modeWriteFailed` не стирается фоновым опросом, начатым до сбоя записи, но его успешный ответ сотрёт заметку «не сохранилось» (опрос идёт раз в 30 с).
+
+## 2026-10-27 — PHASE-03/239 + PHASE-03/245 (мелочи недельного обзора, общий расчёт метрик здоровья)
+
+Тронуто 14 файлов кода, миграций нет.
+
+- `backend/app/crud/health.py` — mod: `HEALTH_SPECS`, `metric_days` (каталог + дни одним чтением) и `compare_windows` (среднее за день против прошлого окна; знаменатель — дни с данными) рядом с `daily_values`.
+- `backend/app/crud/{week_review,supplement_advice}.py` — mod: обе копии расчёта (`_average`, `_figure`, `_figures`, `HEALTH_SPECS`, `AVERAGE_DIGITS`) заменены общим; обзор берёт `sleep/steps/workouts`, совет — ещё `resting_hr`.
+- `backend/app/crud/role.py` — mod: `_share_pct` -> публичная `share_pct`; обзор недели зовёт её.
+- `backend/app/llm/health_format.py` — new: `health_value`, `signed_health_delta`, `plural_form` (шаг/шага/шагов; дробное — родительный), `average_basis` («среднее по дням с данными: N из M дн.»).
+- `backend/app/llm/{week_review,health_advice}.py` — mod: используют общий формат; строка метрики называет знаменатель среднего.
+- `backend/tests/test_health_window.py` — new; `test_role_summary.py`, `test_week_review.py`, `test_health_advice.py` — mod.
+- `frontend/lib/week-review.ts` (+ тест) — mod: `inShell` приватный и делегирует `toMobilePath`; `verdictLine`, `rolesNote`.
+- `frontend/components/week-review/WeekReviewSections.tsx` (+ тест экрана) — mod: строка вердикта в блоке «Итог недели», пояснение о долях ролей на идущей неделе.
+
+Проверки: бэкенд — `tests/` 2082 passed, 2 skipped (`habit_test_239`), ruff, формат, `mypy --strict` чисто, одна голова `e7a9c1b3d5f7`; фронт — `bun test` 1959 pass, `tsc --noEmit` чисто, lint 0 ошибок. Не проверено: живой экран в браузере (стенд не поднимал: машина под нагрузкой load ~24-70).

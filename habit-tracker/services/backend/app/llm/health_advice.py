@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/223, PHASE-03/245
 # summary: orchestration of the health advice — the prompt is rendered from the finished summary (no database, no recomputation), carries supplement names but never doses, forbids diagnoses and doses, and the not-medical-advice disclaimer is appended in code when the model omits it
 """
 The words of the health advice (`#223`).
@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import re
 
-from app.core.humanize import hours_and_minutes
 from app.llm.client import LLMClient, LLMError
+from app.llm.health_format import average_basis, health_value, signed_health_delta
 from app.schemas.supplement_advice import HealthFigure, HealthSummaryResponse
 
 NOT_MEDICAL_ADVICE = "Это не медицинская рекомендация."
@@ -55,34 +55,18 @@ HEALTH_ADVICE_SYSTEM_PROMPT = """\
 - Совет — про привычки: регулярность приёма, движение, режим. Заверши одним
   конкретным действием на ближайшие дни."""
 
-_UNIT_WORDS = {"steps": "шагов", "resting_hr": "уд/мин"}
-
-
-def _value(figure: HealthFigure, value: float) -> str:
-    """Число словами единицы по-русски: «7421 шагов», «0 ч 30 мин», «60 уд/мин»."""
-    if figure.unit == "min":
-        return hours_and_minutes(round(value))
-    word = _UNIT_WORDS.get(figure.key, figure.unit or "")
-    return f"{value:g} {word}".strip()
-
-
-def _signed(figure: HealthFigure) -> str:
-    delta = figure.delta_avg_per_day
-    if delta is None:
-        return "нет данных для сравнения"
-    sign = "+" if delta > 0 else "-" if delta < 0 else ""
-    return sign + _value(figure, abs(delta))
-
 
 def _figure_line(figure: HealthFigure, days: int) -> str:
     if not figure.available or not figure.days_with_data:
         return f"{figure.name}: данных нет."
     if not figure.enough_data:
         return f"{figure.name}: данных мало ({figure.days_with_data} дн. из {days})."
+    delta = signed_health_delta(figure.key, figure.unit, figure.delta_avg_per_day)
     return (
-        f"{figure.name}: в среднем {_value(figure, figure.avg_per_day or 0)} в день "
-        f"по {figure.days_with_data} из {days} дн. "
-        f"({_signed(figure)} к предыдущим {days} дн.)."
+        f"{figure.name}: в среднем "
+        f"{health_value(figure.key, figure.unit, figure.avg_per_day or 0)} в день, "
+        f"{average_basis(figure.days_with_data, days)} "
+        f"({delta} к предыдущим {days} дн.)."
     )
 
 

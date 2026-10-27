@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/223, PHASE-03/245
 # summary: tests for the health summary and the advice built on it — steps, workout minutes and resting heart rate against the previous window, sleep honestly «данных нет», supplement adherence per day, the window closed by yesterday, a flat SQL statement count, «данных мало» instead of an invented advice, the fixed disclaimer, 422/503/502, and no supplement name or health value in a log line
 """
 Advice from sleep, sport and supplements (`#223`).
@@ -464,6 +464,7 @@ async def test_the_advice_is_written_from_the_numbers_of_the_window(
     assert "8000 шагов" in prompt
     assert "+1000 шагов" in prompt
     assert "Минуты тренировки: в среднем 0 ч 30 мин" in prompt
+    assert "среднее по дням с данными" in prompt
     assert "Пульс покоя: в среднем 60 уд/мин" in prompt
     assert "-4 уд/мин" in prompt
     assert "Сон: данных нет" in prompt

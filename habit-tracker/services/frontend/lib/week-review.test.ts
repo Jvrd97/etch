@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221
+// [review:need-review] PHASE-03/221, PHASE-03/239
 // summary: tests for the week review vocabulary — minutes as words, signed deltas, the note under an unfinished week, health values by unit, the empty-week test, and the narrative error picked by HTTP status
 
 import { describe, expect, it } from 'bun:test';
@@ -15,14 +15,17 @@ import {
   isEmptyWeek,
   narrativeErrorText,
   NO_COUNTED_DAYS_TEXT,
-  inShell,
+  ROLES_RUNNING_WEEK_NOTE,
   partialNote,
   periodText,
   retroHref,
   shortDate,
   trendOf,
+  verdictLine,
   weekHref,
+  rolesNote,
 } from '@/lib/week-review';
+import { toMobilePath } from '@/lib/view-mode';
 import { weekReviewFixture } from '@/components/week-review/test-fixture';
 
 function windowOf(patch: Partial<WeekReviewWindow>): WeekReviewWindow {
@@ -96,7 +99,13 @@ describe('dates and links', () => {
     expect(weekHref('2026-W36', true)).toBe('/m/week/review/2026-W36');
     expect(retroHref('2026-W36', true)).toBe('/m/week/2026-W36');
     expect(retroHref('2026-W36')).toBe('/week/2026-W36');
-    expect(inShell('/week/review', true)).toBe('/m/week/review');
+  });
+
+  it('builds the mobile address with the one mapping of the view mode', () => {
+    for (const iso of ['2026-W36', '2026-W01']) {
+      expect(toMobilePath(`/week/review/${iso}`)).toBe(weekHref(iso, true));
+      expect(toMobilePath(`/week/${iso}`)).toBe(retroHref(iso, true));
+    }
   });
 });
 
@@ -168,5 +177,42 @@ describe('narrative errors', () => {
     expect(narrativeErrorText({ status: 500 })).toBe(NARRATIVE_ERROR_FALLBACK);
     expect(narrativeErrorText(new Error('x'))).toBe(NARRATIVE_ERROR_FALLBACK);
     expect(narrativeErrorText(null)).toBe(NARRATIVE_ERROR_FALLBACK);
+  });
+});
+
+describe('the verdict line of the week', () => {
+  const review = (patch: Partial<WeekReview>): WeekReview => ({ ...weekReviewFixture(), ...patch });
+
+  it('says the week is lost, with the rule and the numbers behind it', () => {
+    const line = verdictLine(
+      review({ is_won: false, debt_minutes: 90, totals: { ...weekReviewFixture().totals, won_days: 5, days_total: 6 } })
+    );
+    expect(line).toContain('Неделя выиграна: нет');
+    expect(line).toContain('выиграны все дни недели и нет долга за переработку');
+    expect(line).toContain('выиграно 5 из 6 дней');
+    expect(line).toContain('долг 1 ч 30 мин');
+  });
+
+  it('says the week is won', () => {
+    expect(verdictLine(review({ is_won: true }))).toContain('Неделя выиграна: да');
+  });
+
+  it('says it is not decided while the week runs', () => {
+    expect(verdictLine(review({ is_won: null }))).toBe(
+      'Неделя выиграна: пока не решено, неделя идёт.'
+    );
+  });
+});
+
+describe('the note under the role shares', () => {
+  it('explains the gap with the retro on a running week', () => {
+    expect(rolesNote(windowOf({ is_complete: false, counted_days: 3 }))).toBe(
+      ROLES_RUNNING_WEEK_NOTE
+    );
+    expect(ROLES_RUNNING_WEEK_NOTE).toContain('сегодняшнего дня');
+  });
+
+  it('is absent on a finished week, where both screens count the same days', () => {
+    expect(rolesNote(windowOf({ is_complete: true }))).toBeNull();
   });
 });
