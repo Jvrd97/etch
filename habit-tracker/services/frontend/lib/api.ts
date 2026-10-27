@@ -4100,3 +4100,140 @@ export const planFactsAPI = {
     );
   },
 };
+
+// ============ Week review (#221) ============
+// [review:need-review] PHASE-03/221
+// summary: weekReviewAPI reads a whole week in one request — window, totals against the previous week, days, role and category time, avoid streaks, health — and asks the server for the AI narrative of that week
+
+/** Which days the numbers cover and in which clock they were cut. */
+export interface WeekReviewWindow {
+  iso_code: string;
+  starts_on: string;
+  ends_on: string;
+  timezone: string;
+  day_start_hour: number;
+  /** False while the week runs: the numbers are partial. */
+  is_complete: boolean;
+  counted_days: number;
+  /** Last counted day; null when no day of the week has come yet. */
+  as_of: string | null;
+  previous_iso_code: string;
+  next_iso_code: string;
+  /** How many first days of the previous week the comparison covers. */
+  compared_days: number;
+}
+
+export interface WeekReviewTotals {
+  closed_days: number;
+  won_days: number;
+  lost_days: number;
+  tasks_done: number;
+  tasks_total: number;
+  /** Null when the week had no tasks to divide. */
+  plan_pct: number | null;
+  anchors_done: number;
+  anchors_total: number;
+  /** Null when no day measured work time. */
+  work_minutes: number | null;
+  role_minutes: number;
+  day_streak_end: number | null;
+}
+
+export interface WeekReviewDelta {
+  won_days: number;
+  tasks_done: number;
+  plan_pct: number | null;
+  work_minutes: number | null;
+  role_minutes: number;
+}
+
+export interface WeekReviewDay {
+  date: string;
+  /** 0 is Monday, 6 is Sunday. */
+  weekday: number;
+  counted: boolean;
+  verdict: 'won' | 'lost' | null;
+  tasks_done: number;
+  tasks_total: number;
+  plan_pct: number | null;
+  work_minutes: number | null;
+  role_minutes: number;
+  streak_after: number | null;
+}
+
+export interface WeekReviewRole {
+  role_id: number;
+  role_code: string;
+  title: string;
+  minutes: number;
+  share_pct: number;
+  target_share_pct: number | null;
+  previous_minutes: number;
+  delta_minutes: number;
+}
+
+export interface WeekReviewCategory {
+  category_id: number;
+  name: string;
+  minutes: number;
+  previous_minutes: number;
+  delta_minutes: number;
+  entry_days: number;
+  previous_entry_days: number;
+}
+
+export interface WeekReviewHabitStreak {
+  category_id: number;
+  name: string;
+  current_streak: number;
+  relapses: number;
+}
+
+export type WeekReviewHealthKey = 'sleep' | 'steps' | 'workouts';
+
+export interface WeekReviewHealth {
+  key: WeekReviewHealthKey;
+  name: string;
+  /** Catalog unit (`count`, `min`, ...); null when the metric is not in the catalog. */
+  unit: string | null;
+  available: boolean;
+  total: number | null;
+  avg_per_day: number | null;
+  days_with_data: number;
+  previous_avg_per_day: number | null;
+  delta_avg_per_day: number | null;
+  /** Seven values Monday to Sunday; null is "no data", not zero. */
+  daily: Array<number | null>;
+}
+
+export interface WeekReview {
+  window: WeekReviewWindow;
+  totals: WeekReviewTotals;
+  previous_totals: WeekReviewTotals;
+  delta: WeekReviewDelta;
+  days: WeekReviewDay[];
+  best_day: string | null;
+  worst_day: string | null;
+  roles: WeekReviewRole[];
+  categories: WeekReviewCategory[];
+  habit_streaks: WeekReviewHabitStreak[];
+  health: WeekReviewHealth[];
+}
+
+export interface WeekNarrative {
+  iso_code: string;
+  text: string;
+  model: string;
+}
+
+export const weekReviewAPI = {
+  /** One week by its ISO code; `null` asks for the week the server's day boundary says is running. */
+  get: async (iso: string | null) => {
+    return fetcher<WeekReview>(iso === null ? '/week-review' : `/week-review/${iso}`);
+  },
+
+  /** The AI text for a week; written on request, not stored. */
+  narrative: async (iso: string) => {
+    return fetcher<WeekNarrative>(`/week-review/${iso}/narrative`, { method: 'POST' });
+  },
+};

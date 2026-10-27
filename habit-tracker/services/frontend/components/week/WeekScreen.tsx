@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/138
+// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221
+// summary: a link from the retro page to the week's review screen (#221)
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
 
 import Link from 'next/link';
@@ -13,6 +14,7 @@ import { useDays } from '@/hooks/useDays';
 import { useRoleSummary } from '@/hooks/useRoleSummary';
 import { LOAD_WEEK_ERROR, useWeek } from '@/hooks/useWeek';
 import { dayStatus, daysByDate, toISODate, WEEKDAY_SHORT } from '@/lib/life';
+import { weekHref } from '@/lib/week-review';
 
 /** Shown in place of the retro when nobody has written one. */
 export const NO_RETRO_TEXT = 'Ретро не написано';
@@ -63,6 +65,13 @@ export default function WeekScreen({ iso, compact = false, today = new Date() }:
         <p className="mt-2 text-text-secondary">
           {week.starts_on} — {week.ends_on}
         </p>
+        {/* Цифры недели и сравнение с прошлой живут на экране обзора (#221). */}
+        <Link
+          href={weekHref(week.iso_code)}
+          className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-lime hover:underline"
+        >
+          Обзор недели →
+        </Link>
       </header>
 
       <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4">

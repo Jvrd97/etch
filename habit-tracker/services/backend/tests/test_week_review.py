@@ -1,0 +1,633 @@
+"""
+Weekly review: one answer for the whole week, cut on the day boundary.
+
+The sentences the file is about. A week is Monday to Sunday of *logical* days, so
+the night after Sunday still belongs to Sunday. A week that has not ended says so
+and is compared with the same number of days of the previous one, not with all of
+it. Reading the week costs the same number of SQL statements whether it holds one
+habit and one day or ten habits and fourteen days. And the words of the review
+come from the orchestration layer with a fake model in the test, never a real one.
+"""
+
+# [review:need-review] PHASE-03/221
+# summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with an absent sleep metric, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, and the AI narrative through a fake client
+from collections.abc import AsyncGenerator, Generator
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import event, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_llm_client
+from app.core import daytime
+from app.crud import day as day_crud
+from app.crud import health as health_crud
+from app.crud import role as role_crud
+from app.health.aggregate import HourBucket
+from app.llm.client import LLMClient, LLMError
+from app.main import app
+from app.models import Category, Entry, EntryValue, Field
+from app.models.field import FieldType
+from app.models.role import ROLE_CODE_CTO, ROLE_CODE_TECHLEAD
+from app.models.summary import DaySummary
+from app.models.week import Week
+from tests.conftest import test_engine
+
+URL = "/api/v1/week-review"
+
+# Monday 24 to Sunday 30 August 2026, and the week before it.
+WEEK = "2026-W35"
+PREVIOUS = "2026-W34"
+MONDAY = date(2026, 8, 24)
+SUNDAY = date(2026, 8, 30)
+PREVIOUS_MONDAY = date(2026, 8, 17)
+
+# What the review costs today is eight statements; the ceiling leaves room for one
+# more source without letting the count become a per-day or per-habit loop.
+MAX_QUERIES = 12
+
+STEPS = "HKQuantityTypeIdentifierStepCount"
+EXERCISE = "HKQuantityTypeIdentifierAppleExerciseTime"
+
+
+@pytest.fixture(autouse=True)
+async def seeded(
+    db_session: AsyncSession, seeded_goal: int
+) -> AsyncGenerator[None, None]:
+    """Rules, roles and the health catalogue as a migrated database has them."""
+    await day_crud.seed_rules(db_session)
+    await role_crud.seed_roles(db_session)
+    await health_crud.seed_catalog(db_session)
+    await db_session.commit()
+    yield
+
+
+async def close_day(
+    db: AsyncSession,
+    on: date,
+    verdict: str | None,
+    *,
+    done: int = 0,
+    total: int = 0,
+    anchors: tuple[int, int] = (0, 0),
+    work: int | None = None,
+    streak: int | None = None,
+) -> None:
+    """A closed day as the close endpoint leaves it, written straight to the table."""
+    day = await day_crud.ensure_day(db, on)
+    db.add(
+        DaySummary(
+            day_date=on,
+            rule_set_id=day.rule_set_id,
+            verdict=verdict,
+            tasks_done=done,
+            tasks_total=total,
+            anchors_done=anchors[0],
+            anchors_total=anchors[1],
+            work_minutes=work,
+            streak_after=streak,
+        )
+    )
+    await db.commit()
+
+
+async def add_minutes(db: AsyncSession, on: date, code: str, minutes: int) -> None:
+    """Minutes of a role, written the way the form writes them."""
+    role = await role_crud.get_role_by_code(db, code)
+    assert role is not None
+    await role_crud.write_time_block(
+        db, role_crud.TimeBlockDraft(work_day=on, role_id=role.id, minutes=minutes)
+    )
+    await db.commit()
+
+
+async def add_category(
+    db: AsyncSession, name: str, field_type: FieldType, *, avoid: bool = False
+) -> tuple[int, int]:
+    """A category with one field; answers with `(category_id, field_id)`."""
+    category = Category(name=name, streak_mode="avoid" if avoid else "build")
+    db.add(category)
+    await db.flush()
+    field = Field(category_id=category.id, name="v", field_type=field_type)
+    db.add(field)
+    await db.commit()
+    return category.id, field.id
+
+
+async def add_entry(
+    db: AsyncSession, category_id: int, field_id: int, on: date, value: str
+) -> None:
+    """One entry with one value."""
+    entry = Entry(category_id=category_id, entry_date=on)
+    db.add(entry)
+    await db.flush()
+    db.add(EntryValue(entry_id=entry.id, field_id=field_id, value=value))
+    await db.commit()
+
+
+async def add_health(db: AsyncSession, identifier: str, on: date, value: float) -> None:
+    """One hourly bucket of a catalogue metric, so the day folds to `value`."""
+    metrics = {m.identifier: m for m in await health_crud.get_catalog(db)}
+    await health_crud.upsert_buckets(
+        db,
+        metrics[identifier].id,
+        [
+            HourBucket(
+                local_date=on,
+                hour=12,
+                value=value,
+                sample_count=1,
+                min_value=value,
+                max_value=value,
+                utc_offset_minutes=120,
+            )
+        ],
+    )
+    await db.commit()
+
+
+async def get_week(client: AsyncClient, iso: str = WEEK) -> dict[str, Any]:
+    response = await client.get(f"{URL}/{iso}")
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+async def fill_two_weeks(db: AsyncSession) -> None:
+    """A previous week of two days and a current one of three, every number distinct."""
+    # Previous week: Monday won 2/4, Tuesday lost 1/4.
+    await close_day(db, PREVIOUS_MONDAY, "won", done=2, total=4, work=400, streak=1)
+    await close_day(
+        db, PREVIOUS_MONDAY + timedelta(days=1), "lost", done=1, total=4, streak=0
+    )
+    # This week: Monday won 4/4, Tuesday lost 1/4, Wednesday won 3/4.
+    await close_day(
+        db, MONDAY, "won", done=4, total=4, anchors=(2, 2), work=480, streak=1
+    )
+    await close_day(
+        db, MONDAY + timedelta(days=1), "lost", done=1, total=4, work=300, streak=0
+    )
+    await close_day(
+        db, MONDAY + timedelta(days=2), "won", done=3, total=4, work=420, streak=1
+    )
+
+
+# --- the window ---------------------------------------------------------------
+
+
+async def test_a_finished_week_counts_all_seven_days(client: AsyncClient) -> None:
+    body = await get_week(client)
+
+    window = body["window"]
+    assert (window["iso_code"], window["previous_iso_code"]) == (WEEK, PREVIOUS)
+    assert window["next_iso_code"] == "2026-W36"
+    assert (window["starts_on"], window["ends_on"]) == ("2026-08-24", "2026-08-30")
+    assert window["is_complete"] is True
+    assert (window["counted_days"], window["compared_days"]) == (7, 7)
+    assert window["as_of"] == "2026-08-30"
+    assert window["timezone"] == "Europe/Berlin"
+    assert window["day_start_hour"] == 4
+    assert [d["date"] for d in body["days"]] == [
+        (MONDAY + timedelta(days=i)).isoformat() for i in range(7)
+    ]
+
+
+async def test_a_code_that_names_no_week_is_404(client: AsyncClient) -> None:
+    response = await client.get(f"{URL}/2026-W99")
+    assert response.status_code == 404
+
+
+async def test_reading_a_week_writes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The retro snapshot is `/weeks`; the review is a read and leaves no row."""
+    await get_week(client)
+
+    count = (await db_session.execute(select(func.count()).select_from(Week))).scalar()
+    assert count == 0
+
+
+async def test_the_current_week_is_cut_on_the_day_boundary(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    03:59 Berlin on Monday is still Sunday's night, so the current week is the old one.
+
+    04:00 is the new day, and the new week with it. The week is named by the
+    server's boundary, never by the browser's calendar.
+    """
+    before = datetime(2026, 8, 31, 1, 59, tzinfo=timezone.utc)  # 03:59 in Berlin
+    monkeypatch.setattr(daytime, "now_utc", lambda: before)
+    old = (await client.get(URL)).json()["window"]
+    assert old["iso_code"] == WEEK
+    assert old["is_complete"] is False
+    assert old["as_of"] == "2026-08-30"
+
+    after = datetime(2026, 8, 31, 2, 0, tzinfo=timezone.utc)  # 04:00 in Berlin
+    monkeypatch.setattr(daytime, "now_utc", lambda: after)
+    new = (await client.get(URL)).json()["window"]
+    assert new["iso_code"] == "2026-W36"
+    assert new["counted_days"] == 1
+
+
+async def test_an_unfinished_week_is_marked_and_compared_over_the_same_days(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await fill_two_weeks(db_session)
+    # Friday of the previous week is far outside the two days compared below.
+    await close_day(
+        db_session, PREVIOUS_MONDAY + timedelta(days=4), "won", done=9, total=9
+    )
+    # A Wednesday noon: the week has three days, the third still going.
+    noon = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+
+    body = (await client.get(URL)).json()
+
+    window = body["window"]
+    assert window["is_complete"] is False
+    assert (window["counted_days"], window["compared_days"]) == (3, 3)
+    assert window["as_of"] == "2026-08-26"
+    # The previous Friday sits beyond the three compared days.
+    assert body["previous_totals"]["tasks_total"] == 8
+    assert [d["counted"] for d in body["days"]] == [True] * 3 + [False] * 4
+
+
+async def test_days_after_today_are_not_counted_even_if_they_hold_data(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    await close_day(db_session, MONDAY + timedelta(days=3), "won", done=1, total=1)
+    noon = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+
+    body = (await client.get(URL)).json()
+
+    assert body["totals"]["won_days"] == 1
+    assert body["days"][3]["counted"] is False
+
+
+async def test_a_week_that_has_not_started_is_empty_not_an_error(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    noon = datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+
+    body = await get_week(client)
+
+    assert body["window"]["counted_days"] == 0
+    assert body["window"]["as_of"] is None
+    assert body["totals"]["closed_days"] == 0
+
+
+# --- totals, comparison, best and worst day ------------------------------------
+
+
+async def test_totals_are_added_up_and_compared_with_the_previous_week(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_two_weeks(db_session)
+
+    body = await get_week(client)
+
+    totals = body["totals"]
+    assert (totals["closed_days"], totals["won_days"], totals["lost_days"]) == (3, 2, 1)
+    assert (totals["tasks_done"], totals["tasks_total"]) == (8, 12)
+    assert totals["plan_pct"] == 67
+    assert (totals["anchors_done"], totals["anchors_total"]) == (2, 2)
+    assert totals["work_minutes"] == 1200
+    assert totals["day_streak_end"] == 1
+    previous = body["previous_totals"]
+    assert (previous["won_days"], previous["tasks_done"]) == (1, 3)
+    assert previous["plan_pct"] == 38
+    assert previous["work_minutes"] == 400
+    assert body["delta"]["won_days"] == 1
+    assert body["delta"]["tasks_done"] == 5
+    assert body["delta"]["plan_pct"] == 29
+    assert body["delta"]["work_minutes"] == 800
+
+
+async def test_a_week_without_data_answers_null_not_zero(client: AsyncClient) -> None:
+    body = await get_week(client)
+
+    totals = body["totals"]
+    assert totals["plan_pct"] is None
+    assert totals["work_minutes"] is None
+    assert totals["day_streak_end"] is None
+    assert body["delta"]["plan_pct"] is None
+    assert body["delta"]["work_minutes"] is None
+    assert body["best_day"] is None and body["worst_day"] is None
+    assert body["categories"] == [] and body["habit_streaks"] == []
+
+
+async def test_the_best_day_is_won_with_the_fuller_plan_and_the_worst_is_lost(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_two_weeks(db_session)
+
+    body = await get_week(client)
+
+    assert body["best_day"] == "2026-08-24"  # won, 4/4
+    assert body["worst_day"] == "2026-08-25"  # lost, 1/4
+
+
+async def test_one_judged_day_is_best_and_has_no_worst(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+
+    body = await get_week(client)
+
+    assert body["best_day"] == "2026-08-24"
+    assert body["worst_day"] is None
+
+
+async def test_days_that_tie_have_no_worst(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    for offset in range(2):
+        await close_day(
+            db_session, MONDAY + timedelta(days=offset), "won", done=2, total=2
+        )
+
+    body = await get_week(client)
+
+    assert body["best_day"] == "2026-08-24"
+    assert body["worst_day"] is None
+
+
+async def test_a_day_is_reported_with_its_own_plan_share(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_two_weeks(db_session)
+
+    day = (await get_week(client))["days"][2]
+
+    assert day["verdict"] == "won"
+    assert (day["tasks_done"], day["tasks_total"], day["plan_pct"]) == (3, 4, 75)
+    assert day["work_minutes"] == 420
+
+
+# --- roles, categories, streaks, health ----------------------------------------
+
+
+async def test_role_time_is_split_and_compared_with_the_previous_week(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await add_minutes(db_session, MONDAY, ROLE_CODE_TECHLEAD, 300)
+    await add_minutes(db_session, SUNDAY, ROLE_CODE_CTO, 100)
+    await add_minutes(db_session, PREVIOUS_MONDAY, ROLE_CODE_TECHLEAD, 100)
+    # Sunday night before the week and Monday after it belong to neither.
+    await add_minutes(db_session, MONDAY - timedelta(days=1), ROLE_CODE_CTO, 999)
+    await add_minutes(db_session, SUNDAY + timedelta(days=1), ROLE_CODE_CTO, 999)
+
+    body = await get_week(client)
+
+    by_code = {r["role_code"]: r for r in body["roles"]}
+    assert (by_code["techlead"]["minutes"], by_code["techlead"]["share_pct"]) == (
+        300,
+        75,
+    )
+    assert by_code["techlead"]["previous_minutes"] == 100
+    assert by_code["techlead"]["delta_minutes"] == 200
+    assert by_code["cto"]["minutes"] == 100
+    assert body["totals"]["role_minutes"] == 400
+    assert body["days"][6]["role_minutes"] == 100
+
+
+async def test_category_time_sums_duration_fields_and_counts_logged_days(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    run, run_field = await add_category(db_session, "Бег", FieldType.DURATION)
+    water, water_field = await add_category(db_session, "Вода", FieldType.NUMBER)
+    await add_entry(db_session, run, run_field, MONDAY, "1800")
+    await add_entry(db_session, run, run_field, MONDAY, "600")
+    await add_entry(db_session, run, run_field, SUNDAY, "1200")
+    await add_entry(db_session, run, run_field, PREVIOUS_MONDAY, "900")
+    await add_entry(db_session, water, water_field, MONDAY, "500")
+
+    body = await get_week(client)
+
+    (only,) = body["categories"]
+    assert only["name"] == "Бег"
+    assert only["minutes"] == 60  # 3600 s
+    assert only["previous_minutes"] == 15
+    assert only["delta_minutes"] == 45
+    assert (only["entry_days"], only["previous_entry_days"]) == (2, 1)
+
+
+async def test_avoid_streak_is_counted_to_the_end_of_the_window_not_to_today(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    smoke, flag = await add_category(
+        db_session, "Курение", FieldType.BOOLEAN, avoid=True
+    )
+    await add_entry(db_session, smoke, flag, MONDAY - timedelta(days=2), "false")
+    await add_entry(db_session, smoke, flag, MONDAY + timedelta(days=2), "true")
+    # A relapse after the week must not shorten the streak of the week itself.
+    await add_entry(db_session, smoke, flag, SUNDAY + timedelta(days=3), "true")
+
+    body = await get_week(client)
+
+    (streak,) = body["habit_streaks"]
+    assert streak["name"] == "Курение"
+    assert streak["current_streak"] == 4  # Wednesday relapse, Sunday is day four
+    assert streak["relapses"] == 1
+
+
+async def test_an_avoid_category_not_yet_tracked_is_left_out(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    smoke, flag = await add_category(
+        db_session, "Курение", FieldType.BOOLEAN, avoid=True
+    )
+    await add_entry(db_session, smoke, flag, SUNDAY + timedelta(days=5), "true")
+
+    assert (await get_week(client))["habit_streaks"] == []
+
+
+async def test_health_is_compared_day_by_day_and_a_missing_sleep_metric_says_so(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await add_health(db_session, STEPS, MONDAY, 8000)
+    await add_health(db_session, STEPS, MONDAY + timedelta(days=1), 4000)
+    await add_health(db_session, STEPS, PREVIOUS_MONDAY, 3000)
+    await add_health(db_session, EXERCISE, SUNDAY, 45)
+
+    body = await get_week(client)
+
+    health = {m["key"]: m for m in body["health"]}
+    steps = health["steps"]
+    assert steps["available"] is True
+    assert (steps["total"], steps["avg_per_day"], steps["days_with_data"]) == (
+        12000,
+        6000,
+        2,
+    )
+    assert steps["previous_avg_per_day"] == 3000
+    assert steps["delta_avg_per_day"] == 3000
+    assert steps["daily"] == [8000, 4000, None, None, None, None, None]
+    workouts = health["workouts"]
+    assert (workouts["total"], workouts["unit"]) == (45, "min")
+    assert workouts["daily"][6] == 45
+    # Sleep is not in the catalogue: "нет такой метрики" is not "спал ноль часов".
+    sleep = health["sleep"]
+    assert sleep["available"] is False
+    assert sleep["total"] is None and sleep["daily"] == [None] * 7
+
+
+# --- the number of statements --------------------------------------------------
+
+
+async def count_statements(client: AsyncClient) -> int:
+    statements: list[str] = []
+
+    def count(*args: Any) -> None:
+        statements.append(str(args[2]))
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+    try:
+        await get_week(client)
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+    return len(statements)
+
+
+async def test_reading_the_week_costs_the_same_with_one_habit_or_ten(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    The class of error: a loop that asks the database once per day or per habit.
+
+    The week is read once while it holds a single day and a single category, and
+    again after fourteen days, ten duration categories, ten avoid categories and
+    health on every day have been added. The count must not move.
+    """
+    run, run_field = await add_category(db_session, "Бег", FieldType.DURATION)
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    await add_entry(db_session, run, run_field, MONDAY, "600")
+    small = await count_statements(client)
+
+    for offset in range(14):
+        on = PREVIOUS_MONDAY + timedelta(days=offset)
+        if on != MONDAY:
+            await close_day(db_session, on, "won", done=offset, total=offset + 1)
+        await add_minutes(db_session, on, ROLE_CODE_TECHLEAD, 60 + offset)
+        await add_health(db_session, STEPS, on, 1000 + offset)
+        await add_health(db_session, EXERCISE, on, 10 + offset)
+    for index in range(10):
+        category, field = await add_category(
+            db_session, f"Привычка {index}", FieldType.DURATION
+        )
+        await add_entry(
+            db_session, category, field, MONDAY + timedelta(days=index % 7), "60"
+        )
+        smoke, flag = await add_category(
+            db_session, f"Срыв {index}", FieldType.BOOLEAN, avoid=True
+        )
+        await add_entry(
+            db_session, smoke, flag, MONDAY + timedelta(days=index % 7), "true"
+        )
+    large = await count_statements(client)
+
+    assert large == small
+    assert large <= MAX_QUERIES
+
+
+# --- the narrative through the orchestration layer ------------------------------
+
+
+class FakeLLM(LLMClient):
+    """A model that answers with a canned text and remembers what it was asked."""
+
+    model = "fake-model"
+
+    def __init__(self, text: str = "Неделя прошла ровно.") -> None:
+        self.text = text
+        self.prompts: list[str] = []
+
+    async def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.text
+
+
+class FailingLLM(LLMClient):
+    async def generate(self, prompt: str) -> str:
+        raise LLMError("upstream")
+
+
+@pytest.fixture
+def llm() -> Generator[FakeLLM, None, None]:
+    fake = FakeLLM()
+    app.dependency_overrides[get_llm_client] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_llm_client, None)
+
+
+async def test_the_narrative_is_written_from_the_numbers_of_the_week(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    await fill_two_weeks(db_session)
+
+    response = await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["iso_code"], body["text"], body["model"]) == (
+        WEEK,
+        "Неделя прошла ровно.",
+        "fake-model",
+    )
+    (prompt,) = llm.prompts
+    assert "2 из 3" in prompt  # won days of closed days
+    assert "8 из 12" in prompt  # tasks
+
+
+async def test_the_prompt_tells_the_model_the_week_is_not_over(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await fill_two_weeks(db_session)
+    noon = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: noon)
+
+    response = await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert response.status_code == 200
+    assert "не закончилась" in llm.prompts[0]
+
+
+async def test_a_week_with_nothing_in_it_does_not_reach_the_model(
+    client: AsyncClient, llm: FakeLLM
+) -> None:
+    response = await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert response.status_code == 422
+    assert llm.prompts == []
+
+
+async def test_no_backend_is_503_and_a_failing_one_is_502(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_two_weeks(db_session)
+
+    app.dependency_overrides[get_llm_client] = lambda: None
+    try:
+        assert (await client.post(f"{URL}/{WEEK}/narrative")).status_code == 503
+        app.dependency_overrides[get_llm_client] = lambda: FailingLLM()
+        assert (await client.post(f"{URL}/{WEEK}/narrative")).status_code == 502
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+
+async def test_the_narrative_of_a_bad_code_is_404(
+    client: AsyncClient, llm: FakeLLM
+) -> None:
+    response = await client.post(f"{URL}/2026-W99/narrative")
+
+    assert response.status_code == 404
+    assert llm.prompts == []

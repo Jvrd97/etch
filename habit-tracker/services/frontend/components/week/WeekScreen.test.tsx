@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/221
+// summary: + the retro page links to the review of the same week
 // summary: component tests for the week page — won days, the streak at its end and when the counters were taken are on the screen, the sunday checklist shows its ticks, and a week whose retro nobody wrote opens and says so instead of looking broken
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -62,6 +63,15 @@ afterEach(() => {
 });
 
 describe('WeekScreen', () => {
+  it('links the retro page to the review of the same week', async () => {
+    render(<WeekScreen iso="2026-W35" today={TODAY} />);
+
+    await waitFor(() => expect(screen.getByText('Обзор недели →')).toBeDefined());
+    expect(screen.getByText('Обзор недели →').closest('a')?.getAttribute('href')).toBe(
+      '/week/review/2026-W35'
+    );
+  });
+
   it('shows the won days, the streak at the end and when it was counted', async () => {
     render(<WeekScreen iso="2026-W35" today={TODAY} />);
 

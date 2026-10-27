@@ -1,0 +1,154 @@
+// [review:need-review] PHASE-03/221
+// summary: a finished week with three judged days, two roles, one category, one avoid streak and three health figures — the answer the screen and vocabulary tests start from, each test overriding only what it is about
+
+import type { WeekReview } from '@/lib/api';
+
+export function weekReviewFixture(): WeekReview {
+  return {
+    window: {
+      iso_code: '2026-W35',
+      starts_on: '2026-08-24',
+      ends_on: '2026-08-30',
+      timezone: 'Europe/Berlin',
+      day_start_hour: 4,
+      is_complete: true,
+      counted_days: 7,
+      as_of: '2026-08-30',
+      previous_iso_code: '2026-W34',
+      next_iso_code: '2026-W36',
+      compared_days: 7,
+    },
+    totals: {
+      closed_days: 3,
+      won_days: 2,
+      lost_days: 1,
+      tasks_done: 8,
+      tasks_total: 12,
+      plan_pct: 67,
+      anchors_done: 2,
+      anchors_total: 2,
+      work_minutes: 1200,
+      role_minutes: 400,
+      day_streak_end: 1,
+    },
+    previous_totals: {
+      closed_days: 2,
+      won_days: 1,
+      lost_days: 1,
+      tasks_done: 3,
+      tasks_total: 8,
+      plan_pct: 38,
+      anchors_done: 0,
+      anchors_total: 0,
+      work_minutes: 400,
+      role_minutes: 100,
+      day_streak_end: 0,
+    },
+    delta: { won_days: 1, tasks_done: 5, plan_pct: 29, work_minutes: 800, role_minutes: 300 },
+    days: [
+      day(0, 'won', 4, 4, 100),
+      day(1, 'lost', 1, 4, 25),
+      day(2, 'won', 3, 4, 75),
+      day(3, null, 0, 0, null),
+      day(4, null, 0, 0, null),
+      day(5, null, 0, 0, null),
+      day(6, null, 0, 0, null),
+    ],
+    best_day: '2026-08-24',
+    worst_day: '2026-08-25',
+    roles: [
+      {
+        role_id: 1,
+        role_code: 'techlead',
+        title: 'Тимлид',
+        minutes: 300,
+        share_pct: 75,
+        target_share_pct: 50,
+        previous_minutes: 100,
+        delta_minutes: 200,
+      },
+      {
+        role_id: 2,
+        role_code: 'architect',
+        title: 'Архитектор',
+        minutes: 0,
+        share_pct: 0,
+        target_share_pct: 20,
+        previous_minutes: 0,
+        delta_minutes: 0,
+      },
+    ],
+    categories: [
+      {
+        category_id: 5,
+        name: 'Бег',
+        minutes: 60,
+        previous_minutes: 15,
+        delta_minutes: 45,
+        entry_days: 2,
+        previous_entry_days: 1,
+      },
+    ],
+    habit_streaks: [{ category_id: 9, name: 'Курение', current_streak: 4, relapses: 1 }],
+    health: [
+      {
+        key: 'sleep',
+        name: 'Сон',
+        unit: null,
+        available: false,
+        total: null,
+        avg_per_day: null,
+        days_with_data: 0,
+        previous_avg_per_day: null,
+        delta_avg_per_day: null,
+        daily: [null, null, null, null, null, null, null],
+      },
+      {
+        key: 'steps',
+        name: 'Шаги',
+        unit: 'count',
+        available: true,
+        total: 12000,
+        avg_per_day: 6000,
+        days_with_data: 2,
+        previous_avg_per_day: 3000,
+        delta_avg_per_day: 3000,
+        daily: [8000, 4000, null, null, null, null, null],
+      },
+      {
+        key: 'workouts',
+        name: 'Тренировки',
+        unit: 'min',
+        available: true,
+        total: 45,
+        avg_per_day: 45,
+        days_with_data: 1,
+        previous_avg_per_day: null,
+        delta_avg_per_day: null,
+        daily: [null, null, null, null, null, null, 45],
+      },
+    ],
+  };
+}
+
+function day(
+  weekday: number,
+  verdict: 'won' | 'lost' | null,
+  done: number,
+  total: number,
+  planPct: number | null
+): WeekReview['days'][number] {
+  const date = `2026-08-${String(24 + weekday).padStart(2, '0')}`;
+  return {
+    date,
+    weekday,
+    counted: true,
+    verdict,
+    tasks_done: done,
+    tasks_total: total,
+    plan_pct: planPct,
+    work_minutes: null,
+    role_minutes: 0,
+    streak_after: null,
+  };
+}
