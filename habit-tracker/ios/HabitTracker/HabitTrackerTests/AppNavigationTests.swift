@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/208, PHASE-03/230
-// summary: tests for the root navigation — five tabs in mobile-web order, opening on Today, every former screen behind More; a More screen holding an unconfirmed write cannot be popped by the system (a second tap on the selected tab), every other pop and every push goes through
+// [review:need-review] PHASE-01/208, PHASE-03/230, PHASE-03/250
+// summary: tests for the root navigation — five tabs in mobile-web order, opening on Today, every former screen behind More; a More screen holding an unconfirmed write cannot be popped by the system (a second tap on the selected tab), every other pop and every push goes through; the block is a set of holders, so an old screen going away does not lift the hold of the new one
 import XCTest
 @testable import HabitTracker
 
@@ -62,7 +62,7 @@ final class AppNavigationTests: XCTestCase {
     func testAHeldMoreScreenRefusesThePopToTheRoot() {
         var navigation = AppNavigation()
         navigation.open(.more(.dailySummary))
-        navigation.moreLeaveBlocked = true
+        navigation.holdMoreLeave(UUID())
 
         navigation.setMorePath([])
 
@@ -72,12 +72,13 @@ final class AppNavigationTests: XCTestCase {
     func testAHeldMoreScreenStillAllowsPushesAndTheScreensOwnLeave() {
         var navigation = AppNavigation()
         navigation.open(.more(.dashboard))
-        navigation.moreLeaveBlocked = true
+        let holder = UUID()
+        navigation.holdMoreLeave(holder)
 
         navigation.setMorePath([.dashboard, .journal])
         XCTAssertEqual(navigation.morePath, [.dashboard, .journal])
 
-        navigation.moreLeaveBlocked = false
+        navigation.releaseMoreLeave(holder)
         navigation.setMorePath([])
         XCTAssertEqual(navigation.morePath, [])
     }
@@ -85,11 +86,39 @@ final class AppNavigationTests: XCTestCase {
     func testARefusedPopChangesTheStateSoTheStackIsDrawnAgain() {
         var navigation = AppNavigation()
         navigation.open(.more(.dailySummary))
-        navigation.moreLeaveBlocked = true
+        navigation.holdMoreLeave(UUID())
         let before = navigation
 
         navigation.setMorePath([])
 
         XCTAssertNotEqual(navigation, before, "an unchanged value would not redraw the stack the system already popped")
+    }
+
+    func testAnOldScreenGoingAwayAfterTheNewOneAppearedKeepsTheNewOnesHold() {
+        var navigation = AppNavigation()
+        navigation.open(.more(.dailySummary))
+        let old = UUID()
+        let new = UUID()
+        navigation.holdMoreLeave(old)
+
+        // SwiftUI may show the new instance before the old one has gone.
+        navigation.holdMoreLeave(new)
+        navigation.releaseMoreLeave(old)
+
+        XCTAssertTrue(navigation.moreLeaveBlocked)
+        navigation.setMorePath([])
+        XCTAssertEqual(navigation.morePath, [.dailySummary])
+
+        navigation.releaseMoreLeave(new)
+        XCTAssertFalse(navigation.moreLeaveBlocked)
+    }
+
+    func testReleasingAHoldThatWasNeverTakenChangesNothing() {
+        var navigation = AppNavigation()
+        let before = navigation
+
+        navigation.releaseMoreLeave(UUID())
+
+        XCTAssertEqual(navigation, before)
     }
 }

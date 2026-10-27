@@ -683,3 +683,93 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **Ниты.** `waitUntil` вынесен в `TestWaiting.swift` и падает через `XCTFail` по таймауту. Новые тесты вписаны в строки summary.
 
 Мутации: откат флага прямой попытки, 502/504, повторной записи кэша в трёх моделях валит 7 тестов. Возврат «Дня» к поведению круга 2 (перечитывание сбрасывает поколение, сбой ставит ошибку) валит тест упавшего перечитывания.
+
+
+## 2026-10-27 — PHASE-03/248 и PHASE-03/256: экран «День» без ложных конфликтов, остатки очереди
+
+Тронуто 8 файлов iOS (все `mod`; `TodayViewModel` ещё и по просьбе координатора): `Features/Day/DayViewModel.swift`, `Cache/OutboxQueue.swift`, `Features/Today/TodayViewModel.swift`, тесты `DayViewModelTests`, `DayOfflineTests`, `DayFixtures`, `OutboxQueueTests`, `TodayViewModelTests`.
+
+- **A→B→A.** Сохранение закончилось на другом дне, а черновик набран поверх той же базы: черновик перебазируется на сохранённый текст (`Typed(draft.text, base: text)`). Возврат на A не поднимает «изменился на сервере» с собственным текстом.
+- **Третий текст в устаревшем ответе.** `savedNotebooks` хранит `(text, base, epoch)`. Ответ подменяется на сохранённый текст, только если он равен базе или тексту сохранения. Иначе на экране остаётся сохранённый текст, `notebookConflict` держит третий, сохранение ждёт выбора.
+- **Кэш прежнего дня.** Загрузка пишет в кэш сама при ответе. `newestCached[key]` помнит ответ самого нового чтения по ключу; запоздавшая загрузка возвращает его до проверки поколения. Тихое перечитывание кэш не восстанавливает: оно туда не писало.
+- **502/504 при прямой отметке.** Выбрано тихое перечитывание: отметка, которая легла, остаётся без ошибки; не легла — откат с прежним сообщением. Ответ 500 откатывается без чтения.
+- **Today: второй `load()`.** `.loading` ставится только пока данных нет; повторная загрузка (pull-to-refresh, закрытый лист голосовой сводки) держит `.loaded` и прокрутку, сбой идёт в `saveErrorMessage` («Экран не обновился: …»). Первый сбой остаётся `.failure`.
+- **Мелочи.** Карточка «сохранение заменило текст» не возвращается поверх того же серверного текста; `savedNotebooks` не пишется при офлайн-постановке; `.secureConnectionFailed` в «не дошло» (тело при сбое TLS не уходит); метка кэша Today после перечитывания записей остаётся возрастом категорий и стриков; хуки `MockDayAPI` бросают ошибки вместо `try!`, а `tearDown` обоих тестовых классов падает, если выставленный хук не сработал (`hooksNeverRun`).
+
+Проверки: `xcodebuild test` на av04-iPhone17Pro с подписью симулятора — 682 из 682. Мутации: старый код при новых тестах валит 13 проверок в 8 тестах; снятие `guard generation == loadGeneration` валит `testARereadAnsweredWhileAnotherDayLoadsIsNotShown`, снятие `!Task.isCancelled` — `testACancelledPullToRefreshSaysNothing`; возврат безусловного `.loading` в Today — два теста второй загрузки. Не проверено: экран глазами, телефон; отдельного теста на «`savedNotebooks` не пишется при офлайн-постановке» нет (в наблюдаемом поведении очередь перекрывает этот текст сама).
+### PHASE-03/243 и PHASE-03/250: остаток «Недели» и голосовой сводки
+
+Тронуто 20 файлов. `new`: `services/backend/tests/test_ios_week_fixture.py`. Остальные `mod`: `Features/Week/{WeekFormat,WeekSections,WeekView,WeekViewModel}.swift`, `Features/DailySummary/{DailySummaryView,DailySummaryViewModel}.swift`, `Features/Chat/ChatPlanCardView.swift` (один `switch`), `API/DTOs+PlanOperations.swift`, `App/{AppNavigation,MoreLeaveGuard,RootView}.swift`, тесты `Week{Fixtures,FormatTests,ViewModelTests}`, `DailySummaryViewModelTests`, `PlanOperationDTOTests`, `AppNavigationTests`, `README.md`, этот файл.
+
+- **#243.** Тайм-аут итога называется «Модель отвечает долго», клиентский тайм-аут 150 с при серверных 120 (`LLM_TIMEOUT_SECONDS`): 502 сервера приходит раньше. Кнопки переходов имеют зону 44 pt на каждой кнопке. Свежий ответ недели, открытой по коду, кладётся и под `current`. Плашка «не закончилась» скрыта у кэшированной недели, чей `endsOn` позади (сутки по часовому поясу недели и `dayStartHour`). «Текущая» не показывается на текущей неделе. Итог пишется одним запросом на неделю: счётчик `narrativeToken` по образцу `generation`, возврат на неделю, где итог ещё пишется, показывает «пишу». `.task` при возврате читает на месте (`appear()`). `DayOutcome` вместо сравнения русского слова.
+- **Сверка фикстуры** — `tests/test_ios_week_fixture.py`: достаёт JSON из `WeekFixtures.swift` и сверяет с `WeekReviewResponse` (те же поля на каждом уровне, ответ проходит схему). Переименование поля на сервере краснит тест. Без исходников iOS рядом (образ docker) тест пропускается.
+- **Решение про цифры здоровья** — раздел в `ios/HabitTracker/README.md`.
+- **#250.** Лист голоса возвращает управление Today, только если из него уходила запись (`mayHaveChangedTheDay`, не сбрасывается `reset()`); закрытие без записи не вызывает ни `load`, ни `flush`. После настоящей записи Today по-прежнему зовёт `reload()` со своим загрузчиком: `TodayViewModel.load` принадлежит #248. `JournalOpDTO` читает ответ без `op`. Защита выхода из «Ещё» — набор держателей `moreLeaveHolders` с токеном на экземпляр вместо общего `Bool`. Мелочи: `.accessibilityAction(.escape)`, два `init` у `DailySummaryView` (`onApplied` больше не теряется молча), retainer усыновляет модель в `onAppear` и отпускает в `onDisappear` после обычного выхода, `switch` по `JournalOpDTO.Mode` в карточке чата, заголовок `PlanOperationDTOTests`.
+- Не проверено на устройстве: повторное нажатие вкладки «Ещё», мигание, «tried to update multiple times per frame», рассинхрон пути — это #215.
+
+### PHASE-03/243 и PHASE-03/250, круг 2
+
+Тронуто 11 файлов, все `mod`: `Features/Week/{WeekFormat,WeekViewModel}.swift`, `Features/DailySummary/DailySummaryView.swift`, `API/DTOs+PlanOperations.swift`, `App/RootView.swift` (шапка), тесты `WeekFixtures`, `WeekFormatTests`, `WeekViewModelTests`, `DailySummaryViewModelTests`, `PlanOperationDTOTests`, этот файл.
+
+- **Блокер: понедельник.** Сервер отдаёт `as_of = null` и для будущей недели, и для идущей, пока её первый день не закрыт. `WeekFormat.isRunning(_:at:)` теперь решает по календарю: неделя не завершена, её `startsOn` не позже дня сервера и `endsOn` не раньше него. Кнопка «Текущая» и ключ `current` идут через эту функцию (`isShowingRunningWeek`, запись кэша в `show`). Фикстуры согласованы по датам: `week(...)` и `runningWeek(iso:)` сдвигают `starts_on/ends_on`; `unclosedWeek(iso:)` даёт форму ответа понедельника и будущей недели. Красный тест первым ходом: `testOnMondayBeforeTheDayClosesTheCurrentWeekIsStillCurrent` падал на трёх проверках (кнопка, running, ключ `current`) до правки кода.
+- **Решение «звать ли Today».** `VoiceDayDismissal.shouldReloadToday(after:)` — чистая функция, тест на оба исхода и на лист, который не открывался.
+- **Лист собран через `sheet(item:)`** с `VoiceDaySession`; закрытие любым способом идёт через привязку и запоминает модель для `onDismiss`. На симуляторе первое открытие листа глазами не проверялось: UI-теста нет.
+- Нит-правки: комментарий про тайм-аут (SDK повторяет, до ~360 с), `JournalOpDTO.mode` без ключа читается как `append`, оговорка про переход на летнее время в `serverDay`, шапка `RootView`.
+
+## 2026-10-27 — PHASE-03/240
+
+Экран «Добавки» (More → Добавки): список, добавление, «Принял» с работой без сети через общую очередь.
+
+Тронуто 18 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
+
+- **Очередь.** Новый случай `OutboxAction.markSupplementTaken` хранит id добавки и день нажатия, имени в нём нет (имя только в подписи `Принял: <имя>` для полосы «ждёт отправки»). Реплей идёт через `OutboxSupplementsAPI`; поле `OutboxReplay.supplements` необязательное, существующие вызовы не менялись. В `TodayViewModel` и `DayViewModel` добавлено только имя нового случая в два `switch`.
+- **День нажатия.** Прямое нажатие день не шлёт: решает сервер. Нажатие из очереди шлёт `intake_date` по часам телефона со сменой суток в 04:00 (`SupplementsFormat.dayStartHour`). Сервер сверяет его со своим днём и отвечает 409, если день сменился. Запись уходит в «Не отправлено» с кнопкой «Записать в сегодня» (`forcedRetry` убирает дату).
+- **Кэш списка** хранит день чтения: список из кэша за другой день не показывает «принято сегодня».
+- **Логи.** Ни один файл фичи не пишет в лог; тест `testNoSupplementSourceWritesToALog` сканирует исходники.
+- Не сделано: добавление без сети (нужен id с сервера), правка и архив добавок (тикет не просил), вёрстка на телефоне (#215).
+
+### Слияние main (629b573: #235, #249, #240) в swarm/248
+
+Конфликты были в четырёх местах: шапки `OutboxQueue.swift`, `DayViewModel.swift`, `TodayViewModel.swift` и этот файл. Код сошёлся без правок: случай `markSupplementTaken` из #240 стоит в `writesADay` («День») и в переключателе `TodayViewModel` как был; ветки #248 и #256 (черновик блокнота, `savedNotebooks`, кэш по ключу) его не затрагивают, потому что работают только с `saveNotebook`, `setDayMark` и чтениями дня. Отметка приёма добавки не заменяет старую того же target, не пишет `savedNotebooks`, не считается записью дня.
+
+### PHASE-03/248 и PHASE-03/256, круг 2
+
+Тронуто: `Features/Day/DayViewModel.swift`, `Features/Today/TodayViewModel.swift`, тесты `DayViewModelTests`, `DayOfflineTests`, `TodayViewModelTests`; бэкенд — `tests/test_quick_mark_occurred_at.py`.
+
+- **Блокер: строка «Экран не обновился» на Today.** `TodayViewModel` помнит строку, которую написал сбойный `load()`, и удачный `load()` снимает именно её. Ошибка другого действия (сохранение) остаётся.
+- **Очередь и `savedNotebooks`.** В ветке «старая запись ждёт в очереди» запись `savedNotebooks` ставится, только если после `flush` записи этого блокнота нет в очереди совсем: ни ожидающей, ни отказанной (раньше считалась дошедшей). Тесты на обе ветки: ответ чтения со старой базой не превращается в текст, который сервер не принял.
+- **Третий текст.** Черновик строится поверх старой базы (`Typed(T, base: O)`), поэтому следующее тихое перечитывание с тем же W снова поднимает конфликт; карточка исчезает только по выбору («оставить мой», «взять серверный»). Кнопка сохранения при этом включена, но заблокирована конфликтом.
+- **Прямая отметка с 502/504.** Выбран второй вариант тикета: отметка ставится в очередь с `mayHaveLanded: true`, как после таймаута, а не откатывается. Перечитывание после отказа убрано: оно могло проиграть бэкенду, дописавшему запись позже. Ответ 500 откатывается без очереди. Следствие: при долгом сбое прокси отметка остаётся на экране с признаком очереди и после серии ошибок уходит в список «не отправлено».
+- **Нити.** Восстановленная копия кэша «Дня» берёт метку времени чтения, из которого она пришла; `newestCached` держит не больше 8 дней (вытесняется самое старое чтение); `tearDown` обоих классов зовёт `super`.
+- **Бэкенд.** Тест ветки `other-button`: исходный итог дня равен 250 (не None), после проигранной вставки он тот же, журнал дня содержит одно событие, 409 называет другую кнопку.
+
+Проверки: `xcodebuild test` на av04-iPhone17Pro с подписью симулятора — 760 из 760 после слияния main 055fa7f (#254); до слияния main было 719. Бэкенд: 7 файлов quick_marks — 106 passed, `ruff`, `mypy --strict` чисто. Мутации: снять снятие строки, убрать проверку очереди, вернуть базу = текст, `cache.now()` вместо метки чтения, не ставить 502/504 в очередь — каждая валит свой тест.
+### PHASE-03/254, круг 1 (2026-10-27)
+
+В diff 10 файлов. iOS, 7: `Features/HealthSync/{HealthKitSampleSource,HealthPump,HealthSyncView}.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests` (`mod`), этот файл (`mod`). Вне iOS, 3: ADR-0020 (поправка A2, `mod`), `services/backend/tests/test_health_catalog_fixture.py` и `tests/fixtures/health/metric_catalog.json` (`new`).
+
+- `HealthStoreQuerying: Sendable`; `FakeHealthStore` — `@unchecked Sendable` с обоснованием.
+- Текст `.skipped` не обещает, что повторное нажатие поможет: тот же исход получает и iPad.
+- Тест маппера читает `metric_catalog.json` по `#filePath`; бэкенд-тест держит файл равным `SEED_METRICS`. Если iOS-тест запустят вне дерева репозитория, он упадёт на чтении файла, а не пройдёт молча.
+- Перевод `errorNoData` и живой пояс переделаны в круге 2.
+
+### PHASE-03/254, круг 2 (2026-10-27)
+
+Тронуто 8 файлов: `HealthKitSampleSource.swift`, `HealthPump.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests`, ADR-0020 (`mod`), этот файл (`mod`).
+
+- **ADR, блокер.** Абзац о смене пояса переписан: завышение вечное и касается всех дней окна, отправленных в старом поясе, и дискретных метрик без пояса семпла. Исправление вынесено в тикет #260. Добавлена оговорка про повторный час осеннего перевода: `sample_count` = 2, `min` и `max` — отдельные суммы.
+- **`errorNoData`.** Перевод в пустой список переехал из `HKHealthStore.hourlySums` в `HealthPump.readWindow` (`hourlySumsOrEmpty`): двойник бросает ошибку, и тест проверяет связку. Пустое окно шагов не мешает отправке пульса покоя; любая другая ошибка даёт `.failed(.readFailed)`.
+- **Пояс.** Насос открывает `calendar` и `mapper`, тест строит насос без аргументов и сравнивает с `autoupdatingCurrent` (отличим от `.current`). Статическая константа `deviceCalendar` убрана. В комментарии `readWindow` названа редкая гонка: смена пояса посреди прогона.
+- **Единицы.** Копия списка серверных единиц в тесте маппера удалена: единицы сверяет тест фикстуры.
+
+Мутации: возврат `.current` в календарь и подмена кода в `catch` валят по одному тесту (`testPumpBuiltWithoutZoneArguments…`, `testNoDataErrorOnTheStepWindow…`).
+
+### PHASE-03/243 и PHASE-03/250: слияние main и замечания круга 2
+
+Слит `main` (#235, #249, #240, #254). Конфликты только в шапках `App/AppNavigation.swift`, `App/RootView.swift` и в хвосте этого файла: оставлены обе стороны, держатели с токенами и строка «Добавки» (#240) целиком. Дополнительно тронуто: `Features/DailySummary/DailySummaryView.swift`, `Features/Week/{WeekFormat,WeekViewModel}.swift` (шапки), тесты `DailySummaryViewModelTests`, `WeekFormatTests`.
+
+- **Повторное `nil` в привязку листа.** Состояние листа вынесено в `VoiceDayPresentation` (значение, без вида): `close()` идемпотентна и запоминает модель только пока лист есть. Закрытие во время `.applying`, затем успешный `onApplied` не стирают модель, и Today перечитывается. Тест `testClosingTwiceInARowDoesNotForgetTheFirstClose`.
+- **Поздний `onApplied` старой модели** называет свою сессию (`VoiceDaySession` передаёт её через слабую ссылку), `close(ifShowing:)` закрывает только её лист. Тест `testTheLateAnswerOfAnOldSheetDoesNotCloseTheNewOne`.
+- **`DailySummaryView.init(onApplied:)`** удалён вместе с фразами о нём в шапке: вызывающего не было, `retainer` теперь не опциональный.
+- Граница понедельника 03:59 / 04:00 проверена в `WeekFormatTests`. `VoiceDaySession` оставлен `internal`: на него ссылаются тесты.
+- Глазами в симуляторе лист не проверялся.

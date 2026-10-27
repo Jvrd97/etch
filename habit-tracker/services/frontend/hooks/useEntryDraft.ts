@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/177
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/177, PHASE-03/252
 // summary: entry draft can delegate an existing Today entry update to the optimistic screen owner while retaining its default persistence
+// summary: #252 — the default entry date follows the `date` the screen passes (the server's day, which can arrive after the sheet opened) until the reader picks one
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { entriesAPI, type Category, type Entry, type EntryCreate } from '@/lib/api';
@@ -76,7 +77,10 @@ export function useEntryDraft({
   const [categoryId, setCategoryIdState] = useState<number>(
     editing?.category_id ?? initialCategoryId ?? categories[0]?.id ?? 0
   );
-  const [entryDate, setEntryDate] = useState(editing?.entry_date ?? date ?? todayISO());
+  // The reader's pick wins; else the entry's own day, else the day the screen passed (the
+  // server's, which may land after the sheet is open), else the browser's.
+  const [pickedDate, setEntryDate] = useState<string | null>(null);
+  const entryDate = pickedDate ?? editing?.entry_date ?? date ?? todayISO();
   const [notes, setNotes] = useState(editing?.notes ?? '');
   const [values, setValues] = useState<EntryDraftValues>(() =>
     editing ? draftValuesFromEntry(editing) : {}

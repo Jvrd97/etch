@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/162, PHASE-03/237
+// [review:need-review] PHASE-03/162, PHASE-03/237, PHASE-03/247
 // summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read
 // summary: the desktop Today shows one server date in the title, the records read, the obligation count and the entry form while the browser clock is a day behind; with an unknown day there is no date line, no «nothing to track» and the ask-about-the-day button is disabled
 // [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
@@ -361,8 +361,33 @@ describe('the day of /today comes from the server', () => {
     await renderToday();
 
     expect(screen.getByText(/^2026-07-30 — /)).toBeDefined();
-    expect(getEntries).toHaveBeenCalledWith({ startDate: '2026-07-30', endDate: '2026-07-30' });
+    // The records are asked for a window around the browser's day and cut to the server's, or read
+    // exactly when the server's day is outside it: the read that supplies them holds the server's day.
+    const [params] = getEntries.mock.calls.at(-1) ?? [];
+    expect(params.startDate <= '2026-07-30' && '2026-07-30' <= params.endDate).toBe(true);
     expect(screen.getByRole('button', { name: WATER_MARK.label })).toBeDefined();
+  });
+
+  it('asks the server for its day once for the title and the day-mode badge together', async () => {
+    // A second read could hear another day around the boundary: the badge would then
+    // decide a day the title does not show.
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    await renderToday();
+    await waitFor(() => expect(screen.getByLabelText('Вид дня')).toBeDefined());
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/^2026-07-30 — /)).toBeDefined();
+  });
+
+  it('starts a new obligation on the server date and ends it a week later, in any zone', async () => {
+    // Local noon of the 29th: the browser says 07-29 in any zone, the server runs 07-30.
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    await renderToday();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новый' }));
+
+    expect((screen.getByLabelText('Начало') as HTMLInputElement).value).toBe('2026-07-30');
+    expect((screen.getByLabelText('Конец') as HTMLInputElement).value).toBe('2026-08-05');
   });
 
   it('counts a day of an obligation by the server date, not the browser one', async () => {

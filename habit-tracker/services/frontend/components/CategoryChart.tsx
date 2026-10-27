@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/23-checklist-bar-streaks, #78
+// [review:need-review] PHASE-01/23-checklist-bar-streaks, #78, PHASE-03/252
+// summary: #252 — the current streak of a checklist category is counted to the server's day, not the browser's clock
 // summary: category chart - line chart for form categories; for display_mode=checklist a done-count bar chart plus per-field current-streak badges; both show each number field's daily average for the selected period and open on the period a dashboard trend link carries
 
 import { useMemo, useState } from 'react';
@@ -31,7 +32,7 @@ import {
   cumulate,
   currentStreak,
 } from '@/lib/chart-utils';
-import { todayISO } from '@/lib/date';
+import { useDisplayDay } from '@/hooks/useServerDay';
 import { orderedFields } from '@/lib/today-categories';
 import {
   averageDailyValue,
@@ -147,7 +148,7 @@ function ChecklistCategoryChart({ category, days, initialPeriod }: ChartBodyProp
       sliceByPeriod(buildChecklistBarData(days, category.id, boolFields), period),
     [days, category.id, boolFields, period]
   );
-  const today = useMemo(() => todayISO(), []);
+  const today = useDisplayDay();
   const streaks = useMemo(
     () =>
       boolFields.map((field) => ({

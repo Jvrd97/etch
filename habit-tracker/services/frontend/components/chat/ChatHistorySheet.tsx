@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/203, PHASE-03/197
+// [review:need-review] PHASE-03/203, PHASE-03/197, PHASE-03/252
+// summary: #252 — the list groups «today»/«yesterday» by the server's day, not the browser's clock
 // summary: PHASE-03/197 hands the panel's list the shared delete — it reports a deleted row to the screen, which decides whether the open conversation went, and passes on why the open one cannot be deleted right now
 // summary: the phone's history panel over /m/chat — the desktop list and its loading in a left panel above the chat sheet, a picked row or a new conversation closing it, and the modal contract its role promises: Escape closes only the panel, focus starts and stays inside, the scrim swallows taps meant for the chat underneath
 
@@ -9,7 +10,7 @@ import { X } from 'lucide-react';
 import ChatHistory from '@/components/chat/ChatHistory';
 import { useChatHistory } from '@/hooks/useChatHistory';
 import { chatHrefFor } from '@/lib/chat-nav';
-import { todayISO } from '@/lib/date';
+import { useDisplayDay } from '@/hooks/useServerDay';
 import { focusablesIn, trapTab } from '@/lib/focus-trap';
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 
@@ -58,6 +59,7 @@ export default function ChatHistorySheet({
   const router = useRouter();
   const pathname = usePathname();
   const history = useChatHistory();
+  const today = useDisplayDay();
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Focus starts on the close button, so the keyboard that opened the panel
@@ -133,7 +135,7 @@ export default function ChatHistorySheet({
           layout="panel"
           conversations={history.conversations}
           activeId={activeId}
-          today={todayISO()}
+          today={today}
           hrefFor={(conversationId) => chatHrefFor(pathname, conversationId)}
           onStart={() => void start()}
           starting={history.starting}

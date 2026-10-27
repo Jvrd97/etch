@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/242
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// summary: PHASE-03/248 — test hooks may throw and are counted: `hooksNeverRun` is empty when every hook a test set ran
 // summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save and closing can run a hook while in flight) for the Day tests
 // summary: PHASE-03/242 — the DayAPI double sits on the main actor, so a read alongside the queue's send cannot race on it
 import Foundation
@@ -142,12 +143,18 @@ final class MockDayAPI: DayAPI {
     var removeCalls: [(id: UUID, entry: Int, unmark: Bool)] = []
     var notebookCalls: [String] = []
     var notebookError: Error?
-    /// Runs inside `saveNotebook`, before the answer: lets a test act while the save is in flight.
-    /// Runs once inside the next `fetchDay`, before its answer: lets a test act while a read is in flight.
-    var duringFetch: (@MainActor () async -> Void)?
-    var duringNotebookSave: (@MainActor () async -> Void)?
-    /// Runs inside `reviewDay`/`closeDay`, before the answer: lets a test act while the closing is in flight.
-    var duringClosing: (@MainActor () async -> Void)?
+    /// Hooks let a test act while a call is in flight. A hook throws instead of crashing the run (`try` in a
+    /// test body is the way to build fixtures there); the error comes back as the call's own failure.
+    /// Each hook counts how often it was set and run: `hooksNeverRun` is empty when every hook a test set fired.
+    /// Runs once inside the next `fetchDay`, before its answer.
+    var duringFetch: (@MainActor () async throws -> Void)? { didSet { if duringFetch != nil { armed["fetch", default: 0] += 1 } } }
+    /// Runs inside `saveNotebook`, before the answer.
+    var duringNotebookSave: (@MainActor () async throws -> Void)? { didSet { if duringNotebookSave != nil { armed["notebook", default: 0] += 1 } } }
+    /// Runs inside `reviewDay`/`closeDay`, before the answer.
+    var duringClosing: (@MainActor () async throws -> Void)? { didSet { if duringClosing != nil { armed["closing", default: 0] += 1 } } }
+    private var armed: [String: Int] = [:]
+    private var ran: [String: Int] = [:]
+    var hooksNeverRun: [String] { armed.filter { ran[$0.key, default: 0] == 0 }.map(\.key).sorted() }
     var closingResult: Result<DaySummaryDTO, Error> = .failure(APIClientError.invalidResponse)
     var closingCalls: [(touch: String, body: DayClosingRequestDTO, key: String)] = []
 
@@ -155,7 +162,8 @@ final class MockDayAPI: DayAPI {
         fetchedDates.append(date)
         if let hook = duringFetch {
             duringFetch = nil
-            await hook()
+            ran["fetch", default: 0] += 1
+            try await hook()
         }
         guard !fetchResults.isEmpty else { throw APIClientError.invalidResponse }
         let result = fetchResults.count > 1 ? fetchResults.removeFirst() : fetchResults[0]
@@ -184,19 +192,28 @@ final class MockDayAPI: DayAPI {
 
     func saveNotebook(date: String, content: String) async throws {
         notebookCalls.append(content)
-        await duringNotebookSave?()
+        if let hook = duringNotebookSave {
+            ran["notebook", default: 0] += 1
+            try await hook()
+        }
         if let notebookError { throw notebookError }
     }
 
     func reviewDay(date: String, _ payload: DayClosingRequestDTO, idempotencyKey: String) async throws -> DaySummaryDTO {
         closingCalls.append(("review", payload, idempotencyKey))
-        await duringClosing?()
+        try await runClosingHook()
         return try closingResult.get()
     }
 
     func closeDay(date: String, _ payload: DayClosingRequestDTO, idempotencyKey: String) async throws -> DaySummaryDTO {
         closingCalls.append(("final", payload, idempotencyKey))
-        await duringClosing?()
+        try await runClosingHook()
         return try closingResult.get()
+    }
+
+    private func runClosingHook() async throws {
+        guard let hook = duringClosing else { return }
+        ran["closing", default: 0] += 1
+        try await hook()
     }
 }

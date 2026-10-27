@@ -1,8 +1,9 @@
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/252
+// summary: #252 — without a pinned day the month view stands on the server's day and marks it
 // summary: component tests for the timeline — the five views switch, the weeks-left counter is on the screen, a square carries the state of its day and links to it, and stepping down from the week view lands on the day it names
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DayListItem } from '@/lib/api';
 
 const DAYS: DayListItem[] = [
@@ -17,8 +18,18 @@ mock.module('@/hooks/useDays', () => ({
 }));
 
 const { default: LifeGrid, VIEW_LABEL } = await import('./LifeGrid');
+const api = await import('@/lib/api');
 
 const TODAY = new Date(2026, 7, 30);
+
+// The server's day, written onto the shared client and put back after each test, so
+// whatever other suites left in the registry is not disturbed.
+const agent = api.agentAPI as unknown as { dayMode?: () => Promise<unknown> };
+const realDayMode = agent.dayMode;
+
+function serverDayIs(date: string) {
+  agent.dayMode = () => Promise.resolve({ date, kind: 'work', nocode: false, source: 'schedule' });
+}
 
 function show() {
   render(<LifeGrid today={TODAY} />);
@@ -30,6 +41,7 @@ function switchTo(view: keyof typeof VIEW_LABEL) {
 
 afterEach(() => {
   cleanup();
+  agent.dayMode = realDayMode;
 });
 
 describe('LifeGrid', () => {
@@ -85,5 +97,19 @@ describe('LifeGrid', () => {
 
     expect(screen.getByLabelText(`Вид: ${VIEW_LABEL.day}`)).toBeDefined();
     expect(screen.getByText('2026-08-28')).toBeDefined();
+  });
+});
+
+describe('LifeGrid day (#252)', () => {
+  it('stands the month view on the server day and rings it, when no day is pinned', async () => {
+    serverDayIs('2026-08-26');
+    render(<LifeGrid />);
+    switchTo('month');
+
+    await waitFor(() => expect(document.querySelector('[data-date="2026-08-26"]')).not.toBeNull());
+    expect(document.querySelector('[data-date="2026-08-26"]')?.className).toContain('ring-2');
+    // Behind the server's day a day nobody wrote is empty, ahead of it the frame is unlived.
+    expect(document.querySelector('[data-date="2026-08-25"]')?.getAttribute('data-status')).toBe('empty');
+    expect(document.querySelector('[data-date="2026-08-27"]')?.getAttribute('data-status')).toBe('future');
   });
 });

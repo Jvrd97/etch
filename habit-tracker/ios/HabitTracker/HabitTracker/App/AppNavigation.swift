@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
-// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229); a More screen that holds an unconfirmed write blocks the system's pop to the root (a second tap on the selected tab), #230
+// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
+// [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
+// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229); More screens that hold an unconfirmed write block the system's pop to the root (a second tap on the selected tab), #230; the block is a set of holders, one token per screen instance, so an old screen going away cannot lift the block of the new one (#250)
 import Foundation
 
 /// Tabs of the root bar, in the order the mobile web shows them.
@@ -39,6 +40,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
     case quickMarks
     case dailySummary
     case week
+    case supplements
     case categories
     case table
     case entries
@@ -54,6 +56,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .quickMarks: return "Быстрые отметки"
         case .dailySummary: return "Day summary"
         case .week: return "Неделя"
+        case .supplements: return "Добавки"
         case .categories: return "Categories"
         case .table: return "Table"
         case .entries: return "History"
@@ -69,6 +72,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .quickMarks: return "bolt"
         case .dailySummary: return "square.and.pencil"
         case .week: return "calendar"
+        case .supplements: return "pills"
         case .categories: return "folder"
         case .table: return "tablecells"
         case .entries: return "clock.arrow.circlepath"
@@ -90,10 +94,12 @@ enum AppDestination: Hashable {
 struct AppNavigation: Equatable {
     var selectedTab: AppTab = .today
     private(set) var morePath: [MoreDestination] = []
-    /// A pushed More screen asks not to be left: it holds a write whose answer never came, and
+    /// Pushed More screens that ask not to be left: each holds a write whose answer never came, and
     /// leaving drops the key that keeps a retry from writing the day twice. The screen has its own
-    /// Back that asks first; this stops the way around it.
-    var moreLeaveBlocked = false
+    /// Back that asks first; this stops the way around it. One token per screen instance: the old
+    /// instance going away after the new one appeared lifts only its own hold.
+    private(set) var moreLeaveHolders: Set<UUID> = []
+    var moreLeaveBlocked: Bool { !moreLeaveHolders.isEmpty }
     /// Counts the pops refused. The system has already popped its stack when it reports the new
     /// path, so a refusal must change this value for the stack to be drawn from the path again.
     private(set) var refusedPops = 0
@@ -108,6 +114,14 @@ struct AppNavigation: Equatable {
             selectedTab = .more
             morePath.append(screen)
         }
+    }
+
+    mutating func holdMoreLeave(_ token: UUID) {
+        moreLeaveHolders.insert(token)
+    }
+
+    mutating func releaseMoreLeave(_ token: UUID) {
+        moreLeaveHolders.remove(token)
     }
 
     /// The path as the system reports it. A second tap on the selected More tab pops the stack to

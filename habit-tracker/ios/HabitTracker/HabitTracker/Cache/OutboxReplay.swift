@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the moment it was made as occurred_at (UTC, milliseconds, one shared formatter) (an old stored press, its day as entry_date); a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened) — the state it was made over, its own, or one of the writes it replaced — and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
+// [review:need-review] PHASE-03/240
+// summary: PHASE-03/240 — the replay of markSupplementTaken through OutboxSupplementsAPI (optional, so existing callers stay as they are)
 import Foundation
 
 /// Entry writes the queue replays. `APIClient` is the production implementation.
@@ -24,6 +26,8 @@ struct OutboxReplay: OutboxSending {
     let entries: OutboxEntriesAPI
     let quickMarks: QuickMarksAPI
     let day: OutboxDayAPI
+    /// Nil only where no supplement write is replayed; one that arrives anyway waits like a dead network.
+    var supplements: OutboxSupplementsAPI?
 
     func send(_ action: OutboxAction, idempotencyKey: String) async throws {
         switch action {
@@ -67,6 +71,11 @@ struct OutboxReplay: OutboxSending {
                 }
             }
             try await day.saveNotebook(date: notebook.date, content: notebook.content)
+        case .markSupplementTaken(let intake):
+            guard let supplements else { throw APIClientError.invalidBaseURL }
+            _ = try await supplements.markIntake(
+                supplementID: intake.supplementId, intakeDate: intake.intakeDate, idempotencyKey: idempotencyKey
+            )
         }
     }
 

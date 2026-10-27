@@ -2900,3 +2900,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Частота срабатываний: строка INFO «health advice written» не печаталась (логирование `app.*` настроено только у воркера и ночной задачи), её убрал. Срабатывание — WARNING «dose guard tripped», он проходит через handler последней инстанции. Знаменатель — access log uvicorn: `POST /api/v1/health-advice` с кодом 200. Частота = срабатывания / (200 + срабатывания).
 - Вердикт недели: одна функция `week_verdict_line(..., as_hours)` в `app/day/debt.py`. Экран получает «долг 1 ч 30 мин» (`hours_and_minutes`), промпт — «долг 90 мин», как было. Тесты закрепляют оба вида и то, что строки различаются только долгом.
 - Мелочи: `number_text` на inf/NaN бросает `ValueError`; тест `today_counted` на 03:30 (логические сутки); порядок тикетов в маркере; строка docstring в `supplement_advice.py`.
+||||||| 5d9190c
+
+
+## 2026-10-27 — PHASE-03/256: гонка по ключу быстрой отметки
+
+Тронуто 2 файла кода (оба `mod`), миграций нет.
+
+- `app/api/quick_marks.py` — mod: после отката проигранной вставки кнопка читается `get_quick_mark`, а не `db.refresh`. Кнопка, удалённая между вставкой и чтением, даёт 404, а не 500 (`InvalidRequestError`).
+- `tests/test_quick_mark_occurred_at.py` — mod: проигранная гонка не меняет итог дня спрашивающей кнопки (обе ветки, `same-button` и `other-button`); новый тест удаляет кнопку B между вставкой и чтением и ждёт 404.
+
+Проверки: `pytest tests/` на `habit_test_248` — 2124 passed, 2 skipped (12 мин); `ruff check`, `ruff format --check`, `mypy --strict app` — чисто; `alembic heads` — одна строка.

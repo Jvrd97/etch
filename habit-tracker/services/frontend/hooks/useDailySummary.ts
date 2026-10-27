@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/83-daily-summary-plan-fields-required
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/83-daily-summary-plan-fields-required, PHASE-03/252
 // summary: single owner of the day-summary flow — text + date, the LLM draft, per-metric and per-checkbox opt-in, the day's journal text (append by default, replace opt-in), one idempotent transactional apply, and the shared wordings both screens label a plan with
+// summary: #252 — the day a plan is filed under defaults to the server's day (GET /day-mode), not the browser's clock; a pick or an injected `today` wins, and a text sent before the day is named asks for it first
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -13,6 +14,7 @@ import {
   type LogMetricOp,
 } from '@/lib/api';
 import { todayISO } from '@/lib/date';
+import { readServerDay, useServerDay } from '@/hooks/useServerDay';
 
 export const DRAFT_ERROR = 'Не удалось разобрать день';
 export const APPLY_ERROR = 'Не удалось записать день';
@@ -242,7 +244,12 @@ export function useDailySummary({
   today,
 }: UseDailySummaryOptions): UseDailySummaryResult {
   const [transcript, setTranscript] = useState('');
-  const [entryDate, setEntryDateState] = useState(today ?? todayISO());
+  // The day the plan is filed under: the reader's pick, else the injected day, else
+  // the server's (the boundary is 04:00, not midnight, and not the browser's zone).
+  // '' until the server has named it.
+  const { date: serverDay } = useServerDay(today === undefined);
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
+  const entryDate = pickedDate ?? today ?? serverDay;
   const [draft, setDraft] = useState<DraftState>({ status: 'idle' });
   const [metricStates, setMetricStates] = useState<OpEnabledState[]>([]);
   const [checkStates, setCheckStates] = useState<OpEnabledState[]>([]);
@@ -304,11 +311,15 @@ export function useDailySummary({
     const text = transcript.trim();
     if (text.length === 0) return;
     setDraft({ status: 'loading' });
+    // The day may still be unnamed when the text is sent: ask, and only if the server cannot
+    // be asked at all take the browser's day, which the reader sees in the date field and can change.
+    const day = entryDate !== '' ? entryDate : await readServerDay().catch(() => todayISO());
+    if (entryDate === '') setPickedDate(day);
     // A new plan retires whatever the previous one failed to write: leaving the
     // old banner up would blame the fresh preview for the old plan's rejection.
     setApplyState({ status: 'idle' });
     try {
-      const plan = await dailySummaryAPI.draft(text, entryDate);
+      const plan = await dailySummaryAPI.draft(text, day);
       setMetricStates(initialMetricStates(plan));
       setCheckStates(initialCheckStates(plan));
       // A new plan is a new day-writing intent: it must not inherit the key of
@@ -340,7 +351,7 @@ export function useDailySummary({
   const setEntryDate = useCallback(
     (date: string) => {
       if (date === entryDate) return;
-      setEntryDateState(date);
+      setPickedDate(date);
       setApplyKey(newApplyKey());
     },
     [entryDate]
