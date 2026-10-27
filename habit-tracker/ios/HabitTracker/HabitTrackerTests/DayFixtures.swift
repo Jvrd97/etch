@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/211
-// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double for the Day tests
+// [review:need-review] PHASE-01/211, PHASE-03/226
+// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save can run a hook while in flight) for the Day tests
 import Foundation
 @testable import HabitTracker
 
@@ -115,11 +115,14 @@ enum DayFixtures {
         DayMarkDTO(itemId: id, state: state, note: note)
     }
 
-    static func summary(stage: String = "closed", verdict: String? = "won", reason: String = "") -> DaySummaryDTO {
+    static func summary(
+        stage: String = "closed", verdict: String? = "won", reason: String = "",
+        bodyMd: String = "итог", workMinutes: Int? = 420
+    ) -> DaySummaryDTO {
         DaySummaryDTO(
             dayDate: date, closed: stage == "closed", stage: stage, reviewSkipped: false, verdict: verdict,
             verdictReason: reason, anchorsDone: 2, anchorsTotal: 2, tasksDone: 1, tasksTotal: 1,
-            workMinutes: 420, streakAfter: 4, bodyMd: "итог", missingAnchors: [], clauses: []
+            workMinutes: workMinutes, streakAfter: 4, bodyMd: bodyMd, missingAnchors: [], clauses: []
         )
     }
 }
@@ -136,11 +139,19 @@ final class MockDayAPI: DayAPI {
     var removeCalls: [(id: UUID, entry: Int, unmark: Bool)] = []
     var notebookCalls: [String] = []
     var notebookError: Error?
+    /// Runs inside `saveNotebook`, before the answer: lets a test act while the save is in flight.
+    /// Runs once inside the next `fetchDay`, before its answer: lets a test act while a read is in flight.
+    var duringFetch: (@MainActor () async -> Void)?
+    var duringNotebookSave: (@MainActor () async -> Void)?
     var closingResult: Result<DaySummaryDTO, Error> = .failure(APIClientError.invalidResponse)
     var closingCalls: [(touch: String, body: DayClosingRequestDTO, key: String)] = []
 
     func fetchDay(date: String?) async throws -> DayDetailDTO {
         fetchedDates.append(date)
+        if let hook = duringFetch {
+            duringFetch = nil
+            await hook()
+        }
         guard !fetchResults.isEmpty else { throw APIClientError.invalidResponse }
         let result = fetchResults.count > 1 ? fetchResults.removeFirst() : fetchResults[0]
         return try result.get()
@@ -168,6 +179,7 @@ final class MockDayAPI: DayAPI {
 
     func saveNotebook(date: String, content: String) async throws {
         notebookCalls.append(content)
+        await duringNotebookSave?()
         if let notebookError { throw notebookError }
     }
 

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/211
+// [review:need-review] PHASE-01/211, PHASE-03/226
 // summary: wire tests of the Day endpoints — the server-shaped GET /day fixture decodes into plan tree/marks/facts/summary, and every write goes to the right path with the right method, snake_case body, Idempotency-Key and query
 import XCTest
 @testable import HabitTracker
@@ -55,11 +55,16 @@ final class DayAPIClientTests: XCTestCase {
 
     // MARK: Decoding
 
+    func testARuleWithoutTimezoneStillDecodes() throws {
+        let json = DayFixtures.dayJSON.replacingOccurrences(of: "\"timezone\": \"Europe/Berlin\",", with: "")
+        let day = try APIJSONCoding.makeDecoder().decode(DayDetailDTO.self, from: Data(json.utf8))
+        XCTAssertEqual(day.rule.maxWorkTasks, 3)
+    }
+
     func testServerDayDecodesPlanTreeMarksFactsAndSummary() throws {
         let day = try DayFixtures.day()
 
         XCTAssertEqual(day.day.date, "2026-10-25")
-        XCTAssertEqual(day.rule.timezone, "Europe/Berlin")
         XCTAssertEqual(day.rule.maxWorkTasks, 3)
         let work = try XCTUnwrap(day.plan?.sections.first)
         XCTAssertEqual(work.items.first?.textPlain, "Релиз iOS")

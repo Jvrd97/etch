@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/211
+// [review:need-review] PHASE-01/211, PHASE-03/226
 // summary: pure-rule tests of the Day screen — typed value parsing (comma decimals, h:mm durations), progress/value/link-state texts, plan window text in a passed timezone (the device's by default, DST aware), day stepping, closing headline by stage
+import SwiftUI
 import XCTest
 @testable import HabitTracker
 
@@ -95,6 +96,39 @@ final class DayLogicTests: XCTestCase {
     func testUnreadableMomentGivesNoClock() {
         XCTAssertNil(DayFormat.clock("not a moment", in: berlin))
         XCTAssertNil(DayFormat.window(start: "2026-10-25T05:00:00", end: nil, in: berlin), "a moment without an offset is not guessed")
+    }
+
+    func testRepeatedClockReadsStayCorrectPerZone() {
+        // Formatters are cached per zone: a read in one zone must not leak into the next.
+        for _ in 0..<3 {
+            XCTAssertEqual(DayFormat.clock("2026-10-25T05:00:00Z", in: berlin), "06:00")
+            XCTAssertEqual(DayFormat.clock("2026-10-25T05:00:00Z", in: newYork), "01:00")
+        }
+    }
+
+    func testMarkButtonNamesItsLineForVoiceOver() {
+        XCTAssertEqual(DayFormat.markAccessibilityLabel(for: "Релиз iOS", state: "done"), "Отметка «Релиз iOS»: сделано")
+        XCTAssertEqual(DayFormat.markAccessibilityLabel(for: "Релиз iOS", state: nil), "Отметка «Релиз iOS»: не отмечено")
+    }
+
+    func testTheScreenRereadsWhenTheSceneBecomesActiveFromAnyOtherPhase() {
+        // SwiftUI reports .background -> .inactive -> .active, never .background -> .active.
+        XCTAssertTrue(DayView.shouldReread(from: .inactive, to: .active))
+        XCTAssertTrue(DayView.shouldReread(from: .background, to: .active))
+        XCTAssertFalse(DayView.shouldReread(from: .active, to: .inactive))
+        XCTAssertFalse(DayView.shouldReread(from: .background, to: .inactive))
+        XCTAssertFalse(DayView.shouldReread(from: .active, to: .active))
+    }
+
+    func testAnchorsHintIsShownOnlyWhenTheDayHasAnchors() {
+        XCTAssertFalse(DayFormat.showsAnchorsHint(nil))
+        XCTAssertTrue(DayFormat.showsAnchorsHint(DayFixtures.summary()), "the fixture counts two anchors")
+        let none = DaySummaryDTO(
+            dayDate: DayFixtures.date, closed: false, stage: "open", reviewSkipped: false, verdict: nil,
+            verdictReason: "", anchorsDone: 0, anchorsTotal: 0, tasksDone: 0, tasksTotal: 0,
+            workMinutes: nil, streakAfter: nil, bodyMd: "", missingAnchors: [], clauses: []
+        )
+        XCTAssertFalse(DayFormat.showsAnchorsHint(none))
     }
 
     // MARK: Headlines

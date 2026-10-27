@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/211
+// [review:need-review] PHASE-01/211, PHASE-03/226
 // summary: Codable DTOs of the Day screen — GET /day answer (plan tree, marks, category-linked facts, task counts, notebook, summary), mark/fact/notebook/closing request bodies; decoded with APIJSONCoding (snake_case), dates stay "yyyy-MM-dd" strings, plan windows stay ISO timestamps
 import Foundation
 
@@ -25,9 +25,8 @@ struct DayHeadDTO: Codable, Equatable {
 }
 
 /// The slice of the day's rule the screen needs: the bar the task counter is shown against.
-/// `timezone` is decoded for completeness; plan windows are read in the device's zone.
+/// The rule's `timezone` is not decoded: plan windows are read in the device's zone.
 struct DayRuleDTO: Codable, Equatable {
-    let timezone: String
     let maxWorkTasks: Int
 }
 
