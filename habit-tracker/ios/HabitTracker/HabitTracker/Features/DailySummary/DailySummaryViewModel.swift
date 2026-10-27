@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213
-// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write; nothing reaches the server except the draft request until the person confirms
+// [review:need-review] PHASE-01/213, PHASE-03/227
+// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write (only a 400/422 proves nothing was written, a 401 changes nothing either way, a 409 ends the write as already applied); the day moved away from a plan drops the plan; closing the sheet over an unconfirmed write asks first; nothing reaches the server except the draft request until the person confirms
 import Foundation
 
 @MainActor
@@ -16,6 +16,11 @@ final class DailySummaryViewModel: ObservableObject {
         case applying
         case failure(String)
         case applied
+        /// The server met a key it had already applied: the write landed on an earlier attempt.
+        case alreadyApplied
+
+        /// The day holds this plan; nothing is left to write or to retry.
+        var isWritten: Bool { self == .applied || self == .alreadyApplied }
     }
 
     static let notConfiguredMessage = "Укажите адрес сервера в Settings"
@@ -176,7 +181,7 @@ final class DailySummaryViewModel: ObservableObject {
     /// Moving the day while a request is in flight or after an unanswered write would file the plan
     /// under a day nobody confirmed.
     var canChangeDay: Bool {
-        draftState != .loading && applyState != .applying && !applyIsUnconfirmed && applyState != .applied
+        draftState != .loading && applyState != .applying && !applyIsUnconfirmed && !applyState.isWritten
     }
 
     var canShowNextDay: Bool { canChangeDay && entryDate < today }
@@ -199,34 +204,37 @@ final class DailySummaryViewModel: ObservableObject {
         guard canChangeDay, date != entryDate, date <= today else { return }
         entryDate = date
         applyKey = UUID().uuidString
+        // A plan (or the failure of its draft) belongs to one day; under another it would write what
+        // nobody confirmed there.
+        dropPlan()
+    }
+
+    private func dropPlan() {
+        draftState = .idle
+        applyState = .idle
+        metricEnabled = []
+        checkEnabled = []
+        journalEnabled = true
+        journalReplace = false
     }
 
     // MARK: - Draft
 
     var canGenerate: Bool {
         if case .loading = draftState { return false }
-        guard applyState != .applying, !applyIsUnconfirmed, applyState != .applied else { return false }
+        guard applyState != .applying, !applyIsUnconfirmed, !applyState.isWritten else { return false }
         return !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isListening
     }
 
     func generate() async {
         guard canGenerate else { return }
-        // A half-said sentence is not a day: finish listening, and let the last phrase land first.
-        if isListening {
-            stopDictation()
-        }
-        await dictationFinished()
-        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        guard let api = apiProvider() else {
-            draftState = .failure(Self.notConfiguredMessage)
-            return
-        }
+        // Loading from the first tap: a second tap or an apply during the wait for the last phrase
+        // must find the screen busy, and cancel must reach this wait too.
         let previous = draftState
         draftState = .loading
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.runDraft(api: api, text: text, previous: previous)
+            await self.runDraft(previous: previous)
         }
         draftTask = task
         await task.value
@@ -238,7 +246,22 @@ final class DailySummaryViewModel: ObservableObject {
         draftTask?.cancel()
     }
 
-    private func runDraft(api: DailySummaryAPI, text: String, previous: DraftState) async {
+    private func restore(_ previous: DraftState) {
+        if case .done = previous { draftState = previous } else { draftState = .idle }
+    }
+
+    private func runDraft(previous: DraftState) async {
+        // A half-said sentence is not a day: finish listening, and let the last phrase land first.
+        if isListening {
+            stopDictation()
+        }
+        await dictationFinished()
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Task.isCancelled, !text.isEmpty else { return restore(previous) }
+        guard let api = apiProvider() else {
+            draftState = .failure(Self.notConfiguredMessage)
+            return
+        }
         do {
             let plan = try await api.draftDailySummary(
                 DailySummaryDraftRequestDTO(transcript: text, entryDate: entryDate)
@@ -254,7 +277,7 @@ final class DailySummaryViewModel: ObservableObject {
             draftState = .done(plan)
         } catch {
             if Self.isCancellation(error) {
-                if case .done = previous { draftState = previous } else { draftState = .idle }
+                restore(previous)
             } else {
                 draftState = .failure(Self.draftMessage(for: error))
             }
@@ -280,7 +303,7 @@ final class DailySummaryViewModel: ObservableObject {
     /// Rows, journal mode and the day can change only while nothing is being written and no write
     /// is waiting for its answer.
     var canEditPlan: Bool {
-        plan != nil && applyState != .applying && !applyIsUnconfirmed && applyState != .applied
+        plan != nil && applyState != .applying && !applyIsUnconfirmed && !applyState.isWritten
     }
 
     func setMetric(_ index: Int, enabled: Bool) {
@@ -354,7 +377,11 @@ final class DailySummaryViewModel: ObservableObject {
     // MARK: - Apply
 
     func apply() async {
-        guard canApply, let plan, let api = apiProvider() else { return }
+        guard canApply, let plan else { return }
+        guard let api = apiProvider() else {
+            applyState = .failure(Self.notConfiguredMessage)
+            return
+        }
         let request = DailySummaryApplyRequestDTO(
             entryDate: entryDate,
             metrics: zip(plan.metrics, metricEnabled).filter { $0.1 }.map(\.0),
@@ -368,9 +395,20 @@ final class DailySummaryViewModel: ObservableObject {
             applyState = .applied
             onApplied()
         } catch {
-            applyIsUnconfirmed = Self.leavesWriteUnconfirmed(error)
-            applyState = .failure(Self.applyMessage(for: error))
+            // The key was already applied: the day holds the plan, and a retry would meet the same 409.
+            if case .unexpectedStatus(409)? = error as? APIClientError {
+                applyIsUnconfirmed = false
+                applyState = .alreadyApplied
+                return
+            }
+            applyIsUnconfirmed = Self.unconfirmedAfter(error, was: applyIsUnconfirmed)
+            applyState = .failure(Self.applyMessage(for: error, unconfirmed: applyIsUnconfirmed))
         }
+    }
+
+    /// Closing drops the key, and the next retelling would write the day a second time.
+    var closeNeedsConfirmation: Bool {
+        applyIsUnconfirmed || applyState == .applying
     }
 
     /// Back to an empty screen for the next day's retelling.
@@ -393,12 +431,16 @@ final class DailySummaryViewModel: ObservableObject {
 
     // MARK: - Messages
 
-    /// The server answered "no" and wrote nothing, so the plan may change. Any other failure
-    /// (no answer, a broken answer, a server error) may hide a write that went through.
-    private static func leavesWriteUnconfirmed(_ error: Error) -> Bool {
+    /// Only a 400/422 proves the server wrote nothing. A 401 or a bad address never reached the
+    /// write, so they say nothing about an earlier attempt that got no answer: the flag stays as it
+    /// was. Any other failure (no answer, a broken answer, a server error) may hide a write that
+    /// went through. A 409 is not here: it proves the write landed (see `apply()`).
+    private static func unconfirmedAfter(_ error: Error, was unconfirmed: Bool) -> Bool {
         switch error as? APIClientError {
-        case .unexpectedStatus(400), .unexpectedStatus(409), .unexpectedStatus(422), .unauthorized, .invalidBaseURL:
+        case .unexpectedStatus(400), .unexpectedStatus(422):
             return false
+        case .unauthorized, .invalidBaseURL:
+            return unconfirmed
         default:
             return true
         }
@@ -412,6 +454,8 @@ final class DailySummaryViewModel: ObservableObject {
             return "Не удалось разобрать день: модель ответила с ошибкой. Текст сохранён, попробуйте ещё раз."
         case .timeout, .transport:
             return "Нет связи с сервером. Текст сохранён, попробуйте ещё раз."
+        case .unauthorized, .invalidBaseURL:
+            return "Не удалось разобрать день. \(accessProblem(error)) Текст сохранён."
         case .some(let known):
             return "Не удалось разобрать день. \(known.userMessage)"
         case nil:
@@ -419,14 +463,22 @@ final class DailySummaryViewModel: ObservableObject {
         }
     }
 
-    private static func applyMessage(for error: Error) -> String {
+    private static func accessProblem(_ error: Error) -> String {
+        if case .invalidBaseURL? = error as? APIClientError {
+            return "Адрес сервера неверный: проверьте его в Settings."
+        }
+        return "Сервер не принял ключ API: проверьте его в Settings."
+    }
+
+    private static func applyMessage(for error: Error, unconfirmed: Bool) -> String {
         switch error as? APIClientError {
-        case .unexpectedStatus(409):
-            return "Сервер вернул конфликт: для этого дня уже есть запись с другим составом. Проверьте записи за день и разберите день заново."
         case .unexpectedStatus(400), .unexpectedStatus(422):
             return "Сервер не принял план: категория или поле изменились. Ничего не записано. Разберите день заново."
         case .some(.unauthorized), .some(.invalidBaseURL):
-            return "Не удалось записать день. \((error as? APIClientError)?.userMessage ?? "")"
+            let reason = accessProblem(error)
+            return unconfirmed
+                ? "\(reason) Предыдущая попытка могла пройти. Чтобы поправить ключ, придётся закрыть экран; перед новым рассказом проверьте записи за день."
+                : "\(reason) Ничего не записано."
         case nil, .some:
             return "Нет ответа от сервера: запись могла пройти. Нажмите «Повторить запись», дубля не будет. Пока ответа нет, план менять нельзя."
         }

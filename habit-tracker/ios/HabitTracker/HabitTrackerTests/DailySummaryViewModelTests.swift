@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/213
+// [review:need-review] PHASE-01/213, PHASE-03/227
 // summary: tests for DailySummaryViewModel with a faked recognizer and API — the day (today, another day, a key per day), a plan frozen after an unanswered write, a cancellable draft, dictation stopped by a call or the background, dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request
 import Speech
 import XCTest
@@ -483,15 +483,35 @@ final class DailySummaryViewModelTests: XCTestCase {
         await h.viewModel.generate()
         XCTAssertEqual(h.api.drafts.last?.entryDate, "2026-10-25")
 
-        h.viewModel.showPreviousDay()
-        XCTAssertEqual(h.viewModel.entryDate, "2026-10-24")
         h.api.applyResult = .failure(APIClientError.unexpectedStatus(400))
         await h.viewModel.apply()
-        h.viewModel.showToday()
+        h.viewModel.showPreviousDay()
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-24")
+        await h.viewModel.generate()
         await h.viewModel.apply()
 
-        XCTAssertEqual(h.api.applies.map(\.request.entryDate), ["2026-10-24", "2026-10-25"])
+        XCTAssertEqual(h.api.applies.map(\.request.entryDate), ["2026-10-25", "2026-10-24"])
         XCTAssertNotEqual(h.api.applies[0].key, h.api.applies[1].key, "another day is another write")
+    }
+
+    func testMovingTheDayDropsAPlanBuiltForAnotherDay() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        h.api.applyResult = .failure(APIClientError.unexpectedStatus(422))
+        await h.viewModel.apply()
+        XCTAssertNotNil(h.viewModel.plan)
+
+        h.viewModel.showPreviousDay()
+
+        XCTAssertEqual(h.viewModel.entryDate, "2026-10-24")
+        XCTAssertEqual(h.viewModel.draftState, .idle)
+        XCTAssertEqual(h.viewModel.applyState, .idle)
+        XCTAssertEqual(h.viewModel.metricEnabled, [])
+        XCTAssertEqual(h.viewModel.transcript, "день", "the retelling stays, only the plan goes")
+        await h.viewModel.apply()
+        XCTAssertEqual(h.api.applies.count, 1, "a plan for the other day is not written under this one")
     }
 
     func testADraftIsFiledUnderTheChosenDay() async {
@@ -562,13 +582,168 @@ final class DailySummaryViewModelTests: XCTestCase {
         XCTAssertEqual(h.viewModel.metricEnabled, [false])
     }
 
-    func testAConflictHasItsOwnTextAndDoesNotBlameTheCategory() async {
+    func testAConflictIsTheEndOfTheWriteNotADeadEnd() async {
         let h = await harnessWithPlanAndFailedWrite(APIClientError.unexpectedStatus(409))
 
-        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
-        XCTAssertTrue(message.contains("конфликт"), message)
-        XCTAssertFalse(message.contains("категория"), message)
+        XCTAssertEqual(h.viewModel.applyState, .alreadyApplied, "the key was applied: the day is written")
         XCTAssertFalse(h.viewModel.applyIsUnconfirmed)
+        XCTAssertFalse(h.viewModel.canApply, "a retry under the same key would only meet the same 409")
+        XCTAssertFalse(h.viewModel.canGenerate, "a new plan under a new key writes the day twice")
+        XCTAssertFalse(h.viewModel.canEditPlan)
+        XCTAssertFalse(h.viewModel.closeNeedsConfirmation, "nothing is left to lose")
+        XCTAssertEqual(h.applied.count, 0, "the sheet stays open to say so")
+        let applies = h.api.applies.count
+        await h.viewModel.apply()
+        XCTAssertEqual(h.api.applies.count, applies)
+
+        h.viewModel.reset()
+        XCTAssertEqual(h.viewModel.applyState, .idle)
+        XCTAssertEqual(h.viewModel.draftState, .idle)
+        XCTAssertEqual(h.viewModel.transcript, "")
+    }
+
+    func testA401AfterATimeoutKeepsThePlanFrozen() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.timeout)
+        h.api.applyResult = .failure(APIClientError.unauthorized)
+        await h.viewModel.apply()
+
+        XCTAssertTrue(h.viewModel.applyIsUnconfirmed, "the first attempt may have landed whatever the retry got")
+        XCTAssertFalse(h.viewModel.canGenerate)
+        h.viewModel.setMetric(0, enabled: false)
+        XCTAssertEqual(h.viewModel.metricEnabled, [true])
+        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("могла пройти"), message)
+        XCTAssertTrue(message.contains("закрыть экран"), "the key lives in Settings, out of reach of this screen")
+        XCTAssertTrue(message.contains("проверьте записи за день"), message)
+        XCTAssertFalse(message.contains("дубля не будет"), "leaving the screen drops the idempotency key")
+        XCTAssertFalse(message.contains("Повторить запись"), message)
+        XCTAssertFalse(message.contains("Invalid"), message)
+        XCTAssertFalse(message.contains("(401)"), message)
+
+        h.api.applyResult = .failure(APIClientError.invalidBaseURL)
+        await h.viewModel.apply()
+        XCTAssertTrue(h.viewModel.applyIsUnconfirmed)
+    }
+
+    func testA401OnTheFirstAttemptWroteNothingAndSaysItInRussian() async {
+        let h = await harnessWithPlanAndFailedWrite(APIClientError.unauthorized)
+
+        XCTAssertFalse(h.viewModel.applyIsUnconfirmed)
+        guard case .failure(let message) = h.viewModel.applyState else { return XCTFail("expected failure") }
+        XCTAssertTrue(message.contains("Ничего не записано"), message)
+        XCTAssertFalse(message.contains("Invalid"), message)
+        h.viewModel.setMetric(0, enabled: false)
+        XCTAssertEqual(h.viewModel.metricEnabled, [false])
+    }
+
+    func testClosingNeedsAConfirmationWhileAWriteIsUnconfirmedOrInFlight() async {
+        let h = makeHarness()
+        XCTAssertFalse(h.viewModel.closeNeedsConfirmation)
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        XCTAssertFalse(h.viewModel.closeNeedsConfirmation, "a draft alone has written nothing")
+
+        h.api.applyResult = .failure(APIClientError.timeout)
+        await h.viewModel.apply()
+        XCTAssertTrue(h.viewModel.closeNeedsConfirmation)
+
+        h.api.applyResult = .success(DailySummaryApplyResponseDTO(entryIds: [1], journalEntryId: nil))
+        await h.viewModel.apply()
+        XCTAssertFalse(h.viewModel.closeNeedsConfirmation)
+    }
+
+    func testClosingNeedsAConfirmationWhileTheWriteIsInFlight() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        h.api.applyDelay = .seconds(30)
+        let writing = Task { await h.viewModel.apply() }
+        await waitUntil { h.viewModel.applyState == .applying }
+
+        XCTAssertTrue(h.viewModel.closeNeedsConfirmation)
+
+        writing.cancel()
+        await writing.value
+    }
+
+    func testApplyWithoutAServerAddressSaysSoInsteadOfDoingNothing() async {
+        let api = MockDailySummaryAPI()
+        var configured = true
+        let viewModel = DailySummaryViewModel(
+            apiProvider: { configured ? api : nil }, speech: FakeSpeech()
+        )
+        viewModel.transcript = "день"
+        api.draftResult = .success(plan(metrics: [metric()]))
+        await viewModel.generate()
+        configured = false
+
+        await viewModel.apply()
+
+        XCTAssertEqual(viewModel.applyState, .failure(DailySummaryViewModel.notConfiguredMessage))
+        XCTAssertFalse(viewModel.applyIsUnconfirmed, "no request left the phone")
+        XCTAssertTrue(api.applies.isEmpty)
+    }
+
+    func testTwoTapsOnParseWhileTheLastPhraseLandsSendOneDraft() async {
+        let h = makeHarness()
+        await h.viewModel.startDictation()
+        h.viewModel.transcript = "день"
+        h.speech.emit("съел борщ")
+
+        let first = Task { await h.viewModel.generate() }
+        let second = Task { await h.viewModel.generate() }
+        await first.value
+        await second.value
+
+        XCTAssertEqual(h.api.drafts.count, 1)
+        XCTAssertEqual(h.api.drafts.first?.transcript, "день съел борщ")
+    }
+
+    func testBlankTextAfterWaitingForDictationBringsTheOldPlanBack() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        let before = h.viewModel.draftState
+        await h.viewModel.startDictation()
+        h.viewModel.transcript = ""
+
+        let generating = Task { await h.viewModel.generate() }
+        await waitUntil { h.viewModel.draftState == .loading }
+        XCTAssertEqual(h.viewModel.draftState, .loading, "busy while the last phrase is awaited, not only after it")
+        XCTAssertFalse(h.viewModel.canApply, "the old plan cannot be written while the rebuild waits")
+        await generating.value
+
+        XCTAssertEqual(h.viewModel.draftState, before)
+        XCTAssertEqual(h.api.drafts.count, 1)
+    }
+
+    func testCancellingWhileTheLastPhraseLandsSendsNothing() async {
+        let h = makeHarness()
+        await h.viewModel.startDictation()
+        h.viewModel.transcript = "день"
+
+        let generating = Task { await h.viewModel.generate() }
+        await waitUntil { !h.viewModel.isListening }
+        h.viewModel.cancelDraft()
+        await generating.value
+
+        XCTAssertTrue(h.api.drafts.isEmpty)
+        XCTAssertEqual(h.viewModel.draftState, .idle)
+    }
+
+    func testMovingTheDayAlsoClearsADraftFailure() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .failure(APIClientError.timeout)
+        await h.viewModel.generate()
+        XCTAssertNotEqual(h.viewModel.draftState, .idle)
+
+        h.viewModel.showPreviousDay()
+
+        XCTAssertEqual(h.viewModel.draftState, .idle, "an error about another day's draft does not belong here")
     }
 
     func testWhileTheWriteIsInFlightThePlanAndRebuildAreLocked() async {
