@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-01/208, PHASE-03/229
+// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
 // summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229)
 import SwiftUI
 
 /// The app's root: one `NavigationStack` per tab, screens never create their own.
 struct RootView: View {
     @State private var navigation = AppNavigation()
+    @State private var summaryRetainer = DailySummaryRetainer()
 
     var body: some View {
         TabView(selection: $navigation.selectedTab) {
@@ -29,10 +30,11 @@ struct RootView: View {
         case .health:
             NavigationStack { HealthSyncView(viewModel: .live()) }
         case .more:
-            NavigationStack(path: $navigation.morePath) {
+            NavigationStack(path: Binding(get: { navigation.morePath }, set: { navigation.setMorePath($0) })) {
                 MoreList()
                     .navigationDestination(for: MoreDestination.self) { screen(for: $0) }
             }
+            .environment(\.moreLeaveBlocked, $navigation.moreLeaveBlocked)
         }
     }
 
@@ -44,7 +46,7 @@ struct RootView: View {
         case .quickMarks:
             QuickMarksView()
         case .dailySummary:
-            DailySummaryView()
+            DailySummaryView(retainer: summaryRetainer)
         case .week:
             WeekView()
         case .categories:

@@ -602,3 +602,21 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - Тесты (+9 в `DayViewModelTests`, хук `duringClosing` в `MockDayAPI`): A→B→A с ответом, ждущим конца сохранения; ответ после сохранения снова берёт серверный текст; перечитывание во время сохранения отвечает уже записанным «T» поверх набранного «T2» (проверка внутри хука: конец сохранения сам гасит конфликт над «T»; мутация без `isSavingNotebook ||` краснит тест); карточка пережила перечитывание и ушла со сменой дня; конфликт итога, поднятый за время закрытия, снят ответом; ошибка и успех pull-to-refresh; тихое перечитывание без `actionError`; тот же пояс не публикуется заново. В `testALateReadThatPredatesTheSaveDoesNotRollTheNotebookBack` проверка `"done"` заменена ответом с отметкой `failed`.
 
 Не проверено: живое устройство, вёрстка. Для #215 (только на телефоне): авиарежим, потянуть экран «День» вниз: алерт «День не обновился: …», экран и набранный блокнот на месте; фон и возврат в авиарежиме — без алерта; карточка «Это был текст с сервера, ваше сохранение его заменило» остаётся после pull-to-refresh до «Понятно».
+## 2026-10-27 — PHASE-03/230: остаток голосовой сводки после #227 (iOS)
+
+Общие типы плана с чатом, перечитывание Today после любого закрытия листа, защита экрана «Рассказать день» в «Ещё» от сброса стека повторным нажатием вкладки, мелочи.
+
+- Типы плана: серверная схема одна (`LogMetricOp`, `CheckOp`, `JournalOp`), в приложении теперь тоже один набор. `op` и `existingEntryId` — поля общего типа (в плане чата последнего нет), `mode` — enum; чат `replace` не шлёт, сервер его не принимает. Флаги, которых нет в ответе, читаются как `false` (как раньше в чате). Чат теперь отправляет `op` в теле apply: схема сервера его допускает.
+- Today: `VoiceDayButton(onDismiss:)` вешает перечитывание на `.sheet(isPresented:onDismiss:)`. Закрытие после записи, после 409 и по «Закрыть» ведёт к одному перечитыванию (раньше 409 и «Закрыть» не перечитывали).
+- Вкладка «Ещё»: `AppNavigation.setMorePath` отказывает во всплытии стека, пока экран поднял `moreLeaveBlocked` (модификатор `holdsMoreScreen`); отказ меняет `refusedPops`, чтобы стек перерисовался от пути. `DailySummaryRetainer` отдаёт следующему входу модель с неподтверждённой записью, иначе всплытие системой всё равно убило бы ключ. Решено по коду: срабатывание и сброс стека системой на устройстве не проверены.
+- Мелочи: `.topBarLeading`; `EngineAudioInput.start()` без `installTap` бросает `.unavailable` (экран показывает «Не удалось включить микрофон»); `FakeSpeech.holdsFinalPhrase` держит последнюю фразу до сигнала теста, тест отмены стал детерминированным (50 прогонов подряд зелёные).
+
+Файлов тронуто: 17 (3 new, 14 mod).
+
+- `HabitTracker/API/DTOs+PlanOperations.swift`, `App/MoreLeaveGuard.swift`, `HabitTrackerTests/PlanOperationDTOTests.swift` — new.
+- `HabitTracker/API/{DTOs+Chat,DTOs+DailySummary}.swift`, `App/{AppNavigation,RootView}.swift`, `Features/Chat/{ChatViewModel,ChatPlanCardView}.swift`, `Features/DailySummary/{DailySummaryView,DailySummaryViewModel,SpeechDictation}.swift` — mod.
+- `HabitTrackerTests/{AppNavigationTests,ChatAPIClientTests,ChatViewModelTests,DailySummaryViewModelTests,SystemSpeechRecognizerTests}.swift` — mod (в тестах чата только имена типов и `.append` вместо `"append"`).
+
+Проверки: `xcodebuild test` на av08-iPhone17Pro с подписью симулятора — 621 из 621 (было 609, +12 новых).
+
+Не проверено (для #215): сам сброс стека повторным нажатием «Ещё» и работа защиты (мигание, зацикливание, сохранение текста); перечитывание Today после закрытия листа на устройстве (поведение `onDismiss` не покрыто автотестом, это вид).

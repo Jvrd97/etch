@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227
-// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write (only a 400/422 proves nothing was written, a 401 changes nothing either way, a 409 ends the write as already applied); the day moved away from a plan drops the plan; closing the sheet over an unconfirmed write asks first; nothing reaches the server except the draft request until the person confirms
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
+// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write (only a 400/422 proves nothing was written, a 401 changes nothing either way, a 409 ends the write as already applied); the day moved away from a plan drops the plan; closing the sheet over an unconfirmed write asks first; nothing reaches the server except the draft request until the person confirms; DailySummaryRetainer hands a model with an unconfirmed write to the next visit of the More screen
 import Foundation
 
 @MainActor
@@ -268,8 +268,8 @@ final class DailySummaryViewModel: ObservableObject {
             )
             try Task.checkCancellation()
             applyState = .idle
-            metricEnabled = plan.metrics.map { !$0.uncertain && !$0.implausible }
-            checkEnabled = plan.checklist.map { !$0.uncertain }
+            metricEnabled = plan.metrics.map(\.isTickedByDefault)
+            checkEnabled = plan.checklist.map(\.isTickedByDefault)
             // A plan is one intent to write one day; a retry of it keeps the key, a new plan does not.
             applyKey = UUID().uuidString
             journalEnabled = true
@@ -482,5 +482,29 @@ final class DailySummaryViewModel: ObservableObject {
         case nil, .some:
             return "Нет ответа от сервера: запись могла пройти. Нажмите «Повторить запись», дубля не будет. Пока ответа нет, план менять нельзя."
         }
+    }
+}
+
+/// Keeps the model of the More screen alive when the system pops the screen without asking (a second
+/// tap on the selected tab): a model that holds a write nobody answered is handed to the next visit,
+/// so the idempotency key survives. Nothing else is kept; the person's own leave calls `release()`.
+@MainActor
+final class DailySummaryRetainer {
+    private let make: @MainActor () -> DailySummaryViewModel
+    private var held: DailySummaryViewModel?
+
+    init(make: @escaping @MainActor () -> DailySummaryViewModel = { .live() }) {
+        self.make = make
+    }
+
+    func model() -> DailySummaryViewModel {
+        if let held, held.closeNeedsConfirmation { return held }
+        let fresh = make()
+        held = fresh
+        return fresh
+    }
+
+    func release() {
+        held = nil
     }
 }

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/212
-// summary: chat DTOs — conversation list item and detail, stored message, proposed plan with its operations (metric, check, journal, day plan) and the apply selection, plus the SSE events of one turn
+// [review:need-review] PHASE-01/212, PHASE-03/230
+// summary: chat DTOs — conversation list item and detail, stored message, proposed plan (metric, check and journal operations are the shared ones of DTOs+PlanOperations.swift; the day plan is the chat's own) and the apply selection, plus the SSE events of one turn
 import Foundation
 
 // MARK: - Conversations and messages
@@ -88,78 +88,10 @@ struct ChatPlanDTO: Decodable, Identifiable, Equatable {
 
 struct ChatPlanBodyDTO: Decodable, Equatable {
     let entryDate: String
-    let metrics: [ChatPlanMetricDTO]
-    let checklist: [ChatPlanCheckDTO]
-    let journal: ChatPlanJournalDTO?
+    let metrics: [LogMetricOpDTO]
+    let checklist: [CheckOpDTO]
+    let journal: JournalOpDTO?
     let dayPlan: ChatPlanDayPlanDTO?
-}
-
-struct ChatPlanMetricDTO: Codable, Equatable {
-    let categoryId: Int
-    let fieldId: Int
-    let value: Double
-    let sourceText: String
-    let uncertain: Bool
-    let implausible: Bool
-    let estimated: Bool
-
-    init(
-        categoryId: Int, fieldId: Int, value: Double, sourceText: String,
-        uncertain: Bool = false, implausible: Bool = false, estimated: Bool = false
-    ) {
-        self.categoryId = categoryId
-        self.fieldId = fieldId
-        self.value = value
-        self.sourceText = sourceText
-        self.uncertain = uncertain
-        self.implausible = implausible
-        self.estimated = estimated
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        categoryId = try container.decode(Int.self, forKey: .categoryId)
-        fieldId = try container.decode(Int.self, forKey: .fieldId)
-        value = try container.decode(Double.self, forKey: .value)
-        sourceText = try container.decode(String.self, forKey: .sourceText)
-        uncertain = try container.decodeIfPresent(Bool.self, forKey: .uncertain) ?? false
-        implausible = try container.decodeIfPresent(Bool.self, forKey: .implausible) ?? false
-        estimated = try container.decodeIfPresent(Bool.self, forKey: .estimated) ?? false
-    }
-
-    /// Rows the model was unsure about, or whose value looks wrong, arrive unticked.
-    var isTickedByDefault: Bool { !uncertain && !implausible }
-}
-
-struct ChatPlanCheckDTO: Codable, Equatable {
-    let categoryId: Int
-    let fieldId: Int
-    let sourceText: String
-    let uncertain: Bool
-
-    init(categoryId: Int, fieldId: Int, sourceText: String, uncertain: Bool = false) {
-        self.categoryId = categoryId
-        self.fieldId = fieldId
-        self.sourceText = sourceText
-        self.uncertain = uncertain
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        categoryId = try container.decode(Int.self, forKey: .categoryId)
-        fieldId = try container.decode(Int.self, forKey: .fieldId)
-        sourceText = try container.decode(String.self, forKey: .sourceText)
-        uncertain = try container.decodeIfPresent(Bool.self, forKey: .uncertain) ?? false
-    }
-}
-
-struct ChatPlanJournalDTO: Codable, Equatable {
-    let title: String?
-    let content: String
-    let mood: String?
-    let tags: String?
-    /// `append` or `create`; the chat can never say `replace`.
-    let mode: String
 }
 
 /// The day plan is shown, never edited, and written whole: the apply sends a flag.
@@ -186,9 +118,9 @@ struct ChatPlanDayPlanDTO: Decodable, Equatable {
 
 /// Body of `POST /chat/plans/{id}/apply`: the subset of the stored plan left ticked.
 struct ChatPlanSelectionDTO: Encodable, Equatable {
-    let metrics: [ChatPlanMetricDTO]
-    let checklist: [ChatPlanCheckDTO]
-    let journal: ChatPlanJournalDTO?
+    let metrics: [LogMetricOpDTO]
+    let checklist: [CheckOpDTO]
+    let journal: JournalOpDTO?
     let dayPlan: Bool
 }
 

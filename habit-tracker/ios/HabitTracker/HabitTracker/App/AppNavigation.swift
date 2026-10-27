@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/208, PHASE-03/229
-// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229)
+// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
+// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229); a More screen that holds an unconfirmed write blocks the system's pop to the root (a second tap on the selected tab), #230
 import Foundation
 
 /// Tabs of the root bar, in the order the mobile web shows them.
@@ -89,7 +89,14 @@ enum AppDestination: Hashable {
 /// routing rules are testable without a view.
 struct AppNavigation: Equatable {
     var selectedTab: AppTab = .today
-    var morePath: [MoreDestination] = []
+    private(set) var morePath: [MoreDestination] = []
+    /// A pushed More screen asks not to be left: it holds a write whose answer never came, and
+    /// leaving drops the key that keeps a retry from writing the day twice. The screen has its own
+    /// Back that asks first; this stops the way around it.
+    var moreLeaveBlocked = false
+    /// Counts the pops refused. The system has already popped its stack when it reports the new
+    /// path, so a refusal must change this value for the stack to be drawn from the path again.
+    private(set) var refusedPops = 0
 
     /// A More screen is pushed on top of what More already shows, so Back from a
     /// Journal opened off the Dashboard returns to the Dashboard.
@@ -101,5 +108,16 @@ struct AppNavigation: Equatable {
             selectedTab = .more
             morePath.append(screen)
         }
+    }
+
+    /// The path as the system reports it. A second tap on the selected More tab pops the stack to
+    /// its root without asking the screen on top; that, and any other pop, is refused while
+    /// `moreLeaveBlocked`. Pushes pass.
+    mutating func setMorePath(_ path: [MoreDestination]) {
+        if moreLeaveBlocked, path.count < morePath.count {
+            refusedPops += 1
+            return
+        }
+        morePath = path
     }
 }

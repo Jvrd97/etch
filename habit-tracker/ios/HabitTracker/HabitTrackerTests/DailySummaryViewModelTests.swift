@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
 // summary: tests for DailySummaryViewModel with a faked recognizer and API — the day (today, another day, a key per day), a plan frozen after an unanswered write, a cancellable draft, dictation stopped by a call or the background, dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request
 import Speech
 import XCTest
@@ -47,6 +47,9 @@ final class FakeSpeech: SpeechDictating {
     var startError: Error?
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    /// While set, `stop()` leaves the stream open: the recognizer's last phrase "has not landed"
+    /// until the test calls `landFinalPhrase`.
+    var holdsFinalPhrase = false
     private var continuation: AsyncThrowingStream<String, Error>.Continuation?
 
     /// While set, the permission prompt "is up" until the test calls `answerPrompt()`.
@@ -75,6 +78,11 @@ final class FakeSpeech: SpeechDictating {
 
     func stop() {
         stopCount += 1
+        if !holdsFinalPhrase { continuation?.finish() }
+    }
+
+    func landFinalPhrase(_ text: String) {
+        continuation?.yield(text)
         continuation?.finish()
     }
 
@@ -668,6 +676,38 @@ final class DailySummaryViewModelTests: XCTestCase {
         await writing.value
     }
 
+    // MARK: - A screen the system pops without asking
+
+    func testTheRetainerHandsBackTheModelOfAnUnconfirmedWriteUntilThePersonLeaves() async {
+        let held = makeHarness()
+        held.viewModel.transcript = "день"
+        held.api.draftResult = .success(plan(metrics: [metric()]))
+        await held.viewModel.generate()
+        held.api.applyResult = .failure(APIClientError.timeout)
+        await held.viewModel.apply()
+        XCTAssertTrue(held.viewModel.closeNeedsConfirmation)
+        let spare = makeHarness()
+        var queue = [held.viewModel, spare.viewModel]
+        let retainer = DailySummaryRetainer { queue.removeFirst() }
+
+        let first = retainer.model()
+        XCTAssertTrue(first === held.viewModel)
+        XCTAssertTrue(retainer.model() === held.viewModel, "the system popped the screen; the write is still unanswered")
+
+        retainer.release()
+        XCTAssertTrue(retainer.model() === spare.viewModel, "the person chose to leave: the next visit starts clean")
+    }
+
+    func testTheRetainerDoesNotKeepAModelThatHasNothingToLose() {
+        let first = makeHarness()
+        let second = makeHarness()
+        var queue = [first.viewModel, second.viewModel]
+        let retainer = DailySummaryRetainer { queue.removeFirst() }
+
+        XCTAssertTrue(retainer.model() === first.viewModel)
+        XCTAssertTrue(retainer.model() === second.viewModel)
+    }
+
     func testApplyWithoutAServerAddressSaysSoInsteadOfDoingNothing() async {
         let api = MockDailySummaryAPI()
         var configured = true
@@ -722,12 +762,14 @@ final class DailySummaryViewModelTests: XCTestCase {
 
     func testCancellingWhileTheLastPhraseLandsSendsNothing() async {
         let h = makeHarness()
+        h.speech.holdsFinalPhrase = true
         await h.viewModel.startDictation()
         h.viewModel.transcript = "день"
 
         let generating = Task { await h.viewModel.generate() }
         await waitUntil { !h.viewModel.isListening }
         h.viewModel.cancelDraft()
+        h.speech.landFinalPhrase("и ещё")
         await generating.value
 
         XCTAssertTrue(h.api.drafts.isEmpty)

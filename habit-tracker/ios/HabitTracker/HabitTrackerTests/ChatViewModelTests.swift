@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/212
+// [review:need-review] PHASE-01/212, PHASE-03/230
 // summary: tests for the chat view model on a scripted API — opening (latest, new, named, retry of the same one), a streamed turn folded into the live bubble, refusals, cancelling, late events of an older turn or conversation, a stuck dialogue, guarded deletion from history with a notice tied to its conversation, and plan ticks, apply and dismiss
 import XCTest
 @testable import HabitTracker
@@ -131,14 +131,14 @@ enum ChatTestData {
     static let body = ChatPlanBodyDTO(
         entryDate: "2026-10-25",
         metrics: [
-            ChatPlanMetricDTO(categoryId: 1, fieldId: 2, value: 30, sourceText: "30 отжиманий"),
-            ChatPlanMetricDTO(categoryId: 1, fieldId: 3, value: 300, sourceText: "300 приседаний", implausible: true),
+            LogMetricOpDTO(categoryId: 1, fieldId: 2, value: 30, sourceText: "30 отжиманий"),
+            LogMetricOpDTO(categoryId: 1, fieldId: 3, value: 300, sourceText: "300 приседаний", implausible: true),
         ],
         checklist: [
-            ChatPlanCheckDTO(categoryId: 3, fieldId: 5, sourceText: "витамины"),
-            ChatPlanCheckDTO(categoryId: 3, fieldId: 6, sourceText: "зарядка", uncertain: true),
+            CheckOpDTO(categoryId: 3, fieldId: 5, sourceText: "витамины"),
+            CheckOpDTO(categoryId: 3, fieldId: 6, sourceText: "зарядка", uncertain: true),
         ],
-        journal: ChatPlanJournalDTO(title: nil, content: "Хороший день", mood: nil, tags: nil, mode: "append"),
+        journal: JournalOpDTO(title: nil, content: "Хороший день", mood: nil, tags: nil, mode: .append),
         dayPlan: nil
     )
 

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227
-// summary: dictation seam of the day-summary screen — the SpeechDictating protocol the view model talks to, and the system implementation on SFSpeechRecognizer (on-device when the recognizer supports it) fed by a fresh AVAudioEngine per session; the tap is removed unconditionally, the audio session is released on stop, and a call, a route change of its own engine or a reset of the media services ends the stream with .interrupted (never after an ordinary stop)
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
+// summary: dictation seam of the day-summary screen — the SpeechDictating protocol the view model talks to, and the system implementation on SFSpeechRecognizer (on-device when the recognizer supports it) fed by a fresh AVAudioEngine per session; the tap is removed unconditionally, the audio session is released on stop, and a call, a route change of its own engine or a reset of the media services ends the stream with .interrupted (never after an ordinary stop); an input started before any tap gave it an engine throws .unavailable instead of pretending to listen
 import AVFoundation
 import Foundation
 import Speech
@@ -109,9 +109,11 @@ final class EngineAudioInput: AudioInput {
         engine?.inputNode.removeTap(onBus: 0)
     }
 
+    /// Without a tap there is no engine: starting nothing would report a session that never hears.
     func start() throws {
-        engine?.prepare()
-        try engine?.start()
+        guard let engine else { throw SpeechDictationError.unavailable }
+        engine.prepare()
+        try engine.start()
     }
 
     func stop() {

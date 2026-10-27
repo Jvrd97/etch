@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/212
+// [review:need-review] PHASE-01/212, PHASE-03/230
 // summary: chat screen state — the open conversation and its stored messages, one streamed turn folded from SSE events (answer text kept apart from progress, text before a retrieval dropped, a late event of an older turn or conversation ignored), refusals with their machine codes, history with guarded deletion and a notice tied to its conversation, and proposed plans with a per-row selection
 import Foundation
 
@@ -20,7 +20,7 @@ struct ChatPlanDraft: Equatable {
         for (index, metric) in plan.metrics.enumerated() where metric.isTickedByDefault {
             ticked.insert(.metric(index))
         }
-        for (index, check) in plan.checklist.enumerated() where !check.uncertain {
+        for (index, check) in plan.checklist.enumerated() where check.isTickedByDefault {
             ticked.insert(.check(index))
         }
         if plan.journal != nil { ticked.insert(.journal) }
