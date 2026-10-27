@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-03/221, PHASE-03/86, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/106, PHASE-03/109, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/152, PHASE-01/174, PHASE-03/162
+# [review:need-review] PHASE-03/221, PHASE-03/223, PHASE-03/86, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/106, PHASE-03/109, PHASE-03/111, PHASE-03/121, PHASE-03/127, PHASE-03/134, PHASE-03/152, PHASE-01/174, PHASE-03/162
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, days, weeks, roles, chat, day-rules, challenge and quick-marks routers in the API-key perimeter
 # summary: the week-review router (#221) is mounted in the perimeter beside the weeks
+# summary: the supplements and health-advice routers (#223) are mounted in the perimeter beside the week review
 # summary: the day-mode router (the manual mode of a date and the week schedule) is mounted in the perimeter (#162)
 # summary: the auth router is mounted OUTSIDE that perimeter — logging in is what a client without a key or a cookie has to be able to do
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, training and chat routers in the API-key perimeter
@@ -40,6 +41,8 @@ from app.api import (
     quick_marks,
     roles,
     streaks,
+    supplement_advice,
+    supplements,
     table,
     week,
     week_review,
@@ -104,6 +107,8 @@ API_ROUTERS = (
     week.days_router,
     week.weeks_router,
     week_review.router,
+    supplements.router,
+    supplement_advice.router,
     quick_marks.router,
     challenges.router,
     inbox.router,
