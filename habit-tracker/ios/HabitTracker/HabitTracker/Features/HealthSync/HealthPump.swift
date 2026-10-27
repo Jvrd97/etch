@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131
-// summary: HealthKit pump — reads steps and resting heart rate for the last 7 days, packs whole metrics into chunks of at most 50 000 samples, posts them with retries on transient failures only, joins concurrent callers into one run, and on launch runs only when the permission sheet was already answered
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples), packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, and on launch runs only when the permission sheet was already answered
 import Foundation
 import HealthKit
 import os
@@ -14,12 +14,15 @@ enum HealthSyncOutcome: Equatable {
     /// No server address in Settings.
     case notConfigured
     /// Launch run that did not start: the sheet was never answered or there is no HealthKit.
+    /// A button press that joined such a run gets it too.
     case skipped
     case failed(HealthSyncFailure)
 }
 
 enum HealthSyncFailure: String, Error, Equatable {
     case healthDataUnavailable
+    /// HealthKit refused the permission request or the status check.
+    case authorizationFailed
     case readFailed
     /// One metric alone has more samples than a chunk may hold.
     case chunkTooLarge
@@ -28,6 +31,8 @@ enum HealthSyncFailure: String, Error, Equatable {
     case unauthorized
     /// 4xx other than 401, e.g. 422 for an unknown unit; resending would fail again.
     case rejected
+    /// The body could not be encoded (a non-finite value); resending would fail again.
+    case encodingFailed
 
     var isTransient: Bool {
         self == .network || self == .server
@@ -40,25 +45,28 @@ protocol HealthSyncing: AnyObject {
     func sync() async -> HealthSyncOutcome
 }
 
-/// Reads raw samples from HealthKit and sends them to `POST /health/samples`.
+/// Reads HealthKit and sends what it holds to `POST /health/samples`.
 ///
-/// The client computes nothing (ADR-0020, A2). Retrying is safe because the server
+/// Cumulative metrics go as HealthKit's own hourly sums, one record per hour: only
+/// HealthKit knows which of iPhone and Watch to count for a given minute, and the sums
+/// match the Health app. Discrete metrics go as raw samples. The client adds nothing up
+/// itself (ADR-0020, A2 with its 2026-10-27 amendment). Retrying is safe because the server
 /// overwrites hourly buckets on their natural key, so a chunk sent twice changes
 /// nothing. Nothing is queued on disk: HealthKit already keeps the samples, and the
 /// next run reads the same window again. Health values never leave memory except
 /// in the request body.
 @MainActor
 final class HealthPump: HealthSyncing {
-    static let windowDays = 7
+    nonisolated static let windowDays = 7
     /// Server bound `MAX_SAMPLES_PER_CHUNK` in `app/schemas/health.py`.
-    static let maxSamplesPerChunk = 50_000
-    static let maxAttempts = 3
+    nonisolated static let maxSamplesPerChunk = 50_000
+    nonisolated static let maxAttempts = 3
     /// Up to 50 000 samples in one body: longer than the default request budget.
-    static let uploadTimeout: TimeInterval = 60
+    nonisolated static let uploadTimeout: TimeInterval = 60
     /// The n-th retry waits n steps.
-    static let retryDelayStep: Duration = .seconds(2)
+    nonisolated static let retryDelayStep: Duration = .seconds(2)
 
-    static let pumpedMetrics: [HealthMetricDefinition] = HealthMetricCatalog.metrics.filter {
+    nonisolated static let pumpedMetrics: [HealthMetricDefinition] = HealthMetricCatalog.metrics.filter {
         [.stepCount, .restingHeartRate].contains($0.typeIdentifier)
     }
 
@@ -136,8 +144,10 @@ final class HealthPump: HealthSyncing {
             } else if try await store.readAuthorizationRequestStatus(for: types) != .unnecessary {
                 return .skipped
             }
-        } catch {
+        } catch let error as HKError where error.code == .errorHealthDataUnavailable {
             return .failed(.healthDataUnavailable)
+        } catch {
+            return .failed(.authorizationFailed)
         }
         guard let api = api() else {
             return .notConfigured
@@ -145,7 +155,9 @@ final class HealthPump: HealthSyncing {
 
         let perMetric: [[HealthSampleDTO]]
         do {
-            perMetric = try await readWindow()
+            perMetric = try await Self.readWindow(
+                store: store, metrics: metrics, mapper: mapper, calendar: calendar, end: now()
+            )
         } catch {
             return .failed(.readFailed)
         }
@@ -168,19 +180,30 @@ final class HealthPump: HealthSyncing {
         return .sent(answers)
     }
 
-    /// Today and the six days before it, from local midnight until now.
-    private func readWindow() async throws -> [[HealthSampleDTO]] {
-        let end = now()
+    /// Today and the six days before it, from local midnight until `end`. Nonisolated,
+    /// so turning thousands of samples into DTOs does not run on the main thread.
+    private nonisolated static func readWindow(
+        store: HealthStoreQuerying,
+        metrics: [HealthMetricDefinition],
+        mapper: HealthSampleMapper,
+        calendar: Calendar,
+        end: Date
+    ) async throws -> [[HealthSampleDTO]] {
         let today = calendar.startOfDay(for: end)
-        guard let start = calendar.date(byAdding: .day, value: 1 - Self.windowDays, to: today) else {
+        guard let start = calendar.date(byAdding: .day, value: 1 - windowDays, to: today) else {
             return []
         }
         var perMetric: [[HealthSampleDTO]] = []
         for metric in metrics {
-            let samples = try await store.quantitySamples(
-                of: HKQuantityType(metric.typeIdentifier), from: start, to: end
-            )
-            perMetric.append(samples.map { mapper.dto($0, metric: metric) })
+            let type = HKQuantityType(metric.typeIdentifier)
+            switch metric.kind {
+            case .cumulative:
+                let hours = try await store.hourlySums(of: type, from: start, to: end)
+                perMetric.append(hours.compactMap { mapper.dto($0, metric: metric) })
+            case .discrete:
+                let samples = try await store.quantitySamples(of: type, from: start, to: end)
+                perMetric.append(samples.map { mapper.dto($0, metric: metric) })
+            }
         }
         return perMetric
     }
@@ -231,6 +254,9 @@ final class HealthPump: HealthSyncing {
     }
 
     private static func classify(_ error: Error) -> HealthSyncFailure {
+        if error is EncodingError {
+            return .encodingFailed
+        }
         switch error as? APIClientError {
         case .timeout, .transport:
             return .network
