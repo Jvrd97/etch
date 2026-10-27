@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/210, PHASE-03/225
-// summary: state of the quick-mark buttons — the directory through the read cache, one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key (pinned to the list's day only when that is the local day of the press) and shown at once, the buttons redrawn whenever the queue changes, undo of the last tap or of a named set, and a word to the screen when a day moved
+// [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
+// summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
 import Combine
 import Foundation
 
@@ -91,6 +91,13 @@ final class QuickMarksViewModel: ObservableObject {
         return "Отменить «\(mark.label)»"
     }
 
+    /// What VoiceOver says about presses of the button still waiting in the queue; nil when none wait.
+    /// The "+1" on the button is drawn, not spoken, and a waiting press is not yet on the server.
+    func waitingCaption(of markID: Int) -> String? {
+        let waiting = outbox.pending.filter { $0.tapMarkID == markID }.count
+        return waiting > 0 ? "ждёт отправки: \(waiting)" : nil
+    }
+
     /// Any change of the queue (a press queued, refused, discarded) redraws the buttons; a delivered
     /// press moved the day of its category: read the totals again and say which days moved.
     private func bindOutbox() {
@@ -116,7 +123,10 @@ final class QuickMarksViewModel: ObservableObject {
             state = .failure(Self.notConfiguredMessage)
             return
         }
-        await outbox.flush()
+        // The waiting presses go out alongside the read, not before it: a slow or dead network must
+        // not hold the buttons back. They are drawn over the directory until delivered, and a delivery
+        // reads the directory again (`reconcileAfterFlush`).
+        let flushing = Task { await outbox.flush() }
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 try await api.fetchQuickMarks()
@@ -135,6 +145,7 @@ final class QuickMarksViewModel: ObservableObject {
         } catch {
             state = .failure("Unexpected error")
         }
+        await flushing.value
     }
 
     /// A delivered queue changed the server's totals: read the directory again and tell the screen
@@ -164,23 +175,13 @@ final class QuickMarksViewModel: ObservableObject {
         }
     }
 
-    /// The local day of a press, `yyyy-MM-dd`. A queued press is pinned (`entry_date` of its replay)
-    /// to the list's day only when the two agree: a list read yesterday (a cache, a list from 23:50)
-    /// does not know today's server day, and such a press goes to the server's today, as a direct one.
-    private func localDayOfPress() -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: now())
-    }
-
     // MARK: Taps
 
     /// Records one tap. One network call: the answer carries the new total and `done`, so the
     /// button repaints from it. Without a network the press is queued under the key of this
-    /// attempt, with the server's day from the button list, and shown at once.
+    /// attempt with the moment it was made, and shown at once. The server puts it on the day that
+    /// moment belongs to by its own boundary (04:00), so neither the list's day nor the phone's
+    /// calendar has to guess it.
     func tap(_ mark: QuickMarkDTO) async {
         errorMessage = nil
         guard let api = apiProvider() else {
@@ -188,7 +189,8 @@ final class QuickMarksViewModel: ObservableObject {
             return
         }
         let key = UUID()
-        let offsetMinutes = timeZone.secondsFromGMT(for: now()) / 60
+        let pressed = now()
+        let offsetMinutes = timeZone.secondsFromGMT(for: pressed) / 60
         do {
             let event = try await api.tapQuickMark(
                 id: mark.id,
@@ -206,7 +208,7 @@ final class QuickMarksViewModel: ObservableObject {
                 .tapQuickMark(
                     QueuedTap(
                         quickMarkId: mark.id, categoryId: mark.categoryId, utcOffsetMinutes: offsetMinutes,
-                        serverDay: mark.entryDate == localDayOfPress() ? mark.entryDate : nil
+                        serverDay: nil, occurredAt: pressed
                     )
                 ),
                 key: key.uuidString, label: mark.label

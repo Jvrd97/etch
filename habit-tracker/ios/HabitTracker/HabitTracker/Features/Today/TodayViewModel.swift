@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it; a failed re-read after a background delivery leaves no error
 // summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
@@ -105,7 +106,8 @@ final class TodayViewModel: ObservableObject {
         outbox.delivered
             .sink { [weak self] writes in
                 guard writes.contains(where: { $0.queuedEntry != nil }) else { return }
-                Task { await self?.rereadEntries() }
+                // Nobody pressed anything: a failed read leaves the rows as they are, without an error.
+                Task { await self?.rereadEntries(reportsFailure: false) }
             }
             .store(in: &cancellables)
     }
@@ -166,14 +168,16 @@ final class TodayViewModel: ObservableObject {
     /// Loads active categories, today's entries, and avoid streaks in one pass, through
     /// the read cache: a successful fetch refreshes the screen and the cache; when the
     /// network is down the last cached snapshot is shown with an offline timestamp.
-    /// Waiting writes go first, so a pull-to-refresh is also a retry of the queue.
+    /// Waiting writes go out alongside the read, so a pull-to-refresh is also a retry of the queue; a
+    /// slow send does not hold the screen back (waiting rows are drawn from the queue, a delivery
+    /// reads the day again).
     func load() async {
         state = .loading
         guard let api = apiProvider() else {
             state = .failure(Self.notConfiguredMessage)
             return
         }
-        await outbox?.flush()
+        let flushing = Task { await outbox?.flush() }
         let today = todayString
         var streaksFailed = false
         do {
@@ -209,6 +213,7 @@ final class TodayViewModel: ObservableObject {
         } catch {
             state = .failure("Unexpected error")
         }
+        await flushing.value
     }
 
     /// Publishes a snapshot, recording whether it came from the network or the cache. Saves
@@ -385,21 +390,22 @@ final class TodayViewModel: ObservableObject {
     /// streak when the category is an avoid one. Pending rows of the offline outbox stay.
     func reloadAfterMark(categoryID: Int) async {
         guard let api = apiProvider() else { return }
-        await rereadEntries()
+        await rereadEntries(reportsFailure: true)
         if categories.first(where: { $0.id == categoryID })?.isAvoid == true {
             await refreshStreak(categoryID: categoryID, api: api)
         }
     }
 
     /// Reads today's records again without the loader: the screen stays as it is while the read runs.
-    private func rereadEntries() async {
+    /// A failure is reported only when it follows something the person did.
+    private func rereadEntries(reportsFailure: Bool) async {
         guard let api = apiProvider() else { return }
         let today = todayString
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
             todayEntries = withQueuedRows(fetched)
         } catch {
-            saveErrorMessage = Self.entriesRefreshFailedMessage
+            if reportsFailure { saveErrorMessage = Self.entriesRefreshFailedMessage }
         }
     }
 

@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/225
+// [review:need-review] PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — a "not sent" write whose retry would land over a newer write of the same object says so above its buttons; a queued press shows when it was pressed
 // summary: the one counter of the offline queue shown atop Today, Quick marks and Day — "written on the phone, waiting to send: N", "not sent: M" and a word when the server refuses the API key; a tap opens the list of waiting writes with their day and the "not sent" ones with the reason, a retry that says what it will do and sends at once, and discard
 import SwiftUI
 
@@ -57,6 +58,12 @@ struct OutboxQueueList: View {
                     Section("Не отправлено") {
                         ForEach(queue.failed) { write in
                             row(write)
+                            if let warning = queue.retryWarning(for: write) {
+                                Text(warning)
+                                    .font(DS.Typography.caption)
+                                    .foregroundStyle(DS.Palette.warning)
+                                    .listRowBackground(DS.Palette.card)
+                            }
                             HStack {
                                 Button(write.retryTitle) { Task { await queue.retry(id: write.id) } }
                                     .buttonStyle(.borderless)
@@ -99,6 +106,10 @@ struct OutboxQueueList: View {
                 .foregroundStyle(DS.Palette.textPrimary)
             if let day = write.action.day {
                 Text(DayFormat.title(of: day))
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.textSecondary)
+            } else if let pressed = write.action.pressMoment {
+                Text("Нажато \(pressed.formatted(date: .abbreviated, time: .shortened))")
                     .font(DS.Typography.caption)
                     .foregroundStyle(DS.Palette.textSecondary)
             }

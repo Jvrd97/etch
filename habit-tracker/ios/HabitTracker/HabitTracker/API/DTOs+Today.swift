@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/210
+// [review:need-review] PHASE-01/210, PHASE-03/236
 // summary: wire types of the Today screen beyond DTOs.swift — the quick-mark directory with the day's state, one tap and its answer, an undo, one set of the day's journal, the relapse history of an avoid category and the answer to a one-tap relapse
+// summary: PHASE-03/236 — a tap may carry `occurredAt`, the moment of a press replayed from the queue
 import Foundation
 
 /// One button of the quick-mark directory with the state of the day it was read for
@@ -34,11 +35,14 @@ struct QuickMarkDTO: Codable, Identifiable, Equatable {
 
 /// Body of `POST /quick-marks/{id}/events`. Carries an intent, never a category or a field.
 /// `entryDate` is a guard against a stale screen after midnight (409), not a destination.
+/// `occurredAt` is the moment of a press replayed from the queue, ISO 8601 in UTC: the server puts
+/// the press on that moment's day. Nil is the moment the server takes the request.
 struct QuickMarkEventRequestDTO: Encodable, Equatable {
     let value: Double?
     let entryDate: String?
     let utcOffsetMinutes: Int
     let source: String
+    var occurredAt: String? = nil
 }
 
 /// The recorded tap and the state it produced, so a screen repaints without a second request.

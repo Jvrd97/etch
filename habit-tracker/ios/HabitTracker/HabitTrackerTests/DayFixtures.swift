@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/242
 // summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save can run a hook while in flight) for the Day tests
+// summary: PHASE-03/242 — the DayAPI double sits on the main actor, so a read alongside the queue's send cannot race on it
 import Foundation
 @testable import HabitTracker
 
@@ -127,7 +128,9 @@ enum DayFixtures {
     }
 }
 
-/// Scriptable `DayAPI`: each closure answers one endpoint, every call is recorded.
+/// Scriptable `DayAPI`: each closure answers one endpoint, every call is recorded. On the main actor:
+/// the screen reads it while the queue replays through it, and the two must not race on its state.
+@MainActor
 final class MockDayAPI: DayAPI {
     var fetchResults: [Result<DayDetailDTO, Error>] = []
     var fetchedDates: [String?] = []

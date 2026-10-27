@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
+// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of the replaced writes, so one that landed with its answer lost is not a conflict; a retry that would write over a newer write of the same object says so
 import Combine
 import Foundation
 import Network
@@ -34,7 +35,14 @@ enum OutboxAction: Codable, Equatable {
         }
     }
 
-    /// The day the action belongs to, `yyyy-MM-dd`; nil when the server's today decides.
+    /// The moment of a quick-mark press, when the press carries it.
+    var pressMoment: Date? {
+        if case .tapQuickMark(let tap) = self { return tap.occurredAt }
+        return nil
+    }
+
+    /// The day the action belongs to, `yyyy-MM-dd`; nil when the server decides it (a press carrying
+    /// its moment, or the server's today).
     var day: String? {
         switch self {
         case .createEntry(let entry): return entry.entryDate
@@ -55,15 +63,19 @@ enum OutboxAction: Codable, Equatable {
         }
     }
 
-    /// This write taking the place of a waiting `older` one: it keeps the server state the first
-    /// of them was made over, because that is what the server still holds.
+    /// This write taking the place of a waiting `older` one. It keeps the server state the first of
+    /// them was made over, and also accepts the states of the replaced writes: a replaced write may
+    /// have landed with its answer lost (a timeout), and the server then holds its state, not a
+    /// change made elsewhere.
     func replacing(_ older: OutboxAction) -> OutboxAction {
         switch (self, older) {
         case (.setDayMark(var mark), .setDayMark(let earlier)):
             mark.expected = earlier.expected
+            mark.replacedStates = (earlier.replacedStates ?? []) + [earlier.state ?? ""]
             return .setDayMark(mark)
         case (.saveNotebook(var notebook), .saveNotebook(let earlier)):
             notebook.expected = earlier.expected
+            notebook.replacedContents = (earlier.replacedContents ?? []) + [earlier.content]
             return .saveNotebook(notebook)
         default:
             return self
@@ -71,11 +83,13 @@ enum OutboxAction: Codable, Equatable {
     }
 
     /// The write as the person asked to send it again from the "not sent" list: without the check
-    /// that refused it (the day of a press, the server state a mark or notebook was made over).
+    /// that refused it (the day or the moment of a press, the server state a mark or notebook was
+    /// made over). A press then lands on the server's today.
     func forcedRetry() -> OutboxAction {
         switch self {
         case .tapQuickMark(var tap):
             tap.serverDay = nil
+            tap.occurredAt = nil
             return .tapQuickMark(tap)
         case .setDayMark(var mark):
             mark.expected = nil
@@ -89,24 +103,30 @@ enum OutboxAction: Codable, Equatable {
     }
 }
 
-/// A quick-mark press. `serverDay` is the server's day as the button list last said; a replay sends
-/// it as `entry_date`, so a press made before midnight is refused (409) instead of written into the
-/// next day. Nil sends the press to the server's current day.
+/// A quick-mark press. `occurredAt` is the moment of the press; a replay sends it as `occurred_at`,
+/// and the server puts the press on the day that moment belongs to by its own day boundary, however
+/// late it is delivered. `serverDay` is only on presses queued before the server took the moment:
+/// a replay sends it as `entry_date`, and a turned day is refused (409). With neither the press
+/// lands on the server's current day.
 struct QueuedTap: Codable, Equatable {
     let quickMarkId: Int
     let categoryId: Int
     let utcOffsetMinutes: Int
     var serverDay: String?
+    var occurredAt: Date? = nil
 }
 
 /// A plan mark. `expected` is the state the person changed (`""` — no mark); a server holding
-/// another one by replay time was changed elsewhere. Nil sends without the check.
+/// another one by replay time was changed elsewhere. Nil sends without the check. `replacedStates`
+/// are the states of waiting marks this one replaced: the server holding one of them is not a change
+/// made elsewhere.
 struct QueuedDayMark: Codable, Equatable {
     let date: String
     let itemID: UUID
     let state: String?
     let note: String?
     var expected: String?
+    var replacedStates: [String]? = nil
 }
 
 /// A new fact of a plan line, sent under the key of the attempt that failed.
@@ -150,10 +170,12 @@ struct QueuedPlanFact: Codable, Equatable {
 }
 
 /// The notebook of a day. `expected` is the server text it was typed over; nil sends without the check.
+/// `replacedContents` are the texts of waiting saves this one replaced, accepted on the server as well.
 struct QueuedNotebook: Codable, Equatable {
     let date: String
     let content: String
     var expected: String?
+    var replacedContents: [String]? = nil
 }
 
 /// Why a write sits in the "not sent" list; decides what a retry from the list does. Stored on disk.
@@ -162,7 +184,9 @@ enum OutboxFailureKind: String, Codable {
     case refused
     /// The server failed `OutboxQueue.maxServerErrorAttempts` times in a row (5xx).
     case serverErrors
-    /// A press carrying its day was refused with 409: the day turned (or the button is off).
+    /// A press carrying its day was refused with 409 (the day turned, or the button is off), or one
+    /// carrying its moment was refused with 422 (older than the server's window, or a clock ahead).
+    /// A retry sends it to the server's today.
     case dayTurned
     /// The replay check found the object changed on the server, or could not read it.
     case changedOnServer
@@ -399,8 +423,10 @@ protocol NetworkPathMonitoring: AnyObject {
 final class OutboxQueue: ObservableObject {
     static let maxServerErrorAttempts = 5
     nonisolated static let dayTurnedReason =
-        "Сервер не принял отметку (409): день уже сменился, а задним числом отметки не пишутся, или кнопка выключена."
+        "Сервер не принял отметку (409): день уже сменился, или кнопка выключена."
     nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
+    nonisolated static let pressTimeRefusedReason =
+        "Сервер не принял время нажатия (422): нажатию больше семи дней, или часы телефона спешат."
     nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
     nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
     nonisolated static let checkFailedReason =
@@ -485,6 +511,17 @@ final class OutboxQueue: ObservableObject {
     func discard(id: UUID) {
         store.delete(id: id)
         reload()
+    }
+
+    /// What a retry of a "not sent" write would write over: a later write of the same whole-state
+    /// object still in the queue. The retry becomes the newest action and lands after it.
+    func retryWarning(for write: OutboxWrite) -> String? {
+        guard write.action.replacesOlderOfSameTarget,
+              let newer = writes.last(where: {
+                  $0.id != write.id && $0.action.target == write.action.target && $0.createdAt > write.createdAt
+              })
+        else { return nil }
+        return "Повтор запишет это поверх более новой записи «\(newer.label)»."
     }
 
     /// Flushes with the sender of the current settings; nothing to do without one.
@@ -590,6 +627,7 @@ final class OutboxQueue: ObservableObject {
             case 408, 429: return .waitForNetwork
             case 500...: return .serverError(status)
             case 409: return conflict(for: action)
+            case 422 where action.pressMoment != nil: return .refused(pressTimeRefusedReason, .dayTurned)
             case 404: return .refused("Сервер не нашёл, куда записать (404): объект удалён.", .refused)
             case 400, 422: return .refused("Сервер не принял данные (\(status)).", .refused)
             default: return .refused("Сервер отказал (\(status)).", .refused)

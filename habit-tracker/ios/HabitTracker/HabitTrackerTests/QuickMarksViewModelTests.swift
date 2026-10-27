@@ -1,22 +1,30 @@
-// [review:need-review] PHASE-01/210, PHASE-03/225
+// [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
+// summary: PHASE-03/236, 242 — an offline press carries its moment (01:00 delivered at 08:00 sends 01:00, no day), waiting presses are said to VoiceOver, the directory is read while the queue still sends; the double sits on the main actor
 // summary: tests for QuickMarksViewModel — directory order from the server, a tap repaints from its own answer in one call, an offline tap goes to the shared outbox under the same key with the server's day and is shown at once, a refusal is shown and not queued, undo of the last tap, the day's sets, the cache and the queued taps over a stale directory, a delivered press re-reads the directory; also the scriptable QuickMarksAPI double shared with the Today tests
 import XCTest
 @testable import HabitTracker
 
-/// Scriptable stand-in for the quick-mark endpoints.
+/// Scriptable stand-in for the quick-mark endpoints. On the main actor: a screen reads it while the
+/// queue replays through it, and the two must not race on its state.
+@MainActor
 final class MockQuickMarksAPI: QuickMarksAPI {
     var marksResult: Result<[QuickMarkDTO], Error> = .success([])
     /// Consumed one per tap; an empty script answers `invalidResponse`.
     var tapResults: [Result<QuickMarkEventDTO, Error>] = []
     var undoResult: Result<QuickMarkUndoDTO, Error> = .failure(APIClientError.invalidResponse)
     var dayEventsResult: Result<[QuickMarkDayEventDTO], Error> = .success([])
+    /// Runs inside the next tap request, before its answer.
+    var duringTap: (@MainActor () async -> Void)?
     private(set) var taps: [(id: Int, request: QuickMarkEventRequestDTO, key: String)] = []
     private(set) var undoneIDs: [Int] = []
     private(set) var fetchedDayEventCategories: [Int] = []
     private(set) var directoryFetches = 0
+    /// What reached the double, in order: "fetch", "tap", "tap answered".
+    private(set) var log: [String] = []
 
     func fetchQuickMarks() async throws -> [QuickMarkDTO] {
         directoryFetches += 1
+        log.append("fetch")
         return try marksResult.get()
     }
 
@@ -24,6 +32,12 @@ final class MockQuickMarksAPI: QuickMarksAPI {
         id: Int, request: QuickMarkEventRequestDTO, idempotencyKey: String
     ) async throws -> QuickMarkEventDTO {
         taps.append((id: id, request: request, key: idempotencyKey))
+        log.append("tap")
+        if let hook = duringTap {
+            duringTap = nil
+            await hook()
+        }
+        defer { log.append("tap answered") }
         guard !tapResults.isEmpty else { throw APIClientError.invalidResponse }
         return try tapResults.removeFirst().get()
     }
@@ -71,6 +85,9 @@ final class QuickMarksViewModelTests: XCTestCase {
         )
     }
 
+    /// 2026-10-25 09:00 UTC unless a test moves it.
+    private var clock = Date(timeIntervalSince1970: 1_792_918_800)
+
     private func makeViewModel(
         api: MockQuickMarksAPI,
         cache: CacheStore = InMemoryCacheStore(),
@@ -80,7 +97,7 @@ final class QuickMarksViewModelTests: XCTestCase {
         let viewModel = QuickMarksViewModel(
             api: api, cacheStore: cache, outbox: queue,
             timeZone: TimeZone(identifier: "UTC")!,
-            now: { Date(timeIntervalSince1970: 1_792_918_800) } // 2026-10-25 09:00 UTC
+            now: { [unowned self] in clock }
         )
         return (viewModel, queue)
     }
@@ -166,8 +183,11 @@ final class QuickMarksViewModelTests: XCTestCase {
         XCTAssertEqual(queue.pending.first?.key, api.taps.first?.key)
         XCTAssertEqual(queue.pending.first?.label, "Mark 1")
         XCTAssertEqual(
-            queue.pending.first?.action, queuedTap(1, day: "2026-10-25"),
-            "the press keeps the server's day it was made on"
+            queue.pending.first?.action,
+            .tapQuickMark(
+                QueuedTap(quickMarkId: 1, categoryId: 1, utcOffsetMinutes: 0, serverDay: nil, occurredAt: clock)
+            ),
+            "the press keeps the moment it was made; the server reads its day off it"
         )
         XCTAssertEqual(viewModel.marks[0].todayTotal, 1.25, "the press is visible straight away")
         XCTAssertTrue(viewModel.marks[0].done)
@@ -191,7 +211,9 @@ final class QuickMarksViewModelTests: XCTestCase {
 
         XCTAssertEqual(api.taps.count, 2)
         XCTAssertEqual(api.taps[1].key, firstKey, "a replay is the same tap, so the day's sum cannot double")
-        XCTAssertEqual(api.taps[1].request.entryDate, "2026-10-25")
+        XCTAssertEqual(api.taps[1].request.occurredAt, "2026-10-25T09:00:00Z")
+        XCTAssertNil(api.taps[1].request.entryDate)
+        XCTAssertNil(api.taps[0].request.occurredAt, "a direct tap is the server's own moment")
         XCTAssertEqual(queue.pendingCount, 0)
     }
 
@@ -362,24 +384,54 @@ final class QuickMarksViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.marks[0].todayTotal, 1, "a press that is not going to land is not counted")
     }
 
-    func testAPressOnAButtonListReadYesterdayIsNotPinnedToYesterday() async {
-        let cache = InMemoryCacheStore()
-        let online = MockQuickMarksAPI()
-        online.marksResult = .success([mark(id: 1, total: 0, day: "2026-10-24")])
-        let (first, _) = makeViewModel(api: online, cache: cache)
-        await first.load()
+    func testAPressAtOneAtNightDeliveredAtEightCarriesTheMomentOfThePress() async {
+        // 01:00 is the previous day for a server whose day turns at 04:00; the list, read at
+        // 00:30, says so. The press must not land silently on the day of delivery.
+        clock = Date(timeIntervalSince1970: 1_792_888_200) // 2026-10-25 00:30 UTC
         let api = MockQuickMarksAPI()
-        api.marksResult = .failure(APIClientError.timeout)
-        api.tapResults = [.failure(APIClientError.timeout)]
-        let (viewModel, queue) = makeViewModel(api: api, cache: cache)
+        api.marksResult = .success([mark(id: 1, total: 0, day: "2026-10-24")])
+        api.tapResults = [.failure(APIClientError.transport(code: -1009))]
+        let (viewModel, queue) = makeViewModel(api: api)
         await viewModel.load()
 
+        clock = Date(timeIntervalSince1970: 1_792_890_000) // 01:00
         await viewModel.tap(viewModel.marks[0])
+        clock = Date(timeIntervalSince1970: 1_792_915_200) // 08:00
         api.tapResults = [.success(.stub(markId: 1, total: 1))]
         await queue.flush(using: replay(api))
 
-        XCTAssertEqual(api.taps.last?.request.entryDate, nil, "the list's day is not the day of the press")
+        XCTAssertEqual(api.taps.last?.request.occurredAt, "2026-10-25T01:00:00Z", "the moment of the press, not of delivery")
+        XCTAssertNil(api.taps.last?.request.entryDate, "the server's boundary decides the day, not the phone's calendar")
         XCTAssertTrue(queue.writes.isEmpty, "delivered, not refused as a turned day")
+    }
+
+    func testWaitingPressesAreSaidToVoiceOver() async {
+        let api = MockQuickMarksAPI()
+        api.marksResult = .success([mark(id: 1, total: 1), mark(id: 2)])
+        let (viewModel, queue) = makeViewModel(api: api)
+        await viewModel.load()
+        queue.enqueue(queuedTap(1), label: "Mark 1")
+        queue.enqueue(queuedTap(1), label: "Mark 1")
+
+        XCTAssertEqual(viewModel.waitingCaption(of: 1), "ждёт отправки: 2")
+        XCTAssertNil(viewModel.waitingCaption(of: 2))
+    }
+
+    func testTheDirectoryIsReadWhileTheQueueIsStillSending() async throws {
+        let api = MockQuickMarksAPI()
+        api.marksResult = .success([mark(id: 1, total: 0)])
+        let (viewModel, queue) = makeViewModel(api: api)
+        queue.enqueue(queuedTap(1), label: "Mark 1")
+        api.tapResults = [.success(.stub(markId: 1, total: 1))]
+        api.duringTap = { try? await Task.sleep(nanoseconds: 200_000_000) }
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        let fetched = try XCTUnwrap(api.log.firstIndex(of: "fetch"))
+        let answered = try XCTUnwrap(api.log.firstIndex(of: "tap answered"))
+        XCTAssertLessThan(fetched, answered, "the read does not wait for the slow send")
+        XCTAssertEqual(queue.pendingCount, 0, "load still ends with the queue sent")
     }
 
     func testDiscardingAWaitingPressTakesItOffTheButton() async {

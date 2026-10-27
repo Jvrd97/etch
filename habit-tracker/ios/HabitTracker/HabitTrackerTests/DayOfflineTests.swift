@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/225
+// [review:need-review] PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00)
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
 import XCTest
 @testable import HabitTracker
@@ -203,7 +204,19 @@ final class DayOfflineTests: XCTestCase {
         await nextMorning.load()
 
         XCTAssertEqual(nextMorning.shownDate, DayFixtures.date)
-        XCTAssertEqual(nextMorning.cachedDayNotice, "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: DayFixtures.date)).")
+        XCTAssertEqual(nextMorning.cachedDayNotice, "Показан день из кэша: \(DayFormat.title(of: DayFixtures.date)).")
         XCTAssertNil(viewModel.cachedDayNotice)
+    }
+
+    func testBetweenMidnightAndTheServersBoundaryTheCachedDayIsNotCalledMissing() async {
+        // 01:00: the phone's calendar is already on the 26th, the server's day (turning at 04:00) is
+        // still the 25th, which is exactly the day in the cache.
+        api.fetchResults = [.failure(offline)]
+        let night = makeViewModel(now: Date(timeIntervalSince1970: 1_792_976_400)) // 2026-10-26 01:00 UTC
+
+        await night.load()
+
+        XCTAssertEqual(night.shownDate, DayFixtures.date)
+        XCTAssertFalse(night.cachedDayNotice?.contains("нет") ?? false, "the cache is not said to lack the day")
     }
 }

@@ -1,10 +1,13 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
 import XCTest
 @testable import HabitTracker
 
-/// Scriptable stand-in for the API used by `TodayViewModel`.
+/// Scriptable stand-in for the API used by `TodayViewModel`. On the main actor: the screen reads it
+/// while the queue replays through it, and the two must not race on its state.
+@MainActor
 final class MockTodayAPI: TodayScreenAPI {
     var categoriesResult: Result<[CategoryDTO], Error> = .success([])
     var entriesResult: Result<[EntryDTO], Error> = .success([])
@@ -745,6 +748,30 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore)
         XCTAssertFalse(viewModel.todayEntries.contains(where: \.isPending))
         XCTAssertFalse(states.contains(.loading), "a background delivery re-reads quietly, no loader")
+    }
+
+    func testAFailedBackgroundReReadSaysNothingNobodyAskedFor() async throws {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        let readsBefore = api.fetchedEntryRanges.count
+        api.createEntryResult = .success(
+            EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        )
+        api.entriesResult = .failure(APIClientError.timeout)
+
+        await outbox.flush()
+        for _ in 0..<100 where api.fetchedEntryRanges.count == readsBefore {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // The failed read answers on the next turn; give it one before looking.
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore, "the delivery did read the day again")
+        XCTAssertNil(viewModel.saveErrorMessage, "nobody pressed anything: a failed quiet re-read is not their error")
     }
 
     func testASaveOfAChecklistStillWaitingGoesThroughTheQueueSoTheOldOneCannotLandLast() async {

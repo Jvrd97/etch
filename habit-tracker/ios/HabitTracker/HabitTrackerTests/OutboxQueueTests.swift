@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225, PHASE-03/236, PHASE-03/242
+// summary: PHASE-03/236, 242 — a press carries its moment and no day, a 422 on the moment is "not sent" with "write to today", a stored press without a moment still decodes; a write replacing one that landed with its answer lost is not a conflict, a state none of them made still is; a retry over a newer write says so
 // summary: tests for the one offline write queue — airplane mode → write → network back → one record on a server that dedupes by key; a send cut mid-way is repeated under the same key; a relaunch with a non-empty queue; order across kinds; 5xx kept (only five in a row give up, a dead network resets the count), 4xx in the visible "not sent" list with a reason, 401 waits and says so; an unreadable answer of the replay check refuses instead of passing for delivered; a 409 of a press without a day is not called a day turn; retry sends at once; a newer "set" replaces the waiting one; retry and discard from the list; the day a write was made survives midnight (explicit dates stay, a quick-mark press is refused instead of landing in the next day); a stale notebook or mark is refused instead of overwriting fresher server data; one-time import of the two old queues
 import Combine
 import SwiftData
@@ -6,7 +7,9 @@ import XCTest
 @testable import HabitTracker
 
 /// A server in miniature: it keeps what it was sent, answers a repeated Idempotency-Key with the
-/// original instead of a second row, and holds the day state the replay checks against.
+/// original instead of a second row, and holds the day state the replay checks against. On the main
+/// actor, so a screen reading while the queue sends cannot race on its state.
+@MainActor
 final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
     /// What the server holds, one row per accepted key.
     private(set) var rowsByKey: [String: OutboxAction] = [:]
@@ -27,7 +30,10 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
 
     var rowCount: Int { rowsByKey.count }
 
-    private func handle(_ name: String, key: String?, action: OutboxAction?) async throws {
+    /// `apply` stores a write that has no key (a mark, a notebook), so a lost answer can follow it too.
+    private func handle(
+        _ name: String, key: String?, action: OutboxAction?, apply: () -> Void = {}
+    ) async throws {
         requests.append((name, key))
         if let hook = duringWrite {
             duringWrite = nil
@@ -35,6 +41,7 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
         }
         if !failures.isEmpty { throw failures.removeFirst() }
         if let key, let action, rowsByKey[key] == nil { rowsByKey[key] = action }
+        apply()
         if loseNextAnswer {
             loseNextAnswer = false
             throw APIClientError.transport(code: URLError.networkConnectionLost.rawValue)
@@ -80,8 +87,7 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
     }
 
     func setMark(date: String, itemID: UUID, _ payload: DayMarkRequestDTO) async throws -> DayMarkDTO {
-        try await handle("mark", key: nil, action: nil)
-        marks[date, default: [:]][itemID] = payload.state
+        try await handle("mark", key: nil, action: nil) { marks[date, default: [:]][itemID] = payload.state }
         return DayMarkDTO(itemId: itemID, state: payload.state, note: payload.note)
     }
 
@@ -95,8 +101,7 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
     }
 
     func saveNotebook(date: String, content: String) async throws {
-        try await handle("notebook", key: nil, action: nil)
-        notebooks[date] = content
+        try await handle("notebook", key: nil, action: nil) { notebooks[date] = content }
     }
 }
 
@@ -145,6 +150,10 @@ final class OutboxQueueTests: XCTestCase {
 
     private func tap(day: String? = "2026-10-26") -> OutboxAction {
         .tapQuickMark(QueuedTap(quickMarkId: 3, categoryId: 1, utcOffsetMinutes: 180, serverDay: day))
+    }
+
+    private func momentTap(at pressed: Date) -> OutboxAction {
+        .tapQuickMark(QueuedTap(quickMarkId: 3, categoryId: 1, utcOffsetMinutes: 180, serverDay: nil, occurredAt: pressed))
     }
 
     private func notebook(_ content: String, expected: String?, date: String = "2026-10-26") -> OutboxAction {
@@ -356,7 +365,12 @@ final class OutboxQueueTests: XCTestCase {
         queue.enqueue(notebook("утро и вечер", expected: "утро"), label: "Блокнот")
 
         XCTAssertEqual(queue.pendingCount, 1)
-        XCTAssertEqual(queue.pending.first?.action, notebook("утро и вечер", expected: "с сервера"))
+        XCTAssertEqual(
+            queue.pending.first?.action,
+            .saveNotebook(
+                QueuedNotebook(date: "2026-10-26", content: "утро и вечер", expected: "с сервера", replacedContents: ["утро"])
+            )
+        )
         server.notebooks["2026-10-26"] = "с сервера"
         await queue.flush(using: replay(server))
         XCTAssertEqual(server.notebooks["2026-10-26"], "утро и вечер")
@@ -377,6 +391,52 @@ final class OutboxQueueTests: XCTestCase {
         XCTAssertEqual(server.notebooks["2026-10-26"], "два")
         XCTAssertEqual(queue.pendingCount, 0)
         XCTAssertEqual(queue.failedCount, 0)
+    }
+
+    func testAMarkThatLandedWithItsAnswerLostIsNoConflictForTheMarkReplacingIt() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        let first = QueuedDayMark(date: "2026-10-26", itemID: DayFixtures.taskID, state: "done", note: nil, expected: "")
+        queue.enqueue(.setDayMark(first), label: "Релиз")
+        server.loseNextAnswer = true
+        await queue.flush(using: replay(server))
+        XCTAssertEqual(server.marks["2026-10-26"]?[DayFixtures.taskID], "done", "A landed, its answer did not")
+        XCTAssertEqual(queue.pendingCount, 1)
+
+        let second = QueuedDayMark(date: "2026-10-26", itemID: DayFixtures.taskID, state: "failed", note: nil, expected: "done")
+        queue.enqueue(.setDayMark(second), label: "Релиз")
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(server.marks["2026-10-26"]?[DayFixtures.taskID], "failed")
+        XCTAssertTrue(queue.writes.isEmpty, "the server holding A's state is not a change made elsewhere")
+    }
+
+    func testANotebookThatLandedWithItsAnswerLostIsNoConflictForTheSaveReplacingIt() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        server.notebooks["2026-10-26"] = ""
+        queue.enqueue(notebook("один", expected: ""), label: "Блокнот")
+        server.loseNextAnswer = true
+        await queue.flush(using: replay(server))
+
+        queue.enqueue(notebook("один и два", expected: "один"), label: "Блокнот")
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(server.notebooks["2026-10-26"], "один и два")
+        XCTAssertTrue(queue.writes.isEmpty)
+    }
+
+    func testAReplacementStillRefusesAStateNoneOfTheWritesMade() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(notebook("один", expected: ""), label: "Блокнот")
+        queue.enqueue(notebook("один и два", expected: "один"), label: "Блокнот")
+        server.notebooks["2026-10-26"] = "из веба"
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(server.notebooks["2026-10-26"], "из веба")
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.notebookChangedReason)
     }
 
     func testAddingsAreNeverMerged() {
@@ -406,6 +466,33 @@ final class OutboxQueueTests: XCTestCase {
         XCTAssertNil(queue.pending.last?.failure)
         await queue.flush(using: replay(server))
         XCTAssertEqual(server.rowCount, 2)
+    }
+
+    func testRetryOfAnOlderWriteSaysItWillWriteOverTheNewerOne() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        server.notebooks["2026-10-26"] = "из веба"
+        queue.enqueue(notebook("утро", expected: "с сервера"), label: "Блокнот утро")
+        await queue.flush(using: replay(server))
+        queue.enqueue(notebook("вечер", expected: "из веба"), label: "Блокнот вечер")
+        queue.enqueue(entry("1"), label: "Отжимания")
+
+        XCTAssertEqual(
+            queue.retryWarning(for: queue.failed[0]),
+            "Повтор запишет это поверх более новой записи «Блокнот вечер»."
+        )
+        XCTAssertNil(queue.retryWarning(for: queue.pending[0]), "nothing newer of that object")
+    }
+
+    func testRetryOfAnAdditionWarnsOfNothing() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(entry("1"), label: "a")
+        server.failures = [APIClientError.unexpectedStatus(400)]
+        await queue.flush(using: replay(server))
+        queue.enqueue(entry("1"), label: "a")
+
+        XCTAssertNil(queue.retryWarning(for: queue.failed[0]), "two entries are two entries")
     }
 
     func testDiscardForgetsTheWrite() async {
@@ -475,6 +562,45 @@ final class OutboxQueueTests: XCTestCase {
         XCTAssertEqual(server.tapRequests.first?.source, "ios")
         XCTAssertEqual(server.tapRequests.first?.utcOffsetMinutes, 180)
         XCTAssertEqual(server.rowCount, 1)
+    }
+
+    func testAPressCarryingItsMomentIsSentWithItAndWithoutADay() async {
+        let server = FakeOutboxServer()
+        server.today = "2026-10-27"
+        let queue = makeQueue()
+        let pressed = Date(timeIntervalSince1970: 1_792_890_000) // 2026-10-25 01:00 UTC
+        queue.enqueue(momentTap(at: pressed), label: "Вода")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(server.tapRequests.map(\.occurredAt), ["2026-10-25T01:00:00Z"])
+        XCTAssertEqual(server.tapRequests.map(\.entryDate), [nil], "the server reads the day off the moment")
+        XCTAssertTrue(queue.writes.isEmpty)
+    }
+
+    func testAMomentTheServerWillNotTakeIsNotSentAndCanBeWrittenToToday() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(momentTap(at: Date(timeIntervalSince1970: 1_792_000_000)), label: "Вода")
+        server.failures = [APIClientError.unexpectedStatus(422)]
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.pressTimeRefusedReason)
+        XCTAssertEqual(queue.failed.first?.retryTitle, OutboxWrite.retryTodayTitle)
+
+        await queue.retry(id: queue.failed[0].id)
+        await queue.flush(using: replay(server))
+        XCTAssertEqual(server.tapRequests.last?.occurredAt, nil, "written to the server's today")
+        XCTAssertTrue(queue.writes.isEmpty)
+    }
+
+    func testAPressStoredBeforeTheMomentExistedStillReads() throws {
+        let stored = Data(#"{"quickMarkId":3,"categoryId":1,"utcOffsetMinutes":180,"serverDay":"2026-10-26"}"#.utf8)
+
+        let tap = try CacheCoding.decoder().decode(QueuedTap.self, from: stored)
+
+        XCTAssertEqual(tap, QueuedTap(quickMarkId: 3, categoryId: 1, utcOffsetMinutes: 180, serverDay: "2026-10-26"))
+        XCTAssertNil(tap.occurredAt)
     }
 
     // MARK: Stale writes over fresher data

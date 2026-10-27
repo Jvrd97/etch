@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/210, PHASE-03/225
+// [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — both targets of a card say "ждёт отправки: N" to VoiceOver while its presses wait in the queue
 // summary: the quick-mark buttons of Today — a card per button (name and counter open the day's sets, the trailing plus or tick adds one), planned badge, lime when done, the undo chip of the last tap, the offline banner (queued presses are counted by the shared outbox strip of the screen)
 import SwiftUI
 
@@ -26,6 +27,7 @@ struct QuickMarksSection: View {
                 ForEach(viewModel.marks) { mark in
                     QuickMarkCard(
                         mark: mark,
+                        waitingCaption: viewModel.waitingCaption(of: mark.id),
                         onOpen: { onOpen(mark) },
                         onTap: { Task { await viewModel.tap(mark) } }
                     )
@@ -53,6 +55,9 @@ struct QuickMarksSection: View {
 
 private struct QuickMarkCard: View {
     let mark: QuickMarkDTO
+    /// "ждёт отправки: N" while presses of this button wait in the queue: the drawn total already
+    /// counts them, and VoiceOver has to say they are not on the server yet.
+    let waitingCaption: String?
     let onOpen: () -> Void
     let onTap: () -> Void
 
@@ -94,6 +99,7 @@ private struct QuickMarkCard: View {
             .accessibilityLabel(
                 "\(QuickMarkWording.heading(forKind: mark.kind)) — \(mark.label)"
             )
+            .accessibilityValue(waitingCaption ?? "")
 
             Button(action: onTap) {
                 Image(systemName: mark.kind == QuickMarkDTO.kindCheck ? "checkmark" : "plus")
@@ -104,6 +110,7 @@ private struct QuickMarkCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(mark.accessibilityName)
+            .accessibilityValue(waitingCaption ?? "")
             .accessibilityIdentifier("quickMark.tap.\(mark.id)")
         }
         .foregroundStyle(foreground)

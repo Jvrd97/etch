@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
 import Combine
 import Foundation
@@ -56,10 +57,12 @@ final class DayViewModel: ObservableObject {
     /// The notebook of the shown day waits in the queue.
     @Published private(set) var isNotebookQueued = false
 
-    /// Opened offline on "today", the cache may hold an older day (the last one read): say so.
+    /// Opened offline on "today", the cache may hold an older day (the last one read): name the day shown.
+    /// Not "today is missing": the phone's calendar turns at midnight and the server's day at its own
+    /// boundary (04:00), so between the two the cached day is the server's today.
     var cachedDayNotice: String? {
         guard offlineAsOf != nil, requestedDate == nil, let shown = shownDate, shown != localToday else { return nil }
-        return "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: shown))."
+        return "Показан день из кэша: \(DayFormat.title(of: shown))."
     }
 
     private var localToday: String {
@@ -200,11 +203,13 @@ final class DayViewModel: ObservableObject {
 
     // MARK: Loading
 
-    /// Waiting writes go first, so a reload is also a retry of the queue.
+    /// Waiting writes go out alongside the read, so a reload is also a retry of the queue; a slow send
+    /// does not hold the day back (waiting writes are laid over it, a delivery reads it again).
     func load() async {
         state = .loading
-        await outbox?.flush()
+        let flushing = Task { await outbox?.flush() }
         await fetch(showFailure: true)
+        await flushing.value
     }
 
     /// Re-read after a write: counts and the verdict are the server's to recount.
