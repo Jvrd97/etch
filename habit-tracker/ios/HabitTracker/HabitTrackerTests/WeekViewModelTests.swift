@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/229
-// summary: Week screen state tests — load of the running week through the read cache (fresh, offline with "обновлено", nothing to show), not-configured and server errors in words, stepping between weeks with a late answer dropped, in-place refresh that keeps the screen, and the narrative on request (statuses, no network, empty week, a week change drops it)
+// [review:need-review] PHASE-03/229, PHASE-03/243
+// summary: Week screen state tests (return to the screen reads in place, pull to refresh offline and overtaken by a step, the running week opened by its code kept as «current», a cached week that ended loses its note, no «Текущая» on the running week, one narrative request per week, 422 and a slow model in words) — load of the running week through the read cache (fresh, offline with "обновлено", nothing to show), not-configured and server errors in words, stepping between weeks with a late answer dropped, in-place refresh that keeps the screen, and the narrative on request (statuses, no network, empty week, a week change drops it)
 import XCTest
 @testable import HabitTracker
 
@@ -25,9 +25,23 @@ final class WeekViewModelTests: XCTestCase {
     private let moment = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func makeViewModel(
-        _ api: MockWeekAPI, store: CacheStore = InMemoryCacheStore()
+        _ api: MockWeekAPI, store: CacheStore = InMemoryCacheStore(), now: Date? = nil
     ) -> WeekViewModel {
-        WeekViewModel(api: api, cacheStore: store, now: { self.moment })
+        let at = now ?? moment
+        return WeekViewModel(api: api, cacheStore: store, now: { at })
+    }
+
+    /// 12:00 UTC on a Wednesday of the fixture's running week.
+    private let midWeek = Date(timeIntervalSince1970: 1_787_745_600)
+    /// Monday 24 August 2026, 10:00 in Berlin: the day has begun and is not closed.
+    private let mondayMorning = Date(timeIntervalSince1970: 1_787_558_400)
+
+    private func neighbours(_ iso: String) throws -> WeekReviewDTO {
+        switch iso {
+        case "2026-W34": return try WeekFixtures.week("2026-W34", previous: "2026-W33", next: "2026-W35")
+        case "2026-W35": return try WeekFixtures.review()
+        default: return try WeekFixtures.week("2026-W36", previous: "2026-W35", next: "2026-W37")
+        }
     }
 
     private func narrative(_ text: String = "Неделя прошла ровно.") -> WeekNarrativeDTO {
@@ -233,6 +247,190 @@ final class WeekViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.refreshError, "Сервер ответил ошибкой 500")
     }
 
+    func testPullToRefreshWithoutANetworkKeepsTheWeekAndSaysItIsOld() async throws {
+        let api = MockWeekAPI()
+        let week = try WeekFixtures.review()
+        api.fetchHandler = { _ in week }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        api.fetchHandler = { _ in throw APIClientError.transport(code: -1009) }
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.state, .loaded, "the gesture must not swap the screen for a loader")
+        XCTAssertEqual(viewModel.review, week)
+        XCTAssertEqual(viewModel.offlineAsOf, moment)
+        XCTAssertNil(viewModel.refreshError)
+    }
+
+    func testPullToRefreshWithoutANetworkAndNothingCachedSaysWhy() async throws {
+        let api = MockWeekAPI()
+        let week = try WeekFixtures.review()
+        api.fetchHandler = { _ in week }
+        let viewModel = makeViewModel(api, store: DiscardingCacheStore())
+        await viewModel.load()
+        api.fetchHandler = { _ in throw APIClientError.timeout }
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.review, week)
+        XCTAssertEqual(viewModel.refreshError, "Сервер не ответил вовремя")
+    }
+
+    func testARefreshOvertakenByAStepToAnotherWeekIsDropped() async throws {
+        let api = MockWeekAPI()
+        var release: CheckedContinuation<Void, Never>?
+        var slow = false
+        api.fetchHandler = { iso in
+            if iso == nil, slow {
+                await withCheckedContinuation { release = $0 }
+                return try WeekFixtures.runningWeek()
+            }
+            return try self.neighbours(iso ?? "2026-W35")
+        }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        slow = true
+
+        let refreshing = Task { await viewModel.refresh() }
+        while release == nil { await Task.yield() }
+        await viewModel.showPrevious()
+        release?.resume()
+        await refreshing.value
+
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W34", "the late refresh answered about the week left behind")
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testComingBackToTheScreenReadsInPlaceInsteadOfShowingTheLoader() async throws {
+        let api = MockWeekAPI()
+        let week = try WeekFixtures.review()
+        api.fetchHandler = { _ in week }
+        let viewModel = makeViewModel(api)
+        await viewModel.appear()
+        XCTAssertEqual(viewModel.review, week)
+        var release: CheckedContinuation<Void, Never>?
+        api.fetchHandler = { _ in
+            await withCheckedContinuation { release = $0 }
+            return week
+        }
+
+        let again = Task { await viewModel.appear() }
+        while release == nil { await Task.yield() }
+
+        XCTAssertEqual(viewModel.state, .loaded, "the week stays on screen while it is read again")
+        release?.resume()
+        await again.value
+        XCTAssertEqual(api.fetched.count, 2)
+    }
+
+    // MARK: Running week and the cache
+
+    func testTheRunningWeekOpenedByItsCodeIsAlsoKeptAsCurrent() async throws {
+        let store = InMemoryCacheStore()
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in
+            iso == "2026-W35" ? try WeekFixtures.runningWeek() : try self.neighbours("2026-W34")
+        }
+        let viewModel = makeViewModel(api, store: store, now: midWeek)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W34")
+        await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
+
+        let current = store.load(WeekReviewDTO.self, forKey: WeekViewModel.cacheKey(for: nil))
+
+        XCTAssertEqual(current?.value.window.isoCode, "2026-W35")
+    }
+
+    func testOnMondayBeforeTheDayClosesTheCurrentWeekIsStillCurrent() async throws {
+        // The server counts no day yet and sends no «as of»; the calendar says the week began.
+        let store = InMemoryCacheStore()
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in
+            switch iso {
+            case "2026-W35": return try WeekFixtures.unclosedWeek(iso: "2026-W35")
+            default: return try self.neighbours("2026-W34")
+            }
+        }
+        let viewModel = makeViewModel(api, store: store, now: mondayMorning)
+        await viewModel.load()
+        await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
+
+        XCTAssertTrue(viewModel.isShowingRunningWeek)
+        XCTAssertFalse(viewModel.showsCurrentButton)
+        let current = store.load(WeekReviewDTO.self, forKey: WeekViewModel.cacheKey(for: nil))
+        XCTAssertEqual(current?.value.window.isoCode, "2026-W35")
+    }
+
+    func testAFinishedWeekOpenedByItsCodeIsNotKeptAsCurrent() async throws {
+        let store = InMemoryCacheStore()
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in try self.neighbours(iso ?? "2026-W35") }
+        let viewModel = makeViewModel(api, store: store)
+        await viewModel.load()
+        await viewModel.showPrevious()
+
+        let current = store.load(WeekReviewDTO.self, forKey: WeekViewModel.cacheKey(for: nil))
+
+        XCTAssertEqual(current?.value.window.isoCode, "2026-W35")
+    }
+
+    func testTheUnfinishedNoteIsShownOnAFreshRunningWeek() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.runningWeek() }
+        let viewModel = makeViewModel(api, now: midWeek)
+
+        await viewModel.load()
+
+        XCTAssertNotNil(viewModel.partialNote)
+    }
+
+    func testACachedRunningWeekThatHasEndedSinceLosesItsUnfinishedNote() async throws {
+        let store = InMemoryCacheStore()
+        store.save(try WeekFixtures.runningWeek(), forKey: WeekViewModel.cacheKey(for: nil), updatedAt: midWeek)
+        let offline = MockWeekAPI()
+        offline.fetchHandler = { _ in throw APIClientError.timeout }
+
+        let stillRunning = makeViewModel(offline, store: store, now: midWeek)
+        await stillRunning.load()
+        XCTAssertNotNil(stillRunning.partialNote, "the week has not ended: the note is true")
+        XCTAssertTrue(stillRunning.isShowingRunningWeek)
+
+        let weeksLater = makeViewModel(offline, store: store)
+        await weeksLater.load()
+        XCTAssertEqual(weeksLater.offlineAsOf, midWeek)
+        XCTAssertNil(weeksLater.partialNote, "the cache says the week runs; the calendar says it ended")
+        XCTAssertFalse(weeksLater.isShowingRunningWeek)
+    }
+
+    func testTheButtonBackToTheCurrentWeekIsNotShownOnTheCurrentWeek() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in
+            switch iso {
+            case nil, "2026-W35": return try WeekFixtures.runningWeek()
+            case "2026-W36": return try WeekFixtures.unclosedWeek(iso: "2026-W36")
+            default: return try self.neighbours(iso ?? "2026-W35")
+            }
+        }
+        let viewModel = makeViewModel(api, now: midWeek)
+        await viewModel.load()
+        XCTAssertFalse(viewModel.showsCurrentButton, "the week was asked for without a code")
+
+        await viewModel.showPrevious()
+        XCTAssertTrue(viewModel.showsCurrentButton)
+
+        await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
+        XCTAssertFalse(viewModel.showsCurrentButton, "the running week opened by its code is the current one")
+
+        await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W36")
+        XCTAssertTrue(viewModel.showsCurrentButton, "a week that has not begun is not the current one")
+    }
+
     // MARK: Narrative
 
     func testTheNarrativeIsWrittenOnRequestForTheWeekOnScreen() async throws {
@@ -259,7 +457,8 @@ final class WeekViewModelTests: XCTestCase {
         let expected: [(APIClientError, String)] = [
             (.unexpectedStatus(503), "Итог от ИИ выключен: на сервере не настроена модель."),
             (.unexpectedStatus(502), "Модель не ответила. Повторите позже."),
-            (.timeout, WeekFormat.narrativeNeedsNetwork),
+            (.unexpectedStatus(422), "В этой неделе нет данных для итога."),
+            (.timeout, WeekFormat.narrativeSlow),
             (.transport(code: -1009), WeekFormat.narrativeNeedsNetwork),
         ]
         for (error, message) in expected {
@@ -375,6 +574,70 @@ final class WeekViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.narrative, .failure(WeekFormat.notConfiguredMessage))
     }
 
+    func testComingBackToAWeekStillBeingWrittenShowsThatWriteAndAsksNothingNew() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in try self.neighbours(iso ?? "2026-W35") }
+        var release: CheckedContinuation<Void, Never>?
+        api.narrativeHandler = { _ in
+            await withCheckedContinuation { release = $0 }
+            return self.narrative()
+        }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        let writing = Task { await viewModel.writeNarrative() }
+        while release == nil { await Task.yield() }
+
+        await viewModel.showPrevious()
+        XCTAssertEqual(viewModel.narrative, .idle)
+        await viewModel.showNext()
+
+        XCTAssertEqual(viewModel.narrative, .writing)
+        XCTAssertFalse(viewModel.canWriteNarrative)
+        await viewModel.writeNarrative()
+        XCTAssertEqual(api.narrated, ["2026-W35"], "W35 → W34 → W35 must not ask the model twice")
+        release?.resume()
+        await writing.value
+        XCTAssertEqual(viewModel.narrative, .ready("Неделя прошла ровно."))
+    }
+
+    func testTheTextOfASupersededRequestIsDropped() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in try self.neighbours(iso ?? "2026-W35") }
+        var releases: [String: CheckedContinuation<Void, Never>] = [:]
+        api.narrativeHandler = { iso in
+            await withCheckedContinuation { releases[iso] = $0 }
+            return WeekNarrativeDTO(isoCode: iso, text: "Текст \(iso)", model: "m")
+        }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        let first = Task { await viewModel.writeNarrative() }
+        while releases["2026-W35"] == nil { await Task.yield() }
+        await viewModel.showPrevious()
+        let second = Task { await viewModel.writeNarrative() }
+        while releases["2026-W34"] == nil { await Task.yield() }
+
+        releases["2026-W35"]?.resume()
+        await first.value
+        XCTAssertEqual(viewModel.narrative, .writing, "the first request no longer owns the text")
+        releases["2026-W34"]?.resume()
+        await second.value
+
+        XCTAssertEqual(viewModel.narrative, .ready("Текст 2026-W34"))
+    }
+
+    func testAnEmptyWeekAnswer422IsSaidInWordsOnTheScreenModel() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.review() }
+        api.narrativeHandler = { _ in throw APIClientError.unexpectedStatus(422) }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+
+        await viewModel.writeNarrative()
+
+        XCTAssertEqual(viewModel.narrative, .failure("В этой неделе нет данных для итога."))
+        XCTAssertTrue(viewModel.canWriteNarrative, "a refusal does not lock the button")
+    }
+
     // MARK: Entry point
 
     func testWeekIsOneRowUnderMore() {
@@ -387,4 +650,10 @@ final class WeekViewModelTests: XCTestCase {
         XCTAssertEqual(navigation.selectedTab, .more)
         XCTAssertEqual(navigation.morePath, [.week])
     }
+}
+
+/// A store that remembers nothing: a screen with an answer on it and no cache under it.
+private final class DiscardingCacheStore: CacheStore {
+    func save<T: Encodable>(_ value: T, forKey key: String, updatedAt: Date) {}
+    func load<T: Decodable>(_ type: T.Type, forKey key: String) -> CachedValue<T>? { nil }
 }

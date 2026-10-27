@@ -1,6 +1,24 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/243
 // summary: the blocks of the Week screen — header with the period, the note under an unfinished week and the neighbour-week buttons, totals against the previous week, the seven days with the best and the worst named in words, role and category time, avoid streaks, health with "Метрика не подключена", and the AI narrative; every change is printed with its sign so colour never carries meaning alone
 import SwiftUI
+
+/// Sizes and weights of the screen, named so none of them is a bare number in a view.
+private enum Layout {
+    /// The smallest side of anything the finger must hit.
+    static let minTap: CGFloat = 44
+    static let titleScale: CGFloat = 0.6
+    static let valueScale: CGFloat = 0.7
+    static let statValueSize: CGFloat = 26
+    static let healthValueSize: CGFloat = 22
+    static let dayVerdictSize: CGFloat = 11
+    static let dayMarkSize: CGFloat = 10
+    static let noteFillOpacity = 0.1
+    static let noteStrokeOpacity = 0.4
+    static let wonBorderOpacity = 0.6
+    static let lostBorderOpacity = 0.5
+    static let narrativeLoaderHeight: CGFloat = 100
+    static let disabledOpacity = 0.4
+}
 
 private func tone(_ trend: WeekFormat.Trend) -> Color {
     switch trend {
@@ -85,7 +103,7 @@ struct WeekHeaderView: View {
             Text("Неделя \(window.isoCode)")
                 .font(DS.Typography.h1)
                 .foregroundStyle(DS.Palette.textPrimary)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(Layout.titleScale)
                 .lineLimit(1)
             Text("\(WeekFormat.period(window)) · сутки с \(window.dayStartHour):00, \(window.timezone)")
                 .font(DS.Typography.caption)
@@ -93,17 +111,17 @@ struct WeekHeaderView: View {
             if let asOf = viewModel.offlineAsOf {
                 WeekOfflineNote(updatedAt: asOf)
             }
-            if let note = WeekFormat.partialNote(window) {
+            if let note = viewModel.partialNote {
                 Text(note)
                     .font(DS.Typography.body)
                     .foregroundStyle(DS.Palette.textPrimary)
                     .padding(DS.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(DS.Palette.lime.opacity(0.1))
+                    .background(DS.Palette.lime.opacity(Layout.noteFillOpacity))
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
-                            .stroke(DS.Palette.lime.opacity(0.4), lineWidth: 1)
+                            .stroke(DS.Palette.lime.opacity(Layout.noteStrokeOpacity), lineWidth: 1)
                     )
             }
             if let message = viewModel.refreshError {
@@ -137,11 +155,16 @@ private struct WeekStepper: View {
                 Task { await viewModel.showPrevious() }
             } label: {
                 Label(window.previousIsoCode, systemImage: "chevron.left")
+                    .stepperHitArea(alignment: .leading)
             }
             .accessibilityLabel("Неделя \(window.previousIsoCode)")
             Spacer(minLength: DS.Spacing.sm)
-            if viewModel.requestedIso != nil {
-                Button("Текущая") { Task { await viewModel.showCurrent() } }
+            if viewModel.showsCurrentButton {
+                Button {
+                    Task { await viewModel.showCurrent() }
+                } label: {
+                    Text("Текущая").stepperHitArea(alignment: .center)
+                }
             }
             Spacer(minLength: DS.Spacing.sm)
             Button {
@@ -151,13 +174,21 @@ private struct WeekStepper: View {
                     Text(window.nextIsoCode)
                     Image(systemName: "chevron.right")
                 }
+                .stepperHitArea(alignment: .trailing)
             }
             .accessibilityLabel("Неделя \(window.nextIsoCode)")
         }
         .font(DS.Typography.caption)
         .foregroundStyle(DS.Palette.lime)
         .buttonStyle(.plain)
-        .frame(minHeight: 44)
+    }
+}
+
+private extension View {
+    /// The whole 44 pt box answers the finger, not just the glyphs inside it.
+    func stepperHitArea(alignment: Alignment) -> some View {
+        frame(minWidth: Layout.minTap, minHeight: Layout.minTap, alignment: alignment)
+            .contentShape(Rectangle())
     }
 }
 
@@ -176,9 +207,9 @@ private struct StatCard: View {
                     .font(DS.Typography.caption)
                     .foregroundStyle(DS.Palette.textSecondary)
                 Text(value)
-                    .font(.system(size: 26, weight: .bold))
+                    .font(.system(size: Layout.statValueSize, weight: .bold))
                     .foregroundStyle(DS.Palette.textPrimary)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(Layout.valueScale)
                     .lineLimit(1)
                 if let hint {
                     Text(hint)
@@ -269,20 +300,11 @@ private struct DayCell: View {
 
     private var verdict: String { WeekFormat.dayVerdict(day) }
 
-    private var shortVerdict: String {
-        switch verdict {
-        case "выигран": return "выигр."
-        case "проигран": return "проигр."
-        case "не учтён": return "—"
-        default: return "открыт"
-        }
-    }
-
     private var border: Color {
-        switch day.verdict {
-        case "won": return DS.Palette.lime.opacity(0.6)
-        case "lost": return DS.Palette.danger.opacity(0.5)
-        default: return DS.Palette.cardStroke
+        switch WeekFormat.outcome(day) {
+        case .won: return DS.Palette.lime.opacity(Layout.wonBorderOpacity)
+        case .lost: return DS.Palette.danger.opacity(Layout.lostBorderOpacity)
+        case .notCounted, .open: return DS.Palette.cardStroke
         }
     }
 
@@ -292,18 +314,18 @@ private struct DayCell: View {
                 .foregroundStyle(DS.Palette.textDisabled)
             Text(WeekFormat.shortDate(day.date))
                 .foregroundStyle(DS.Palette.textSecondary)
-            Text(shortVerdict)
-                .font(.system(size: 11))
+            Text(WeekFormat.shortDayVerdict(day))
+                .font(.system(size: Layout.dayVerdictSize))
                 .foregroundStyle(DS.Palette.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(Layout.valueScale)
             Text(day.counted && day.tasksTotal > 0 ? "\(day.tasksDone)/\(day.tasksTotal)" : "·")
                 .foregroundStyle(DS.Palette.textSecondary)
             Text(mark ?? " ")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: Layout.dayMarkSize, weight: .semibold))
                 .foregroundStyle(DS.Palette.lime)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(Layout.valueScale)
         }
         .font(DS.Typography.caption)
         .monospacedDigit()
@@ -465,9 +487,9 @@ private struct HealthCard: View {
                     HintText(text: WeekFormat.metricMissing)
                 } else if let average = metric.avgPerDay {
                     Text("\(WeekFormat.healthValue(unit: metric.unit, average)) в день")
-                        .font(.system(size: 22, weight: .bold))
+                        .font(.system(size: Layout.healthValueSize, weight: .bold))
                         .foregroundStyle(DS.Palette.textPrimary)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(Layout.valueScale)
                         .lineLimit(1)
                     HStack(spacing: 0) {
                         if let change = WeekFormat.healthDelta(metric) {
@@ -531,7 +553,7 @@ struct WeekNarrativeView: View {
                     .font(DS.Typography.body)
                     .foregroundStyle(DS.Palette.danger)
             case .writing:
-                NeonLoader(label: "Пишу итог…").frame(height: 100)
+                NeonLoader(label: "Пишу итог…").frame(height: Layout.narrativeLoaderHeight)
             case .idle:
                 EmptyView()
             }
@@ -545,7 +567,7 @@ struct WeekNarrativeView: View {
                 }
                 .buttonStyle(LimeButtonStyle())
                 .disabled(!viewModel.canWriteNarrative)
-                .opacity(viewModel.canWriteNarrative ? 1 : 0.4)
+                .opacity(viewModel.canWriteNarrative ? 1 : Layout.disabledOpacity)
             }
         }
         .accessibilityElement(children: .contain)

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/230
-// summary: the plan operations the day-summary draft and the chat plan share — a number to record, a checklist box to tick, the day's text with its append/create/replace mode; the server uses one schema for both, so the app decodes and echoes one type; flags the server leaves out are false, `existingEntryId` exists only in a draft
+// [review:need-review] PHASE-03/230, PHASE-03/250
+// summary: the plan operations the day-summary draft and the chat plan share — a number to record, a checklist box to tick, the day's text with its append/create/replace mode; the server uses one schema for both, so the app decodes and echoes one type; flags the server leaves out are false, `existingEntryId` exists only in a draft; the `op` tag is written on the way out and never required on the way in (a stored chat journal has none)
 import Foundation
 
 /// One number a plan proposes to record. Resolved by `categoryId` and `fieldId` only; the server
@@ -105,5 +105,18 @@ struct JournalOpDTO: Codable, Equatable {
         self.tags = tags
         self.mode = mode
         self.existingEntryId = existingEntryId
+    }
+
+    /// `op` is a tag the app writes when it echoes the operation back; a journal read from the chat's
+    /// history may come without it, and a missing tag must not fail the whole message. A missing `mode`
+    /// reads as the server's default, `append`: it adds to the day and overwrites nothing.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        content = try container.decode(String.self, forKey: .content)
+        mood = try container.decodeIfPresent(String.self, forKey: .mood)
+        tags = try container.decodeIfPresent(String.self, forKey: .tags)
+        mode = try container.decodeIfPresent(Mode.self, forKey: .mode) ?? .append
+        existingEntryId = try container.decodeIfPresent(Int.self, forKey: .existingEntryId)
     }
 }
