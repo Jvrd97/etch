@@ -1,10 +1,12 @@
-// [review:need-review] PHASE-03/229
-// summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status
+// [review:need-review] PHASE-03/229, PHASE-03/243
+// summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week (and whether a cached answer's week has since ended), the outcome of a day by the server's flags, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status (a slow model is not a missing network)
 import Foundation
 
 enum WeekFormat {
     private static let minutesPerHour = 60
+    static let daysInWeek = 7
     private static let minus = "−"
+    private static let secondsPerHour = 3600
 
     static let noChange = "без изменений"
     static let noData = "Нет данных"
@@ -144,9 +146,30 @@ enum WeekFormat {
     static func partialNote(_ window: WeekWindowDTO) -> String? {
         if window.isComplete { return nil }
         if window.countedDays == 0 { return noCountedDaysText }
-        return "Неделя не закончилась: учтено \(window.countedDays) из 7 дней — закрытые и прошедшие, "
+        return "Неделя не закончилась: учтено \(window.countedDays) из \(daysInWeek) дней — закрытые и прошедшие, "
             + "сегодняшний день войдёт после закрытия. "
             + "Сравнение — с первыми \(window.comparedDays) днями прошлой недели."
+    }
+
+    /// Whether the week is the one running now by the server's flags: it has begun and is not complete.
+    static func isRunning(_ window: WeekWindowDTO) -> Bool {
+        !window.isComplete && window.asOf != nil
+    }
+
+    /// The server's day for `date`: the clock of the week's own time zone, cut at the day-start hour.
+    static func serverDay(_ date: Date, in window: WeekWindowDTO) -> String {
+        let zone = TimeZone(identifier: window.timezone) ?? .current
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let shifted = date.addingTimeInterval(-TimeInterval(window.dayStartHour * secondsPerHour))
+        let parts = calendar.dateComponents([.year, .month, .day], from: shifted)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    /// The last day of the week is behind `date`. A cached answer of a week that was running when it
+    /// was kept says «не закончилась» for as long as it sits on disk; this is how the screen knows better.
+    static func hasEnded(_ window: WeekWindowDTO, at date: Date) -> Bool {
+        window.endsOn < serverDay(date, in: window)
     }
 
     // MARK: Health
@@ -175,13 +198,37 @@ enum WeekFormat {
 
     // MARK: Days and the verdict
 
-    /// The state of a day in words, for the cell and for VoiceOver.
-    static func dayVerdict(_ day: WeekDayStatDTO) -> String {
-        if !day.counted { return "не учтён" }
+    /// Where a day stands, read from the server's flags and nowhere else.
+    enum DayOutcome: Equatable {
+        case notCounted, won, lost, open
+    }
+
+    static func outcome(_ day: WeekDayStatDTO) -> DayOutcome {
+        if !day.counted { return .notCounted }
         switch day.verdict {
-        case "won": return "выигран"
-        case "lost": return "проигран"
-        default: return notClosed
+        case "won": return .won
+        case "lost": return .lost
+        default: return .open
+        }
+    }
+
+    /// The state of a day in words, for VoiceOver.
+    static func dayVerdict(_ day: WeekDayStatDTO) -> String {
+        switch outcome(day) {
+        case .notCounted: return "не учтён"
+        case .won: return "выигран"
+        case .lost: return "проигран"
+        case .open: return notClosed
+        }
+    }
+
+    /// The same, short enough for a cell of seven.
+    static func shortDayVerdict(_ day: WeekDayStatDTO) -> String {
+        switch outcome(day) {
+        case .notCounted: return "—"
+        case .won: return "выигр."
+        case .lost: return "проигр."
+        case .open: return "открыт"
         }
     }
 
@@ -224,6 +271,8 @@ enum WeekFormat {
     static let notConfiguredMessage = "Укажите адрес сервера в More → Settings"
     static let narrativeNeedsNetwork = "Итог пишется на сервере: нужна сеть. Проверьте соединение и повторите."
     static let narrativeFallback = "Не удалось написать итог недели."
+    static let narrativeSlow = "Модель отвечает долго. Повторите чуть позже."
+    static let loadFailedMessage = "Не удалось загрузить неделю"
 
     static func message(for error: APIClientError) -> String {
         switch error {
@@ -237,7 +286,9 @@ enum WeekFormat {
     }
 
     /// The narrative's refusals by HTTP status, and a clear word when the network is the problem.
+    /// A timeout is the model taking its time, not the network missing: the request left and nothing came back.
     static func narrativeMessage(for error: APIClientError) -> String {
+        if case .timeout = error { return narrativeSlow }
         if error.isConnectivity { return narrativeNeedsNetwork }
         switch error {
         case .unexpectedStatus(422): return "В этой неделе нет данных для итога."

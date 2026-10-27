@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/230
-// summary: tests of the plan operations the voice summary and the chat share — one set of types reads both server shapes (the chat plan without existing_entry_id, the draft with it), a flag the server leaves out is false, an operation echoes back with its op, the chat's journal never carries replace
+// [review:need-review] PHASE-03/230, PHASE-03/250
+// summary: tests of the plan operations the voice summary and the chat share — one set of types reads both server shapes (the chat plan without existing_entry_id, the draft with it), a flag the server leaves out is false, a journal without the op tag is still read (a chat history message has none), an operation echoes back with its op, the selection the chat sends carries the operations unchanged
 import XCTest
 @testable import HabitTracker
 
@@ -57,6 +57,29 @@ final class PlanOperationDTOTests: XCTestCase {
 
         XCTAssertEqual(journal.existingEntryId, 55)
         XCTAssertEqual(journal.mode, .append)
+    }
+
+    func testAJournalWithoutTheOpTagIsStillRead() throws {
+        let journal = try decode(JournalOpDTO.self, """
+        {"title": null, "content": "День", "mood": "ok", "tags": null, "mode": "append"}
+        """)
+
+        XCTAssertEqual(journal.content, "День")
+        XCTAssertEqual(journal.mood, "ok")
+        XCTAssertEqual(journal.mode, .append)
+        XCTAssertEqual(journal.op, "write_journal")
+    }
+
+    func testAChatPlanWhoseJournalHasNoOpTagIsStillAPlan() throws {
+        let body = try decode(ChatPlanBodyDTO.self, """
+        {"entry_date": "2026-10-25", "metrics": [], "checklist": [],
+         "journal": {"title": null, "content": "Хороший день", "mood": null, "tags": null, "mode": "create"}}
+        """)
+
+        XCTAssertEqual(body.journal?.content, "Хороший день")
+        XCTAssertEqual(body.journal?.mode, .create)
+        let echoed = try object(try XCTUnwrap(body.journal))
+        XCTAssertEqual(echoed["op"] as? String, "write_journal", "the tag is written on the way out")
     }
 
     func testEveryOperationEchoesBackWithItsOpAndWithoutAnAbsentEntryId() throws {

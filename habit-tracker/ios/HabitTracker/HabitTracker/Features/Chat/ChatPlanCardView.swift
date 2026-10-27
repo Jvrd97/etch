@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/212, PHASE-03/230
+// [review:need-review] PHASE-01/212, PHASE-03/230, PHASE-03/250
 // summary: the card under an assistant message that proposed a plan — a toggle per proposed operation (doubtful rows unticked), apply and dismiss, and after the apply the count of what was written
 import SwiftUI
 
@@ -33,6 +33,16 @@ struct ChatPlanCardView: View {
         }
     }
 
+    /// The chat's server schema cannot say `replace`; if it ever does, the card must say so instead of
+    /// reading «дополнить» over a text that would overwrite the day's.
+    private static func journalLabel(_ mode: JournalOpDTO.Mode) -> String {
+        switch mode {
+        case .create: return "Новая запись в дневнике: "
+        case .append: return "Дополнить дневник: "
+        case .replace: return "Заменить запись в дневнике: "
+        }
+    }
+
     @ViewBuilder
     private var rows: some View {
         let proposal = plan.plan
@@ -43,7 +53,7 @@ struct ChatPlanCardView: View {
             row(.check(index), label: check.sourceText, doubt: check.uncertain ? Self.unsure : nil)
         }
         if let journal = proposal.journal {
-            row(.journal, label: (journal.mode == .create ? "Новая запись в дневнике: " : "Дополнить дневник: ") + journal.content, doubt: nil)
+            row(.journal, label: Self.journalLabel(journal.mode) + journal.content, doubt: nil)
         }
         if let dayPlan = proposal.dayPlan {
             row(

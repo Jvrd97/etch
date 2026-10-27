@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227, PHASE-03/230
-// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments; the Today sheet hands Today a callback on every dismissal (applied, 409 or Close) so it reads the day again; on the More stack a retainer keeps a model with an unconfirmed write across a pop the system makes on its own, and the screen tells the root it must not be popped (#230)
+// [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227, PHASE-03/230, PHASE-03/250
+// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments; the Today sheet hands Today a callback on every dismissal (applied, 409 or Close) so it reads the day again; on the More stack a retainer keeps a model with an unconfirmed write across a pop the system makes on its own, and the screen tells the root it must not be popped, each instance under its own token (#230, #250); the retainer adopts the model the screen shows and lets it go after an ordinary exit; the two-finger escape asks like the screen's own Back; the Today sheet hands Today its callback only when the sheet sent a write, so a plain Close leaves Today as it was (#250)
 import SwiftUI
 
 /// The page pushed from More. It owns its view model, so leaving it drops the idempotency key of a
@@ -7,14 +7,23 @@ import SwiftUI
 struct DailySummaryView: View {
     @StateObject private var viewModel: DailySummaryViewModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.moreLeaveBlocked) private var leaveBlocked
+    @Environment(\.moreLeaveHold) private var leaveHold
     @State private var asksToLeave = false
+    /// This instance's name in the root's set of holders: an old instance going away cannot lift the hold of a new one.
+    @State private var holdToken = UUID()
     private let retainer: DailySummaryRetainer?
 
+    /// A page that owns its model for good: leaving it, however it happens, ends the model.
+    init(onApplied: @escaping () -> Void = {}) {
+        retainer = nil
+        _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
+    }
+
     /// With a retainer the model outlives a pop the system makes on its own (see `AppNavigation`).
-    init(onApplied: @escaping () -> Void = {}, retainer: DailySummaryRetainer? = nil) {
+    /// The retainer builds the model, so what happens when the day is written is the retainer's `make`.
+    init(retainer: DailySummaryRetainer) {
         self.retainer = retainer
-        _viewModel = StateObject(wrappedValue: retainer?.model() ?? .live(onApplied: onApplied))
+        _viewModel = StateObject(wrappedValue: retainer.model())
     }
 
     var body: some View {
@@ -30,10 +39,17 @@ struct DailySummaryView: View {
                     }
                 }
             }
-            .holdsMoreScreen(viewModel.closeNeedsConfirmation)
+            .holdsMoreScreen(viewModel.closeNeedsConfirmation, token: holdToken)
+            // The two-finger Z gesture pops a pushed page; with the page's own Back standing in for
+            // the system one it must ask the same question.
+            .accessibilityAction(.escape) {
+                if viewModel.closeNeedsConfirmation { asksToLeave = true } else { dismiss() }
+            }
+            .onAppear { retainer?.adopt(viewModel) }
+            .onDisappear { retainer?.screenLeft(viewModel) }
             .unconfirmedWriteDialog(isPresented: $asksToLeave, leaveTitle: "Выйти без проверки") {
                 // The person chose this: let the stack pop, and let the next visit start clean.
-                leaveBlocked.wrappedValue = false
+                leaveHold.release(holdToken)
                 retainer?.release()
                 dismiss()
             }
@@ -268,15 +284,18 @@ struct DailySummaryContent: View {
 }
 
 /// The button Today shows: opens the screen above in a sheet and closes it once the day is written.
-/// Today reads the day again whenever the sheet goes away, whatever the way: after the write, after
-/// a 409 (the day already holds the plan, but the sheet only says so), or after a Close that left a
-/// write of unknown outcome behind.
+/// Today is told when the sheet goes away only if the sheet sent a write — after the write, after a
+/// 409 (the day already holds the plan, but the sheet only says so), or after a Close that left a
+/// write of unknown outcome behind. A sheet closed without one changed nothing: reading the day again
+/// would swap Today for its loader and lose the scroll for no reason.
 struct VoiceDayButton: View {
     var onDismiss: () -> Void = {}
     @State private var isPresented = false
+    @State private var model: DailySummaryViewModel?
 
     var body: some View {
         Button {
+            model = .live(onApplied: { isPresented = false })
             isPresented = true
         } label: {
             Label("Рассказать день", systemImage: "mic.fill")
@@ -284,24 +303,27 @@ struct VoiceDayButton: View {
         .buttonStyle(LimeButtonStyle(prominent: false))
         .frame(minHeight: 44)
         .accessibilityIdentifier("today.voiceDay")
-        .sheet(isPresented: $isPresented, onDismiss: onDismiss) {
-            VoiceDaySheet(onApplied: { isPresented = false }, close: { isPresented = false })
+        .sheet(isPresented: $isPresented, onDismiss: sheetDismissed) {
+            if let model {
+                VoiceDaySheet(viewModel: model, close: { isPresented = false })
+            }
         }
+    }
+
+    private func sheetDismissed() {
+        let sentAWrite = model?.mayHaveChangedTheDay ?? false
+        model = nil
+        if sentAWrite { onDismiss() }
     }
 }
 
-/// The sheet owns the view model, so it knows when closing would lose the key of a write that may
+/// The sheet knows from the view model when closing would lose the key of a write that may
 /// have landed. A swipe cannot be intercepted to ask, so it is switched off for that case and the
 /// Close button asks instead.
 private struct VoiceDaySheet: View {
-    @StateObject private var viewModel: DailySummaryViewModel
+    @ObservedObject var viewModel: DailySummaryViewModel
     @State private var asksToClose = false
     let close: () -> Void
-
-    init(onApplied: @escaping () -> Void, close: @escaping () -> Void) {
-        _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
-        self.close = close
-    }
 
     var body: some View {
         NavigationStack {

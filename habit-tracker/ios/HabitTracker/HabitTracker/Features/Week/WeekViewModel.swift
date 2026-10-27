@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/229
-// summary: Week screen state — the running or a named week through the read cache (each week under its own key, the running one also under its code, so stepping back works offline; offline answers carry their moment), stepping between weeks with a late answer dropped, refresh in place, and the AI narrative on request (statuses in words, dropped when the week changed)
+// [review:need-review] PHASE-03/229, PHASE-03/243
+// summary: Week screen state — the running or a named week through the read cache (each week under its own key, the running one also under its code whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
 import Foundation
 
 @MainActor
@@ -29,8 +29,10 @@ final class WeekViewModel: ObservableObject {
     /// The week asked for; `nil` is the server's running week.
     private(set) var requestedIso: String?
 
-    /// The AI text is written on the server by a model: a generous timeout, like the insights.
-    static let narrativeTimeout: TimeInterval = 120
+    /// The AI text is written on the server by a model. The server gives the model 120 s
+    /// (`LLM_TIMEOUT_SECONDS`) and answers 502 when it runs out; the client waits longer, so that
+    /// answer arrives before the client's own timeout fires.
+    static let narrativeTimeout: TimeInterval = 150
 
     private let apiProvider: () -> WeekAPI?
     private let narrativeAPIProvider: () -> WeekAPI?
@@ -39,6 +41,10 @@ final class WeekViewModel: ObservableObject {
     private let now: () -> Date
     /// Bumped by every read; an answer that finds a newer number was asked about a week the person left.
     private var generation = 0
+    /// Bumped by every narrative request: only the newest one may put its text on screen.
+    private var narrativeToken = 0
+    /// The week whose text is being written right now, if any: coming back to it shows «пишу», not a second button.
+    private var narrativeWeek: String?
 
     init(
         apiProvider: @escaping () -> WeekAPI?,
@@ -75,6 +81,34 @@ final class WeekViewModel: ObservableObject {
 
     func load() async {
         await read(iso: requestedIso, silent: false)
+    }
+
+    /// The screen came on again. With an answer already shown it is read in place: a loader over
+    /// weeks the person was reading would be a step back.
+    func appear() async {
+        if review == nil {
+            await load()
+        } else {
+            await refresh()
+        }
+    }
+
+    /// The note under an unfinished week. A cached answer of a week that has ended since is not
+    /// «unfinished» any more, whatever the cache remembers.
+    var partialNote: String? {
+        guard let window = review?.window else { return nil }
+        if offlineAsOf != nil, WeekFormat.hasEnded(window, at: now()) { return nil }
+        return WeekFormat.partialNote(window)
+    }
+
+    /// The week on screen is the running one; the button back to it has nothing to do there.
+    var isShowingRunningWeek: Bool {
+        guard let window = review?.window, WeekFormat.isRunning(window) else { return false }
+        return offlineAsOf == nil || !WeekFormat.hasEnded(window, at: now())
+    }
+
+    var showsCurrentButton: Bool {
+        requestedIso != nil && !isShowingRunningWeek
     }
 
     /// Pull to refresh: the screen stays, so the gesture is not cancelled by its own redraw.
@@ -121,7 +155,7 @@ final class WeekViewModel: ObservableObject {
             fail(WeekFormat.message(for: error), silent: silent)
         } catch {
             guard mine == generation else { return }
-            fail("Не удалось загрузить неделю", silent: silent)
+            fail(WeekFormat.loadFailedMessage, silent: silent)
         }
     }
 
@@ -134,12 +168,17 @@ final class WeekViewModel: ObservableObject {
             if iso == nil {
                 // The running week is also kept under its own code: stepping away and back must not need the network.
                 store.save(value, forKey: Self.cacheKey(for: value.window.isoCode), updatedAt: now())
+            } else if WeekFormat.isRunning(value.window) {
+                // …and the other way round: the running week opened by its code is the one «current» means.
+                store.save(value, forKey: Self.cacheKey(for: nil), updatedAt: now())
             }
         case .stale(let value, let updatedAt):
             response = value
             offlineAsOf = updatedAt
         }
-        if review?.window.isoCode != response.window.isoCode { narrative = .idle }
+        if review?.window.isoCode != response.window.isoCode {
+            narrative = narrativeWeek == response.window.isoCode ? .writing : .idle
+        }
         review = response
         state = .loaded
     }
@@ -161,12 +200,16 @@ final class WeekViewModel: ObservableObject {
     }
 
     /// Writes the AI text for the week on screen. It needs the network; the text is not kept anywhere.
+    /// One request per week: leaving a week mid-write and coming back shows the same write, not a second one.
     func writeNarrative() async {
         guard canWriteNarrative, let iso = review?.window.isoCode else { return }
         guard let api = narrativeAPIProvider() else {
             narrative = .failure(WeekFormat.notConfiguredMessage)
             return
         }
+        narrativeToken += 1
+        let mine = narrativeToken
+        narrativeWeek = iso
         narrative = .writing
         let result: NarrativeState
         do {
@@ -176,6 +219,9 @@ final class WeekViewModel: ObservableObject {
         } catch {
             result = .failure(WeekFormat.narrativeFallback)
         }
+        // A newer request owns the text now.
+        guard mine == narrativeToken else { return }
+        narrativeWeek = nil
         // The person may have stepped to another week while the model wrote.
         guard review?.window.isoCode == iso else { return }
         narrative = result

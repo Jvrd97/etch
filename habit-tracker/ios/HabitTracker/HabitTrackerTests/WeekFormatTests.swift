@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/229
-// summary: tests of the Week vocabulary — minutes as hours, signed changes with the real minus, counts with Russian plurals, dates by hand, the note under an unfinished week, health values by unit, the emptiness test mirrored from the server, error and narrative texts by status
+// [review:need-review] PHASE-03/229, PHASE-03/243
+// summary: tests of the Week vocabulary (a day's outcome from the server's flags, the server's day cut at the day-start hour, a week that has ended since it was cached, a timeout that is a slow model and not a missing network) — minutes as hours, signed changes with the real minus, counts with Russian plurals, dates by hand, the note under an unfinished week, health values by unit, the emptiness test mirrored from the server, error and narrative texts by status
 import XCTest
 @testable import HabitTracker
 
@@ -175,7 +175,8 @@ final class WeekFormatTests: XCTestCase {
         )
         XCTAssertEqual(
             WeekFormat.narrativeMessage(for: .timeout),
-            "Итог пишется на сервере: нужна сеть. Проверьте соединение и повторите."
+            "Модель отвечает долго. Повторите чуть позже.",
+            "no answer within the budget is a slow model, not a missing network"
         )
         XCTAssertEqual(WeekFormat.narrativeMessage(for: .unexpectedStatus(500)), "Не удалось написать итог недели.")
     }
@@ -190,5 +191,63 @@ final class WeekFormatTests: XCTestCase {
         XCTAssertTrue(caption.hasPrefix("обновлено "), caption)
         XCTAssertTrue(caption.contains("27"), caption)
         XCTAssertTrue(caption.contains("9:41") || caption.contains("09:41"), caption)
+    }
+
+    // MARK: Outcome of a day
+
+    func testADaysOutcomeAndItsShortWordComeFromTheServersFlags() throws {
+        let days = try WeekFixtures.review().days
+        let future = try WeekFixtures.review { object in
+            var days = object["days"] as? [[String: Any]] ?? []
+            days[6]["counted"] = false
+            object["days"] = days
+        }.days[6]
+
+        XCTAssertEqual(WeekFormat.outcome(days[0]), .won)
+        XCTAssertEqual(WeekFormat.outcome(days[1]), .lost)
+        XCTAssertEqual(WeekFormat.outcome(days[3]), .open)
+        XCTAssertEqual(WeekFormat.outcome(future), .notCounted)
+        XCTAssertEqual(
+            [days[0], days[1], days[3], future].map(WeekFormat.shortDayVerdict),
+            ["выигр.", "проигр.", "открыт", "—"]
+        )
+    }
+
+    // MARK: The week's clock
+
+    private func moment(_ iso: String) throws -> Date {
+        let formatter = ISO8601DateFormatter()
+        return try XCTUnwrap(formatter.date(from: iso))
+    }
+
+    func testTheServersDayChangesAtTheDayStartHourOfTheWeeksOwnZone() throws {
+        let window = try WeekFixtures.review().window
+        XCTAssertEqual(window.timezone, "Europe/Berlin")
+        XCTAssertEqual(window.dayStartHour, 4)
+
+        // 03:30 in Berlin (summer time, UTC+2) is still the night of the 30th.
+        XCTAssertEqual(WeekFormat.serverDay(try moment("2026-08-31T01:30:00Z"), in: window), "2026-08-30")
+        XCTAssertEqual(WeekFormat.serverDay(try moment("2026-08-31T02:30:00Z"), in: window), "2026-08-31")
+    }
+
+    func testAWeekHasEndedOnlyWhenItsLastDayIsBehindTheServersDay() throws {
+        let window = try WeekFixtures.review().window
+
+        XCTAssertFalse(WeekFormat.hasEnded(window, at: try moment("2026-08-30T12:00:00Z")))
+        XCTAssertFalse(WeekFormat.hasEnded(window, at: try moment("2026-08-31T01:30:00Z")), "the night after Sunday is Sunday")
+        XCTAssertTrue(WeekFormat.hasEnded(window, at: try moment("2026-08-31T02:30:00Z")))
+    }
+
+    func testOnlyAWeekThatHasBegunAndNotFinishedIsRunning() throws {
+        XCTAssertTrue(WeekFormat.isRunning(try WeekFixtures.runningWeek().window))
+        XCTAssertFalse(WeekFormat.isRunning(try WeekFixtures.review().window))
+        let future = try WeekFixtures.review { object in
+            var window = object["window"] as? [String: Any] ?? [:]
+            window["is_complete"] = false
+            window["counted_days"] = 0
+            window["as_of"] = NSNull()
+            object["window"] = window
+        }.window
+        XCTAssertFalse(WeekFormat.isRunning(future), "a week that has not begun is not the current one")
     }
 }

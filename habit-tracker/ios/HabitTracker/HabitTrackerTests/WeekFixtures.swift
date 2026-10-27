@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/243
 // summary: a server-shaped answer of GET /week-review for a finished week (three judged days, two roles, one category, one avoid streak, sleep not connected) as JSON, with helpers to patch it into a running or an empty week
 import Foundation
 @testable import HabitTracker
@@ -62,9 +62,10 @@ enum WeekFixtures {
     }
 
     /// The running week: three of seven days counted, compared with the first three of the last week.
-    static func runningWeek() throws -> WeekReviewDTO {
+    static func runningWeek(iso: String = "2026-W35") throws -> WeekReviewDTO {
         try review { object in
             var window = object["window"] as? [String: Any] ?? [:]
+            window["iso_code"] = iso
             window["is_complete"] = false
             window["counted_days"] = 3
             window["compared_days"] = 3
