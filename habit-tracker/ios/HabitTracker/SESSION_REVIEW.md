@@ -498,3 +498,19 @@ Avoid-стрик карточка «N дней чистый» на экране 
 Известный предел (не делаем здесь): сохранение блокнота — слепая перезапись. Если клиент не видел чужую правку (перечитывание не случилось), PUT затрёт её. Закрыть можно только серверной проверкой базы (expected base / If-Match) — отдельный тикет.
 
 Проверки: `xcodebuild test` на av04-iPhone17Pro с подписью симулятора — 476 из 476. Не проверено: живой бэкенд, вёрстка карточек конфликта (блокнот, итог дня) глазами, pull-to-refresh и фокус `TextEditor` на устройстве. Для #215 добавлено: тянуть экран вниз во время набора в блокноте — курсор остаётся, текст не пропадает.
+## 2026-10-27 — PHASE-03/131: HealthKit-насос (шаги и пульс покоя за 7 дней → `POST /health/samples`)
+
+Клиент остаётся насосом: читает сырые семплы и отправляет шесть полей `HealthSampleIn`, сервер считает всё сам. Отправка идемпотентна без `Idempotency-Key`: сервер перезаписывает часовые корзины по естественному ключу. Очереди на диске нет намеренно: значения здоровья не покидают память, повтор = новое чтение окна из HealthKit. Ревизия Alembic не нужна, таблицы есть с `PHASE-02/64`. Тронуто 7 файлов `new`, 3 `mod`.
+
+- `HabitTracker/API/DTOs+Health.swift` — new: `HealthSampleDTO` ровно из шести полей, чанк, ответ сервера.
+- `HabitTracker/API/APIClient+Health.swift` — new: `HealthSamplesAPI.postHealthSamples`.
+- `HabitTracker/Features/HealthSync/HealthKitSampleSource.swift` — new: шов `HealthStoreQuerying` над `HKHealthStore` (только чтение, share-множества в сигнатурах нет; окно со `strictStartDate`), `HealthSampleMapper` — единица из каталога, UTC с миллисекундами, смещение устройства на момент семпла, `HKMetadataKeyTimeZone` семпла важнее.
+- `HabitTracker/Features/HealthSync/HealthPump.swift` — new: окно «сегодня и шесть дней до», целые метрики в чанке до 50 000 (метрика больше чанка — отказ без частичной отправки), до 3 попыток только на сети и 5xx, 401/422 без повтора, параллельные вызовы сливаются в один прогон, запуск при старте не показывает лист разрешений. В лог идёт только класс ошибки.
+- `HabitTracker/Features/HealthSync/HealthSyncView.swift` — mod: секция «Отправка на сервер» с кнопкой и итогом словами (`samples_received`, `buckets_written` от сервера); пустая неделя отправляет в Настройки.
+- `HabitTracker/App/HabitTrackerApp.swift` — mod: строка `.task { HealthPump.shared.syncIfAuthorized() }` перед `.appLock()`, то есть прогон после разблокировки.
+- `HabitTrackerTests/{HealthPumpTests,HealthSampleMappingTests,HealthAPIClientTests}.swift` — new: 14 + 7 + 2 теста на подделке `HKHealthStore` и `MockURLProtocol`; `HealthSyncViewModelTests.swift` — mod: +3 теста кнопки.
+- `services/backend/tests/test_health_device_chunk.py` — new: приём тела ровно в кодировке iOS (миллисекунды, `count\/min`, прогулка через границу часа), дневная свёртка и повторная отправка.
+
+Проверки: `xcodebuild test` на av08-iPhone17Pro с подписью симулятора — 473 из 473; `pytest tests/` — 1928 passed; `alembic heads` — одна строка. Мутация «без слияния вызовов» роняет `testConcurrentCallersShareOneRun`.
+
+Не проверено (устройство, для #215): лист разрешений при первом входе и отказ в нём; реальные семплы и единицы из «Здоровья»; дневная сумма шагов против приложения «Здоровье» на трёх днях; `/health` на маке после кнопки; прогон при старте после Face ID; подпись Personal Team с HealthKit.

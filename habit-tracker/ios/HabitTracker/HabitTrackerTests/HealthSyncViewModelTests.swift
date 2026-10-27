@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65
-// summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, and empty values
+// [review:need-review] PHASE-02/65, PHASE-03/131
+// summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, empty values, and the sync button with its result text
 
 import XCTest
 @testable import HabitTracker
@@ -21,7 +21,7 @@ final class HealthSyncViewModelTests: XCTestCase {
 
     func testFirstEntryRequestsReadOnlyAuthorizationAndReadsEveryTypeOnce() async {
         let reader = HealthDataReaderSpy()
-        let viewModel = HealthSyncViewModel(reader: reader)
+        let viewModel = HealthSyncViewModel(reader: reader, syncer: HealthSyncerSpy())
 
         await viewModel.enterSection()
         await viewModel.enterSection()
@@ -33,12 +33,55 @@ final class HealthSyncViewModelTests: XCTestCase {
     }
 
     func testMissingSamplesRemainExplicitlyEmpty() async {
-        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy())
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: HealthSyncerSpy())
 
         await viewModel.enterSection()
 
         XCTAssertEqual(viewModel.rows.count, 24)
         XCTAssertTrue(viewModel.rows.allSatisfy { $0.value == nil })
+    }
+
+    func testSyncButtonShowsWhatTheServerWrote() async {
+        let syncer = HealthSyncerSpy()
+        syncer.outcome = .sent([HealthSamplesResponseDTO(samplesReceived: 412, bucketsWritten: 96)])
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
+
+        await viewModel.syncNow()
+
+        XCTAssertEqual(syncer.calls, 1)
+        XCTAssertEqual(viewModel.syncState, .finished(syncer.outcome))
+        XCTAssertEqual(viewModel.syncMessage, "Отправлено: принято семплов 412, записано часов 96")
+    }
+
+    func testEmptyWeekPointsToSettingsInsteadOfAnEmptyChart() async {
+        let syncer = HealthSyncerSpy()
+        syncer.outcome = .nothingToSend
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
+
+        await viewModel.syncNow()
+
+        XCTAssertTrue(viewModel.syncMessage?.contains("Настройк") ?? false)
+    }
+
+    func testFailureIsNamedWithoutAnyValue() async {
+        let syncer = HealthSyncerSpy()
+        syncer.outcome = .failed(.network)
+        let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
+
+        await viewModel.syncNow()
+
+        XCTAssertEqual(viewModel.syncMessage, "Сервер недоступен. Данные остались в «Здоровье», повторите позже")
+    }
+}
+
+@MainActor
+private final class HealthSyncerSpy: HealthSyncing {
+    var outcome: HealthSyncOutcome = .nothingToSend
+    private(set) var calls = 0
+
+    func sync() async -> HealthSyncOutcome {
+        calls += 1
+        return outcome
     }
 }
 
