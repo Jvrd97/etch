@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-02/65, PHASE-01/208, PHASE-01/214
-// summary: app entry point — Lime Tech UIKit appearance, the RootView tab bar and the Face ID lock in front of it
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-02/65, PHASE-01/208, PHASE-01/214, PHASE-03/131
+// summary: app entry point — Lime Tech UIKit appearance, the RootView tab bar, the Face ID lock in front of it, and the HealthKit pump run once the lock opens
 import SwiftUI
 import UIKit
 
@@ -12,6 +12,7 @@ struct HabitTrackerApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .task { _ = await HealthPump.shared.syncIfAuthorized() }
                 .appLock()
                 .preferredColorScheme(.dark)
         }
