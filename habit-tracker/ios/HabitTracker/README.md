@@ -50,4 +50,4 @@ xcodebuild test -project HabitTracker.xcodeproj -scheme HabitTracker \
 5. Включи на телефоне Tailscale в той же сети, что и сервер.
 6. В приложении открой More → Settings, введи адрес сервера по Tailscale и ключ API, нажми «Check connection». Проверка: зелёная галочка.
 
-Ограничения Personal Team (бесплатная команда): профиль действует 7 дней, потом повтори `make ios-device`. Если Xcode отвечает, что идентификатор `com.habittracker.HabitTracker` недоступен, задай свой: `make ios-device IOS_DEVICE=<id> IOS_BUNDLE_ID=com.<имя>.habittracker`. Поддерживает ли Personal Team HealthKit и его фоновую доставку, не проверено: это покажет шаг подписи.
+Ограничения Personal Team (бесплатная команда): профиль действует 7 дней, потом повтори `make ios-device`. Если Xcode отвечает, что идентификатор `com.daniilbystrov.habittracker.HabitTracker` недоступен, задай свой: `make ios-device IOS_DEVICE=<id> IOS_BUNDLE_ID=com.<имя>.habittracker`. Поддерживает ли Personal Team HealthKit и его фоновую доставку, не проверено: это покажет шаг подписи.

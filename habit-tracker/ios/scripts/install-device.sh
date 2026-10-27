@@ -87,4 +87,4 @@ xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH" \
     || stop "devicectl не установил приложение; если телефон спросил о доверии — подтверди разработчика в Настройки → Основные → VPN и управление устройством"
 
 printf '\nГотово: HabitTracker установлен на «%s». Запуск: xcrun devicectl device process launch --device %s %s\n' \
-    "$DEVICE" "$DEVICE_ID" "${BUNDLE_ID:-com.habittracker.HabitTracker}"
+    "$DEVICE" "$DEVICE_ID" "${BUNDLE_ID:-com.daniilbystrov.habittracker.HabitTracker}"
