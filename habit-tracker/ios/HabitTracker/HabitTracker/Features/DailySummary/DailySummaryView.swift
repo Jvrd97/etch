@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227, PHASE-03/230, PHASE-03/250
-// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments; the Today sheet hands Today a callback on every dismissal (applied, 409 or Close) so it reads the day again; on the More stack a retainer keeps a model with an unconfirmed write across a pop the system makes on its own, and the screen tells the root it must not be popped, each instance under its own token (#230, #250); the retainer adopts the model the screen shows and lets it go after an ordinary exit; the two-finger escape asks like the screen's own Back; the Today sheet hands Today its callback only when the sheet sent a write, so a plain Close leaves Today as it was (#250)
+// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own; on the More stack a retainer keeps a model with an unconfirmed write across a pop the system makes on its own, and the screen tells the root it must not be popped, each instance under its own token (#230, #250); the retainer adopts the model the screen shows and lets it go after an ordinary exit; the two-finger escape asks like the screen's own Back; the Today sheet hands Today its callback only when the sheet sent a write (applied, 409 or a Close over an unanswered one), so a plain Close leaves Today as it was; a late answer of an old sheet's write closes only its own sheet, and a second close does not forget the first (VoiceDayPresentation, #250)
 import SwiftUI
 
 /// The page pushed from More. It owns its view model, so leaving it drops the idempotency key of a
@@ -11,16 +11,10 @@ struct DailySummaryView: View {
     @State private var asksToLeave = false
     /// This instance's name in the root's set of holders: an old instance going away cannot lift the hold of a new one.
     @State private var holdToken = UUID()
-    private let retainer: DailySummaryRetainer?
+    private let retainer: DailySummaryRetainer
 
-    /// A page that owns its model for good: leaving it, however it happens, ends the model.
-    init(onApplied: @escaping () -> Void = {}) {
-        retainer = nil
-        _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
-    }
-
-    /// With a retainer the model outlives a pop the system makes on its own (see `AppNavigation`).
-    /// The retainer builds the model, so what happens when the day is written is the retainer's `make`.
+    /// The model outlives a pop the system makes on its own (see `AppNavigation`): the retainer
+    /// builds it and hands it back to the next visit while a write waits for its answer.
     init(retainer: DailySummaryRetainer) {
         self.retainer = retainer
         _viewModel = StateObject(wrappedValue: retainer.model())
@@ -45,12 +39,12 @@ struct DailySummaryView: View {
             .accessibilityAction(.escape) {
                 if viewModel.closeNeedsConfirmation { asksToLeave = true } else { dismiss() }
             }
-            .onAppear { retainer?.adopt(viewModel) }
-            .onDisappear { retainer?.screenLeft(viewModel) }
+            .onAppear { retainer.adopt(viewModel) }
+            .onDisappear { retainer.screenLeft(viewModel) }
             .unconfirmedWriteDialog(isPresented: $asksToLeave, leaveTitle: "Выйти без проверки") {
                 // The person chose this: let the stack pop, and let the next visit start clean.
                 leaveHold.release(holdToken)
-                retainer?.release()
+                retainer.release()
                 dismiss()
             }
     }
@@ -290,24 +284,24 @@ struct DailySummaryContent: View {
 /// would swap Today for its loader and lose the scroll for no reason.
 struct VoiceDayButton: View {
     var onDismiss: () -> Void = {}
-    /// The sheet's item: the sheet is built from the item itself, so its content never reads an older `nil`.
-    @State private var session: VoiceDaySession?
-    /// The model of the sheet that just went away, kept until `onDismiss` of the sheet has looked at it.
-    @State private var dismissedModel: DailySummaryViewModel?
+    /// The sheet's item and the model of the sheet that just went away, kept until `onDismiss` looks at it.
+    @State private var presentation = VoiceDayPresentation()
 
     private var item: Binding<VoiceDaySession?> {
         Binding(
-            get: { session },
-            set: { newValue in
-                if newValue == nil { dismissedModel = session?.model }
-                session = newValue
-            }
+            get: { presentation.session },
+            set: { if $0 == nil { presentation.close() } }
         )
     }
 
     var body: some View {
         Button {
-            session = VoiceDaySession(model: .live(onApplied: { item.wrappedValue = nil }))
+            presentation.open(
+                VoiceDaySession(
+                    make: { .live(onApplied: $0) },
+                    onApplied: { presentation.close(ifShowing: $0) }
+                )
+            )
         } label: {
             Label("Рассказать день", systemImage: "mic.fill")
         }
@@ -315,13 +309,12 @@ struct VoiceDayButton: View {
         .frame(minHeight: 44)
         .accessibilityIdentifier("today.voiceDay")
         .sheet(item: item, onDismiss: sheetDismissed) { session in
-            VoiceDaySheet(viewModel: session.model, close: { item.wrappedValue = nil })
+            VoiceDaySheet(viewModel: session.model, close: { presentation.close() })
         }
     }
 
     private func sheetDismissed() {
-        let owes = VoiceDayDismissal.shouldReloadToday(after: dismissedModel)
-        dismissedModel = nil
+        let owes = VoiceDayDismissal.shouldReloadToday(after: presentation.takeDismissedModel())
         if owes { onDismiss() }
     }
 }
@@ -330,8 +323,51 @@ struct VoiceDayButton: View {
 final class VoiceDaySession: Identifiable {
     let model: DailySummaryViewModel
 
-    init(model: DailySummaryViewModel) {
-        self.model = model
+    /// `make` builds the model around the callback the session hands it; the callback names this
+    /// session, so a late answer of an old sheet can tell whose sheet it is.
+    init(
+        make: (_ onApplied: @escaping () -> Void) -> DailySummaryViewModel,
+        onApplied: @escaping (VoiceDaySession) -> Void
+    ) {
+        let handle = WeakSession()
+        model = make { if let session = handle.session { onApplied(session) } }
+        handle.session = self
+    }
+
+    private final class WeakSession {
+        weak var session: VoiceDaySession?
+    }
+}
+
+/// Which sheet is up, and which model just went away. A value type so the order of closes is testable
+/// without a view.
+@MainActor
+struct VoiceDayPresentation {
+    private(set) var session: VoiceDaySession?
+    private var dismissedModel: DailySummaryViewModel?
+
+    mutating func open(_ session: VoiceDaySession) {
+        self.session = session
+    }
+
+    /// The sheet goes away, by a button, a swipe or the answer of its write. Closing twice in a row
+    /// (Close during the write, then its answer) must not forget the first close.
+    mutating func close() {
+        guard let current = session else { return }
+        dismissedModel = current.model
+        session = nil
+    }
+
+    /// An answer from the write of `session`: it closes that sheet and no other. An old sheet's late
+    /// answer must not close the one opened after it.
+    mutating func close(ifShowing answered: VoiceDaySession) {
+        if session === answered { close() }
+    }
+
+    /// The model the sheet's `onDismiss` looks at, once.
+    mutating func takeDismissedModel() -> DailySummaryViewModel? {
+        defer { dismissedModel = nil }
+        return dismissedModel
     }
 }
 

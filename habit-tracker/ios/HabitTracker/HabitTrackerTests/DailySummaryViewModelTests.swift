@@ -785,6 +785,79 @@ final class DailySummaryViewModelTests: XCTestCase {
         XCTAssertTrue(VoiceDayDismissal.shouldReloadToday(after: sent.viewModel), "a write that lost its answer may have landed")
     }
 
+    /// A sheet whose model reports to `presentation` the way the Today button wires it.
+    private func openSheet(
+        _ presentation: inout VoiceDayPresentation, api: MockDailySummaryAPI, report: @escaping (VoiceDaySession) -> Void
+    ) -> VoiceDaySession {
+        let session = VoiceDaySession(
+            make: { onApplied in
+                DailySummaryViewModel(apiProvider: { api }, speech: FakeSpeech(), onApplied: onApplied)
+            },
+            onApplied: report
+        )
+        presentation.open(session)
+        return session
+    }
+
+    private func startWriting(_ session: VoiceDaySession, api: MockDailySummaryAPI) async -> Task<Void, Never> {
+        session.model.transcript = "день"
+        api.draftResult = .success(plan(metrics: [metric()]))
+        await session.model.generate()
+        let writing = Task { await session.model.apply() }
+        await waitUntil { session.model.applyState == .applying }
+        return writing
+    }
+
+    func testClosingTwiceInARowDoesNotForgetTheFirstClose() async {
+        let api = MockDailySummaryAPI()
+        api.applyDelay = .milliseconds(50)
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let session = openSheet(&presentation, api: api) { box.late.append($0) }
+        let writing = await startWriting(session, api: api)
+
+        presentation.close() // Close pressed while the write waits
+        await writing.value // its answer arrives: onApplied names the session, the close is written again
+        for answered in box.late { presentation.close(ifShowing: answered) }
+        presentation.close() // and the binding writes nil once more
+
+        let dismissed = presentation.takeDismissedModel()
+        XCTAssertTrue(dismissed === session.model)
+        XCTAssertTrue(VoiceDayDismissal.shouldReloadToday(after: dismissed), "the write went through: Today must read the day")
+        XCTAssertNil(presentation.takeDismissedModel(), "the model is handed over once")
+    }
+
+    func testTheLateAnswerOfAnOldSheetDoesNotCloseTheNewOne() async {
+        let api = MockDailySummaryAPI()
+        api.applyDelay = .milliseconds(50)
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let old = openSheet(&presentation, api: api) { box.late.append($0) }
+        let writing = await startWriting(old, api: api)
+        presentation.close()
+        _ = presentation.takeDismissedModel()
+        let fresh = openSheet(&presentation, api: MockDailySummaryAPI()) { box.late.append($0) }
+
+        await writing.value // the old write is answered now
+        XCTAssertTrue(box.late.contains { $0 === old }, "the answer names the old sheet")
+        for answered in box.late { presentation.close(ifShowing: answered) }
+
+        XCTAssertTrue(presentation.session === fresh, "the new sheet stays open")
+    }
+
+    func testAnAnswerOfTheSheetOnScreenClosesIt() async {
+        let api = MockDailySummaryAPI()
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let session = openSheet(&presentation, api: api) { box.late.append($0) }
+
+        await startWriting(session, api: api).value
+        for answered in box.late { presentation.close(ifShowing: answered) }
+
+        XCTAssertNil(presentation.session)
+        XCTAssertTrue(presentation.takeDismissedModel() === session.model)
+    }
+
     func testStartingAgainDoesNotForgetThatAWriteLeft() async {
         let h = makeHarness()
         h.viewModel.transcript = "день"
@@ -1039,4 +1112,10 @@ final class DailySummaryViewModelTests: XCTestCase {
         let server = SystemSpeechRecognizer.makeRequest(supportsOnDevice: false)
         XCTAssertFalse(server.requiresOnDeviceRecognition)
     }
+}
+
+/// Collects the sessions whose model reported an answer.
+@MainActor
+private final class PresentationBox {
+    var late: [VoiceDaySession] = []
 }

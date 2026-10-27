@@ -258,7 +258,8 @@ final class WeekFormatTests: XCTestCase {
         // 10:00 in Berlin on Monday: running. 03:00 on Monday is still Sunday's night, so the week has not begun.
         XCTAssertTrue(WeekFormat.isRunning(monday, at: try moment("2026-08-24T08:00:00Z")))
         XCTAssertTrue(WeekFormat.isRunning(monday, at: try moment("2026-08-24T02:30:00Z")))
-        XCTAssertFalse(WeekFormat.isRunning(monday, at: try moment("2026-08-24T01:30:00Z")))
+        XCTAssertFalse(WeekFormat.isRunning(monday, at: try moment("2026-08-24T01:59:00Z")), "03:59 is still Sunday")
+        XCTAssertTrue(WeekFormat.isRunning(monday, at: try moment("2026-08-24T02:00:00Z")), "04:00 is Monday")
     }
 
     func testAWeekStartingInTheFutureIsNotRunning() throws {

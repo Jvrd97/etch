@@ -1,6 +1,8 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
 // summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, and a proxy's 502/504 sets it too; a retry that would write over a newer write of the same object says so
+// [review:need-review] PHASE-03/240
+// summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
 import Combine
 import Foundation
 import Network
@@ -22,6 +24,7 @@ enum OutboxAction: Codable, Equatable {
     case setDayMark(QueuedDayMark)
     case recordPlanFact(QueuedPlanFact)
     case saveNotebook(QueuedNotebook)
+    case markSupplementTaken(QueuedSupplementIntake)
 
     /// The object written. Writes of one object replay in the order they were made.
     var target: String {
@@ -32,6 +35,7 @@ enum OutboxAction: Codable, Equatable {
         case .setDayMark(let mark): return "mark:\(mark.date):\(mark.itemID.uuidString)"
         case .recordPlanFact(let fact): return "fact:\(fact.date):\(fact.itemID.uuidString)"
         case .saveNotebook(let notebook): return "notebook:\(notebook.date)"
+        case .markSupplementTaken(let intake): return "supplement-intake:\(intake.supplementId)"
         }
     }
 
@@ -51,6 +55,7 @@ enum OutboxAction: Codable, Equatable {
         case .setDayMark(let mark): return mark.date
         case .recordPlanFact(let fact): return fact.date
         case .saveNotebook(let notebook): return notebook.date
+        case .markSupplementTaken(let intake): return intake.intakeDate
         }
     }
 
@@ -59,7 +64,7 @@ enum OutboxAction: Codable, Equatable {
     var replacesOlderOfSameTarget: Bool {
         switch self {
         case .upsertChecklist, .setDayMark, .saveNotebook: return true
-        case .createEntry, .tapQuickMark, .recordPlanFact: return false
+        case .createEntry, .tapQuickMark, .recordPlanFact, .markSupplementTaken: return false
         }
     }
 
@@ -102,6 +107,9 @@ enum OutboxAction: Codable, Equatable {
         case .saveNotebook(var notebook):
             notebook.expected = nil
             return .saveNotebook(notebook)
+        case .markSupplementTaken(var intake):
+            intake.intakeDate = nil
+            return .markSupplementTaken(intake)
         case .createEntry, .upsertChecklist, .recordPlanFact:
             return self
         }
@@ -181,6 +189,15 @@ struct QueuedNotebook: Codable, Equatable {
     let content: String
     var expected: String?
     var replacedContents: [String]? = nil
+}
+
+/// The mark «принял» of a supplement. `intakeDate` is the day of the press by the phone's clock; a replay
+/// sends it as a clock check, and a server on another day refuses (409) instead of writing the mark to
+/// the wrong day. Nil lands on the server's current day. Only the id is stored: the name stays in the label.
+struct QueuedSupplementIntake: Codable, Equatable {
+    let supplementId: Int
+    var intakeDate: String?
+    let pressedAt: Date
 }
 
 /// Why a write sits in the "not sent" list; decides what a retry from the list does. Stored on disk.
@@ -439,6 +456,9 @@ final class OutboxQueue: ObservableObject {
     nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
     nonisolated static let pressTimeRefusedReason =
         "Сервер не принял время нажатия (422): нажатию больше семи дней, часы телефона спешат, или сервер ещё не обновлён и времени нажатия не знает."
+    nonisolated static let supplementDayTurnedReason =
+        "Сервер не принял отметку (409): день уже сменился, или добавка в архиве."
+    nonisolated static let supplementArchivedReason = "Сервер не принял отметку (409): добавка в архиве."
     nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
     nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
     nonisolated static let checkFailedReason =
@@ -682,6 +702,10 @@ final class OutboxQueue: ObservableObject {
     /// A 409 is a server-side rule saying no. A press that carried its day: the day turned or the button
     /// is off (the status alone does not tell). A press without a day: the button is off.
     private static func conflict(for action: OutboxAction) -> Outcome {
+        if case .markSupplementTaken(let intake) = action {
+            return intake.intakeDate == nil
+                ? .refused(supplementArchivedReason, .refused) : .refused(supplementDayTurnedReason, .dayTurned)
+        }
         guard case .tapQuickMark(let tap) = action else {
             return .refused("Сервер отказал (409): запись противоречит тому, что уже есть на сервере.", .refused)
         }

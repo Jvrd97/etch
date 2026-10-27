@@ -1,0 +1,122 @@
+[
+  {
+    "identifier": "HKQuantityTypeIdentifierStepCount",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceWalkingRunning",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierFlightsClimbed",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierActiveEnergyBurned",
+    "kind": "cumulative",
+    "canonical_unit": "kcal"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBasalEnergyBurned",
+    "kind": "cumulative",
+    "canonical_unit": "kcal"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleExerciseTime",
+    "kind": "cumulative",
+    "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleStandTime",
+    "kind": "cumulative",
+    "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierHeartRate",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRestingHeartRate",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWalkingHeartRateAverage",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
+    "kind": "discrete",
+    "canonical_unit": "ms"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRespiratoryRate",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierOxygenSaturation",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierVO2Max",
+    "kind": "discrete",
+    "canonical_unit": "mL/(kg*min)"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBodyMass",
+    "kind": "discrete",
+    "canonical_unit": "kg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBodyFatPercentage",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierLeanBodyMass",
+    "kind": "discrete",
+    "canonical_unit": "kg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBodyMassIndex",
+    "kind": "discrete",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierHeight",
+    "kind": "discrete",
+    "canonical_unit": "cm"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryEnergyConsumed",
+    "kind": "cumulative",
+    "canonical_unit": "kcal"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryProtein",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFatTotal",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryCarbohydrates",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryWater",
+    "kind": "cumulative",
+    "canonical_unit": "mL"
+  }
+]

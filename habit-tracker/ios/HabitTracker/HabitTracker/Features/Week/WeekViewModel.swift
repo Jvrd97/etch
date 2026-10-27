@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/229, PHASE-03/243
-// summary: Week screen state — the running or a named week through the read cache (each week under its own key, the running one also under its code whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
+// summary: Week screen state — the running or a named week through the read cache (each week under its own key, the week running by the calendar also under `current` whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
 import Foundation
 
 @MainActor

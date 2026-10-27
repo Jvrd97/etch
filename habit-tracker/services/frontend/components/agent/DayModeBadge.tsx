@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/241
-// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out; since #241 also when a mode is already on screen (it may be yesterday's): the controls are locked until a read goes through
+// [review:need-review] PHASE-03/249
+// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out; since #241 also when a mode is already on screen (it may be yesterday's): the controls are locked until a read goes through; since #249 also while a re-read is on its way (`reading`), so a decision cannot go to yesterday's date
 
 import Link from 'next/link';
 import type { DayMode, DayModeKind } from '@/lib/api';
@@ -11,6 +11,8 @@ export interface DayModeBadgeProps {
   /** Null while the first answer is awaited, and after a failed read. */
   mode: DayMode | null;
   saving: boolean;
+  /** A read is on its way: the mode on screen may be yesterday's, so the controls wait for the answer. */
+  reading: boolean;
   /** The last write failed. */
   error: string | null;
   /** The read failed: the badge says so and offers `onRetry`; a mode still shown is locked, it may be stale. */
@@ -39,6 +41,7 @@ function LoadFailedNotice({ onRetry }: { onRetry: () => void }) {
 export default function DayModeBadge({
   mode,
   saving,
+  reading,
   error,
   loadFailed,
   onDecide,
@@ -53,7 +56,7 @@ export default function DayModeBadge({
       </div>
     );
   }
-  const locked = saving || loadFailed;
+  const locked = saving || reading || loadFailed;
   return (
     <div
       data-source={mode.source}

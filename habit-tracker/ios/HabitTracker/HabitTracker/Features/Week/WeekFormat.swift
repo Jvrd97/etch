@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/229, PHASE-03/243
-// summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week (and whether a cached answer's week has since ended), the outcome of a day by the server's flags, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status (a slow model is not a missing network)
+// summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week (which week runs now, decided by the calendar and not by the server's «as of», and whether a cached answer's week has since ended), the outcome of a day by the server's flags, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status (a slow model is not a missing network)
 import Foundation
 
 enum WeekFormat {
