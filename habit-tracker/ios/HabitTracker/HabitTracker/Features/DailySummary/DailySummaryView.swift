@@ -1,24 +1,45 @@
-// [review:need-review] PHASE-01/213, PHASE-01/208
-// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; no NavigationStack of its own, init() takes no required arguments so RootView is unchanged
+// [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227
+// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments so RootView is unchanged
 import SwiftUI
 
+/// The page pushed from More. It owns its view model, so leaving it drops the idempotency key of a
+/// write that may have landed: Back (and the swipe, which goes with the hidden button) asks first.
 struct DailySummaryView: View {
     @StateObject private var viewModel: DailySummaryViewModel
-    @FocusState private var textFocused: Bool
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
+    @State private var asksToLeave = false
 
     init(onApplied: @escaping () -> Void = {}) {
         _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
     }
 
-    init(viewModel: DailySummaryViewModel) {
-        _viewModel = StateObject(wrappedValue: viewModel)
+    var body: some View {
+        DailySummaryContent(viewModel: viewModel)
+            .navigationBarBackButtonHidden(viewModel.closeNeedsConfirmation)
+            .toolbar {
+                if viewModel.closeNeedsConfirmation {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button { asksToLeave = true } label: {
+                            Label("Назад", systemImage: "chevron.backward")
+                        }
+                        .accessibilityIdentifier("dailySummary.back")
+                    }
+                }
+            }
+            .unconfirmedWriteDialog(isPresented: $asksToLeave, leaveTitle: "Выйти без проверки") { dismiss() }
     }
+}
+
+/// The screen itself, for whoever owns the view model.
+struct DailySummaryContent: View {
+    @ObservedObject var viewModel: DailySummaryViewModel
+    @FocusState private var textFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.Spacing.lg) {
-                if viewModel.applyState == .applied {
+                if viewModel.applyState.isWritten {
                     appliedCard
                 } else {
                     dayNavigator
@@ -215,9 +236,18 @@ struct DailySummaryView: View {
     private var appliedCard: some View {
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                Label("День записан", systemImage: "checkmark.circle.fill")
-                    .font(DS.Typography.section)
-                    .foregroundStyle(DS.Palette.success)
+                Label(
+                    viewModel.applyState == .alreadyApplied ? "Запись по этому плану уже прошла" : "День записан",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(DS.Typography.section)
+                .foregroundStyle(DS.Palette.success)
+                if viewModel.applyState == .alreadyApplied {
+                    Text("Сервер уже принял этот план под тем же ключом, то есть день записан. Проверьте записи за день.")
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.textSecondary)
+                        .accessibilityIdentifier("dailySummary.alreadyApplied")
+                }
                 Button("Рассказать ещё") { viewModel.reset() }
                     .buttonStyle(LimeButtonStyle(prominent: false))
                     .frame(minHeight: 44)
@@ -243,17 +273,58 @@ struct VoiceDayButton: View {
         .frame(minHeight: 44)
         .accessibilityIdentifier("today.voiceDay")
         .sheet(isPresented: $isPresented) {
-            NavigationStack {
-                DailySummaryView(onApplied: {
+            VoiceDaySheet(
+                onApplied: {
                     isPresented = false
                     onApplied()
-                })
+                },
+                close: { isPresented = false }
+            )
+        }
+    }
+}
+
+/// The sheet owns the view model, so it knows when closing would lose the key of a write that may
+/// have landed. A swipe cannot be intercepted to ask, so it is switched off for that case and the
+/// Close button asks instead.
+private struct VoiceDaySheet: View {
+    @StateObject private var viewModel: DailySummaryViewModel
+    @State private var asksToClose = false
+    let close: () -> Void
+
+    init(onApplied: @escaping () -> Void, close: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
+        self.close = close
+    }
+
+    var body: some View {
+        NavigationStack {
+            DailySummaryContent(viewModel: viewModel)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Закрыть") { isPresented = false }
+                        Button("Закрыть") {
+                            if viewModel.closeNeedsConfirmation { asksToClose = true } else { close() }
+                        }
+                        .accessibilityIdentifier("dailySummary.close")
                     }
                 }
-            }
+        }
+        .interactiveDismissDisabled(viewModel.closeNeedsConfirmation)
+        .unconfirmedWriteDialog(isPresented: $asksToClose, leaveTitle: "Закрыть без проверки") { close() }
+    }
+}
+
+private extension View {
+    /// Leaving drops the key of a write that may have landed: the next retelling would write the
+    /// day a second time.
+    func unconfirmedWriteDialog(
+        isPresented: Binding<Bool>, leaveTitle: String, leave: @escaping () -> Void
+    ) -> some View {
+        confirmationDialog("Запись не подтверждена", isPresented: isPresented, titleVisibility: .visible) {
+            Button(leaveTitle, role: .destructive, action: leave)
+            Button("Остаться", role: .cancel) {}
+        } message: {
+            Text("Запись могла пройти. Если выйти и рассказать день снова, он запишется второй раз. Сначала проверьте записи за день.")
         }
     }
 }

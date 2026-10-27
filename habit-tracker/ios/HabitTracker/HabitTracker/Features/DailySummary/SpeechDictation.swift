@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213
-// summary: dictation seam of the day-summary screen — the SpeechDictating protocol the view model talks to, and the system implementation on SFSpeechRecognizer (on-device when the recognizer supports it) fed by AVAudioEngine; the tap is removed unconditionally, the audio session is released on stop, and a call or a route change ends the stream with .interrupted
+// [review:need-review] PHASE-01/213, PHASE-03/227
+// summary: dictation seam of the day-summary screen — the SpeechDictating protocol the view model talks to, and the system implementation on SFSpeechRecognizer (on-device when the recognizer supports it) fed by a fresh AVAudioEngine per session; the tap is removed unconditionally, the audio session is released on stop, and a call, a route change of its own engine or a reset of the media services ends the stream with .interrupted (never after an ordinary stop)
 import AVFoundation
 import Foundation
 import Speech
@@ -38,6 +38,10 @@ protocol SpeechDictating: AnyObject {
 /// a call or a route change and leaves the tap behind, and a second tap on the same bus traps.
 @MainActor
 protocol AudioInput: AnyObject {
+    /// The object whose `AVAudioEngineConfigurationChange` is ours: the system posts it for every
+    /// engine in the process, and another engine's route change is not a reason to stop dictating.
+    var configurationChangeSource: AnyObject? { get }
+    /// Starts a session on a fresh engine: one the media services reset left behind is dead.
     func installTap(_ onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void)
     func removeTap()
     func start() throws
@@ -58,7 +62,7 @@ protocol RecognitionBackend: AnyObject {
     func startTask(
         request: SFSpeechAudioBufferRecognitionRequest,
         handler: @escaping @Sendable (_ text: String?, _ isFinal: Bool, _ error: Error?) -> Void
-    ) -> () -> Void
+    ) -> @Sendable () -> Void
 }
 
 final class SFRecognitionBackend: RecognitionBackend {
@@ -75,7 +79,7 @@ final class SFRecognitionBackend: RecognitionBackend {
     func startTask(
         request: SFSpeechAudioBufferRecognitionRequest,
         handler: @escaping @Sendable (String?, Bool, Error?) -> Void
-    ) -> () -> Void {
+    ) -> @Sendable () -> Void {
         let task = recognizer.recognitionTask(with: request) { result, error in
             handler(result?.bestTranscription.formattedString, result?.isFinal ?? false, error)
         }
@@ -85,27 +89,33 @@ final class SFRecognitionBackend: RecognitionBackend {
 
 @MainActor
 final class EngineAudioInput: AudioInput {
-    private let engine = AVAudioEngine()
+    /// Created per session in `installTap`: building one up front would open an `inputNode` that is
+    /// never used.
+    private var engine: AVAudioEngine?
+
+    var configurationChangeSource: AnyObject? { engine }
 
     func installTap(_ onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
+        engine?.inputNode.removeTap(onBus: 0)
+        let engine = AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
-        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
             onBuffer(buffer)
         }
     }
 
     func removeTap() {
-        engine.inputNode.removeTap(onBus: 0)
+        engine?.inputNode.removeTap(onBus: 0)
     }
 
     func start() throws {
-        engine.prepare()
-        try engine.start()
+        engine?.prepare()
+        try engine?.start()
     }
 
     func stop() {
-        engine.stop()
+        engine?.stop()
     }
 }
 
@@ -138,7 +148,7 @@ final class SystemSpeechRecognizer: SpeechDictating {
     private let session: AudioSessionControlling
     private let notifications: NotificationCenter
     private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var cancelTask: (() -> Void)?
+    private var cancelTask: (@Sendable () -> Void)?
     private var continuation: AsyncThrowingStream<String, Error>.Continuation?
     private var observers: [NSObjectProtocol] = []
     private var generation = 0
@@ -191,7 +201,8 @@ final class SystemSpeechRecognizer: SpeechDictating {
             throw error
         }
         self.request = request
-        observeInterruptions()
+        // After installTap: the engine behind `configurationChangeSource` exists only from then on.
+        observeInterruptions(generation: generation)
 
         let current = generation
         return AsyncThrowingStream { continuation in
@@ -233,8 +244,8 @@ final class SystemSpeechRecognizer: SpeechDictating {
     }
 
     /// A call, Siri, another app or an unplugged headset: end the stream so the screen can say so.
-    private func observeInterruptions() {
-        let began: (Notification) -> Bool = { note in
+    private func observeInterruptions(generation current: Int) {
+        let began: @Sendable (Notification) -> Bool = { note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return false }
             return AVAudioSession.InterruptionType(rawValue: raw) == .began
         }
@@ -243,18 +254,26 @@ final class SystemSpeechRecognizer: SpeechDictating {
                 forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
             ) { [weak self] note in
                 guard began(note) else { return }
-                Task { @MainActor in self?.interrupt() }
+                Task { @MainActor in self?.interrupt(generation: current) }
             },
             notifications.addObserver(
-                forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
+                forName: .AVAudioEngineConfigurationChange, object: input.configurationChangeSource, queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.interrupt() }
+                Task { @MainActor in self?.interrupt(generation: current) }
+            },
+            notifications.addObserver(
+                forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.interrupt(generation: current) }
             },
         ]
     }
 
-    private func interrupt() {
-        guard let continuation else { return }
+    /// An ordinary stop is already winding down: a notification that arrives in its last seconds
+    /// must not turn the final phrase into a fault. A signal queued for an earlier session must not
+    /// end the next one.
+    private func interrupt(generation signalled: Int) {
+        guard signalled == generation, let continuation, !isStopping else { return }
         continuation.finish(throwing: SpeechDictationError.interrupted)
         teardown()
     }

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner + queued-uploads badge atop when data came from the read cache / a save was queued offline
 import SwiftUI
 
@@ -93,11 +93,16 @@ struct TodayView: View {
     @ViewBuilder
     private var categoryList: some View {
         if viewModel.categories.isEmpty && quickMarks.marks.isEmpty {
-            DSEmptyState(
-                title: "No habits yet",
-                systemImage: "checkmark.circle",
-                message: "Create a category to start tracking today."
-            )
+            VStack(spacing: 0) {
+                VoiceDayButton { Task { await reload() } }
+                    .padding(.horizontal, DS.Spacing.lg)
+                    .padding(.top, DS.Spacing.lg)
+                DSEmptyState(
+                    title: "No habits yet",
+                    systemImage: "checkmark.circle",
+                    message: "Create a category to start tracking today."
+                )
+            }
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.lg) {

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/213
+// [review:need-review] PHASE-01/213, PHASE-03/227
 // summary: tests for SystemSpeechRecognizer over faked microphone, audio session and recognition backend — a restart after the system stopped the engine never installs a second tap, stop and failures release the session, a call or a route change ends the stream with .interrupted, results flow and an error after stop is not reported
 import AVFoundation
 import Speech
@@ -13,6 +13,8 @@ private final class FakeAudioInput: AudioInput {
     private(set) var installsOverATap = 0
     var isRunning = false
     var startError: Error?
+    /// Stands for the `AVAudioEngine`: only its own configuration changes may end the stream.
+    let configurationChangeSource: AnyObject? = NSObject()
 
     func installTap(_ onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
         if tapInstalled { installsOverATap += 1 }
@@ -50,7 +52,7 @@ private final class FakeBackend: RecognitionBackend, @unchecked Sendable {
     func startTask(
         request: SFSpeechAudioBufferRecognitionRequest,
         handler: @escaping @Sendable (String?, Bool, Error?) -> Void
-    ) -> () -> Void {
+    ) -> @Sendable () -> Void {
         self.handler = handler
         return { [unowned self] in cancels += 1 }
     }
@@ -156,16 +158,57 @@ final class SystemSpeechRecognizerTests: XCTestCase {
         let rig = makeRig()
         let stream = try rig.recognizer.start()
 
-        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: nil)
+        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: rig.input.configurationChangeSource)
         let result = await collect(stream)
 
         XCTAssertEqual(result.error as? SpeechDictationError, .interrupted)
     }
 
+    func testAnotherEnginesConfigurationChangeDoesNotEndTheStream() async throws {
+        let rig = makeRig()
+        let stream = try rig.recognizer.start()
+
+        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: NSObject())
+        rig.backend.emit("съел борщ", final: true)
+        let result = await collect(stream)
+
+        XCTAssertNil(result.error)
+        XCTAssertEqual(result.phrases, ["съел борщ"])
+    }
+
+    func testAResetOfTheMediaServicesEndsTheStreamAsInterrupted() async throws {
+        let rig = makeRig()
+        let stream = try rig.recognizer.start()
+
+        rig.notifications.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+        let result = await collect(stream)
+
+        XCTAssertEqual(result.error as? SpeechDictationError, .interrupted)
+        XCTAssertFalse(rig.input.tapInstalled)
+    }
+
+    func testAnInterruptionAfterAnOrdinaryStopDoesNotTurnItIntoAFault() async throws {
+        let rig = makeRig()
+        let stream = try rig.recognizer.start()
+        rig.backend.emit("съел борщ")
+        rig.recognizer.stop()
+
+        rig.notifications.post(
+            name: AVAudioSession.interruptionNotification, object: nil,
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]
+        )
+        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: rig.input.configurationChangeSource)
+        rig.backend.emit("съел борщ и котлету", final: true)
+        let result = await collect(stream)
+
+        XCTAssertNil(result.error, "the final phrase of a stopped dictation still lands")
+        XCTAssertEqual(result.phrases, ["съел борщ", "съел борщ и котлету"])
+    }
+
     func testSpeakingAgainAfterACallStartsCleanly() async throws {
         let rig = makeRig()
         let first = try rig.recognizer.start()
-        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: nil)
+        rig.notifications.post(name: .AVAudioEngineConfigurationChange, object: rig.input.configurationChangeSource)
         _ = await collect(first)
 
         _ = try rig.recognizer.start()
