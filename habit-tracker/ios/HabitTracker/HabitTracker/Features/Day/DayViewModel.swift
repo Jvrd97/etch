@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242
+// summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
 import Combine
 import Foundation
@@ -56,10 +57,12 @@ final class DayViewModel: ObservableObject {
     /// The notebook of the shown day waits in the queue.
     @Published private(set) var isNotebookQueued = false
 
-    /// Opened offline on "today", the cache may hold an older day (the last one read): say so.
+    /// Opened offline on "today", the cache may hold an older day (the last one read): name the day shown.
+    /// Not "today is missing": the phone's calendar turns at midnight and the server's day at its own
+    /// boundary (04:00), so between the two the cached day is the server's today.
     var cachedDayNotice: String? {
         guard offlineAsOf != nil, requestedDate == nil, let shown = shownDate, shown != localToday else { return nil }
-        return "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: shown))."
+        return "Показан день из кэша: \(DayFormat.title(of: shown))."
     }
 
     private var localToday: String {
@@ -94,7 +97,14 @@ final class DayViewModel: ObservableObject {
     private let now: () -> Date
     private var cancellables: Set<AnyCancellable> = []
     private var loadedDate: String?
+    /// Bumped by every load (`showFailure`): an answer of a read sent before it is for what the screen
+    /// asked earlier (another day) and is dropped.
     private var loadGeneration = 0
+    /// Reads of the day, numbered as they are sent, and the newest one shown. A load reads alongside
+    /// the queue's send, so its answer may come back after the re-read a delivery started: an answer
+    /// older than the one on screen is dropped, and a failed re-read leaves the load's answer in place.
+    private var readsSent = 0
+    private var readShown = 0
     /// Unsaved notebook text of days the person stepped away from, by `yyyy-MM-dd`, with the
     /// server text it was typed on. In memory only: it survives stepping, not a relaunch.
     private var notebookDrafts: [String: Typed] = [:]
@@ -153,7 +163,10 @@ final class DayViewModel: ObservableObject {
 
     // MARK: Offline queue
 
-    /// The queued signs follow the queue; a delivered write of the shown day reads the day again.
+    /// The queued signs follow the queue; a delivered write of the shown day reads the day again. So does
+    /// any delivered day write while a load is running: the load's read may have left before the
+    /// delivery (the queue sends alongside it), and nothing is shown yet, or it is another day, to
+    /// match against. The re-read is newer, so the load's answer is dropped if it comes back later.
     private func bindOutbox() {
         guard let outbox else { return }
         outbox.$writes
@@ -163,9 +176,10 @@ final class DayViewModel: ObservableObject {
             .store(in: &cancellables)
         outbox.delivered
             .sink { [weak self] writes in
-                guard let self, let date = self.shownDate, writes.contains(where: { $0.action.isDayWrite(of: date) }) else {
-                    return
-                }
+                guard let self else { return }
+                let ofShownDay = self.shownDate.map { date in writes.contains { $0.action.isDayWrite(of: date) } } ?? false
+                let duringLoad = self.state == .loading && writes.contains { $0.action.writesADay }
+                guard ofShownDay || duringLoad else { return }
                 Task { await self.reloadSilently() }
             }
             .store(in: &cancellables)
@@ -204,11 +218,13 @@ final class DayViewModel: ObservableObject {
 
     // MARK: Loading
 
-    /// Waiting writes go first, so a reload is also a retry of the queue.
+    /// Waiting writes go out alongside the read, so a reload is also a retry of the queue; a slow send
+    /// does not hold the day back (waiting writes are laid over it, a delivery reads it again).
     func load() async {
         state = .loading
-        await outbox?.flush()
+        let flushing = Task { await outbox?.flush() }
         await fetch(showFailure: true)
+        await flushing.value
     }
 
     /// Re-read after a write: counts and the verdict are the server's to recount.
@@ -224,8 +240,10 @@ final class DayViewModel: ObservableObject {
             if showFailure { state = .failure(Self.notConfiguredMessage) }
             return
         }
-        loadGeneration += 1
+        if showFailure { loadGeneration += 1 }
         let generation = loadGeneration
+        readsSent += 1
+        let read = readsSent
         let epochAtSend = notebookSaveEpoch
         do {
             let requested = requestedDate
@@ -236,12 +254,18 @@ final class DayViewModel: ObservableObject {
             } else {
                 // A silent re-read that fails leaves the screen as it is: the cached copy is older
                 // than what the screen shows after a write.
-                let day = try await api.fetchDay(date: requested)
-                cache.store.save(day, forKey: key, updatedAt: cache.now())
-                outcome = .fresh(day)
+                outcome = .fresh(try await api.fetchDay(date: requested))
             }
             // A newer load (stepped to another day) has taken over: drop this answer.
             guard generation == loadGeneration else { return }
+            guard read > readShown else {
+                // A read sent later is on screen. The load already put this older answer in the cache:
+                // put the day on screen back there.
+                if case .fresh = outcome, let shown = detail { cache.store.save(shown, forKey: key, updatedAt: cache.now()) }
+                return
+            }
+            readShown = read
+            if !showFailure, case .fresh(let day) = outcome { cache.store.save(day, forKey: key, updatedAt: cache.now()) }
             let fetched: DayDetailDTO
             switch outcome {
             case .fresh(let day):
@@ -259,7 +283,8 @@ final class DayViewModel: ObservableObject {
             apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, serverNotebook: savedSince)
             state = .loaded
         } catch {
-            guard generation == loadGeneration else { return }
+            // A newer answer is on screen, or the screen asked for another day since: nothing to say.
+            guard generation == loadGeneration, read > readShown else { return }
             if showFailure {
                 state = .failure(Self.message(for: error))
             } else if reportingFailure, !Task.isCancelled {
@@ -424,7 +449,11 @@ final class DayViewModel: ObservableObject {
         } catch {
             if let outbox, Self.isOffline(error) {
                 // The tick stays: it is on the phone and reaches the server with the state it was made over.
-                outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»")
+                // A timeout may have written it already: a later mark replacing it accepts that state.
+                outbox.enqueue(
+                    .setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»",
+                    mayHaveLanded: OutboxQueue.mayHaveLanded(after: error)
+                )
                 return
             }
             marks[itemID] = previous
@@ -559,8 +588,9 @@ final class DayViewModel: ObservableObject {
                 do {
                     try await api.saveNotebook(date: date, content: text)
                 } catch let error where Self.isOffline(error) && outbox != nil {
-                    // Kept on the phone as saved; the replay checks the server still holds what it was typed over.
-                    outbox?.enqueue(queued, label: label)
+                    // Kept on the phone as saved; the replay checks the server still holds what it was typed over
+                    // (or this text, when the attempt may have landed and a later save replaces it).
+                    outbox?.enqueue(queued, label: label, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
                 }
             }
             savedNotebooks[date] = (text, startEpoch)
@@ -717,5 +747,13 @@ private extension OutboxAction {
 
     func isDayWrite(of date: String) -> Bool {
         queuedItem(of: date) != nil || queuedNotebook(of: date) != nil
+    }
+
+    /// A mark, a fact or a notebook of any day.
+    var writesADay: Bool {
+        switch self {
+        case .setDayMark, .recordPlanFact, .saveNotebook: return true
+        case .createEntry, .upsertChecklist, .tapQuickMark: return false
+        }
     }
 }

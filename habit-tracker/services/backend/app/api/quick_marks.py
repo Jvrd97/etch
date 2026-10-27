@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-03/185, PHASE-01/206, PHASE-03/236
 # summary: the quick-mark endpoints — the directory read asks today_local(), and the write path records one event whose answer carries the new state; undo and source usage stay in the same API, and the sets of one category's day are read back from the journal on the same clock
+# summary: PHASE-03/236 — a tap may carry `occurred_at` (a press replayed from an offline queue lands on its own day; future or older than 7 days is 422 in the list form), and a recorded Idempotency-Key answers before any day or window check — 409 when it is another button's tap, also after a lost race on the unique key (the button is read again after the rollback)
 """
 The whole contract of a quick mark: read the buttons, tap one.
 
@@ -9,25 +10,27 @@ neither of them mentions a category, a field or a display mode. The third,
 `POST /quick-marks`, exists because the directory starts empty and the buttons
 are entered by hand until the management screen of `#125` arrives.
 
-The day of a tap is decided by `app.core.daytime.local_date()` on the moment the
-request is served. There is no timezone setting in this module and no second
+The day of a tap is decided by `app.core.daytime.local_date()` on the moment of
+the press — the request's own moment, or `occurred_at` of a press replayed from
+an offline queue. There is no timezone setting in this module and no second
 answer to "какое сегодня число".
 """
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.daytime import local_date, today_local
+from app.core.daytime import local_date, now_utc, today_local
 from app.crud import category as category_crud
 from app.crud import quick_mark as quick_mark_crud
-from app.models.quick_mark import QuickMark
+from app.models.quick_mark import QuickMark, QuickMarkEvent
 from app.schemas.quick_mark import (
     SURFACES,
     HotkeyTaken,
@@ -44,6 +47,13 @@ from app.schemas.quick_mark import (
 )
 
 router = APIRouter(prefix="/quick-marks", tags=["quick-marks"])
+
+# How far back a queued press may still land on its own day: a phone a week
+# offline is the longest absence the queue is built for.
+OCCURRED_AT_MAX_AGE = timedelta(days=7)
+# How far ahead of the server a press may be dated: the drift of a phone clock,
+# not a press from the future.
+OCCURRED_AT_MAX_AHEAD = timedelta(minutes=5)
 
 
 def _to_today_response(
@@ -210,13 +220,20 @@ async def create_quick_mark_event(
     Ответ несёт новое состояние дня (`today_total`, `done`), поэтому экран
     перерисовывается без второго запроса.
 
-    День отметки — `local_date()` от момента запроса. Клиент может прислать
-    `entry_date`, но это не адрес записи, а сверка часов: расхождение — 409, а
-    не тихая запись во вчера.
+    День отметки — `local_date()` от момента нажатия: `occurred_at`, если клиент
+    его прислал (нажатие из оффлайн-очереди), иначе момент запроса. Клиент может
+    прислать `entry_date`, но это не адрес записи, а сверка часов: расхождение с
+    днём нажатия — 409, а не тихая запись во вчера.
+
+    Повтор записанного `Idempotency-Key` отвечает записанным событием до любых
+    сверок: ответ на первую попытку мог потеряться, пока сменился день или
+    закрылось окно, и отказ на повтор выдал бы записанное нажатие за потерянное.
 
     - **201** — тап записан; **200** — повтор того же `Idempotency-Key`
     - **404** — такой кнопки нет
-    - **409** — кнопка выключена, либо `entry_date` не совпал с днём сервера
+    - **409** — кнопка выключена, `entry_date` не совпал с днём нажатия, либо
+      `Idempotency-Key` уже принадлежит нажатию другой кнопки
+    - **422** — `occurred_at` без смещения, в будущем или старше семи дней
     """
     mark = await quick_mark_crud.get_quick_mark(db, quick_mark_id)
     if mark is None:
@@ -224,13 +241,19 @@ async def create_quick_mark_event(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Quick mark with id {quick_mark_id} not found",
         )
+
+    if idempotency_key is not None:
+        existing = await quick_mark_crud.event_by_idempotency_key(db, idempotency_key)
+        if existing is not None:
+            return await _replay(db, response, mark, existing)
+
     if not mark.is_active:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Quick mark {quick_mark_id} is not active",
         )
 
-    at = datetime.now(timezone.utc)
+    at = _moment_of_press(payload.occurred_at, now_utc())
     on = local_date(at)
     if payload.entry_date is not None and payload.entry_date != on:
         raise HTTPException(
@@ -240,14 +263,6 @@ async def create_quick_mark_event(
                 f"the server says {on.isoformat()}"
             ),
         )
-
-    if idempotency_key is not None:
-        existing = await quick_mark_crud.event_by_idempotency_key(db, idempotency_key)
-        if existing is not None:
-            response.status_code = status.HTTP_200_OK
-            return _to_event_response(
-                await quick_mark_crud.replayed_event(db, mark, existing)
-            )
 
     try:
         recorded = await quick_mark_crud.record_event(
@@ -269,12 +284,69 @@ async def create_quick_mark_event(
         winner = await quick_mark_crud.event_by_idempotency_key(db, idempotency_key)
         if winner is None:
             raise
-        response.status_code = status.HTTP_200_OK
-        return _to_event_response(
-            await quick_mark_crud.replayed_event(db, mark, winner)
-        )
+        # The rollback expired `mark`; reading its attributes in an async session would
+        # need lazy IO and fail, so the button is loaded again before the answer.
+        await db.refresh(mark)
+        return await _replay(db, response, mark, winner)
 
     return _to_event_response(recorded)
+
+
+async def _replay(
+    db: AsyncSession, response: Response, mark: QuickMark, event: QuickMarkEvent
+) -> QuickMarkEventResponse:
+    """
+    The answer to a key already recorded: 200 with that event, if it is this button's.
+
+    The key is unique across all buttons. A key of another button's tap is a client
+    bug, and answering with that tap would hand back a different button's state
+    under this button's URL.
+    """
+    if event.quick_mark_id != mark.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Idempotency-Key belongs to a tap of another quick mark "
+                f"(id {event.quick_mark_id})"
+            ),
+        )
+    response.status_code = status.HTTP_200_OK
+    return _to_event_response(await quick_mark_crud.replayed_event(db, mark, event))
+
+
+def _moment_of_press(occurred_at: datetime | None, now: datetime) -> datetime:
+    """
+    The moment a tap belongs to: the press the client names, or the request.
+
+    The client's moment is bounded on both sides. Ahead of the server by more
+    than a clock's drift is a wrong clock, not a press; older than a week is a
+    queue that should have given up, and writing it would quietly reopen a day
+    the person has long since closed.
+    """
+    if occurred_at is None:
+        return now
+    at = occurred_at.astimezone(timezone.utc)
+    if at > now + OCCURRED_AT_MAX_AHEAD:
+        raise _occurred_at_refused(
+            at, f"in the future; the server says {now.isoformat()}"
+        )
+    if at < now - OCCURRED_AT_MAX_AGE:
+        raise _occurred_at_refused(at, f"older than {OCCURRED_AT_MAX_AGE.days} days")
+    return at
+
+
+def _occurred_at_refused(at: datetime, why: str) -> RequestValidationError:
+    """422 in the shape of every other one of the API: a list of problems with `loc`."""
+    return RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("body", "occurred_at"),
+                "msg": f"occurred_at is {why}",
+                "input": at.isoformat(),
+            }
+        ]
+    )
 
 
 def _hotkey_conflict(hotkey: str, owner: QuickMark) -> HTTPException:

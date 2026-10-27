@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/225
-// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the day it was made as entry_date; a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened), and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
+// [review:need-review] PHASE-03/225, PHASE-03/236, PHASE-03/242
+// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the moment it was made as occurred_at (UTC, milliseconds, one shared formatter) (an old stored press, its day as entry_date); a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened) — the state it was made over, its own, or one of the writes it replaced — and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
 import Foundation
 
 /// Entry writes the queue replays. `APIClient` is the production implementation.
@@ -37,7 +37,8 @@ struct OutboxReplay: OutboxSending {
                 id: tap.quickMarkId,
                 request: QuickMarkEventRequestDTO(
                     value: nil, entryDate: tap.serverDay, utcOffsetMinutes: tap.utcOffsetMinutes,
-                    source: QuickMarkEventRequestDTO.iosSource
+                    source: QuickMarkEventRequestDTO.iosSource,
+                    occurredAt: tap.occurredAt.map(Self.wireMoment)
                 ),
                 idempotencyKey: idempotencyKey
             )
@@ -45,7 +46,8 @@ struct OutboxReplay: OutboxSending {
             if let expected = mark.expected {
                 let current = try await serverDay(mark.date)
                     .marks.first { $0.itemId == mark.itemID }?.state ?? ""
-                guard current == expected || current == (mark.state ?? "") else {
+                let accepted = [expected, mark.state ?? ""] + (mark.replacedStates ?? [])
+                guard accepted.contains(current) else {
                     throw OutboxConflict(reason: OutboxQueue.markChangedReason)
                 }
             }
@@ -60,11 +62,26 @@ struct OutboxReplay: OutboxSending {
             if let expected = notebook.expected {
                 let current = try await serverDay(notebook.date).notebook ?? ""
                 if current == notebook.content { return }
-                guard current == expected else { throw OutboxConflict(reason: OutboxQueue.notebookChangedReason) }
+                guard ([expected] + (notebook.replacedContents ?? [])).contains(current) else {
+                    throw OutboxConflict(reason: OutboxQueue.notebookChangedReason)
+                }
             }
             try await day.saveNotebook(date: notebook.date, content: notebook.content)
         }
     }
+
+    /// A moment as `occurred_at` travels: ISO 8601 in UTC with milliseconds, `2026-10-25T01:00:00.250Z`.
+    private static func wireMoment(_ moment: Date) -> String {
+        wireFormatter.string(from: moment)
+    }
+
+    /// One formatter for every replay; `ISO8601DateFormatter` is safe to share across threads.
+    private static let wireFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     /// The day for a replay check. An answer this app cannot read must not pass for "delivered"
     /// (the queue reads `invalidResponse` of a write that way): the write is refused, kept visible.

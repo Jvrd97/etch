@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-01/206
+# [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-01/206, PHASE-03/236
 # summary: wire types of the quick mark — the button as it is created, patched and as it is read with the day's state on it, and the tap, whose body carries an id and an intent but never a category, a field or a display mode; the answer to an undo, the split of taps by source and one tap of a day's journal with the flag that says whether undo would take it
+# summary: PHASE-03/236 adds the optional `occurred_at` of a tap — an offset-aware moment of the press
 """
 Wire types of the quick mark.
 
@@ -18,6 +19,12 @@ answered by `app.core.daytime.local_date()` and by nothing else. A client may
 still send the date it believes it is marking; if the two disagree the write is
 refused rather than silently moved, so a stale tab at 04:00 finds out instead of
 writing into yesterday.
+
+**`occurred_at` is when, not where.** A phone that queued a press offline sends
+the moment of the press; the server reads its day through the same
+`local_date()`, so a press made at 23:50 and delivered at 00:10 lands on the day
+it was made. The moment is bounded — not in the future, not older than a week —
+because a queue that replays a month-old press is a bug, not a memory.
 """
 
 from __future__ import annotations
@@ -25,7 +32,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.models.quick_mark import (
     QUICK_MARK_KINDS,
@@ -143,8 +150,16 @@ class QuickMarkEventRequest(BaseModel):
     entry_date: date | None = Field(
         None,
         description=(
-            "День, который клиент считает текущим. День отметки решает сервер "
+            "День, который клиент считает днём нажатия. День отметки решает сервер "
             "(`local_date()`); несовпадение — 409, а не тихая запись в другой день"
+        ),
+    )
+    occurred_at: AwareDatetime | None = Field(
+        None,
+        description=(
+            "Когда нажали, со смещением (телефон шлёт UTC). Нажатие, доставленное "
+            "позже, ложится в свой день: `local_date(occurred_at)`. Без поля — "
+            "момент запроса. В будущем или старше окна — 422"
         ),
     )
     utc_offset_minutes: int = Field(

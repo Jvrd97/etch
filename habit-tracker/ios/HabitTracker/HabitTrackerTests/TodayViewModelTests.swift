@@ -1,10 +1,13 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
 import XCTest
 @testable import HabitTracker
 
-/// Scriptable stand-in for the API used by `TodayViewModel`.
+/// Scriptable stand-in for the API used by `TodayViewModel`. On the main actor: the screen reads it
+/// while the queue replays through it, and the two must not race on its state.
+@MainActor
 final class MockTodayAPI: TodayScreenAPI {
     var categoriesResult: Result<[CategoryDTO], Error> = .success([])
     var entriesResult: Result<[EntryDTO], Error> = .success([])
@@ -29,9 +32,22 @@ final class MockTodayAPI: TodayScreenAPI {
         try categoriesResult.get()
     }
 
+    /// Runs once inside the next entries read, after its answer is fixed and before it returns: the
+    /// answer is what the server held when the read arrived.
+    var duringFetchEntries: (@MainActor () async -> Void)?
+    /// Runs once inside the next entry create, before its answer.
+    var duringCreateEntry: (@MainActor () async -> Void)?
+    private(set) var entriesAnswered = 0
+
     func fetchEntries(startDate: String, endDate: String) async throws -> [EntryDTO] {
         fetchedEntryRanges.append((start: startDate, end: endDate))
-        return try entriesResult.get()
+        let answer = entriesResult
+        if let hook = duringFetchEntries {
+            duringFetchEntries = nil
+            await hook()
+        }
+        entriesAnswered += 1
+        return try answer.get()
     }
 
     func createEntry(_ entry: EntryCreateDTO) async throws -> EntryDTO {
@@ -41,6 +57,10 @@ final class MockTodayAPI: TodayScreenAPI {
     func createEntry(_ entry: EntryCreateDTO, idempotencyKey: String?) async throws -> EntryDTO {
         createdEntries.append(entry)
         createKeys.append(idempotencyKey)
+        if let hook = duringCreateEntry {
+            duringCreateEntry = nil
+            await hook()
+        }
         guard let result = createEntryResult else {
             throw APIClientError.invalidResponse
         }
@@ -618,7 +638,9 @@ final class TodayViewModelTests: XCTestCase {
 
     // MARK: Offline
 
-    private func makeOfflineViewModel(api: MockTodayAPI) -> (TodayViewModel, OutboxQueue) {
+    private func makeOfflineViewModel(
+        api: MockTodayAPI, cache: CacheStore = InMemoryCacheStore()
+    ) -> (TodayViewModel, OutboxQueue) {
         let fixed = makeFixedDate()
         let server = FakeOutboxServer()
         let outbox = OutboxQueue(
@@ -626,7 +648,7 @@ final class TodayViewModelTests: XCTestCase {
             sender: { OutboxReplay(entries: api, quickMarks: server, day: server) }
         )
         let viewModel = TodayViewModel(
-            api: api, outbox: outbox, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+            api: api, cacheStore: cache, outbox: outbox, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
         )
         return (viewModel, outbox)
     }
@@ -745,6 +767,61 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore)
         XCTAssertFalse(viewModel.todayEntries.contains(where: \.isPending))
         XCTAssertFalse(states.contains(.loading), "a background delivery re-reads quietly, no loader")
+    }
+
+    func testAFailedBackgroundReReadSaysNothingNobodyAskedFor() async throws {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        let readsBefore = api.fetchedEntryRanges.count
+        api.createEntryResult = .success(
+            EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        )
+        api.entriesResult = .failure(APIClientError.timeout)
+
+        let answeredBefore = api.entriesAnswered
+        await outbox.flush()
+        await waitUntil { api.entriesAnswered > answeredBefore }
+        // The read has answered; its failure is handled on the main actor's next turns.
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore, "the delivery did read the day again")
+        XCTAssertNil(viewModel.saveErrorMessage, "nobody pressed anything: a failed quiet re-read is not their error")
+    }
+
+    func testAReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let cache = InMemoryCacheStore()
+        let (viewModel, outbox) = makeOfflineViewModel(api: api, cache: cache)
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        let readsBefore = api.fetchedEntryRanges.count
+        api.createEntryResult = .success(delivered)
+        // The send waits until the load's read is on its way, then the server holds the entry.
+        api.duringCreateEntry = {
+            await waitUntil { api.fetchedEntryRanges.count > readsBefore }
+            api.entriesResult = .success([delivered])
+        }
+        // The load's read was answered before the delivery; it returns only after the re-read did.
+        api.duringFetchEntries = {
+            await waitUntil { api.entriesAnswered > 0 && viewModel.entries(forCategory: 1) == [delivered] }
+        }
+
+        await viewModel.load()
+
+        XCTAssertEqual(outbox.pendingCount, 0)
+        XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the older answer would drop the delivered entry")
+        XCTAssertEqual(
+            cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.entries, [delivered],
+            "the cache keeps the newer records, not the older answer"
+        )
+        XCTAssertNil(viewModel.offlineAsOf)
     }
 
     func testASaveOfAChecklistStillWaitingGoesThroughTheQueueSoTheOldOneCannotLandLast() async {

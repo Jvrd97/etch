@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/225
+// [review:need-review] PHASE-03/225, PHASE-03/242
+// summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00); a load's read answered after a delivery's re-read replaces neither the day nor the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is no conflict for the next one
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
 import XCTest
 @testable import HabitTracker
@@ -203,7 +204,124 @@ final class DayOfflineTests: XCTestCase {
         await nextMorning.load()
 
         XCTAssertEqual(nextMorning.shownDate, DayFixtures.date)
-        XCTAssertEqual(nextMorning.cachedDayNotice, "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: DayFixtures.date)).")
+        XCTAssertEqual(nextMorning.cachedDayNotice, "Показан день из кэша: \(DayFormat.title(of: DayFixtures.date)).")
         XCTAssertNil(viewModel.cachedDayNotice)
+    }
+
+    func testBetweenMidnightAndTheServersBoundaryTheCachedDayIsNotCalledMissing() async {
+        // 01:00: the phone's calendar is already on the 26th, the server's day (turning at 04:00) is
+        // still the 25th, which is exactly the day in the cache.
+        api.fetchResults = [.failure(offline)]
+        let night = makeViewModel(now: Date(timeIntervalSince1970: 1_792_976_400)) // 2026-10-26 01:00 UTC
+
+        await night.load()
+
+        XCTAssertEqual(night.shownDate, DayFixtures.date)
+        XCTAssertEqual(
+            night.cachedDayNotice, "Показан день из кэша: \(DayFormat.title(of: DayFixtures.date)).",
+            "the cache is not said to lack the day"
+        )
+    }
+
+    // MARK: A read sent before a delivery
+
+    func testADayReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async throws {
+        let day: MockDayAPI = api
+        let server = FakeOutboxServer()
+        let queue = OutboxQueue(
+            store: InMemoryOutboxStore(), sender: { OutboxReplay(entries: server, quickMarks: server, day: server) }
+        )
+        queue.enqueue(
+            .setDayMark(QueuedDayMark(date: DayFixtures.date, itemID: DayFixtures.minimumID, state: "done", note: nil, expected: nil)),
+            label: "Минимум"
+        )
+        let marked = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
+        // The re-read after the delivery is answered first and takes the first answer; the load's read,
+        // sent before the delivery, takes the older second one.
+        day.fetchResults = [.success(try DayFixtures.day(marks: [marked])), .success(try DayFixtures.day())]
+        let readsBefore = day.fetchedDates.count
+        let store = InMemoryCacheStore()
+        let fresh = DayViewModel(
+            apiProvider: { day }, timeZoneProvider: { TimeZone(identifier: "UTC")! }, outbox: queue,
+            cacheStore: store, now: { Date(timeIntervalSince1970: 1_792_918_800) }
+        )
+        server.duringWrite = { await waitUntil { day.fetchedDates.count > readsBefore } }
+        day.duringFetch = {
+            await waitUntil { queue.pendingCount == 0 && day.fetchedDates.count > readsBefore + 1 && fresh.shownDate != nil }
+        }
+
+        await fresh.load()
+
+        XCTAssertGreaterThan(day.fetchedDates.count, readsBefore + 1, "a delivery during the first load reads the day again")
+        XCTAssertEqual(fresh.state(of: DayFixtures.minimumID), "done", "the older answer would drop the delivered mark")
+        XCTAssertEqual(fresh.state, .loaded)
+        XCTAssertEqual(
+            store.load(DayDetailDTO.self, forKey: "day.today")?.value.marks.first { $0.itemId == DayFixtures.minimumID }?.state,
+            "done", "the cache keeps the newer day, not the older answer"
+        )
+    }
+
+    func testAReReadThatFailsDuringALoadLeavesTheLoadsDay() async throws {
+        let day: MockDayAPI = api
+        let server = FakeOutboxServer()
+        let queue = OutboxQueue(
+            store: InMemoryOutboxStore(), sender: { OutboxReplay(entries: server, quickMarks: server, day: server) }
+        )
+        queue.enqueue(
+            .setDayMark(QueuedDayMark(date: DayFixtures.date, itemID: DayFixtures.minimumID, state: "done", note: nil, expected: nil)),
+            label: "Минимум"
+        )
+        // The re-read after the delivery fails; the load's own read, sent before, answers with the day.
+        day.fetchResults = [.failure(APIClientError.timeout), .success(try DayFixtures.day())]
+        let readsBefore = day.fetchedDates.count
+        let fresh = DayViewModel(
+            apiProvider: { day }, timeZoneProvider: { TimeZone(identifier: "UTC")! }, outbox: queue,
+            cacheStore: InMemoryCacheStore(), now: { Date(timeIntervalSince1970: 1_792_918_800) }
+        )
+        server.duringWrite = { await waitUntil { day.fetchedDates.count > readsBefore } }
+        day.duringFetch = {
+            await waitUntil { queue.pendingCount == 0 && day.fetchedDates.count > readsBefore + 1 }
+            for _ in 0..<10 { await Task.yield() }
+        }
+
+        await fresh.load()
+
+        XCTAssertEqual(fresh.state, .loaded, "the failed re-read does not replace a day the load brought")
+        XCTAssertEqual(fresh.shownDate, DayFixtures.date)
+        XCTAssertNil(fresh.actionError)
+    }
+
+    // MARK: A direct write that lost its answer
+
+    func testAMarkWhoseDirectAnswerWasLostIsNoConflictForTheNextMark() async throws {
+        api.markResult = .failure(APIClientError.timeout)
+        await viewModel.cycleMark(DayFixtures.minimumID)
+        XCTAssertEqual(outbox.pending.first?.mayHaveLanded, true, "a timeout may have written the mark")
+        // The first PUT did land: the server holds "done".
+        let landed = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
+        api.fetchResults = [.success(try DayFixtures.day(marks: [landed]))]
+        let next = DayFormat.nextMark(after: "done")
+        api.markResult = .success(DayMarkDTO(itemId: DayFixtures.minimumID, state: next, note: nil))
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+
+        XCTAssertTrue(outbox.writes.isEmpty, "the server holding the lost mark is not a change made elsewhere")
+        XCTAssertEqual(api.markCalls.last?.body.state, next)
+    }
+
+    func testANotebookWhoseDirectAnswerWasLostIsNoConflictForTheNextSave() async throws {
+        api.notebookError = APIClientError.timeout
+        viewModel.notebook = "один"
+        await viewModel.saveNotebook()
+        XCTAssertEqual(outbox.pending.first?.mayHaveLanded, true)
+        // The first PUT did land: the server holds "один".
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("один")))]
+        api.notebookError = nil
+
+        viewModel.notebook = "один и два"
+        await viewModel.saveNotebook()
+
+        XCTAssertTrue(outbox.writes.isEmpty, "the server holding the lost save is not a change made elsewhere")
+        XCTAssertEqual(api.notebookCalls.last, "один и два")
     }
 }
