@@ -1,4 +1,5 @@
-// [review:need-review] #78
+// [review:need-review] #78, PHASE-03/252
+// summary: #252 — the streak badge of a checklist category counts to the server's day (a run ending on it and a run ending the day before it)
 // summary: tests for the category chart's daily averages - one per number field for the selected period, the period a trend link opens on, and equality with the dashboard Trends row for the same days
 
 import type { ReactNode } from 'react';
@@ -36,6 +37,7 @@ mock.module('recharts', () => ({
 }));
 
 const { default: CategoryChart } = await import('./CategoryChart');
+const api = await import('@/lib/api');
 
 const TIMESTAMP = '2026-09-01T00:00:00Z';
 /** Local noon, so the calendar date never depends on the timezone of the runner. */
@@ -93,11 +95,20 @@ function numberCell(fieldId: number, value: string | null, entryCount = 1) {
   return { category_id: 1, field_id: fieldId, aggregated_value: value, entry_count: entryCount };
 }
 
+// The server's day for the streak tests. Written onto the shared client and put back, so
+// whatever other suites left in the registry is not disturbed.
+type DayModeRead = () => Promise<unknown>;
+const agent = api.agentAPI as unknown as { dayMode?: DayModeRead };
+const realDayMode = agent.dayMode;
+
 beforeEach(() => {
   searchParams = new URLSearchParams();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  agent.dayMode = realDayMode;
+});
 
 describe('CategoryChart period', () => {
   const pushups = category([field(11, { name: 'Reps', unit: 'reps' })]);
@@ -227,4 +238,34 @@ describe('CategoryChart and the dashboard agree', () => {
       expect(screen.getByText(`avg ${formatTrendAverage(row.average, 'reps')}`)).toBeTruthy();
     });
   }
+});
+
+describe('CategoryChart streak follows the server day (#252)', () => {
+  const SERVER_DAY = '2026-09-30';
+  const habit = category(
+    [field(11, { name: 'Done', field_type: 'boolean' })],
+    { display_mode: 'checklist' }
+  );
+  /** Done on the server's day and the two before it: three days in a row. */
+  const doneDays = ['2026-09-30', '2026-09-29', '2026-09-28'].map((date) => ({
+    date,
+    cells: [numberCell(11, 'true')],
+  }));
+
+  it('counts the run to the server day, not to a browser day far from it', async () => {
+    agent.dayMode = () =>
+      Promise.resolve({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' });
+    render(<CategoryChart category={habit} days={doneDays} />);
+
+    expect(await screen.findByText('3 days')).toBeTruthy();
+  });
+
+  it('counts a run that ends yesterday from the day the server is on', async () => {
+    // The server is a day later: the run of 3 ended yesterday and is still alive.
+    agent.dayMode = () =>
+      Promise.resolve({ date: '2026-10-01', kind: 'work', nocode: false, source: 'schedule' });
+    render(<CategoryChart category={habit} days={doneDays} />);
+
+    expect(await screen.findByText('3 days')).toBeTruthy();
+  });
 });

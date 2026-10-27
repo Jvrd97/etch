@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, PHASE-03/237
+// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, PHASE-03/237, PHASE-03/252
 // summary: the Today block of obligations — the cards of the ones running now, the separate «Предложено» block of what the model proposed and nobody has taken on yet, the failure mode and budget chosen at creation, and the button that counts today by hand; one component so both shells mount the same behaviour
+// summary: #252 — the window of a new obligation starts on the screen's (server's) day and runs a week, no longer from the browser's UTC date
 // summary: takes the day of the screen as a prop and counts a day by hand into it, never into the browser's date; the button is not offered while the day is unknown
 
 import { useState } from 'react';
@@ -8,6 +9,8 @@ import ChallengeCard from '@/components/ChallengeCard';
 import ProposedChallengeCard from '@/components/ProposedChallengeCard';
 import { useChallenges } from '@/hooks/useChallenges';
 import { isOnToday, isProposal } from '@/lib/challenges';
+import { todayISO } from '@/lib/date';
+import { shiftDay } from '@/lib/server-day';
 import type {
   Category,
   Challenge,
@@ -51,12 +54,6 @@ const FAILURE_LABELS: { value: ChallengeFailureMode; label: string }[] = [
   { value: 'budget', label: 'бюджет промахов' },
 ];
 
-function isoDaysFromToday(offset: number): string {
-  const day = new Date();
-  day.setDate(day.getDate() + offset);
-  return day.toISOString().slice(0, 10);
-}
-
 /**
  * Обязательства на экране сегодняшнего дня.
  *
@@ -83,8 +80,14 @@ export default function ChallengesSection({ categories, date }: ChallengesSectio
   const [target, setTarget] = useState('');
   const [failureMode, setFailureMode] = useState<ChallengeFailureMode>('any_miss');
   const [allowedMisses, setAllowedMisses] = useState('0');
-  const [startsOn, setStartsOn] = useState(isoDaysFromToday(0));
-  const [endsOn, setEndsOn] = useState(isoDaysFromToday(DEFAULT_WINDOW_DAYS));
+  // The window of a new obligation starts on the day of the screen (the server's) and
+  // runs a week; the reader's own pick wins. Until the day is known the form
+  // stands on the browser's local date, which the reader sees and can change.
+  const formToday = date !== '' ? date : todayISO();
+  const [pickedStart, setStartsOn] = useState<string | null>(null);
+  const [pickedEnd, setEndsOn] = useState<string | null>(null);
+  const startsOn = pickedStart ?? formToday;
+  const endsOn = pickedEnd ?? shiftDay(formToday, DEFAULT_WINDOW_DAYS);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 

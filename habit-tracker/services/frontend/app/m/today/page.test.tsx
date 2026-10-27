@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177, PHASE-01/206, PHASE-03/237
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/253
 // summary: tests for the two entry points on the mobile Today screen — dictation (the button opens the sheet, cancelling leaves the day untouched, a written day closes the sheet and reloads what Today shows) and the chat, whose conversation is started on the very date this screen is displaying
 // summary: the mobile Today shows the server date, reads, counts an obligation, opens the add-entry sheet and asks about that day while the browser clock is a day behind; with an unknown day there is no date line, no «nothing to track» and the ask-about-the-day button is disabled
 // summary: tests for the mobile Today screen — the dictation entry point (sheet opens, cancel leaves the day alone, a written day reloads it) and the quick-mark section, which is drawn from the directory and absent entirely when the directory is empty
@@ -484,7 +484,10 @@ describe('the day of /m/today comes from the server', () => {
     await renderToday();
 
     expect(screen.getByText(SERVER_DAY)).toBeDefined();
-    expect(getEntries).toHaveBeenCalledWith({ startDate: SERVER_DAY, endDate: SERVER_DAY });
+    // The records are asked for a window around the browser's day and cut to the server's, or read
+    // exactly when the server's day is outside it: the read that supplies them holds the server's day.
+    const [params] = getEntries.mock.calls.at(-1) ?? [];
+    expect(params.startDate <= SERVER_DAY && SERVER_DAY <= params.endDate).toBe(true);
     expect(screen.getByRole('button', { name: WATER_MARK.label })).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }));
@@ -521,7 +524,8 @@ describe('the day of /m/today comes from the server', () => {
     render(<MobileTodayPage />);
 
     expect(await screen.findByText('day unknown')).toBeDefined();
-    expect(screen.queryByText(/^\d{4}-\d{2}-\d{2}$/)).toBeNull();
+    // Nothing on the loaded screen names a date: not the date line, and not a date inside other text.
+    expect(document.body.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(screen.queryByText('Nothing to track today')).toBeNull();
     expect(
       (screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }) as HTMLButtonElement).disabled

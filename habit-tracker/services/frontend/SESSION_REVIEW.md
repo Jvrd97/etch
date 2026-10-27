@@ -2325,3 +2325,15 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `hooks/useToday.test.ts`, `app/today/page.test.tsx`, `app/m/today/page.test.tsx` — mod: браузер на день позади сервера, одна дата в заголовке, чтении записей и быстрых отметках; смена дня при возврате на вкладку.
 
 Живая проверка: заглушка API на 8882 (день 2031-03-15) и dev-фронт на 3882, headless Chrome с TZ=Pacific/Pago_Pago, десктоп 1280px и `/m/today` 390px. Не проверено: настоящий бэкенд и граница 04:00 (база `habit_test_237` не мигрирована), нажатие на «+» вживую.
+
+## 2026-10-27 — PHASE-03/247, 252, 253: один источник дня сервера на экран и вне Today
+
+Тронуто 28 файлов: 22 mod, 3 new код (`hooks/useServerDay.ts`, `lib/server-day.ts`, `components/chat/ChatHistorySheet.test.tsx`), остальные — тесты рядом с кодом.
+
+- `hooks/useToday.ts` — mod: одно чтение `GET /day-mode` на момент (снимок, минутный опрос и бейдж режима дня присоединяются к одному); записи просятся окном в три дня вокруг ожидаемого дня параллельно с днём и режутся до дня сервера, вне окна — одно точное чтение; «день не подтверждён» (упавший снимок или три опроса подряд) запрещает галочку и прибавку и говорит об этом баннером один раз; откат галочки только на том же дне; опрос после размонтирования не запускает снимок, тихий повтор первой загрузки не возвращает закрытый баннер; `dayModeClient` для `useDayMode`.
+- `app/today/page.tsx` — mod: `useDayMode(dayModeClient)`, только строка вызова и деструктуризация.
+- `hooks/useServerDay.ts`, `lib/server-day.ts` — new: `readServerDay`/`useServerDay`/`useDisplayDay`/`useDisplayDate` и `shiftDay` для экранов вне Today.
+- `hooks/useDailySummary.ts`, `hooks/useDashboard.ts`, `lib/dashboard-stats.ts`, `hooks/useEntryDraft.ts`, `components/CategoryChart.tsx`, `components/chat/ChatHistorySheet.tsx`, `components/ChallengesSection.tsx`, `components/week/WeekScreen.tsx`, `components/day/DaySidebar.tsx`, `components/life/LifeGrid.tsx`, `app/m/entries/page.tsx`, `app/m/categories/[id]/page.tsx` — mod: «сегодня» берётся у сервера, а не у часов браузера.
+- Тесты: `hooks/useToday.test.ts`, `hooks/useDailySummary.test.ts`, `hooks/useDashboard.test.ts`, `app/today/page.test.tsx`, `app/m/today/page.test.tsx`, `app/m/entries/page.test.tsx`, `app/m/categories/[id]/page.test.tsx`, `components/CategoryChart.test.tsx`, `components/chat/ChatHistorySheet.test.tsx` (new), `components/week/WeekScreen.test.tsx`, `components/day/DaySidebar.test.tsx`, `components/life/LifeGrid.test.tsx` — mod.
+
+Живая проверка: заглушка API на 8892 (день на сутки впереди браузера, 150 мс на ответ) и dev-фронт на 3892, headless Chrome по сырому CDP. Настоящий бэкенд не поднимался: `habit_test_247` пуста (миграции в рое не запускаются).

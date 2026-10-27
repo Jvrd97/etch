@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253
 // summary: tests for useToday — the targeted re-read after a quick mark (records, ticks and the one streak that can have moved, nothing else, and never an older answer over a newer one), silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// summary: #247/#253 — the screen and its day-mode badge share one read of the day (same day, one request, the badge's answer moves the screen); records ask in parallel with the day; a day not confirmed by three minute reads in a row refuses writes and says so once; a failed tick rolls back only on its own day; no snapshot after unmount; the retry of a failed first load stays quiet
 // summary: the server day in useToday: the header, the records read, the re-read after a mark, the checklist tick and the increment use the day of GET /day-mode while the browser is a day behind; a changed day is followed on return to the tab and by the minute timer (fake timers); an older snapshot, a tick or a re-read of a finished day never lands over the new day; a day that cannot be read leaves no screen and no request for records
 
 import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from 'bun:test';
@@ -12,7 +13,7 @@ import type {
   QuickMarkEvent,
   QuickMarkUndo,
 } from '@/lib/api';
-import { numberFieldSum } from '@/lib/today-entries';
+import { isFieldChecked, numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
@@ -20,6 +21,7 @@ const TODAY = '2026-07-24';
 // at 23:00 UTC), or 00:30 before the boundary hour. Never the server's day, so
 // any read of the browser clock shows up as a different date in a request.
 const BROWSER_DAY = '2026-07-23';
+const DAY_BEFORE_BROWSER = '2026-07-22';
 
 const GLASSES_FIELD: Field = {
   id: 7,
@@ -92,12 +94,18 @@ function dayModeOf(date: string) {
 }
 
 /** Resolves only when the test releases it, so a refetch can be observed mid-flight. */
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: Error) => void;
+} {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 let getAllCategories: ReturnType<typeof mock>;
@@ -288,7 +296,9 @@ mock.module('@/lib/api', () => ({
 
 mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
 
-const { useToday, STREAKS_FAILED, DAY_RECHECK_MS } = await import('./useToday');
+const { useToday, STREAKS_FAILED, DAY_RECHECK_MS, DAY_POLL_FAILURES_LIMIT, DAY_UNCONFIRMED } =
+  await import('./useToday');
+const { useDayMode } = await import('./useDayMode');
 const { entriesAPI } = await import('@/lib/api');
 
 beforeEach(() => {
@@ -450,7 +460,47 @@ describe('useToday takes the day from the server', () => {
 
     expect(readDayMode).toHaveBeenCalledWith();
     expect(result.current.date).toBe(TODAY);
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: TODAY, endDate: TODAY });
+    // A window around the browser's day (a hint, one day behind here) that holds the
+    // server's day: the records of the day are cut from it, no second read.
+    expect(getAllEntries).toHaveBeenCalledTimes(1);
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: DAY_BEFORE_BROWSER, endDate: TODAY });
+  });
+
+  it('asks for the records while the day is still unanswered, not after it', async () => {
+    const slowDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => slowDay.promise);
+    const { result } = renderHook(() => useToday());
+
+    await waitFor(() => expect(getAllEntries).toHaveBeenCalled());
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      slowDay.resolve(dayModeOf(TODAY));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.entries).toEqual([ENTRY]);
+  });
+
+  it('keeps only the records of the server day out of the window', async () => {
+    const yesterdays: Entry = { ...ENTRY, id: 9, entry_date: BROWSER_DAY };
+    getAllEntries = mock(() => Promise.resolve([ENTRY, yesterdays]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.entries).toEqual([ENTRY]);
+  });
+
+  it('reads the day exactly when the server day is outside the window', async () => {
+    readDayMode = mock(() => Promise.resolve(dayModeOf('2026-08-30')));
+    getAllEntries = mock((params: { startDate: string }) =>
+      Promise.resolve(params.startDate === '2026-08-30' ? [{ ...ENTRY, entry_date: '2026-08-30' }] : [ENTRY])
+    );
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getAllEntries).toHaveBeenLastCalledWith({ startDate: '2026-08-30', endDate: '2026-08-30' });
+    expect(result.current.entries).toEqual([{ ...ENTRY, entry_date: '2026-08-30' }]);
   });
 
   it('writes a checklist tick and a number increment to the server day', async () => {
@@ -497,7 +547,7 @@ describe('useToday takes the day from the server', () => {
     });
     await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
 
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: NEXT_DAY, endDate: NEXT_DAY });
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY });
     // The increment belonged to yesterday and must not be counted into the new day.
     expect(result.current.entries).toEqual([]);
 
@@ -517,7 +567,7 @@ describe('useToday takes the day from the server', () => {
     // Falling back to the browser clock would write to a day the server does not run.
     expect(result.current.categories).toEqual([]);
     expect(result.current.date).toBe('');
-    expect(getAllEntries).not.toHaveBeenCalled();
+    expect(result.current.entries).toEqual([]);
   });
 });
 
@@ -541,7 +591,7 @@ describe('useToday keeps up with the server day', () => {
     });
     await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
 
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: NEXT_DAY, endDate: NEXT_DAY });
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY });
     await act(async () => {
       await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
     });
@@ -1191,5 +1241,240 @@ describe('useToday.reloadAfterMark', () => {
 
     expect(result.current.entries.filter((entry) => entry.id === 11)).toHaveLength(1);
     expect(totalOf(result.current.entries)).toBe(1);
+  });
+});
+
+describe('the screen and its day-mode badge share one day (#247)', () => {
+  const NEXT_DAY = '2026-07-25';
+
+  function renderBoth() {
+    return renderHook(() => {
+      const today = useToday();
+      const badge = useDayMode(today.dayModeClient);
+      return { today, badge };
+    });
+  }
+
+  it('asks the server for the day once on mount, for the header and the badge together', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.today.loading).toBe(false));
+    await waitFor(() => expect(result.current.badge.mode).not.toBeNull());
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+    expect(result.current.badge.mode?.date).toBe(result.current.today.date);
+  });
+
+  it('names one day in the header and the badge when the day changes between the two reads', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode).not.toBeNull());
+
+    // Two requests would hear two answers: the first one the new day, the second one the old.
+    const answers = [NEXT_DAY, TODAY];
+    readDayMode = mock(() => Promise.resolve(dayModeOf(answers.shift() ?? TODAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.today.date).toBe(NEXT_DAY));
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(NEXT_DAY));
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves the screen to the day the badge heard when no snapshot is on the way', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode).not.toBeNull());
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.badge.reload();
+    });
+
+    await waitFor(() => expect(result.current.today.date).toBe(NEXT_DAY));
+  });
+
+  it('does not add requests per screen: a return to the tab is one day read, one records read', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode).not.toBeNull());
+    readDayMode.mockClear();
+    getAllEntries.mockClear();
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(getAllEntries).toHaveBeenCalledTimes(1));
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a day the server does not confirm (#253)', () => {
+  const NEXT_DAY = '2026-07-25';
+  const CHECKLIST: Category = {
+    ...CATEGORY,
+    id: 3,
+    display_mode: 'checklist',
+    fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+  };
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function tick(times: number) {
+    for (let i = 0; i < times; i += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(DAY_RECHECK_MS);
+      });
+    }
+  }
+
+  it('says the day is not followed after the third failed minute read, and refuses to write', async () => {
+    jest.useFakeTimers();
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, CHECKLIST]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await tick(DAY_POLL_FAILURES_LIMIT - 1);
+    expect(result.current.dayStale).toBe(false);
+    expect(result.current.error).toBeNull();
+    await tick(1);
+    expect(result.current.dayStale).toBe(true);
+    expect(result.current.error).toBe(DAY_UNCONFIRMED);
+
+    let added = true;
+    await act(async () => {
+      await result.current.toggleField(CHECKLIST.id, 8);
+      added = await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+    expect(added).toBe(false);
+    expect(upsertChecklist).not.toHaveBeenCalled();
+    expect(createEntry).not.toHaveBeenCalled();
+    expect(isFieldChecked(result.current.checked, CHECKLIST.id, 8)).toBe(false);
+  });
+
+  it('writes again, and withdraws its own banner, once a read goes through', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await tick(DAY_POLL_FAILURES_LIMIT);
+    expect(result.current.dayStale).toBe(true);
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+    await tick(1);
+    expect(result.current.dayStale).toBe(false);
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+    expect(createEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bring a banner the user closed back with every minute', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await tick(DAY_POLL_FAILURES_LIMIT);
+    expect(result.current.error).toBe(DAY_UNCONFIRMED);
+
+    act(() => result.current.setError(null));
+    await tick(3);
+
+    expect(result.current.error).toBeNull();
+  });
+
+  it('refuses to write after a full snapshot could not confirm the day it knew', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.dayStale).toBe(true);
+
+    let added = true;
+    await act(async () => {
+      added = await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+    expect(added).toBe(false);
+    expect(createEntry).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed first load every minute without raising the closed banner again', async () => {
+    jest.useFakeTimers();
+    readDayMode = mock(() => Promise.reject(new Error('day unknown')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.error).toBe('day unknown'));
+
+    act(() => result.current.setError(null));
+    await tick(2);
+    expect(readDayMode.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(result.current.error).toBeNull();
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+    await tick(1);
+    await waitFor(() => expect(result.current.date).toBe(TODAY));
+  });
+
+  it('starts no snapshot from a minute read that is answered after the screen is gone', async () => {
+    jest.useFakeTimers();
+    const { result, unmount } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const slowDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => slowDay.promise);
+    await tick(1);
+    getAllCategories.mockClear();
+    unmount();
+    await act(async () => {
+      slowDay.resolve(dayModeOf(NEXT_DAY));
+      await Promise.resolve();
+    });
+
+    expect(getAllCategories).not.toHaveBeenCalled();
+  });
+
+  it('leaves the map of the new day alone when a tick of the old day fails', async () => {
+    getAllCategories = mock(() => Promise.resolve([CHECKLIST]));
+    getAllEntries = mock(() => Promise.resolve([]));
+    const pending = deferred<Entry>();
+    upsertChecklist = mock(() => pending.promise);
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let toggled!: Promise<void>;
+    act(() => {
+      toggled = result.current.toggleField(CHECKLIST.id, 8);
+    });
+    // The new day already has this field ticked, by another device.
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() =>
+      Promise.resolve([
+        {
+          ...ENTRY,
+          id: 31,
+          category_id: CHECKLIST.id,
+          entry_date: NEXT_DAY,
+          values: [{ id: 1, entry_id: 31, field_id: 8, value: 'true' }],
+        },
+      ])
+    );
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(isFieldChecked(result.current.checked, CHECKLIST.id, 8)).toBe(true);
+
+    await act(async () => {
+      pending.reject(new Error('save failed'));
+      await toggled;
+    });
+
+    expect(isFieldChecked(result.current.checked, CHECKLIST.id, 8)).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import DaySquare, { DaySquareLegend } from '@/components/life/DaySquare';
 import { useDays } from '@/hooks/useDays';
+import { useDisplayDate } from '@/hooks/useServerDay';
 import { verdictOriginLabel } from '@/lib/day-format';
 import { type DayListItem } from '@/lib/api';
 import {
@@ -90,15 +91,19 @@ function writeFrame(frame: Frame): void {
 }
 
 export interface LifeGridProps {
-  /** Pinned in tests; the wall clock everywhere else. */
+  /** Pinned in tests; the server's day everywhere else. */
   today?: Date;
   /** Tighter type scale for the mobile shell. */
   compact?: boolean;
 }
 
-export default function LifeGrid({ today = new Date(), compact = false }: LifeGridProps) {
+export default function LifeGrid({ today: pinnedToday, compact = false }: LifeGridProps) {
+  // The server's day: «today», the open squares and the counter all stand on it.
+  const today = useDisplayDate(pinnedToday);
   const [view, setView] = useState<LifeView>('life');
-  const [cursor, setCursor] = useState<Date>(() => new Date(today));
+  // Until the reader moves it, the view stays on today, wherever the server puts it.
+  const [movedCursor, setCursor] = useState<Date | null>(null);
+  const cursor = movedCursor ?? today;
   const [frame, setFrame] = useState<Frame>(() => readFrame());
 
   const todayISO = toISODate(today);

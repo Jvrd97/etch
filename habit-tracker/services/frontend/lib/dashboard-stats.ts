@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #76
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #76, PHASE-03/252
 // summary: pure dashboard aggregation — the KPI counts plus computeDashboardHero: today's ring, the last written entry and the tip of the day
+// summary: #252 — computeDashboardHero takes the day the journal gap is counted to as `today` (the server's), falling back to the day of `now`
 
 import type { Category, Entry } from './api';
 import { pickDailyTip, type DailyTip, type TrackedCategory } from './daily-tip';
@@ -71,6 +72,8 @@ export interface DashboardHeroInput {
   /** `YYYY-MM-DD` of the newest journal note, or `null` when there is none. */
   lastJournalDate: string | null;
   now: Date;
+  /** `YYYY-MM-DD` of the day the journal gap is counted to; the server's day, `now`'s own when omitted. */
+  today?: string;
 }
 
 /** Whole days between two `YYYY-MM-DD` strings, or `null` if either is unreadable. */
@@ -123,7 +126,7 @@ function heroValue(category: Category | undefined, entry: Entry): string | null 
  * written today.
  */
 export function computeDashboardHero(input: DashboardHeroInput): DashboardHero {
-  const { categories, todayEntries, loggedYesterday, lastEntry, lastJournalDate, now } = input;
+  const { categories, todayEntries, loggedYesterday, lastEntry, lastJournalDate, now, today } = input;
 
   const tracked = trackedTodayCategories(categories);
   const loggedCategoryIds = [...new Set(todayEntries.map((entry) => entry.category_id))];
@@ -137,7 +140,7 @@ export function computeDashboardHero(input: DashboardHeroInput): DashboardHero {
       : Number(todayEntries.length > 0);
 
   const daysSinceJournal =
-    lastJournalDate === null ? null : daysBetweenDates(lastJournalDate, todayISO(now));
+    lastJournalDate === null ? null : daysBetweenDates(lastJournalDate, today ?? todayISO(now));
 
   const lastEntryCategory =
     lastEntry === null

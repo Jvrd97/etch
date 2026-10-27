@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/75-daily-summary-checklist, PHASE-01/83-daily-summary-plan-fields-required
+// [review:need-review] PHASE-01/75-daily-summary-checklist, PHASE-01/83-daily-summary-plan-fields-required, PHASE-03/252
+// summary: #252 — without an injected day the plan is filed under the server's day while the browser is a day behind, a text sent before the day is named waits for it, a pick wins, and a server that cannot be asked falls back to the browser's day
 // summary: tests for useDailySummary — text/date -> plan -> checkbox edits (metrics and checklist ticks) -> the journal op (append by default, replace opt-in) -> one idempotent apply
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -98,9 +99,14 @@ const PLAN: DailySummaryPlan = { metrics: [metric()], checklist: [], unresolved:
 
 const TODAY = '2026-07-30';
 
+// The browser is a day behind the server (before the 04:00 boundary, or a zone behind).
+const SERVER_DAY = '2026-07-30';
+const BROWSER_DAY = '2026-07-29';
+
 let draft: ReturnType<typeof mock>;
 let applyPlan: ReturnType<typeof mock>;
 let getCategories: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
 
 // The whole `@/lib/api` surface is declared because bun fixes a module's export
 // names on first link and shares them across the run; a partial mock here would
@@ -129,6 +135,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -232,6 +239,8 @@ mock.module('@/lib/api', () => ({
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
 }));
 
+mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
+
 const { useDailySummary } = await import('./useDailySummary');
 
 /** Render the hook and drive it to a settled plan built from `plan`. */
@@ -250,6 +259,7 @@ beforeEach(() => {
   draft = mock(() => Promise.resolve(PLAN));
   applyPlan = mock(() => Promise.resolve({ entry_ids: [1] }));
   getCategories = mock(() => Promise.resolve([SPORT]));
+  readDayMode = mock(() => Promise.resolve({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' }));
 });
 
 afterEach(() => {
@@ -687,5 +697,63 @@ describe('useDailySummary checklist', () => {
 
     expect(result.current.checklist).toEqual([]);
     expect(result.current.checkStates).toEqual([]);
+  });
+});
+
+describe('useDailySummary without an injected day (#252)', () => {
+  it('files the plan under the server day while the browser is a day behind', async () => {
+    const view = renderHook(() => useDailySummary({ onApplied: () => {} }));
+    await waitFor(() => expect(view.result.current.entryDate).toBe(SERVER_DAY));
+
+    act(() => view.result.current.setTranscript('отжался 30 раз'));
+    await act(async () => {
+      await view.result.current.generate();
+    });
+
+    expect(draft.mock.calls[0][1]).toBe(SERVER_DAY);
+  });
+
+  it('waits for the day when the text is sent before the server has named it', async () => {
+    let release!: (mode: unknown) => void;
+    const pendingDay = new Promise((resolve) => { release = resolve; });
+    readDayMode = mock(() => pendingDay);
+    const view = renderHook(() => useDailySummary({ onApplied: () => {} }));
+    expect(view.result.current.entryDate).toBe('');
+
+    act(() => view.result.current.setTranscript('отжался 30 раз'));
+    let generated!: Promise<void>;
+    act(() => {
+      generated = view.result.current.generate();
+    });
+    await act(async () => {
+      release({ date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' });
+      await generated;
+    });
+
+    expect(draft.mock.calls[0][1]).toBe(SERVER_DAY);
+    expect(view.result.current.entryDate).toBe(SERVER_DAY);
+  });
+
+  it('keeps the day the reader picked when the server names its own', async () => {
+    const view = renderHook(() => useDailySummary({ onApplied: () => {} }));
+    act(() => view.result.current.setEntryDate('2026-07-01'));
+    await waitFor(() => expect(readDayMode).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(view.result.current.entryDate).toBe('2026-07-01');
+  });
+
+  it('takes the browser day only when the server cannot be asked at all', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    const view = renderHook(() => useDailySummary({ onApplied: () => {} }));
+    act(() => view.result.current.setTranscript('отжался 30 раз'));
+    await act(async () => {
+      await view.result.current.generate();
+    });
+
+    expect(draft.mock.calls[0][1]).toBe(BROWSER_DAY);
+    expect(view.result.current.entryDate).toBe(BROWSER_DAY);
   });
 });

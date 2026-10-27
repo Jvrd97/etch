@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/94, PHASE-03/221
+// [review:need-review] PHASE-03/94, PHASE-03/221, PHASE-03/252
+// summary: #252 — without a pinned day the squares are marked by the server's day
 // summary: + the retro page links to the review of the same week
 // summary: component tests for the week page — won days, the streak at its end and when the counters were taken are on the screen, the sunday checklist shows its ticks, and a week whose retro nobody wrote opens and says so instead of looking broken
 
@@ -51,8 +52,18 @@ mock.module('@/hooks/useWeek', () => ({
 }));
 
 const { default: WeekScreen, NO_RETRO_TEXT } = await import('./WeekScreen');
+const api = await import('@/lib/api');
 
 const TODAY = new Date(2026, 7, 30);
+
+// The server's day, written onto the shared client and put back after each test, so
+// whatever other suites left in the registry is not disturbed.
+const agent = api.agentAPI as unknown as { dayMode?: () => Promise<unknown> };
+const realDayMode = agent.dayMode;
+
+function serverDayIs(date: string) {
+  agent.dayMode = () => Promise.resolve({ date, kind: 'work', nocode: false, source: 'schedule' });
+}
 
 beforeEach(() => {
   answer = WEEK;
@@ -60,6 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  agent.dayMode = realDayMode;
 });
 
 describe('WeekScreen', () => {
@@ -119,5 +131,18 @@ describe('WeekScreen', () => {
     expect(
       document.querySelector('[data-date="2026-08-30"]')?.getAttribute('data-status')
     ).toBe('open');
+  });
+});
+
+describe('WeekScreen day (#252)', () => {
+  it('rings the server day and calls the days after it unlived, when no day is pinned', async () => {
+    serverDayIs('2026-08-26');
+    render(<WeekScreen iso="2026-W35" />);
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-date="2026-08-26"]')?.className).toContain('ring-2')
+    );
+    expect(document.querySelector('[data-date="2026-08-25"]')?.getAttribute('data-status')).toBe('empty');
+    expect(document.querySelector('[data-date="2026-08-27"]')?.getAttribute('data-status')).toBe('future');
   });
 });

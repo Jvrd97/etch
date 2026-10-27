@@ -11,6 +11,7 @@ import Markdown from '@/components/Markdown';
 import DaySquare from '@/components/life/DaySquare';
 import RoleWeekSummary from '@/components/RoleWeekSummary';
 import { useDays } from '@/hooks/useDays';
+import { useDisplayDate } from '@/hooks/useServerDay';
 import { useRoleSummary } from '@/hooks/useRoleSummary';
 import { LOAD_WEEK_ERROR, useWeek } from '@/hooks/useWeek';
 import { dayStatus, daysByDate, toISODate, WEEKDAY_SHORT } from '@/lib/life';
@@ -33,8 +34,10 @@ export interface WeekScreenProps {
   today?: Date;
 }
 
-export default function WeekScreen({ iso, compact = false, today = new Date() }: WeekScreenProps) {
+export default function WeekScreen({ iso, compact = false, today: pinnedToday }: WeekScreenProps) {
   const { week, loading, error, reload } = useWeek(iso);
+  // The server's day: the squares mark «today» and the unclosed days by it.
+  const today = useDisplayDate(pinnedToday);
   const todayISO = toISODate(today);
 
   // The days are asked for by date rather than taken from the week: the week
