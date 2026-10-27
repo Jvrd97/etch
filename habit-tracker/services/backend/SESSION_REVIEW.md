@@ -2757,3 +2757,26 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `habit-tracker/mac/HabitAgent/HabitAgent/Panel/{PanelConfig,PanelAPIClient,PanelModel,PanelView,FloatingPanelController}.swift`, `App/PanelHost.swift` — mod.
 
 Не проверено: вид окна и бейджа глазами (отрисовка SwiftUI и высота окна 296 pt подобраны без просмотра), `~/.claude/nocode/config` и хук не тронуты (отдельная работа в personal-os).
+
+## 2026-10-27 — PHASE-03/221: weekly review и weekly stats в приложении
+
+Неделя одним ответом: `GET /api/v1/week-review` (текущая по границе суток) и `/week-review/{iso}` — окно недели с поясом и пометкой «не закончилась», итоги против первых N дней прошлой недели, дни с лучшим и худшим, время по ролям и категориям (поля `duration`), серии «избегать» на конец окна, шаги, тренировки и сон из здоровья. `POST /week-review/{iso}/narrative` пишет текст итога через `LLMClient` (по запросу, не хранится). Читает только существующие таблицы, ничего не пишет, ревизий нет; запросов на неделю восемь при любом числе дней и привычек.
+
+- `habit-tracker/services/backend/app/{api,crud,schemas,llm}/week_review.py` — new.
+- `habit-tracker/services/backend/app/main.py` — mod: регистрация роутера.
+- `habit-tracker/services/backend/tests/test_week_review.py` — new: 24 теста.
+- `habit-tracker/services/frontend/components/week-review/**`, `app/week/review/**`, `app/m/week/review/**`, `hooks/useWeekReview.ts`, `lib/week-review.ts` и их тесты — new.
+- `habit-tracker/services/frontend/lib/api.ts` — mod (добавлением): типы и `weekReviewAPI`.
+- `habit-tracker/services/frontend/components/week/WeekScreen.tsx` + тест — mod: ссылка «Обзор недели».
+
+Живая проверка: бэкенд на 8871 и dev-фронт на 3871 над `habit_test_221` с засеянными двумя неделями, модель — заглушка; десктоп 1440 и мобильный шелл 390 в headless Chrome через CDP (без горизонтальной прокрутки, кнопка итога показывает текст заглушки). Не проверено: настоящая модель, iPad и телефон, сон (метрики сна нет в каталоге здоровья: блок говорит «не подключена»).
+
+### 2026-10-27 — PHASE-03/221, круг 2
+
+- Окно недели: сегодняшний день учитывается только после закрытия (`stage='closed'`), прошлая неделя берётся за столько же дней; раньше Пн-Вт сравнивались с Пн-Ср.
+- Доли ролей — `role_crud.minutes_by_role` и `_share_pct`, посуточный запрос только для колонки дней.
+- Вердикт недели считает `app.day.debt.week_is_won` (поля `is_won`, `debt_minutes`, `totals.days_total`) и отдаёт промпту готовой строкой; метрика «Минуты тренировки» названа по каталогу; единицы здоровья в промпте по-русски; детали 422/502/503 по-русски; `week_has_data` и `isEmptyWeek` учитывают серии привычек.
+- Веб: ссылки экранов недели строятся с учётом шелла (`compact` → `/m/...`), `mobileRouteFor` знает `/week/review/<iso>` на два сегмента (`lib/view-mode.ts` — вне перечня владения, правка добавлением); `encodeURIComponent` для кода недели; aria-live у блока итога.
+- Тесты: окно по последнему закрытому дню, неделя через границу года (`2027-W01`, предыдущая `2026-W53`), «5 из 6» → «нет» в промпте. Число запросов на неделю — 12 при любом числе дней и привычек.
+- Нестабильность: `components/day/PlanBuilder.test.tsx` («пока модель думает, ожидание видно») падает по таймауту 5 с в общем прогоне под нагрузкой и проходит отдельно; к #221 не относится.
+- Не проверено: сон (метрики нет в каталоге), настоящая модель, телефон и iPad.

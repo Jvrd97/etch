@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/111, PHASE-03/118, PHASE-03/152
+// [review:need-review] PHASE-01/62-mobile-onboarding-twin, PHASE-03/111, PHASE-03/118, PHASE-03/152, PHASE-03/221
+// summary: + the review of a named week (`/week/review/<iso>`, two segments under /week) maps across to its mobile twin
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen has a mobile twin again now that Chat has one, a nested route of a flat screen is the no-mobile example
 // summary: unit tests for view-mode helpers — desktop/mobile path mapping and persisted preference; every registry screen but Chat has a mobile twin (Chat's is #118), a nested route of a flat screen is the no-mobile example
 
@@ -127,6 +128,18 @@ describe('toMobilePath', () => {
 
   it('carries the id of a category detail route across to mobile', () => {
     expect(toMobilePath('/categories/12')).toBe('/m/categories/12');
+  });
+
+  it('finds the mobile twin of the review of a named week, two segments under /week', () => {
+    expect(hasMobileVersion('/week/review')).toBe(true);
+    expect(hasMobileVersion('/week/review/2026-W35')).toBe(true);
+    expect(toMobilePath('/week/review/2026-W35')).toBe('/m/week/review/2026-W35');
+    expect(toDesktopEntryPath('/m/week/review/2026-W35')).toBe('/week/review/2026-W35');
+    expect(resolvePath('/week/review/2026-W35', 'mobile')).toBe('/m/week/review/2026-W35');
+  });
+
+  it('leaves anything deeper than the review of a week on the desktop page', () => {
+    expect(toMobilePath('/week/review/2026-W35/extra')).toBeNull();
   });
 
   it('is idempotent on a mobile category detail route', () => {
