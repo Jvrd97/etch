@@ -19,12 +19,25 @@ shows. The layer reads no table and computes nothing.
 
 from __future__ import annotations
 
+import re
+
 from app.core.humanize import hours_and_minutes
-from app.llm.client import LLMClient
+from app.llm.client import LLMClient, LLMError
 from app.schemas.supplement_advice import HealthFigure, HealthSummaryResponse
 
 NOT_MEDICAL_ADVICE = "Это не медицинская рекомендация."
-_DISCLAIMER_MARKER = "не медицинская рекомендация"
+# «не медицинская рекомендация», «не является медицинской рекомендацией» и т.п.
+_DISCLAIMER = re.compile(
+    r"не\s+(?:является\s+)?медицинск\w*\s+(?:рекомендаци\w*|совет\w*)",
+    re.IGNORECASE,
+)
+# A number glued to a dose unit: «200 мг», «5000 МЕ», «2 капсулы». The model is
+# told never to name one; this is the net under the instruction.
+_DOSE = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:мг|мкг|ме|iu|mg|mcg|µg|мл|ml|грамм\w*|гр|г(?!\.)|"
+    r"таблет\w*|капсул\w*)(?!\w)",
+    re.IGNORECASE,
+)
 
 HEALTH_ADVICE_SYSTEM_PROMPT = """\
 Ты помощник личного трекера привычек. Тебе дают цифры о движении, пульсе покоя
@@ -112,11 +125,20 @@ def build_health_advice_prompt(summary: HealthSummaryResponse) -> str:
 def with_disclaimer(text: str) -> str:
     """The text, closed by the disclaimer unless the model already wrote it."""
     text = text.strip()
-    if _DISCLAIMER_MARKER in text.lower():
+    if _DISCLAIMER.search(text):
         return text
     return f"{text}\n\n{NOT_MEDICAL_ADVICE}"
 
 
 async def write_health_advice(llm: LLMClient, summary: HealthSummaryResponse) -> str:
-    """The advice with its disclaimer; `LLMError` from the client is the caller's."""
-    return with_disclaimer(await llm.generate(build_health_advice_prompt(summary)))
+    """
+    The advice with its disclaimer.
+
+    `LLMError` from the client is the caller's; so is the one raised here when the
+    answer names a dose: such an answer is not shown, and the error text carries
+    no part of it.
+    """
+    text = await llm.generate(build_health_advice_prompt(summary))
+    if _DOSE.search(text):
+        raise LLMError("the model named a dose")
+    return with_disclaimer(text)

@@ -19,13 +19,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.supplement import Supplement, SupplementIntake
+from app.models.supplement import Supplement, SupplementIntake, SupplementIntakeKey
 from app.schemas.supplement import SupplementCreate, SupplementUpdate
 
 __all__ = [
     "archive_supplement",
     "create_supplement",
     "get_supplement",
+    "alias_intake_key",
     "intake_by_idempotency_key",
     "intake_on_day",
     "list_supplements",
@@ -98,9 +99,9 @@ async def intake_by_idempotency_key(
     db: AsyncSession, idempotency_key: str
 ) -> SupplementIntake | None:
     result = await db.execute(
-        select(SupplementIntake).where(
-            SupplementIntake.idempotency_key == idempotency_key
-        )
+        select(SupplementIntake)
+        .join(SupplementIntakeKey, SupplementIntakeKey.intake_id == SupplementIntake.id)
+        .where(SupplementIntakeKey.key == idempotency_key)
     )
     return result.scalar_one_or_none()
 
@@ -126,18 +127,25 @@ async def record_intake(
     idempotency_key: str | None,
 ) -> SupplementIntake:
     """
-    Insert the mark; a unique violation (a concurrent twin) is the caller's to catch.
+    Insert the mark and its key; a unique violation (a concurrent twin) is the caller's.
 
-    The caller has already looked for a replay; the constraints
-    `uq_supplement_intake_day` and the unique key are the backstop for the race
-    between that lookup and this insert.
+    The caller has already looked for a replay; the unique day and the key's primary
+    key are the backstop for the race between that lookup and this insert.
     """
     intake = SupplementIntake(
-        supplement_id=supplement.id,
-        intake_date=day,
-        taken_at=taken_at,
-        idempotency_key=idempotency_key,
+        supplement_id=supplement.id, intake_date=day, taken_at=taken_at
     )
     db.add(intake)
+    if idempotency_key is not None:
+        await db.flush()
+        db.add(SupplementIntakeKey(key=idempotency_key, intake_id=intake.id))
     await db.commit()
     return intake
+
+
+async def alias_intake_key(
+    db: AsyncSession, intake: SupplementIntake, idempotency_key: str
+) -> None:
+    """Remember a key that the day's dedup answered with an existing mark."""
+    db.add(SupplementIntakeKey(key=idempotency_key, intake_id=intake.id))
+    await db.commit()

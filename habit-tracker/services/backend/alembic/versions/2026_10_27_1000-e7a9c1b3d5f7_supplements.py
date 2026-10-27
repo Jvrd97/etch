@@ -6,7 +6,7 @@ Create Date: 2026-10-27 10:00:00.000000+00:00
 """
 
 # [review:need-review] PHASE-03/223
-# summary: reversible — `supplements` (name, dose, unit, planned time, archived_at) and `supplement_intakes` (one mark per supplement per logical day, unique Idempotency-Key, cascade on the supplement)
+# summary: reversible — `supplements` (name, dose, unit, planned time, archived_at) and `supplement_intakes` (one mark per supplement per logical day, cascade on the supplement) and `supplement_intake_keys` (Idempotency-Keys that point at a mark)
 
 from collections.abc import Sequence
 
@@ -48,20 +48,34 @@ def upgrade() -> None:
         ),
         sa.Column("intake_date", sa.Date(), nullable=False),
         sa.Column("taken_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("idempotency_key", sa.String(length=255), nullable=True),
         sa.UniqueConstraint(
             "supplement_id", "intake_date", name="uq_supplement_intake_day"
-        ),
-        sa.UniqueConstraint(
-            "idempotency_key", name="uq_supplement_intakes_idempotency_key"
         ),
     )
     op.create_index(
         "ix_supplement_intakes_intake_date", "supplement_intakes", ["intake_date"]
     )
 
+    op.create_table(
+        "supplement_intake_keys",
+        sa.Column("key", sa.String(length=255), primary_key=True),
+        sa.Column(
+            "intake_id",
+            sa.Integer(),
+            sa.ForeignKey("supplement_intakes.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
+    op.create_index(
+        "ix_supplement_intake_keys_intake_id", "supplement_intake_keys", ["intake_id"]
+    )
+
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_supplement_intake_keys_intake_id", table_name="supplement_intake_keys"
+    )
+    op.drop_table("supplement_intake_keys")
     op.drop_index("ix_supplement_intakes_intake_date", table_name="supplement_intakes")
     op.drop_table("supplement_intakes")
     op.drop_index("ix_supplements_id", table_name="supplements")

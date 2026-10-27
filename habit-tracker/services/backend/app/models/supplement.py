@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-03/223
-# summary: the two tables of supplements — the directory (name, dose, unit, planned time, archived_at) and the intake mark, unique per supplement per logical day and per Idempotency-Key
+# summary: the tables of supplements — the directory (name, dose, unit, planned time, archived_at), the intake mark unique per supplement per logical day, and the Idempotency-Keys that point at a mark
 """
 Supplements the owner takes (`#223`).
 
@@ -8,12 +8,19 @@ Supplements the owner takes (`#223`).
 промпте на время одного запроса, текст совета не хранится.
 
 **Архив, а не удаление.** `archived_at` вместо `is_active`: по моменту видно,
-с какого дня добавка перестала быть в плане, и соблюдение за прошлые дни не
-перекраивается задним числом. `is_active` — производное свойство.
+с какого дня добавка перестала быть в плане. `is_active` — производное свойство.
+Ограничение: истории периодов нет. Возврат из архива обнуляет `archived_at`, и
+дни перерыва в сводке соблюдения становятся пропусками. Хочешь честный перерыв —
+заведи добавку заново.
 
 **Один приём — одна строка на добавку в сутки.** `(supplement_id, intake_date)`
 уникален: второе нажатие в тот же логический день ничего не создаёт. День
 отметки решает `app.core.daytime`, а не клиент.
+
+**Ключ повтора — алиас отметки.** Каждый `Idempotency-Key`, приходивший с
+отметкой, лежит строкой `SupplementIntakeKey` и ведёт на отметку дня, даже если
+отметку создал другой ключ: повтор любого из них через сутки вернёт ту же
+отметку, а не заведёт новую.
 """
 
 from __future__ import annotations
@@ -84,9 +91,19 @@ class SupplementIntake(Base):
     )
     intake_date: Mapped[date] = mapped_column(Date, index=True)
     taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(IDEMPOTENCY_KEY_MAX_LENGTH), unique=True, nullable=True
-    )
 
     def __repr__(self) -> str:
         return f"<SupplementIntake(id={self.id}, date={self.intake_date})>"
+
+
+class SupplementIntakeKey(Base):
+    """An `Idempotency-Key` that was sent with a mark, and the mark it stands for."""
+
+    __tablename__ = "supplement_intake_keys"
+
+    key: Mapped[str] = mapped_column(
+        String(IDEMPOTENCY_KEY_MAX_LENGTH), primary_key=True
+    )
+    intake_id: Mapped[int] = mapped_column(
+        ForeignKey("supplement_intakes.id", ondelete="CASCADE"), index=True
+    )

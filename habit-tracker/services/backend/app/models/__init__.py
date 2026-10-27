@@ -4,7 +4,7 @@
 # [review:need-review] 205
 # summary: re-export WebAuthnCredential, the passkey table
 # [review:need-review] PHASE-03/223
-# summary: re-export Supplement and SupplementIntake, the supplement tables
+# summary: re-export Supplement, SupplementIntake and SupplementIntakeKey, the supplement tables
 from app.models.activity import (
     ActivityInterval,
     AgentHeartbeat,
@@ -54,7 +54,7 @@ from app.models.plan_violation import PlanViolation
 from app.models.quick_mark import QuickMark, QuickMarkEvent
 from app.models.role import Role, RoleAct, RoleRule, RoleTimeBlock
 from app.models.summary import DaySummary
-from app.models.supplement import Supplement, SupplementIntake
+from app.models.supplement import Supplement, SupplementIntake, SupplementIntakeKey
 from app.models.training import (
     BodyComplaint,
     PersonalRecord,
@@ -102,6 +102,7 @@ __all__ = [
     "DaySummary",
     "Supplement",
     "SupplementIntake",
+    "SupplementIntakeKey",
     "Field",
     "FieldType",
     "Entry",

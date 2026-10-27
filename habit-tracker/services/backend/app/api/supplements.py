@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import daytime
 from app.core.database import get_db
 from app.crud import supplement as supplement_crud
-from app.models.supplement import Supplement, SupplementIntake
+from app.models.supplement import (
+    IDEMPOTENCY_KEY_MAX_LENGTH,
+    Supplement,
+    SupplementIntake,
+)
 from app.schemas.supplement import (
     IntakeRequest,
     IntakeResponse,
@@ -94,6 +98,16 @@ async def restore_supplement(
     return await supplement_crud.restore_supplement(db, supplement)
 
 
+def _owned_by(intake: SupplementIntake, supplement_id: int) -> SupplementIntake:
+    """A key belongs to the supplement it was first sent for; another is a client bug."""
+    if intake.supplement_id != supplement_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key was already used for another supplement",
+        )
+    return intake
+
+
 @router.post(
     "/{supplement_id}/intakes",
     response_model=IntakeResponse,
@@ -104,7 +118,9 @@ async def mark_intake(
     response: Response,
     payload: IntakeRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", max_length=IDEMPOTENCY_KEY_MAX_LENGTH
+    ),
 ) -> SupplementIntake:
     """
     Отметка «принял» за текущие логические сутки сервера.
@@ -113,10 +129,22 @@ async def mark_intake(
     может прислать `intake_date` как сверку часов; расхождение — 409.
 
     - **201** — отметка записана; **200** — повтор: тот же `Idempotency-Key`
-      или уже стоящая отметка этой добавки за этот день (вторая не создаётся)
-    - **404** — добавки нет; **409** — добавка в архиве либо день клиента не совпал
+      (отвечает записанной отметкой раньше всех проверок, даже после смены дня
+      или архивации) или уже стоящая отметка этой добавки за этот день. Ключ
+      второго нажатия запоминается за отметкой дня, и его повтор завтра тоже
+      вернёт её, а не заведёт новую
+    - **404** — добавки нет; **409** — добавка в архиве, день клиента не совпал
+      либо ключ уже стоит за отметкой другой добавки; **422** — ключ длиннее
+      255 знаков
     """
     supplement = await _existing(db, supplement_id)
+
+    if idempotency_key is not None:
+        replay = await supplement_crud.intake_by_idempotency_key(db, idempotency_key)
+        if replay is not None:
+            response.status_code = status.HTTP_200_OK
+            return _owned_by(replay, supplement_id)
+
     if not supplement.is_active:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -135,27 +163,21 @@ async def mark_intake(
             ),
         )
 
-    if idempotency_key is not None:
-        replay = await supplement_crud.intake_by_idempotency_key(db, idempotency_key)
-        if replay is not None:
-            response.status_code = status.HTTP_200_OK
-            return replay
     already = await supplement_crud.intake_on_day(db, supplement_id, day)
-    if already is not None:
-        response.status_code = status.HTTP_200_OK
-        return already
-
     try:
-        return await supplement_crud.record_intake(
-            db,
-            supplement,
-            day=day,
-            taken_at=taken_at,
-            idempotency_key=idempotency_key,
-        )
+        if already is None:
+            return await supplement_crud.record_intake(
+                db,
+                supplement,
+                day=day,
+                taken_at=taken_at,
+                idempotency_key=idempotency_key,
+            )
+        if idempotency_key is not None:
+            await supplement_crud.alias_intake_key(db, already, idempotency_key)
     except IntegrityError:
         # A concurrent twin won the race between the lookups and the insert; the
-        # unique constraints are the backstop. Answer with the winner.
+        # unique day and the key's primary key are the backstop. Answer with the winner.
         await db.rollback()
         winner = None
         if idempotency_key is not None:
@@ -165,5 +187,6 @@ async def mark_intake(
         winner = winner or await supplement_crud.intake_on_day(db, supplement_id, day)
         if winner is None:
             raise
-        response.status_code = status.HTTP_200_OK
-        return winner
+        already = _owned_by(winner, supplement_id)
+    response.status_code = status.HTTP_200_OK
+    return already

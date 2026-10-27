@@ -15,9 +15,12 @@ The summary of sleep, sport and supplements (`#223`).
 `available=false`, а не нулями. Когда метрика появится в каталоге, она заработает
 без правок: ключ — идентификатор HealthKit.
 
-**Соблюдение.** Добавка запланирована на день, если она уже заведена к этому
-дню и в архив не ушла раньше него. Отметка вне плана всё равно считается и в
-плане, иначе «принято» могло бы превысить «запланировано».
+**Соблюдение.** Добавка запланирована на день, если она заведена к этому дню
+или раньше и ушла в архив позже него: день архивации в план не входит, потому
+что отметить добавку после архивации нельзя. Отметка вне плана всё равно
+считается и в плане, иначе «принято» могло бы превысить «запланировано».
+Возврат из архива обнуляет `archived_at`, и дни перерыва становятся пропусками
+(истории периодов нет).
 """
 
 from __future__ import annotations
@@ -159,7 +162,7 @@ async def _adherence(db: AsyncSession, current: list[date]) -> Adherence:
         planned = {
             supplement_id
             for supplement_id, (created, archived) in spans.items()
-            if created <= on and (archived is None or on <= archived)
+            if created <= on and (archived is None or on < archived)
         } | taken
         for supplement_id in planned:
             planned_days[supplement_id] += 1

@@ -20,7 +20,8 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import daytime
-from app.models.supplement import SupplementIntake
+from app.crud import supplement as supplement_crud
+from app.models.supplement import SupplementIntake, SupplementIntakeKey
 from tests.conftest import test_engine
 
 URL = "/api/v1/supplements"
@@ -32,6 +33,11 @@ TODAY = date(2026, 10, 27)
 NIGHT = datetime(2026, 10, 27, 2, 30, tzinfo=timezone.utc)
 # 04:00 in Berlin: the new day starts.
 DAWN = datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)
+# 03:50 and 04:10 in Berlin: a tap and its retry on either side of the boundary.
+BEFORE_DAWN = datetime(2026, 10, 27, 2, 50, tzinfo=timezone.utc)
+AFTER_DAWN = datetime(2026, 10, 27, 3, 10, tzinfo=timezone.utc)
+TOMORROW = datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc)
+KEY_MAX_LENGTH = 255
 
 NAME = "Магний цитрат"
 
@@ -320,6 +326,135 @@ async def test_a_client_that_names_another_day_is_409_not_a_silent_write(
 
     assert stale.status_code == 409
     assert right.status_code == 201
+    assert await intake_count(db_session) == 1
+
+
+# --- idempotency keys -----------------------------------------------------------
+
+
+async def test_a_retry_of_the_key_after_the_boundary_is_the_original_not_409(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = await add(client)
+    pin(monkeypatch, BEFORE_DAWN)
+    first = await mark(
+        client, created["id"], key="tap-1", body={"intake_date": "2026-10-26"}
+    )
+    pin(monkeypatch, AFTER_DAWN)
+
+    # The client still says the 26th: its clock is the one of the first tap.
+    retry = await mark(
+        client, created["id"], key="tap-1", body={"intake_date": "2026-10-26"}
+    )
+
+    assert (first.status_code, retry.status_code) == (201, 200)
+    assert retry.json() == first.json()
+    assert await intake_count(db_session) == 1
+
+
+async def test_a_retry_of_the_key_after_archiving_is_the_original_not_409(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    created = await add(client)
+    first = await mark(client, created["id"], key="tap-1")
+    await client.post(f"{URL}/{created['id']}/archive")
+
+    retry = await mark(client, created["id"], key="tap-1")
+
+    assert retry.status_code == 200
+    assert retry.json() == first.json()
+    # A new key on the archived supplement is still refused.
+    assert (await mark(client, created["id"], key="tap-2")).status_code == 409
+
+
+async def test_a_key_of_another_supplement_is_409_and_writes_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    magnesium = await add(client)
+    zinc = await add(client, name="Цинк")
+    await mark(client, magnesium["id"], key="tap-1")
+
+    response = await mark(client, zinc["id"], key="tap-1")
+
+    assert response.status_code == 409
+    assert await intake_count(db_session) == 1
+
+
+async def test_the_key_of_a_deduped_tap_still_means_the_days_mark_tomorrow(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = await add(client)
+    first = await mark(client, created["id"], key="tap-1")
+    second = await mark(client, created["id"], key="tap-2")
+    assert (first.status_code, second.status_code) == (201, 200)
+
+    pin(monkeypatch, TOMORROW)
+    retry_of_second = await mark(client, created["id"], key="tap-2")
+    retry_of_first = await mark(client, created["id"], key="tap-1")
+
+    assert retry_of_second.status_code == retry_of_first.status_code == 200
+    assert (
+        retry_of_second.json()["id"]
+        == retry_of_first.json()["id"]
+        == first.json()["id"]
+    )
+    assert await intake_count(db_session) == 1
+    keys = (
+        await db_session.execute(select(func.count()).select_from(SupplementIntakeKey))
+    ).scalar_one()
+    assert keys == 2
+
+
+async def test_a_key_longer_than_the_column_is_422_not_500(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    created = await add(client)
+
+    ok = await mark(client, created["id"], key="k" * KEY_MAX_LENGTH)
+    too_long = await mark(client, created["id"], key="k" * (KEY_MAX_LENGTH + 1))
+
+    assert (ok.status_code, too_long.status_code) == (201, 422)
+    assert await intake_count(db_session) == 1
+
+
+def blind_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Make the first call of a lookup miss, as if the twin had not committed yet."""
+    real = getattr(supplement_crud, name)
+    calls = 0
+
+    async def lookup(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else await real(*args, **kwargs)
+
+    monkeypatch.setattr(supplement_crud, name, lookup)
+
+
+async def test_a_twin_that_wins_the_day_race_is_answered_with_its_mark(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = await add(client)
+    first = await mark(client, created["id"])
+    blind_once(monkeypatch, "intake_on_day")
+
+    response = await mark(client, created["id"], key="tap-2")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == first.json()["id"]
+    assert await intake_count(db_session) == 1
+
+
+async def test_a_twin_that_wins_the_key_race_is_answered_with_its_mark(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = await add(client)
+    first = await mark(client, created["id"], key="tap-1")
+    blind_once(monkeypatch, "intake_by_idempotency_key")
+
+    response = await mark(client, created["id"], key="tap-1")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == first.json()["id"]
     assert await intake_count(db_session) == 1
 
 

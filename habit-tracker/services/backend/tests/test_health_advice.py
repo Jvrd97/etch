@@ -94,7 +94,7 @@ async def add_supplement(
 ) -> int:
     supplement = Supplement(
         name=name,
-        dose=200,
+        dose=777,
         unit="мг",
         intake_time=time(21, 30),
         created_at=datetime.combine(created, time(12), tzinfo=timezone.utc),
@@ -277,7 +277,7 @@ async def test_adherence_is_taken_over_planned_by_day(
     assert (by_name[D3]["planned_days"], by_name[D3]["taken_days"]) == (5, 2)
 
 
-async def test_an_archived_supplement_is_planned_only_until_the_day_it_left(
+async def test_an_archived_supplement_is_planned_only_before_the_day_it_left(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     await add_supplement(
@@ -289,8 +289,9 @@ async def test_an_archived_supplement_is_planned_only_until_the_day_it_left(
 
     adherence = (await get_summary(client))["adherence"]
 
-    # The 20th, 21st and 22nd; nothing after the day it was archived.
-    assert (adherence["planned"], adherence["taken"]) == (3, 0)
+    # The 20th and 21st; the day it was archived on is already out of the plan,
+    # because after archiving it can no longer be ticked.
+    assert (adherence["planned"], adherence["taken"]) == (2, 0)
 
 
 async def test_a_supplement_not_yet_started_is_not_planned(
@@ -318,7 +319,8 @@ async def test_a_mark_outside_the_planned_days_still_counts_as_planned(
     adherence = (await get_summary(client))["adherence"]
 
     assert adherence["taken"] <= adherence["planned"]
-    assert (adherence["planned"], adherence["taken"]) == (3, 1)
+    # The 20th (before the archive day) and the 23rd (the mark itself).
+    assert (adherence["planned"], adherence["taken"]) == (2, 1)
 
 
 async def test_an_empty_summary_is_empty_and_not_enough(client: AsyncClient) -> None:
@@ -478,7 +480,7 @@ async def test_the_model_is_never_given_a_dose(
     await ask(client)
 
     (prompt,) = llm.prompts
-    assert "200" not in prompt
+    assert "777" not in prompt
     assert "мг" not in prompt
 
 
@@ -501,19 +503,56 @@ async def test_the_answer_always_carries_the_disclaimer(
 
     text = (await ask(client)).json()["text"]
 
-    assert text.endswith(NOT_MEDICAL_ADVICE)
-    assert "не медицинская рекомендация" in NOT_MEDICAL_ADVICE.lower()
+    assert text == f"{llm.text}\n\n{NOT_MEDICAL_ADVICE}"
 
 
+@pytest.mark.parametrize(
+    "written",
+    [
+        "Всё ровно. Это не Медицинская рекомендация.",
+        "Всё ровно. Это не является медицинской рекомендацией.",
+    ],
+)
 async def test_a_disclaimer_the_model_already_wrote_is_not_doubled(
-    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM, written: str
 ) -> None:
     await fill_window(db_session)
-    llm.text = "Всё ровно. Это не Медицинская рекомендация."
+    llm.text = written
 
     text = (await ask(client)).json()["text"]
 
-    assert text.lower().count("не медицинская рекомендация") == 1
+    assert text == written
+
+
+@pytest.mark.parametrize(
+    "dosed",
+    [
+        "Пей магний по 400 мг на ночь.",
+        "Добавь 5000 МЕ витамина D.",
+        "Выпей 2 капсулы утром.",
+        "Хватит 1,5 г в день.",
+        "Take 200 mg daily.",
+    ],
+)
+async def test_an_answer_that_names_a_dose_is_502_and_not_shown(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM, dosed: str
+) -> None:
+    await fill_window(db_session)
+    llm.text = dosed
+
+    response = await ask(client)
+
+    assert response.status_code == 502
+    assert dosed not in response.text
+
+
+async def test_numbers_that_are_not_doses_pass(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    await fill_window(db_session)
+    llm.text = "8000 шагов в день и 60 уд/мин в покое, на 3 дня чаще, чем в 2026 г."
+
+    assert (await ask(client)).status_code == 200
 
 
 async def test_a_block_with_a_few_days_is_marked_as_thin_in_the_prompt(
