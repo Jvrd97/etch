@@ -58,12 +58,9 @@ final class HealthSampleMappingTests: XCTestCase {
         XCTAssertEqual(HealthPump.pumpedMetrics.map(\.kind), [.cumulative, .discrete])
     }
 
-    func testEveryWireUnitIsOneTheServerKnowsAndNoneIsPercent() {
-        // `_UNITS` in `app/health/aggregate.py`.
-        let serverUnits: Set<String> = [
-            "m", "kcal", "min", "count/min", "ms", "fraction", "mL/(kg*min)", "kg", "cm", "g", "mL", "count",
-        ]
-        XCTAssertTrue(Set(HealthMetricCatalog.metrics.map(\.wireUnit)).isSubset(of: serverUnits))
+    func testOnlyTheTwoPercentMetricsAreReadAsPercentAndNoneIsSentAsPercent() {
+        // Wire units against the server's table: `testCatalogKindsAndUnitsMatchTheServerFixture`.
+        XCTAssertFalse(HealthMetricCatalog.metrics.contains { $0.wireUnit == "%" })
         XCTAssertEqual(
             HealthMetricCatalog.metrics.filter { $0.unit == "%" }.map(\.typeIdentifier),
             [.oxygenSaturation, .bodyFatPercentage]

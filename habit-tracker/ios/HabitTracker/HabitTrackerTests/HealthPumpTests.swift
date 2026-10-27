@@ -284,24 +284,40 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(outcome, .failed(.healthDataUnavailable))
     }
 
-    func testNoDataErrorOnAnEmptyWindowIsAnEmptyListNotAReadFailure() async throws {
-        let hours = try await HealthHourSum.readingEmptyWhenNoData { throw HKError(.errorNoData) }
+    func testNoDataErrorOnTheStepWindowIsAnEmptyWeekNotAReadFailure() async {
+        store.sumError = HKError(.errorNoData)
+        store.samples[.restingHeartRate] = [
+            FakeHealthStore.sample(.restingHeartRate, 54, HKUnit(from: "count/min"), "2026-10-20T03:00:00Z"),
+        ]
 
-        XCTAssertEqual(hours, [])
-    }
+        let withHeartRate = await makePump().sync()
+        store.samples = [:]
+        let withNothing = await makePump().sync()
 
-    func testOtherReadErrorsStayReadFailures() async {
-        do {
-            _ = try await HealthHourSum.readingEmptyWhenNoData { throw HKError(.errorDatabaseInaccessible) }
-            XCTFail("a locked database is not an empty window")
-        } catch {
-            XCTAssertEqual((error as? HKError)?.code, .errorDatabaseInaccessible)
+        guard case .sent = withHeartRate else {
+            return XCTFail("a window without steps must still send the heart rate, got \(withHeartRate)")
         }
+        XCTAssertEqual(
+            api.posted.first?.samples.map(\.identifier), ["HKQuantityTypeIdentifierRestingHeartRate"]
+        )
+        XCTAssertEqual(withNothing, .nothingToSend)
     }
 
-    func testPumpFollowsTheDeviceZoneWithoutARestart() {
-        XCTAssertEqual(HealthPump.deviceCalendar, Calendar.autoupdatingCurrent)
-        XCTAssertNotEqual(HealthPump.deviceCalendar, Calendar.current)
+    func testAnyOtherErrorOfTheStepWindowIsAReadFailure() async {
+        store.sumError = HKError(.errorDatabaseInaccessible)
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.readFailed))
+        XCTAssertTrue(api.posted.isEmpty)
+    }
+
+    func testPumpBuiltWithoutZoneArgumentsFollowsTheDeviceZoneLive() {
+        let pump = HealthPump(store: store, api: { nil })
+
+        XCTAssertEqual(pump.calendar, Calendar.autoupdatingCurrent)
+        XCTAssertNotEqual(pump.calendar, Calendar.current)
+        XCTAssertEqual(pump.mapper.timeZone, TimeZone.autoupdatingCurrent)
     }
 
     func testConcurrentCallersShareOneRun() async {
@@ -333,6 +349,8 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
     var latest: [HKQuantityTypeIdentifier: HKQuantitySample] = [:]
     var readError: Error?
+    /// Fails only the hourly-sum query; samples and the latest reading are unaffected.
+    var sumError: Error?
     var authorizationError: Error?
     /// Yields inside every read so a second caller gets a turn mid-run.
     var suspendReads = false
@@ -375,8 +393,8 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
         if suspendReads {
             await Task.yield()
         }
-        if let readError {
-            throw readError
+        if let failure = sumError ?? readError {
+            throw failure
         }
         return hourSums[HKQuantityTypeIdentifier(rawValue: type.identifier)] ?? []
     }

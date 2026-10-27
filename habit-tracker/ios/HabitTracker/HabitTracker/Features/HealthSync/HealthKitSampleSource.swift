@@ -10,16 +10,6 @@ struct HealthHourSum: Equatable {
     let start: Date
     let end: Date
     let sum: HKQuantity?
-
-    /// HealthKit answers a window with no data at all by throwing `.errorNoData`. That is
-    /// an empty week, not a failed read: other errors pass through.
-    static func readingEmptyWhenNoData(_ read: () async throws -> [HealthHourSum]) async throws -> [HealthHourSum] {
-        do {
-            return try await read()
-        } catch let error as HKError where error.code == .errorNoData {
-            return []
-        }
-    }
 }
 
 /// Everything the app reads from `HKHealthStore`, for the pump and the Health screen
@@ -34,6 +24,7 @@ protocol HealthStoreQuerying: Sendable {
     /// Raw samples that start inside `[from, to)`, oldest first. For discrete metrics.
     func quantitySamples(of type: HKQuantityType, from: Date, to: Date) async throws -> [HKQuantitySample]
     /// Hour-long sums covering `[from, to)`, anchored at `from`. For cumulative metrics.
+    /// A window with no data at all may throw `HKError.errorNoData`; the pump reads that as an empty week.
     func hourlySums(of type: HKQuantityType, from: Date, to: Date) async throws -> [HealthHourSum]
     /// The most recent sample of the type, if any.
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample?
@@ -72,16 +63,14 @@ extension HKHealthStore: HealthStoreQuerying {
             anchorDate: from,
             intervalComponents: DateComponents(hour: 1)
         )
-        return try await HealthHourSum.readingEmptyWhenNoData {
-            let collection = try await descriptor.result(for: self)
-            var hours: [HealthHourSum] = []
-            collection.enumerateStatistics(from: from, to: to) { statistics, _ in
-                hours.append(HealthHourSum(
-                    start: statistics.startDate, end: statistics.endDate, sum: statistics.sumQuantity()
-                ))
-            }
-            return hours
+        let collection = try await descriptor.result(for: self)
+        var hours: [HealthHourSum] = []
+        collection.enumerateStatistics(from: from, to: to) { statistics, _ in
+            hours.append(HealthHourSum(
+                start: statistics.startDate, end: statistics.endDate, sum: statistics.sumQuantity()
+            ))
         }
+        return hours
     }
 
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {

@@ -74,7 +74,7 @@ final class HealthSyncViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.syncMessage, "Сервер недоступен. Данные остались в «Здоровье», повторите позже")
     }
 
-    func testButtonThatJoinedTheSkippedLaunchRunDoesNotPromiseAnotherPressHelps() async throws {
+    func testButtonThatJoinedTheSkippedLaunchRunDoesNotPromiseAnotherPressHelps() async {
         let syncer = HealthSyncerSpy()
         syncer.outcome = .skipped
         let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
@@ -86,7 +86,6 @@ final class HealthSyncViewModelTests: XCTestCase {
             viewModel.syncMessage,
             "Отправка при запуске ничего не отправила: на этом устройстве нет данных «Здоровья» или доступ к ним ещё не запрошен"
         )
-        XCTAssertFalse(try XCTUnwrap(viewModel.syncMessage).contains("ещё раз"))
     }
 
     func testFailedPermissionRequestIsNotCalledMissingData() async {

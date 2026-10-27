@@ -686,10 +686,20 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 ### PHASE-03/254, круг 1 (2026-10-27)
 
-Тронуто 8 файлов iOS: `Features/HealthSync/{HealthKitSampleSource,HealthPump,HealthSyncView}.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests` (`mod`), этот файл; плюс ADR-0020 (поправка A2), `services/backend/tests/test_health_catalog_fixture.py` и `tests/fixtures/health/metric_catalog.json` (`new`).
+В diff 10 файлов. iOS, 7: `Features/HealthSync/{HealthKitSampleSource,HealthPump,HealthSyncView}.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests` (`mod`), этот файл (`mod`). Вне iOS, 3: ADR-0020 (поправка A2, `mod`), `services/backend/tests/test_health_catalog_fixture.py` и `tests/fixtures/health/metric_catalog.json` (`new`).
 
-- `HealthHourSum.readingEmptyWhenNoData`: `HKError.errorNoData` на пустом окне даёт `[]`, остальные ошибки идут дальше как `.readFailed`. Настоящий `HKStatisticsCollectionQueryDescriptor` двойником не подменить, поэтому тест гоняет обёртку с брошенной ошибкой.
-- `HealthSampleMapper()` и `HealthPump.deviceCalendar` берут `autoupdatingCurrent`. Тесты различают его с `.current`.
 - `HealthStoreQuerying: Sendable`; `FakeHealthStore` — `@unchecked Sendable` с обоснованием.
 - Текст `.skipped` не обещает, что повторное нажатие поможет: тот же исход получает и iPad.
 - Тест маппера читает `metric_catalog.json` по `#filePath`; бэкенд-тест держит файл равным `SEED_METRICS`. Если iOS-тест запустят вне дерева репозитория, он упадёт на чтении файла, а не пройдёт молча.
+- Перевод `errorNoData` и живой пояс переделаны в круге 2.
+
+### PHASE-03/254, круг 2 (2026-10-27)
+
+Тронуто 8 файлов: `HealthKitSampleSource.swift`, `HealthPump.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests`, ADR-0020 (`mod`), этот файл (`mod`).
+
+- **ADR, блокер.** Абзац о смене пояса переписан: завышение вечное и касается всех дней окна, отправленных в старом поясе, и дискретных метрик без пояса семпла. Исправление вынесено в тикет #260. Добавлена оговорка про повторный час осеннего перевода: `sample_count` = 2, `min` и `max` — отдельные суммы.
+- **`errorNoData`.** Перевод в пустой список переехал из `HKHealthStore.hourlySums` в `HealthPump.readWindow` (`hourlySumsOrEmpty`): двойник бросает ошибку, и тест проверяет связку. Пустое окно шагов не мешает отправке пульса покоя; любая другая ошибка даёт `.failed(.readFailed)`.
+- **Пояс.** Насос открывает `calendar` и `mapper`, тест строит насос без аргументов и сравнивает с `autoupdatingCurrent` (отличим от `.current`). Статическая константа `deviceCalendar` убрана. В комментарии `readWindow` названа редкая гонка: смена пояса посреди прогона.
+- **Единицы.** Копия списка серверных единиц в тесте маппера удалена: единицы сверяет тест фикстуры.
+
+Мутации: возврат `.current` в календарь и подмена кода в `catch` валят по одному тесту (`testPumpBuiltWithoutZoneArguments…`, `testNoDataErrorOnTheStepWindow…`).

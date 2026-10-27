@@ -63,8 +63,6 @@ final class HealthPump: HealthSyncing {
     nonisolated static let maxAttempts = 3
     /// Up to 50 000 samples in one body: longer than the default request budget.
     nonisolated static let uploadTimeout: TimeInterval = 60
-    /// Local midnights follow the device zone live, so a flight across zones needs no restart.
-    nonisolated static let deviceCalendar: Calendar = .autoupdatingCurrent
     /// The n-th retry waits n steps.
     nonisolated static let retryDelayStep: Duration = .seconds(2)
 
@@ -82,8 +80,8 @@ final class HealthPump: HealthSyncing {
     private let store: HealthStoreQuerying
     private let api: () -> HealthSamplesAPI?
     private let metrics: [HealthMetricDefinition]
-    private let mapper: HealthSampleMapper
-    private let calendar: Calendar
+    let mapper: HealthSampleMapper
+    let calendar: Calendar
     private let now: () -> Date
     private let chunkLimit: Int
     private let pause: (Int) async throws -> Void
@@ -94,7 +92,7 @@ final class HealthPump: HealthSyncing {
         api: @escaping () -> HealthSamplesAPI?,
         metrics: [HealthMetricDefinition] = HealthPump.pumpedMetrics,
         mapper: HealthSampleMapper = HealthSampleMapper(),
-        calendar: Calendar = HealthPump.deviceCalendar,
+        calendar: Calendar = .autoupdatingCurrent,
         now: @escaping () -> Date = Date.init,
         chunkLimit: Int = HealthPump.maxSamplesPerChunk,
         pause: @escaping (Int) async throws -> Void = { attempt in
@@ -184,6 +182,9 @@ final class HealthPump: HealthSyncing {
 
     /// Today and the six days before it, from local midnight until `end`. Nonisolated,
     /// so turning thousands of samples into DTOs does not run on the main thread.
+    /// The calendar and the mapper both follow the device zone, read at different moments:
+    /// a zone change in the middle of one run (rare) can leave the window and the offsets
+    /// in different zones. The buckets it leaves are the zone-change cost of ADR-0020, A2.
     private nonisolated static func readWindow(
         store: HealthStoreQuerying,
         metrics: [HealthMetricDefinition],
@@ -200,7 +201,7 @@ final class HealthPump: HealthSyncing {
             let type = HKQuantityType(metric.typeIdentifier)
             switch metric.kind {
             case .cumulative:
-                let hours = try await store.hourlySums(of: type, from: start, to: end)
+                let hours = try await Self.hourlySumsOrEmpty(store, type, from: start, to: end)
                 perMetric.append(hours.compactMap { mapper.dto($0, metric: metric) })
             case .discrete:
                 let samples = try await store.quantitySamples(of: type, from: start, to: end)
@@ -208,6 +209,18 @@ final class HealthPump: HealthSyncing {
             }
         }
         return perMetric
+    }
+
+    /// HealthKit throws `.errorNoData` for a window it holds nothing in: that is an empty
+    /// week, not a failed read. Any other error stays one.
+    private nonisolated static func hourlySumsOrEmpty(
+        _ store: HealthStoreQuerying, _ type: HKQuantityType, from: Date, to: Date
+    ) async throws -> [HealthHourSum] {
+        do {
+            return try await store.hourlySums(of: type, from: from, to: to)
+        } catch let error as HKError where error.code == .errorNoData {
+            return []
+        }
     }
 
     /// Whole metrics per chunk. The server overwrites an hour with what the chunk
