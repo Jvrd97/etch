@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/162
-// summary: the day-mode section of the floating window — the kind in a menu and no-code as its own switch (a working Tuesday is both), who decided it (schedule or hand), a way back to the schedule for a day decided by hand, and a note when a write did not go through
+// [review:need-review] PHASE-03/228
+// summary: the day-mode section of the floating window — the kind in a menu and no-code as its own switch (a working Tuesday is both), who decided it (schedule or hand), a way back to the schedule for a day decided by hand, and a note when a write did not go through; the controls are locked while a write runs
 import SwiftUI
 
 /// A change of the day mode the window asks the server for.
@@ -28,9 +28,11 @@ struct ModeSwitcher: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
+                    .disabled(model.modeSaving)
                     Toggle("no-code", isOn: nocodeBinding(mode))
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .disabled(model.modeSaving)
                 }
                 HStack(spacing: 6) {
                     Text(model.modeWriteFailed ? "не сохранилось" : mode.sourceText)
@@ -40,6 +42,7 @@ struct ModeSwitcher: View {
                         Button("К расписанию") { Task { await model.resetMode() } }
                             .buttonStyle(.link)
                             .font(.caption)
+                            .disabled(model.modeSaving)
                     }
                 }
             }

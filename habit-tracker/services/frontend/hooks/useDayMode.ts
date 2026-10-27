@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/162
-// summary: the day mode of one date for the Today screen — read on mount, replaced by the server's answer to a decision or a reset, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) leaves the badge out, because a badge must never break the day
+// [review:need-review] PHASE-03/228
+// summary: the day mode of the server's current day for the Today screen — read on mount without a date (the answer names the day), every decision or reset goes to the date of that answer and is replaced by the server's reply, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) is reported as `loadFailed` and can be retried
 
 import { useCallback, useEffect, useState } from 'react';
 // A namespace import read at call time, not a named import: suites that mock
@@ -11,13 +11,14 @@ import type { DayMode, DayModeDraft, DayModeKind } from '@/lib/api';
 
 /** The three calls the badge makes; a parameter so tests need no module mock. Keep the object stable between renders. */
 export interface DayModeClient {
-  read: (date: string) => Promise<DayMode>;
+  /** No date is sent: which day is running is the server's answer, as for the quick marks. */
+  read: () => Promise<DayMode>;
   set: (date: string, draft: DayModeDraft) => Promise<DayMode>;
   clear: (date: string) => Promise<DayMode>;
 }
 
 const API_CLIENT: DayModeClient = {
-  read: (date) => api.agentAPI.dayMode(date),
+  read: () => api.agentAPI.dayMode(),
   set: (date, draft) => api.agentAPI.setDayMode(date, draft),
   clear: (date) => api.agentAPI.clearDayMode(date),
 };
@@ -25,36 +26,52 @@ const API_CLIENT: DayModeClient = {
 const WRITE_FAILED = 'Не удалось сохранить режим дня';
 
 export interface UseDayModeResult {
-  /** Null until the first answer, and for good if the read never works. */
+  /** Null until the first answer, and while the read keeps failing. */
   mode: DayMode | null;
   saving: boolean;
+  /** The last write did not go through. */
   error: string | null;
+  /** The read of the mode did not go through; `reload` asks again. */
+  loadFailed: boolean;
+  reload: () => Promise<void>;
   /** Decide the date by hand; both fields go, because they are independent. */
   decide: (kind: DayModeKind, nocode: boolean) => Promise<void>;
   /** Give the date back to the schedule. */
   reset: () => Promise<void>;
 }
 
-export function useDayMode(date: string, client: DayModeClient = API_CLIENT): UseDayModeResult {
+export function useDayMode(client: DayModeClient = API_CLIENT): UseDayModeResult {
   const [mode, setMode] = useState<DayMode | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  // The date every write goes to: the one the server named in its answer.
+  const date = mode?.date ?? null;
+
+  const load = useCallback(
+    async (isCurrent: () => boolean) => {
+      try {
+        // `await` inside `try` also turns a synchronous throw of the client into a failed read.
+        const body = await client.read();
+        if (!isCurrent()) return;
+        setMode(body);
+        setLoadFailed(false);
+      } catch {
+        if (isCurrent()) setLoadFailed(true);
+      }
+    },
+    [client]
+  );
 
   useEffect(() => {
     let alive = true;
-    // `Promise.resolve().then` turns a synchronous throw into a rejection too.
-    Promise.resolve()
-      .then(() => client.read(date))
-      .then((body) => {
-        if (alive) setMode(body);
-      })
-      .catch(() => {
-        // No badge is better than a broken day.
-      });
+    void load(() => alive);
     return () => {
       alive = false;
     };
-  }, [client, date]);
+  }, [load]);
+
+  const reload = useCallback(() => load(() => true), [load]);
 
   const write = useCallback(async (call: () => Promise<DayMode>) => {
     setSaving(true);
@@ -69,10 +86,14 @@ export function useDayMode(date: string, client: DayModeClient = API_CLIENT): Us
   }, []);
 
   const decide = useCallback(
-    (kind: DayModeKind, nocode: boolean) => write(() => client.set(date, { kind, nocode })),
+    async (kind: DayModeKind, nocode: boolean) => {
+      if (date !== null) await write(() => client.set(date, { kind, nocode }));
+    },
     [client, date, write]
   );
-  const reset = useCallback(() => write(() => client.clear(date)), [client, date, write]);
+  const reset = useCallback(async () => {
+    if (date !== null) await write(() => client.clear(date));
+  }, [client, date, write]);
 
-  return { mode, saving, error, decide, reset };
+  return { mode, saving, error, loadFailed, reload, decide, reset };
 }

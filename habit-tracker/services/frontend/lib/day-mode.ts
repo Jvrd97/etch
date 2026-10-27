@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/162
+// [review:need-review] PHASE-03/228
 // summary: the words of the day mode on screen — a label per kind, who decided (schedule or hand), the week in the order a person reads it (Monday first) over the server's 0 = Sunday numbering
 
 import type { DayMode, DayModeKind } from '@/lib/api';
@@ -12,10 +12,6 @@ export const KIND_OPTIONS: { value: DayModeKind; label: string }[] = [
 
 export const NOCODE_LABEL = 'no-code';
 export const RESET_LABEL = 'Вернуть к расписанию';
-
-export function kindLabel(kind: DayModeKind): string {
-  return KIND_OPTIONS.find((option) => option.value === kind)?.label ?? kind;
-}
 
 /** «По расписанию» and «вручную» are the same day and two different facts. */
 export function sourceLabel(source: DayMode['source']): string {

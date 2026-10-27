@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/159
-// summary: the part of GET /agent/config the floating panel draws — the task the day is on, the date and the path of the day page — decoded from the server's answer; since #162 also the day mode with who decided it
+// [review:need-review] PHASE-03/228
+// summary: the part of GET /agent/config the floating panel draws — the task the day is on, the date and the path of the day page — decoded from the server's answer; since #162 also the day mode with who decided it; since #228 a source the window does not know leaves the switcher out instead of failing the whole config
 import Foundation
 
 /// Which kind of day it is and who said so. `kind` stays the server's word: a kind
@@ -81,7 +81,9 @@ struct PanelConfig: Equatable, Decodable {
         date = try mode.decode(String.self, forKey: .date)
         if let kind = try mode.decodeIfPresent(String.self, forKey: .kind),
            let nocode = try mode.decodeIfPresent(Bool.self, forKey: .nocode),
-           let source = try mode.decodeIfPresent(PanelDayMode.Source.self, forKey: .source) {
+           // The source stays a String until it is known: a value from a newer server
+           // must cost the switcher, not the task, the date and the day link.
+           let source = try mode.decodeIfPresent(String.self, forKey: .source).flatMap(PanelDayMode.Source.init(rawValue:)) {
             dayMode = PanelDayMode(kind: kind, nocode: nocode, source: source)
         } else {
             dayMode = nil

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/162
-// summary: desktop Today page — the day-mode badge with its switch sits under the title
+// [review:need-review] PHASE-03/228
+// summary: desktop Today page — the day-mode badge with its switch sits under the title; the badge reads and writes the server's current day, not the browser's date
 // [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
@@ -61,8 +61,8 @@ export default function TodayPage() {
   const dayList = useTodayList(categories, quickMarks.marks);
   const [editing, setEditing] = useState<{ category: Category; entry: Entry | null } | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
-  // Режим дня (#162): бейдж с переключателем. Прочитать его не вышло — бейджа нет, день цел.
-  const dayMode = useDayMode(date);
+  // Режим дня (#162): бейдж с переключателем. День — тот, что назвал сервер; не вышло прочитать — бейдж говорит об этом и повторяет, день цел.
+  const dayMode = useDayMode();
 
   const markByKey = useCallback((id: number) => void quickMarks.tap(id), [quickMarks]);
   const openLegend = useCallback(() => setLegendOpen(true), []);
@@ -115,8 +115,10 @@ export default function TodayPage() {
           mode={dayMode.mode}
           saving={dayMode.saving}
           error={dayMode.error}
+          loadFailed={dayMode.loadFailed}
           onDecide={(kind, nocode) => void dayMode.decide(kind, nocode)}
           onReset={() => void dayMode.reset()}
+          onRetry={() => void dayMode.reload()}
         />
 
         {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}

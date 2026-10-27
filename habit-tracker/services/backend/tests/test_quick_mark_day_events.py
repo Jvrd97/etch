@@ -1,3 +1,5 @@
+# [review:need-review] PHASE-03/228
+# summary: the undo-offer test pins its moment to 01:30 Berlin on a 01:00 boundary (UTC date and server day differ) and reads the day the rule names, so it no longer depends on the hour of the run
 # [review:need-review] PHASE-01/206
 # summary: the read of one category's quick-mark taps for a day — every set as its own row in time order, a taken-back tap flagged and kept, undo offered only where the undo endpoint would accept it, the day decided by the shared boundary, other days and other categories left out
 """
@@ -245,15 +247,26 @@ async def test_another_day_is_left_out(
 async def test_an_old_day_offers_no_undo_for_taps_that_are_no_longer_last(
     client: AsyncClient, db_session: AsyncSession, water: dict[str, Any]
 ) -> None:
-    """Подход прошлого дня не последний у кнопки, если после него были другие."""
+    """
+    Подход прошлого дня не последний у кнопки, если после него были другие.
+
+    Момент подхода закреплён за границей дня, где календарная дата UTC и день
+    сервера расходятся: 01:30 по Берлину при границе 01:00 — это 23:30 UTC
+    предыдущего числа. Запрашивается день, который назвало правило, а не
+    `.date()` от UTC, поэтому результат не зависит от времени суток прогона.
+    """
+    daytime.use_boundary(DayBoundary(timezone="Europe/Berlin", day_start_hour=1))
     created = await make_mark(client, water)
     mark = await quick_mark_crud.get_quick_mark(db_session, created["id"])
     assert mark is not None
-    old = datetime.now(timezone.utc) - timedelta(days=3)
+    old = datetime(2026, 8, 29, 1, 30, tzinfo=BERLIN)
+    assert old.astimezone(timezone.utc).date().isoformat() == "2026-08-28"
     await quick_mark_crud.record_event(db_session, mark, at=old, source="web")
     await tap(client, created["id"])
 
-    past = await day_events(client, water["id"], date=old.date().isoformat())
+    past = await day_events(
+        client, water["id"], date=daytime.local_date(old).isoformat()
+    )
 
     assert [one["undoable"] for one in past] == [False]
 

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/162
-// summary: component tests of the week schedule screen — seven rows read Monday first over the server's Sunday-first numbers, an edit of one weekday saves the whole week, no-code is edited apart from the kind, and a refused save shows its message instead of pretending
+// [review:need-review] PHASE-03/228
+// summary: component tests of the week schedule screen — seven rows read Monday first over the server's Sunday-first numbers, an edit of one weekday saves the whole week, no-code is edited apart from the kind, a refused save shows its message instead of pretending, and «Сохранено» sits in a polite live region that exists before the save so a screen reader announces it
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -68,5 +68,18 @@ describe('ModeScheduleEditor', () => {
     fireEvent.click(screen.getByText('Сохранить'));
 
     await waitFor(() => expect(screen.getByText('Не удалось сохранить расписание')).toBeTruthy());
+  });
+
+  it('announces the save through a polite live region that is there before the save', async () => {
+    show(async (week) => week);
+    await waitFor(() => expect(screen.getByText('Сохранить')).toBeTruthy());
+    const region = screen.getByRole('status');
+    expect(region.getAttribute('aria-live')).toBe('polite');
+    expect(region.textContent).toBe('');
+
+    fireEvent.click(screen.getByText('Сохранить'));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Сохранено'));
+    expect(screen.getByRole('status')).toBe(region);
   });
 });

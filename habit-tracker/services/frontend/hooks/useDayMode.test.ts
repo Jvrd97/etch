@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/162
-// summary: tests for useDayMode — the mode is read on mount, a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a client that throws before returning a promise leaves the badge out instead of breaking the screen
+// [review:need-review] PHASE-03/228
+// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -23,8 +23,8 @@ function client(overrides: Partial<DayModeClient> = {}): DayModeClient {
 }
 
 describe('useDayMode', () => {
-  it('reads the mode of the date on mount', async () => {
-    const { result } = renderHook(() => useDayMode(DATE, client()));
+  it('reads the mode of the server day on mount', async () => {
+    const { result } = renderHook(() => useDayMode(client()));
 
     await waitFor(() => expect(result.current.mode).toEqual(SCHEDULED));
   });
@@ -37,7 +37,7 @@ describe('useDayMode', () => {
         return { date: DATE, kind: draft.kind, nocode: draft.nocode, source: 'manual' };
       },
     });
-    const { result } = renderHook(() => useDayMode(DATE, api));
+    const { result } = renderHook(() => useDayMode(api));
     await waitFor(() => expect(result.current.mode).not.toBeNull());
 
     await act(async () => {
@@ -53,7 +53,7 @@ describe('useDayMode', () => {
     const api = client({
       read: async () => ({ ...SCHEDULED, kind: 'sick', source: 'manual' }),
     });
-    const { result } = renderHook(() => useDayMode(DATE, api));
+    const { result } = renderHook(() => useDayMode(api));
     await waitFor(() => expect(result.current.mode?.source).toBe('manual'));
 
     await act(async () => {
@@ -69,7 +69,7 @@ describe('useDayMode', () => {
         throw new Error('offline');
       },
     });
-    const { result } = renderHook(() => useDayMode(DATE, api));
+    const { result } = renderHook(() => useDayMode(api));
     await waitFor(() => expect(result.current.mode).not.toBeNull());
 
     await act(async () => {
@@ -80,15 +80,64 @@ describe('useDayMode', () => {
     expect(result.current.error).not.toBeNull();
   });
 
-  it('stays null, without throwing, when the client throws before it returns a promise', async () => {
+  it('writes to the date the server named, not to a date of its own', async () => {
+    const serverDay = '2026-10-26';
+    const calls: string[] = [];
+    const api = client({
+      read: async () => ({ ...SCHEDULED, date: serverDay }),
+      set: async (date, draft) => {
+        calls.push(`set ${date}`);
+        return { date, ...draft, source: 'manual' };
+      },
+      clear: async (date) => {
+        calls.push(`clear ${date}`);
+        return { ...SCHEDULED, date };
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(result.current.mode?.date).toBe(serverDay));
+
+    await act(async () => {
+      await result.current.decide('sick', false);
+    });
+    await act(async () => {
+      await result.current.reset();
+    });
+
+    expect(calls).toEqual([`set ${serverDay}`, `clear ${serverDay}`]);
+  });
+
+  it('reports a failed read and recovers on retry', async () => {
+    let attempts = 0;
+    const api = client({
+      read: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('offline');
+        return SCHEDULED;
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api));
+
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
+    expect(result.current.mode).toBeNull();
+
+    await act(async () => {
+      await result.current.reload();
+    });
+
+    expect(result.current.loadFailed).toBe(false);
+    expect(result.current.mode).toEqual(SCHEDULED);
+  });
+
+  it('reports a read whose client throws before it returns a promise', async () => {
     const api = client({
       read: () => {
         throw new TypeError('agentAPI.dayMode is not a function');
       },
     });
-    const { result } = renderHook(() => useDayMode(DATE, api));
+    const { result } = renderHook(() => useDayMode(api));
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
     expect(result.current.mode).toBeNull();
   });
 });

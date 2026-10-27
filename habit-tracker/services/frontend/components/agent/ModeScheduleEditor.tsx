@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/162
-// summary: the week schedule of the day mode — seven rows, Monday first, the kind in a list and no-code as its own switch per weekday, saved as one week; days decided by hand are not touched by a save, and the screen says so
+// [review:need-review] PHASE-03/228
+// summary: the week schedule of the day mode — seven rows, Monday first, the kind in a list and no-code as its own switch per weekday, saved as one week; days decided by hand are not touched by a save, and the screen says so; «Сохранено» is read out through a live region
 
 import { useEffect, useState } from 'react';
 // A namespace import read at call time (see hooks/useDayMode.ts): suites that
@@ -129,7 +129,9 @@ export default function ModeScheduleEditor({ client = API_CLIENT }: { client?: M
             >
               Сохранить
             </button>
-            {saved && <span className="text-sm text-text-secondary">Сохранено</span>}
+            <span role="status" aria-live="polite" className="text-sm text-text-secondary">
+              {saved ? 'Сохранено' : ''}
+            </span>
           </div>
         </>
       )}

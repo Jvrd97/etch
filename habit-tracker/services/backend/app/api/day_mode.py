@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/162
-# summary: the day mode as an API — GET/PUT/DELETE /day-mode/{date} (a manual decision overrides the schedule for that date only; DELETE gives the date back to the schedule) and GET/PUT /mode-schedule (the whole week at once)
+# [review:need-review] PHASE-03/228
+# summary: the day mode as an API — GET /day-mode answers for the server's current day, GET/PUT/DELETE /day-mode/{date} (a manual decision overrides the schedule for that date only; DELETE gives the date back to the schedule; dates outside 2000..2100 are 422) and GET/PUT /mode-schedule (the whole week at once; resolved on the fly, so an edit moves every past or future day without a decision)
 """
 HTTP surface of the day mode: what kind of day it is, who said so, and how to change it.
 
@@ -13,13 +13,16 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.daytime import today_local
 from app.core.database import get_db
 from app.crud import activity as activity_crud
 from app.crud import day_mode as day_mode_crud
 from app.schemas.day_mode import (
+    DAY_MODE_MAX_DATE,
+    DAY_MODE_MIN_DATE,
     DayModeIn,
     DayModeResponse,
     ModeScheduleDay,
@@ -27,6 +30,19 @@ from app.schemas.day_mode import (
 )
 
 router = APIRouter(tags=["day-mode"])
+
+
+def _calendar_day(on: date_type) -> date_type:
+    """The `{on}` of the path, refused when it is outside the calendar of the app."""
+    if not DAY_MODE_MIN_DATE <= on <= DAY_MODE_MAX_DATE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Дата вне календаря приложения: "
+                f"{DAY_MODE_MIN_DATE.isoformat()}..{DAY_MODE_MAX_DATE.isoformat()}."
+            ),
+        )
+    return on
 
 
 async def _answer(db: AsyncSession, on: date_type) -> DayModeResponse:
@@ -46,9 +62,21 @@ async def _week(db: AsyncSession) -> ModeScheduleWeek:
     )
 
 
+@router.get("/day-mode", response_model=DayModeResponse)
+async def get_current_day_mode(db: AsyncSession = Depends(get_db)) -> DayModeResponse:
+    """
+    Режим текущего дня сервера.
+
+    Какой день идёт, знает сервер (`today_local()`): браузер между полуночью и
+    часом границы считает другую дату. Ответ несёт `date`, и экран пишет решение
+    на неё, а не на свою.
+    """
+    return await _answer(db, today_local())
+
+
 @router.get("/day-mode/{on}", response_model=DayModeResponse)
 async def get_day_mode(
-    on: date_type, db: AsyncSession = Depends(get_db)
+    on: date_type = Depends(_calendar_day), db: AsyncSession = Depends(get_db)
 ) -> DayModeResponse:
     """Режим дня: решение человека, если оно есть, иначе строка расписания."""
     return await _answer(db, on)
@@ -56,7 +84,9 @@ async def get_day_mode(
 
 @router.put("/day-mode/{on}", response_model=DayModeResponse)
 async def put_day_mode(
-    on: date_type, decision: DayModeIn, db: AsyncSession = Depends(get_db)
+    decision: DayModeIn,
+    on: date_type = Depends(_calendar_day),
+    db: AsyncSession = Depends(get_db),
 ) -> DayModeResponse:
     """
     Решить режим одного дня вручную.
@@ -71,7 +101,7 @@ async def put_day_mode(
 
 @router.delete("/day-mode/{on}", response_model=DayModeResponse)
 async def delete_day_mode(
-    on: date_type, db: AsyncSession = Depends(get_db)
+    on: date_type = Depends(_calendar_day), db: AsyncSession = Depends(get_db)
 ) -> DayModeResponse:
     """Вернуть день расписанию; отвечает режимом, в который он вернулся."""
     await day_mode_crud.clear_manual_mode(db, on)
@@ -92,8 +122,9 @@ async def put_mode_schedule(
     """
     Заменить расписание целиком.
 
-    Меняет режим будущих дней без решения. Дни, где человек решил вручную, лежат
-    в `day_mode` и этой ручкой не затрагиваются.
+    Режим дня без решения считается из расписания на лету: правка меняет все
+    такие дни, будущие и прошлые. Дни, где человек решил вручную, лежат в
+    `day_mode` и этой ручкой не затрагиваются.
     """
     await day_mode_crud.replace_schedule(db, schedule)
     await db.commit()

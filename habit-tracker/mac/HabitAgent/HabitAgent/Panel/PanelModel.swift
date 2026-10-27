@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/159
-// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the next config
+// [review:need-review] PHASE-03/228
+// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the next config; since #228 one mode write at a time (`modeSaving` locks the switcher, a second change is not sent) and a fresh config clears «не сохранилось»
 import Combine
 import Foundation
 
@@ -14,6 +14,10 @@ final class PanelModel: ObservableObject {
     @Published private(set) var configIsStale = false
     /// The last write of the day mode did not go through; the mode shown is the old one.
     @Published private(set) var modeWriteFailed = false
+    /// A write of the day mode is in flight. The window repaints only from the next
+    /// config, so a second change built meanwhile would carry the old half of the
+    /// first one and switch it back.
+    @Published private(set) var modeSaving = false
 
     private let outbox: ManualIntervalOutbox?
     private let serverAddress: () -> String?
@@ -42,6 +46,11 @@ final class PanelModel: ObservableObject {
         observers = [
             config.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
             timer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
+            // A poll that went through is a fresh look at the server: the mode on screen
+            // is its answer, so a note about an earlier refused write no longer fits.
+            config.$lastFailure.dropFirst().sink { [weak self] failure in
+                if failure == nil { self?.modeWriteFailed = false }
+            },
         ]
     }
 
@@ -103,7 +112,9 @@ final class PanelModel: ObservableObject {
 
     /// The window repaints from the server's own answer, not from what was asked for.
     private func write(_ change: ModeChange) async {
-        guard let date = config.value?.date, let modeWrite else { return }
+        guard !modeSaving, let date = config.value?.date, let modeWrite else { return }
+        modeSaving = true
+        defer { modeSaving = false }
         do {
             try await modeWrite(date, change)
             modeWriteFailed = false
