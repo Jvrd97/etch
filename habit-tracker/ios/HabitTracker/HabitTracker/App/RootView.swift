@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/208
-// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens
+// [review:need-review] PHASE-01/208, PHASE-03/229
+// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229)
 import SwiftUI
 
 /// The app's root: one `NavigationStack` per tab, screens never create their own.
@@ -45,6 +45,8 @@ struct RootView: View {
             QuickMarksView()
         case .dailySummary:
             DailySummaryView()
+        case .week:
+            WeekView()
         case .categories:
             CategoriesView(viewModel: .live())
         case .table:
