@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/246
 # summary: /supplements — add, list (with taken_today), edit, archive, restore, and POST /{id}/intakes, the idempotent «принял» mark on the logical day; no name or dose in any log line
 from datetime import date
 
@@ -108,6 +108,35 @@ def _owned_by(intake: SupplementIntake, supplement_id: int) -> SupplementIntake:
     return intake
 
 
+async def _settle_race(
+    db: AsyncSession, supplement_id: int, day: date, idempotency_key: str | None
+) -> SupplementIntake | None:
+    """
+    The mark a lost race should be answered with, or None when nothing is there.
+
+    The winner is found by the key first, then by the day; in the second case the
+    loser's key is remembered behind the winner's mark, so its retry tomorrow is
+    still the original. The alias write can lose to a twin too: then the key is
+    already behind a mark, and that mark is the answer.
+    """
+    if idempotency_key is not None:
+        by_key = await supplement_crud.intake_by_idempotency_key(db, idempotency_key)
+        if by_key is not None:
+            return _owned_by(by_key, supplement_id)
+    winner = await supplement_crud.intake_on_day(db, supplement_id, day)
+    if winner is None or idempotency_key is None:
+        return winner
+    try:
+        await supplement_crud.alias_intake_key(db, winner, idempotency_key)
+    except IntegrityError:
+        await db.rollback()
+        by_key = await supplement_crud.intake_by_idempotency_key(db, idempotency_key)
+        if by_key is None:
+            return None
+        winner = by_key
+    return _owned_by(winner, supplement_id)
+
+
 @router.post(
     "/{supplement_id}/intakes",
     response_model=IntakeResponse,
@@ -119,7 +148,10 @@ async def mark_intake(
     payload: IntakeRequest | None = None,
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(
-        default=None, alias="Idempotency-Key", max_length=IDEMPOTENCY_KEY_MAX_LENGTH
+        default=None,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
     ),
 ) -> SupplementIntake:
     """
@@ -134,8 +166,8 @@ async def mark_intake(
       второго нажатия запоминается за отметкой дня, и его повтор завтра тоже
       вернёт её, а не заведёт новую
     - **404** — добавки нет; **409** — добавка в архиве, день клиента не совпал
-      либо ключ уже стоит за отметкой другой добавки; **422** — ключ длиннее
-      255 знаков
+      либо ключ уже стоит за отметкой другой добавки; **422** — ключ пустой или
+      длиннее 255 знаков
     """
     supplement = await _existing(db, supplement_id)
 
@@ -179,14 +211,9 @@ async def mark_intake(
         # A concurrent twin won the race between the lookups and the insert; the
         # unique day and the key's primary key are the backstop. Answer with the winner.
         await db.rollback()
-        winner = None
-        if idempotency_key is not None:
-            winner = await supplement_crud.intake_by_idempotency_key(
-                db, idempotency_key
-            )
-        winner = winner or await supplement_crud.intake_on_day(db, supplement_id, day)
+        winner = await _settle_race(db, supplement_id, day, idempotency_key)
         if winner is None:
             raise
-        already = _owned_by(winner, supplement_id)
+        already = winner
     response.status_code = status.HTTP_200_OK
     return already
