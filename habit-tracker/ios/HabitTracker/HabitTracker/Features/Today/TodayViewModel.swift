@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242
-// summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it; a failed re-read after a background delivery leaves no error
+// summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it, and its records are dropped when a re-read started by a delivery is already newer on screen; a failed re-read after a background delivery leaves no error
 // summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
@@ -71,6 +71,11 @@ final class TodayViewModel: ObservableObject {
     private var relapseKeys: [Int: String] = [:]
     /// Live subscription to the outbox, so the pending rows follow a background flush.
     private var cancellables: Set<AnyCancellable> = []
+    /// Reads of today's records, numbered as they are sent, and the newest one shown. A load reads
+    /// alongside the queue's send, so its answer may come back after a re-read a delivery started:
+    /// an answer older than the one on screen is dropped.
+    private var entriesReadsSent = 0
+    private var entriesReadShown = 0
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
@@ -178,6 +183,7 @@ final class TodayViewModel: ObservableObject {
             return
         }
         let flushing = Task { await outbox?.flush() }
+        let read = nextEntriesRead()
         let today = todayString
         var streaksFailed = false
         do {
@@ -203,7 +209,7 @@ final class TodayViewModel: ObservableObject {
                     categories: active, entries: fetchedEntries, streaks: loadedStreaks
                 )
             }
-            apply(outcome)
+            apply(outcome, entriesAreNewest: showsEntries(of: read))
             streaksError = streaksFailed ? Self.streaksFailedMessage : nil
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
@@ -218,19 +224,32 @@ final class TodayViewModel: ObservableObject {
 
     /// Publishes a snapshot, recording whether it came from the network or the cache. Saves
     /// still in the queue are not on the server (nor in the cache) yet: they are laid on top.
-    private func apply(_ outcome: CacheOutcome<TodaySnapshot>) {
+    /// `entriesAreNewest` is false when a newer read of the records is already on screen.
+    private func apply(_ outcome: CacheOutcome<TodaySnapshot>, entriesAreNewest: Bool) {
+        let value: TodaySnapshot
         switch outcome {
-        case .fresh(let value):
+        case .fresh(let fresh):
             offlineAsOf = nil
-            categories = value.categories
-            todayEntries = withQueuedRows(value.entries)
-            streaks = value.streaks
-        case .stale(let value, let updatedAt):
+            value = fresh
+        case .stale(let stale, let updatedAt):
             offlineAsOf = updatedAt
-            categories = value.categories
-            todayEntries = withQueuedRows(value.entries)
-            streaks = value.streaks
+            value = stale
         }
+        categories = value.categories
+        if entriesAreNewest { todayEntries = withQueuedRows(value.entries) }
+        streaks = value.streaks
+    }
+
+    private func nextEntriesRead() -> Int {
+        entriesReadsSent += 1
+        return entriesReadsSent
+    }
+
+    /// Whether the answer of `read` may go on screen: only one newer than what is shown.
+    private func showsEntries(of read: Int) -> Bool {
+        guard read > entriesReadShown else { return false }
+        entriesReadShown = read
+        return true
     }
 
     /// Today's entries belonging to the given category.
@@ -400,10 +419,11 @@ final class TodayViewModel: ObservableObject {
     /// A failure is reported only when it follows something the person did.
     private func rereadEntries(reportsFailure: Bool) async {
         guard let api = apiProvider() else { return }
+        let read = nextEntriesRead()
         let today = todayString
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
-            todayEntries = withQueuedRows(fetched)
+            if showsEntries(of: read) { todayEntries = withQueuedRows(fetched) }
         } catch {
             if reportsFailure { saveErrorMessage = Self.entriesRefreshFailedMessage }
         }

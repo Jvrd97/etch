@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -176,12 +176,18 @@ async def test_the_client_day_is_checked_against_the_day_of_the_press(
 
 # --- the window -------------------------------------------------------------
 
+NOW = at_berlin(20, 8, 0)
+
 
 @pytest.mark.parametrize(
-    "pressed",
+    ("pressed", "lands_on"),
     [
-        pytest.param(at_berlin(20, 9, 0), id="an-hour-ahead"),
-        pytest.param(at_berlin(12, 7, 59), id="older-than-seven-days"),
+        pytest.param(
+            NOW + timedelta(minutes=5, seconds=1), "2026-10-20", id="5m01s-ahead"
+        ),
+        pytest.param(
+            NOW - timedelta(days=7, seconds=1), "2026-10-13", id="7d1s-before"
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -190,17 +196,19 @@ async def test_a_moment_outside_the_window_is_422(
     water: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     pressed: datetime,
+    lands_on: str,
 ) -> None:
-    """Будущее и старше семи дней — 422, ничего не записано."""
+    """Дальше +5 минут и старше семи дней — 422 в списочной форме, в тот день ничего не легло."""
     mark_id = await make_mark(client, water)
-    serve_at(monkeypatch, at_berlin(20, 8, 0))
+    serve_at(monkeypatch, NOW)
 
     status_code, body = await tap(client, mark_id, occurred_at=wire(pressed))
 
     assert status_code == 422, body
+    assert [problem["loc"] for problem in body["detail"]] == [["body", "occurred_at"]]
     events = await client.get(
         f"{QUICK_MARKS_URL}/events",
-        params={"category_id": water["id"], "date": "2026-10-20"},
+        params={"category_id": water["id"], "date": lands_on},
     )
     assert events.json() == []
 
@@ -208,20 +216,20 @@ async def test_a_moment_outside_the_window_is_422(
 @pytest.mark.parametrize(
     "pressed",
     [
-        pytest.param(at_berlin(20, 8, 1), id="clock-a-minute-ahead"),
-        pytest.param(at_berlin(13, 8, 1), id="just-inside-seven-days"),
+        pytest.param(NOW + timedelta(minutes=5), id="exactly-5m-ahead"),
+        pytest.param(NOW - timedelta(days=7), id="exactly-7d-before"),
     ],
 )
 @pytest.mark.asyncio
-async def test_a_moment_inside_the_window_is_taken(
+async def test_a_moment_on_the_edge_of_the_window_is_taken(
     client: AsyncClient,
     water: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     pressed: datetime,
 ) -> None:
-    """Часы телефона на минуту впереди и нажатие шестидневной давности принимаются."""
+    """Ровно +5 минут и ровно семь дней назад — ещё в окне."""
     mark_id = await make_mark(client, water)
-    serve_at(monkeypatch, at_berlin(20, 8, 0))
+    serve_at(monkeypatch, NOW)
 
     status_code, body = await tap(client, mark_id, occurred_at=wire(pressed))
 
@@ -295,6 +303,42 @@ async def test_a_replay_after_the_day_turned_is_not_refused(
 
     assert status_code == 200, again
     assert again["event_id"] == first["event_id"]
+
+
+@pytest.mark.asyncio
+async def test_the_same_key_with_another_moment_answers_the_first_event(
+    client: AsyncClient, water: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ключ решает, а не момент: повтор с другим `occurred_at` — то же первое событие."""
+    mark_id = await make_mark(client, water)
+    serve_at(monkeypatch, NOW)
+    _, first = await tap(
+        client, mark_id, key="k-moment", occurred_at=wire(at_berlin(19, 22, 0))
+    )
+
+    status_code, again = await tap(
+        client, mark_id, key="k-moment", occurred_at=wire(at_berlin(20, 7, 0))
+    )
+
+    assert status_code == 200, again
+    assert again["event_id"] == first["event_id"]
+    assert again["occurred_at"] == first["occurred_at"]
+
+
+@pytest.mark.asyncio
+async def test_a_key_of_another_buttons_tap_is_409(
+    client: AsyncClient, water: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ключ принадлежит нажатию кнопки A: тот же ключ на кнопке B — 409, а не событие A."""
+    first_id = await make_mark(client, water)
+    second_id = await make_mark(client, water)
+    serve_at(monkeypatch, NOW)
+    await tap(client, first_id, key="k-shared")
+
+    status_code, body = await tap(client, second_id, key="k-shared")
+
+    assert status_code == 409, body
+    assert "another quick mark" in body["detail"]
 
 
 # --- cost -------------------------------------------------------------------

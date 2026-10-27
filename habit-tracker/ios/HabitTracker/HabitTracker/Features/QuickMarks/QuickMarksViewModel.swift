@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
-// summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
+// summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it; an answer older than the one on screen is dropped), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
 import Combine
 import Foundation
 
@@ -39,6 +39,11 @@ final class QuickMarksViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     /// The directory as the server (or the cache) gave it; `marks` is it with the waiting presses on top.
     private var serverMarks: [QuickMarkDTO] = []
+    /// Directory reads, numbered as they are sent, and the newest one shown. A load reads alongside the
+    /// queue's send, so its answer may come back after the re-read a delivery started: an answer older
+    /// than the one on screen is dropped, or a delivered press would vanish from the total.
+    private var readsSent = 0
+    private var readShown = 0
 
     init(
         apiProvider: @escaping () -> QuickMarksAPI?,
@@ -127,17 +132,20 @@ final class QuickMarksViewModel: ObservableObject {
         // not hold the buttons back. They are drawn over the directory until delivered, and a delivery
         // reads the directory again (`reconcileAfterFlush`).
         let flushing = Task { await outbox.flush() }
+        let read = nextRead()
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 try await api.fetchQuickMarks()
             }
-            switch outcome {
-            case .fresh(let directory):
-                offlineAsOf = nil
-                show(directory)
-            case .stale(let directory, let updatedAt):
-                offlineAsOf = updatedAt
-                show(directory)
+            if isNewest(read) {
+                switch outcome {
+                case .fresh(let directory):
+                    offlineAsOf = nil
+                    show(directory)
+                case .stale(let directory, let updatedAt):
+                    offlineAsOf = updatedAt
+                    show(directory)
+                }
             }
             state = .loaded
         } catch let error as APIClientError {
@@ -152,11 +160,24 @@ final class QuickMarksViewModel: ObservableObject {
     /// which days moved.
     func reconcileAfterFlush(categoryIDs: [Int]) async {
         guard let api = apiProvider() else { return }
-        if let directory = try? await api.fetchQuickMarks() {
+        let read = nextRead()
+        if let directory = try? await api.fetchQuickMarks(), isNewest(read) {
             offlineAsOf = nil
             show(directory)
         }
         categoryIDs.forEach { onDayChanged?($0) }
+    }
+
+    private func nextRead() -> Int {
+        readsSent += 1
+        return readsSent
+    }
+
+    /// Whether the answer of `read` may go on screen: only one newer than what is shown.
+    private func isNewest(_ read: Int) -> Bool {
+        guard read > readShown else { return false }
+        readShown = read
+        return true
     }
 
     private func show(_ directory: [QuickMarkDTO]) {

@@ -1,6 +1,6 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
-// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of the replaced writes, so one that landed with its answer lost is not a conflict; a retry that would write over a newer write of the same object says so
+// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a retry that would write over a newer write of the same object says so
 import Combine
 import Foundation
 import Network
@@ -64,22 +64,27 @@ enum OutboxAction: Codable, Equatable {
     }
 
     /// This write taking the place of a waiting `older` one. It keeps the server state the first of
-    /// them was made over, and also accepts the states of the replaced writes: a replaced write may
-    /// have landed with its answer lost (a timeout), and the server then holds its state, not a
-    /// change made elsewhere.
-    func replacing(_ older: OutboxAction) -> OutboxAction {
+    /// them was made over. When the older one `mayHaveLanded` (a send that lost its answer), its state
+    /// is accepted too: the server holding it is that write, not a change made elsewhere. A write that
+    /// never left the phone adds nothing — the same state on the server is somebody else's.
+    func replacing(_ older: OutboxAction, mayHaveLanded: Bool) -> OutboxAction {
         switch (self, older) {
         case (.setDayMark(var mark), .setDayMark(let earlier)):
             mark.expected = earlier.expected
-            mark.replacedStates = (earlier.replacedStates ?? []) + [earlier.state ?? ""]
+            mark.replacedStates = Self.accepted(earlier.replacedStates, plus: earlier.state ?? "", if: mayHaveLanded)
             return .setDayMark(mark)
         case (.saveNotebook(var notebook), .saveNotebook(let earlier)):
             notebook.expected = earlier.expected
-            notebook.replacedContents = (earlier.replacedContents ?? []) + [earlier.content]
+            notebook.replacedContents = Self.accepted(earlier.replacedContents, plus: earlier.content, if: mayHaveLanded)
             return .saveNotebook(notebook)
         default:
             return self
         }
+    }
+
+    private static func accepted(_ earlier: [String]?, plus state: String, if landed: Bool) -> [String]? {
+        guard landed else { return earlier }
+        return (earlier ?? []) + [state]
     }
 
     /// The write as the person asked to send it again from the "not sent" list: without the check
@@ -211,6 +216,9 @@ struct OutboxWrite: Identifiable, Equatable {
     /// Why the write is in the "not sent" list, in words, and what kind of reason it is.
     var failure: String?
     var failureKind: OutboxFailureKind?
+    /// An attempt went out and its answer was lost (a timeout, a dropped connection): the server may
+    /// hold this write. A dead network before sending does not count. A replacing write accepts its state.
+    var mayHaveLanded = false
 
     /// The retry button of the "not sent" list says what a retry will do.
     var retryTitle: String {
@@ -286,6 +294,7 @@ final class PendingWriteRecord {
     var statusRaw: String
     var failure: String?
     var failureKindRaw: String?
+    var mayHaveLanded: Bool = false
 
     init(write: OutboxWrite, action: Data) {
         self.id = write.id
@@ -297,6 +306,7 @@ final class PendingWriteRecord {
         self.statusRaw = write.status.rawValue
         self.failure = write.failure
         self.failureKindRaw = write.failureKind?.rawValue
+        self.mayHaveLanded = write.mayHaveLanded
     }
 }
 
@@ -355,6 +365,7 @@ final class SwiftDataOutboxStore: OutboxStore {
         record.statusRaw = write.status.rawValue
         record.failure = write.failure
         record.failureKindRaw = write.failureKind?.rawValue
+        record.mayHaveLanded = write.mayHaveLanded
         persist()
     }
 
@@ -395,7 +406,8 @@ final class SwiftDataOutboxStore: OutboxStore {
         return OutboxWrite(
             id: record.id, key: record.key, action: action, label: record.label, createdAt: record.createdAt,
             serverErrors: record.serverErrors, status: PendingStatus(rawValue: record.statusRaw) ?? .pending,
-            failure: record.failure, failureKind: record.failureKindRaw.flatMap(OutboxFailureKind.init(rawValue:))
+            failure: record.failure, failureKind: record.failureKindRaw.flatMap(OutboxFailureKind.init(rawValue:)),
+            mayHaveLanded: record.mayHaveLanded
         )
     }
 }
@@ -426,7 +438,7 @@ final class OutboxQueue: ObservableObject {
         "Сервер не принял отметку (409): день уже сменился, или кнопка выключена."
     nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
     nonisolated static let pressTimeRefusedReason =
-        "Сервер не принял время нажатия (422): нажатию больше семи дней, или часы телефона спешат."
+        "Сервер не принял время нажатия (422): нажатию больше семи дней, часы телефона спешат, или сервер ещё не обновлён и времени нажатия не знает."
     nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
     nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
     nonisolated static let checkFailedReason =
@@ -471,7 +483,7 @@ final class OutboxQueue: ObservableObject {
         var action = action
         if action.replacesOlderOfSameTarget {
             for older in pending where older.action.target == action.target && older.id != inFlightID {
-                action = action.replacing(older.action)
+                action = action.replacing(older.action, mayHaveLanded: older.mayHaveLanded)
                 store.delete(id: older.id)
             }
         }
@@ -572,6 +584,7 @@ final class OutboxQueue: ObservableObject {
         switch Self.outcome(of: error, for: write.action) {
         case .waitForNetwork:
             settled.serverErrors = 0
+            settled.mayHaveLanded = settled.mayHaveLanded || Self.mayHaveLanded(after: error)
             store.update(settled)
             return false
         case .waitForKey:
@@ -609,6 +622,24 @@ final class OutboxQueue: ObservableObject {
         case refused(String, OutboxFailureKind)
         case delivered
     }
+
+    /// Whether a failed attempt may still have reached the server: its answer was lost on the way,
+    /// rather than the request never leaving (no connection, no host).
+    private static func mayHaveLanded(after error: Error) -> Bool {
+        switch error as? APIClientError {
+        case .timeout?:
+            return true
+        case .transport(let code)?:
+            return !neverLeftCodes.contains(code)
+        default:
+            return false
+        }
+    }
+
+    private static let neverLeftCodes: Set<Int> = [
+        URLError.notConnectedToInternet.rawValue, URLError.cannotConnectToHost.rawValue,
+        URLError.cannotFindHost.rawValue, URLError.dnsLookupFailed.rawValue,
+    ]
 
     private static func outcome(of error: Error, for action: OutboxAction) -> Outcome {
         if let conflict = error as? OutboxConflict { return .refused(conflict.reason, .changedOnServer) }

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242
-// summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send
+// summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again over the load's older answer
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
 import Combine
 import Foundation
@@ -156,7 +156,10 @@ final class DayViewModel: ObservableObject {
 
     // MARK: Offline queue
 
-    /// The queued signs follow the queue; a delivered write of the shown day reads the day again.
+    /// The queued signs follow the queue; a delivered write of the shown day reads the day again. So does
+    /// any delivered day write while a load is running: the load's read may have left before the
+    /// delivery (the queue sends alongside it), and nothing is shown yet, or it is another day, to
+    /// match against. The re-read is newer, so the load's answer is dropped (`loadGeneration`).
     private func bindOutbox() {
         guard let outbox else { return }
         outbox.$writes
@@ -166,9 +169,10 @@ final class DayViewModel: ObservableObject {
             .store(in: &cancellables)
         outbox.delivered
             .sink { [weak self] writes in
-                guard let self, let date = self.shownDate, writes.contains(where: { $0.action.isDayWrite(of: date) }) else {
-                    return
-                }
+                guard let self else { return }
+                let ofShownDay = self.shownDate.map { date in writes.contains { $0.action.isDayWrite(of: date) } } ?? false
+                let duringLoad = self.state == .loading && writes.contains { $0.action.writesADay }
+                guard ofShownDay || duringLoad else { return }
                 Task { await self.reloadSilently() }
             }
             .store(in: &cancellables)
@@ -265,7 +269,8 @@ final class DayViewModel: ObservableObject {
             state = .loaded
         } catch {
             guard generation == loadGeneration else { return }
-            if showFailure {
+            if showFailure || state == .loading {
+                // A silent re-read that took over a running load must not leave the loader spinning.
                 state = .failure(Self.message(for: error))
             } else if reportingFailure, !Task.isCancelled {
                 actionError = Self.failure(Self.refreshFailedMessage, error)
@@ -722,5 +727,13 @@ private extension OutboxAction {
 
     func isDayWrite(of date: String) -> Bool {
         queuedItem(of: date) != nil || queuedNotebook(of: date) != nil
+    }
+
+    /// A mark, a fact or a notebook of any day.
+    var writesADay: Bool {
+        switch self {
+        case .setDayMark, .recordPlanFact, .saveNotebook: return true
+        case .createEntry, .upsertChecklist, .tapQuickMark: return false
+        }
     }
 }

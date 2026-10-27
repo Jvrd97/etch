@@ -217,6 +217,42 @@ final class DayOfflineTests: XCTestCase {
         await night.load()
 
         XCTAssertEqual(night.shownDate, DayFixtures.date)
-        XCTAssertFalse(night.cachedDayNotice?.contains("нет") ?? false, "the cache is not said to lack the day")
+        XCTAssertEqual(
+            night.cachedDayNotice, "Показан день из кэша: \(DayFormat.title(of: DayFixtures.date)).",
+            "the cache is not said to lack the day"
+        )
+    }
+
+    // MARK: A read sent before a delivery
+
+    func testADayReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async throws {
+        let day: MockDayAPI = api
+        let server = FakeOutboxServer()
+        let queue = OutboxQueue(
+            store: InMemoryOutboxStore(), sender: { OutboxReplay(entries: server, quickMarks: server, day: server) }
+        )
+        queue.enqueue(
+            .setDayMark(QueuedDayMark(date: DayFixtures.date, itemID: DayFixtures.minimumID, state: "done", note: nil, expected: nil)),
+            label: "Минимум"
+        )
+        let marked = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
+        // The re-read after the delivery is answered first and takes the first answer; the load's read,
+        // sent before the delivery, takes the older second one.
+        day.fetchResults = [.success(try DayFixtures.day(marks: [marked])), .success(try DayFixtures.day())]
+        let readsBefore = day.fetchedDates.count
+        let fresh = DayViewModel(
+            apiProvider: { day }, timeZoneProvider: { TimeZone(identifier: "UTC")! }, outbox: queue,
+            cacheStore: InMemoryCacheStore(), now: { Date(timeIntervalSince1970: 1_792_918_800) }
+        )
+        server.duringWrite = { await waitUntil { day.fetchedDates.count > readsBefore } }
+        day.duringFetch = {
+            await waitUntil { queue.pendingCount == 0 && day.fetchedDates.count > readsBefore + 1 && fresh.shownDate != nil }
+        }
+
+        await fresh.load()
+
+        XCTAssertGreaterThan(day.fetchedDates.count, readsBefore + 1, "a delivery during the first load reads the day again")
+        XCTAssertEqual(fresh.state(of: DayFixtures.minimumID), "done", "the older answer would drop the delivered mark")
+        XCTAssertEqual(fresh.state, .loaded)
     }
 }

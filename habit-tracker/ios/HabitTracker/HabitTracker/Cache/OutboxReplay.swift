@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/225, PHASE-03/236, PHASE-03/242
-// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the moment it was made as occurred_at (an old stored press, its day as entry_date); a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened) — the state it was made over, its own, or one of the writes it replaced — and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
+// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the moment it was made as occurred_at (UTC, milliseconds, one shared formatter) (an old stored press, its day as entry_date); a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened) — the state it was made over, its own, or one of the writes it replaced — and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
 import Foundation
 
 /// Entry writes the queue replays. `APIClient` is the production implementation.
@@ -70,13 +70,18 @@ struct OutboxReplay: OutboxSending {
         }
     }
 
-    /// A moment as `occurred_at` travels: ISO 8601 in UTC, `2026-10-25T01:00:00Z`.
+    /// A moment as `occurred_at` travels: ISO 8601 in UTC with milliseconds, `2026-10-25T01:00:00.250Z`.
     private static func wireMoment(_ moment: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter.string(from: moment)
+        wireFormatter.string(from: moment)
     }
+
+    /// One formatter for every replay; `ISO8601DateFormatter` is safe to share across threads.
+    private static let wireFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     /// The day for a replay check. An answer this app cannot read must not pass for "delivered"
     /// (the queue reads `invalidResponse` of a write that way): the write is refused, kept visible.

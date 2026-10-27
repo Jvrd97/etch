@@ -366,10 +366,8 @@ final class OutboxQueueTests: XCTestCase {
 
         XCTAssertEqual(queue.pendingCount, 1)
         XCTAssertEqual(
-            queue.pending.first?.action,
-            .saveNotebook(
-                QueuedNotebook(date: "2026-10-26", content: "утро и вечер", expected: "с сервера", replacedContents: ["утро"])
-            )
+            queue.pending.first?.action, notebook("утро и вечер", expected: "с сервера"),
+            "the replaced save never left the phone: its text is no state the server can hold"
         )
         server.notebooks["2026-10-26"] = "с сервера"
         await queue.flush(using: replay(server))
@@ -424,6 +422,35 @@ final class OutboxQueueTests: XCTestCase {
 
         XCTAssertEqual(server.notebooks["2026-10-26"], "один и два")
         XCTAssertTrue(queue.writes.isEmpty)
+    }
+
+    func testAMarkReplacingOneThatNeverLeftThePhoneStillSeesAChangeMadeElsewhere() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        let first = QueuedDayMark(date: "2026-10-26", itemID: DayFixtures.taskID, state: "done", note: nil, expected: "")
+        queue.enqueue(.setDayMark(first), label: "Релиз")
+        let second = QueuedDayMark(date: "2026-10-26", itemID: DayFixtures.taskID, state: nil, note: nil, expected: "done")
+        queue.enqueue(.setDayMark(second), label: "Релиз")
+        // On the web the same line was marked done meanwhile; the phone's "done" never reached the server.
+        server.marks["2026-10-26"] = [DayFixtures.taskID: "done"]
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(server.marks["2026-10-26"]?[DayFixtures.taskID], "done", "the web's mark is not wiped silently")
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.markChangedReason)
+    }
+
+    func testADeadNetworkDoesNotCountAsAWriteThatMayHaveLanded() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(notebook("один", expected: ""), label: "Блокнот")
+        server.failures = [APIClientError.transport(code: URLError.notConnectedToInternet.rawValue)]
+        await queue.flush(using: replay(server))
+        XCTAssertFalse(queue.pending[0].mayHaveLanded, "no connection: the request never left")
+
+        server.failures = [APIClientError.timeout]
+        await queue.flush(using: replay(server))
+        XCTAssertTrue(queue.pending[0].mayHaveLanded, "a timeout may have landed")
     }
 
     func testAReplacementStillRefusesAStateNoneOfTheWritesMade() async {
@@ -573,7 +600,7 @@ final class OutboxQueueTests: XCTestCase {
 
         await queue.flush(using: replay(server))
 
-        XCTAssertEqual(server.tapRequests.map(\.occurredAt), ["2026-10-25T01:00:00Z"])
+        XCTAssertEqual(server.tapRequests.map(\.occurredAt), ["2026-10-25T01:00:00.000Z"])
         XCTAssertEqual(server.tapRequests.map(\.entryDate), [nil], "the server reads the day off the moment")
         XCTAssertTrue(queue.writes.isEmpty)
     }

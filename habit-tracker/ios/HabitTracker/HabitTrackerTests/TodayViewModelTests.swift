@@ -32,9 +32,22 @@ final class MockTodayAPI: TodayScreenAPI {
         try categoriesResult.get()
     }
 
+    /// Runs once inside the next entries read, after its answer is fixed and before it returns: the
+    /// answer is what the server held when the read arrived.
+    var duringFetchEntries: (@MainActor () async -> Void)?
+    /// Runs once inside the next entry create, before its answer.
+    var duringCreateEntry: (@MainActor () async -> Void)?
+    private(set) var entriesAnswered = 0
+
     func fetchEntries(startDate: String, endDate: String) async throws -> [EntryDTO] {
         fetchedEntryRanges.append((start: startDate, end: endDate))
-        return try entriesResult.get()
+        let answer = entriesResult
+        if let hook = duringFetchEntries {
+            duringFetchEntries = nil
+            await hook()
+        }
+        entriesAnswered += 1
+        return try answer.get()
     }
 
     func createEntry(_ entry: EntryCreateDTO) async throws -> EntryDTO {
@@ -44,6 +57,10 @@ final class MockTodayAPI: TodayScreenAPI {
     func createEntry(_ entry: EntryCreateDTO, idempotencyKey: String?) async throws -> EntryDTO {
         createdEntries.append(entry)
         createKeys.append(idempotencyKey)
+        if let hook = duringCreateEntry {
+            duringCreateEntry = nil
+            await hook()
+        }
         guard let result = createEntryResult else {
             throw APIClientError.invalidResponse
         }
@@ -763,15 +780,40 @@ final class TodayViewModelTests: XCTestCase {
         )
         api.entriesResult = .failure(APIClientError.timeout)
 
+        let answeredBefore = api.entriesAnswered
         await outbox.flush()
-        for _ in 0..<100 where api.fetchedEntryRanges.count == readsBefore {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        // The failed read answers on the next turn; give it one before looking.
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await waitUntil { api.entriesAnswered > answeredBefore }
+        // The read has answered; its failure is handled on the main actor's next turns.
+        for _ in 0..<10 { await Task.yield() }
 
         XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore, "the delivery did read the day again")
         XCTAssertNil(viewModel.saveErrorMessage, "nobody pressed anything: a failed quiet re-read is not their error")
+    }
+
+    func testAReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        let readsBefore = api.fetchedEntryRanges.count
+        api.createEntryResult = .success(delivered)
+        // The send waits until the load's read is on its way, then the server holds the entry.
+        api.duringCreateEntry = {
+            await waitUntil { api.fetchedEntryRanges.count > readsBefore }
+            api.entriesResult = .success([delivered])
+        }
+        // The load's read was answered before the delivery; it returns only after the re-read did.
+        api.duringFetchEntries = {
+            await waitUntil { api.entriesAnswered > 0 && viewModel.entries(forCategory: 1) == [delivered] }
+        }
+
+        await viewModel.load()
+
+        XCTAssertEqual(outbox.pendingCount, 0)
+        XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the older answer would drop the delivered entry")
     }
 
     func testASaveOfAChecklistStillWaitingGoesThroughTheQueueSoTheOldOneCannotLandLast() async {
@@ -790,5 +832,13 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": false], ["20": true]], "the old one never follows the new")
         XCTAssertEqual(outbox.pendingCount, 0)
+    }
+}
+
+/// Waits on the main actor until `condition` holds, for at most about two seconds.
+@MainActor
+func waitUntil(_ condition: () -> Bool) async {
+    for _ in 0..<200 where !condition() {
+        try? await Task.sleep(nanoseconds: 10_000_000)
     }
 }

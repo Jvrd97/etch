@@ -22,10 +22,20 @@ final class MockQuickMarksAPI: QuickMarksAPI {
     /// What reached the double, in order: "fetch", "tap", "tap answered".
     private(set) var log: [String] = []
 
+    /// Runs once inside the next directory read, after its answer is fixed and before it returns.
+    var duringFetch: (@MainActor () async -> Void)?
+    private(set) var directoryAnswers = 0
+
     func fetchQuickMarks() async throws -> [QuickMarkDTO] {
         directoryFetches += 1
         log.append("fetch")
-        return try marksResult.get()
+        let answer = marksResult
+        if let hook = duringFetch {
+            duringFetch = nil
+            await hook()
+        }
+        directoryAnswers += 1
+        return try answer.get()
     }
 
     func tapQuickMark(
@@ -211,7 +221,7 @@ final class QuickMarksViewModelTests: XCTestCase {
 
         XCTAssertEqual(api.taps.count, 2)
         XCTAssertEqual(api.taps[1].key, firstKey, "a replay is the same tap, so the day's sum cannot double")
-        XCTAssertEqual(api.taps[1].request.occurredAt, "2026-10-25T09:00:00Z")
+        XCTAssertEqual(api.taps[1].request.occurredAt, "2026-10-25T09:00:00.000Z")
         XCTAssertNil(api.taps[1].request.entryDate)
         XCTAssertNil(api.taps[0].request.occurredAt, "a direct tap is the server's own moment")
         XCTAssertEqual(queue.pendingCount, 0)
@@ -400,7 +410,7 @@ final class QuickMarksViewModelTests: XCTestCase {
         api.tapResults = [.success(.stub(markId: 1, total: 1))]
         await queue.flush(using: replay(api))
 
-        XCTAssertEqual(api.taps.last?.request.occurredAt, "2026-10-25T01:00:00Z", "the moment of the press, not of delivery")
+        XCTAssertEqual(api.taps.last?.request.occurredAt, "2026-10-25T01:00:00.000Z", "the moment of the press, not of delivery")
         XCTAssertNil(api.taps.last?.request.entryDate, "the server's boundary decides the day, not the phone's calendar")
         XCTAssertTrue(queue.writes.isEmpty, "delivered, not refused as a turned day")
     }
@@ -415,6 +425,28 @@ final class QuickMarksViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.waitingCaption(of: 1), "ждёт отправки: 2")
         XCTAssertNil(viewModel.waitingCaption(of: 2))
+    }
+
+    func testADirectoryReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async {
+        let api = MockQuickMarksAPI()
+        api.marksResult = .success([mark(id: 1, total: 0)])
+        let (viewModel, queue) = makeViewModel(api: api)
+        queue.enqueue(queuedTap(1, day: nil), label: "Mark 1")
+        api.tapResults = [.success(.stub(markId: 1, total: 1))]
+        // The press lands once the load's read is on its way; from then on the server says 1.
+        api.duringTap = {
+            await waitUntil { api.directoryFetches > 0 }
+            api.marksResult = .success([self.mark(id: 1, total: 1)])
+        }
+        // The load's read was answered with 0; it returns only after the re-read put 1 on screen.
+        api.duringFetch = {
+            await waitUntil { api.directoryAnswers > 0 && viewModel.marks.first?.todayTotal == 1 }
+        }
+
+        await viewModel.load()
+
+        XCTAssertEqual(queue.pendingCount, 0)
+        XCTAssertEqual(viewModel.marks.first?.todayTotal, 1, "the older 0 would invite a second press")
     }
 
     func testTheDirectoryIsReadWhileTheQueueIsStillSending() async throws {
