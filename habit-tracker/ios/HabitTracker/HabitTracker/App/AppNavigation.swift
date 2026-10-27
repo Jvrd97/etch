@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/208
-// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps
+// [review:need-review] PHASE-01/208, PHASE-03/229
+// summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229)
 import Foundation
 
 /// Tabs of the root bar, in the order the mobile web shows them.
@@ -38,6 +38,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
     case dashboard
     case quickMarks
     case dailySummary
+    case week
     case categories
     case table
     case entries
@@ -52,6 +53,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .dashboard: return "Dashboard"
         case .quickMarks: return "Быстрые отметки"
         case .dailySummary: return "Day summary"
+        case .week: return "Неделя"
         case .categories: return "Categories"
         case .table: return "Table"
         case .entries: return "History"
@@ -66,6 +68,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .dashboard: return "square.grid.2x2"
         case .quickMarks: return "bolt"
         case .dailySummary: return "square.and.pencil"
+        case .week: return "calendar"
         case .categories: return "folder"
         case .table: return "tablecells"
         case .entries: return "clock.arrow.circlepath"
