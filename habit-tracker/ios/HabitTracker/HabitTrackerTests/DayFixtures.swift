@@ -115,11 +115,14 @@ enum DayFixtures {
         DayMarkDTO(itemId: id, state: state, note: note)
     }
 
-    static func summary(stage: String = "closed", verdict: String? = "won", reason: String = "") -> DaySummaryDTO {
+    static func summary(
+        stage: String = "closed", verdict: String? = "won", reason: String = "",
+        bodyMd: String = "итог", workMinutes: Int? = 420
+    ) -> DaySummaryDTO {
         DaySummaryDTO(
             dayDate: date, closed: stage == "closed", stage: stage, reviewSkipped: false, verdict: verdict,
             verdictReason: reason, anchorsDone: 2, anchorsTotal: 2, tasksDone: 1, tasksTotal: 1,
-            workMinutes: 420, streakAfter: 4, bodyMd: "итог", missingAnchors: [], clauses: []
+            workMinutes: workMinutes, streakAfter: 4, bodyMd: bodyMd, missingAnchors: [], clauses: []
         )
     }
 }
@@ -137,12 +140,18 @@ final class MockDayAPI: DayAPI {
     var notebookCalls: [String] = []
     var notebookError: Error?
     /// Runs inside `saveNotebook`, before the answer: lets a test act while the save is in flight.
+    /// Runs once inside the next `fetchDay`, before its answer: lets a test act while a read is in flight.
+    var duringFetch: (@MainActor () async -> Void)?
     var duringNotebookSave: (@MainActor () async -> Void)?
     var closingResult: Result<DaySummaryDTO, Error> = .failure(APIClientError.invalidResponse)
     var closingCalls: [(touch: String, body: DayClosingRequestDTO, key: String)] = []
 
     func fetchDay(date: String?) async throws -> DayDetailDTO {
         fetchedDates.append(date)
+        if let hook = duringFetch {
+            duringFetch = nil
+            await hook()
+        }
         guard !fetchResults.isEmpty else { throw APIClientError.invalidResponse }
         let result = fetchResults.count > 1 ? fetchResults.removeFirst() : fetchResults[0]
         return try result.get()

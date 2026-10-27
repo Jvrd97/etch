@@ -16,13 +16,19 @@ struct DayView: View {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
+    /// SwiftUI walks `.background` → `.inactive` → `.active`, so "back from the background" is
+    /// "became active"; a pass through the Control Center re-reads too, and that is harmless.
+    static func shouldReread(from old: ScenePhase, to new: ScenePhase) -> Bool {
+        new == .active && old != .active
+    }
+
     var body: some View {
         content
             .navigationTitle(AppTab.day.title)
             .dsScreenBackground()
             .task { await viewModel.load() }
             .onChange(of: scenePhase) { old, new in
-                if old == .background, new == .active { Task { await viewModel.rereadInPlace() } }
+                if Self.shouldReread(from: old, to: new) { Task { await viewModel.rereadInPlace() } }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
                 Task { await viewModel.rereadInPlace() }
@@ -68,7 +74,7 @@ struct DayView: View {
             .padding(DS.Spacing.lg)
         }
         .scrollDismissesKeyboard(.interactively)
-        .refreshable { await viewModel.load() }
+        .refreshable { await viewModel.rereadInPlace() }
     }
 }
 
@@ -376,6 +382,9 @@ private struct DayClosingCard: View {
                     summaryBlock(summary)
                 }
 
+                if let conflict = viewModel.closingConflict {
+                    closingConflictCard(conflict)
+                }
                 TextField("Минут работы (не измерено)", text: $viewModel.closingMinutes)
                     .keyboardType(.numberPad)
                     .textFieldStyle(.roundedBorder)
@@ -388,7 +397,7 @@ private struct DayClosingCard: View {
                     Task { await viewModel.review() }
                 }
                 .buttonStyle(LimeButtonStyle(prominent: false))
-                .disabled(viewModel.isClosing)
+                .disabled(viewModel.isClosing || viewModel.closingConflict != nil)
 
                 if DayFormat.showsAnchorsHint(viewModel.summary) {
                     Text(DayFormat.anchorsHint)
@@ -400,9 +409,37 @@ private struct DayClosingCard: View {
                     Task { await viewModel.closeDay() }
                 }
                 .buttonStyle(LimeButtonStyle())
-                .disabled(viewModel.isClosing)
+                .disabled(viewModel.isClosing || viewModel.closingConflict != nil)
             }
         }
+    }
+
+    /// A field of the day's summary changed elsewhere while this one holds unsent text.
+    private func closingConflictCard(_ conflict: DayViewModel.ClosingConflict) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            Text("Итог дня изменили в другом месте. Ваши значения ниже ещё не отправлены.")
+                .font(DS.Typography.caption)
+                .foregroundStyle(DS.Palette.warning)
+            if let minutes = conflict.minutes {
+                Text("На сервере минут работы: \(minutes.isEmpty ? "нет" : minutes)")
+                    .font(DS.Typography.body)
+                    .foregroundStyle(DS.Palette.textSecondary)
+            }
+            if let body = conflict.body {
+                Text(body.isEmpty ? "На сервере текст итога пуст" : body)
+                    .font(DS.Typography.body)
+                    .foregroundStyle(DS.Palette.textSecondary)
+            }
+            HStack {
+                Button("Оставить мои") { viewModel.keepMyClosing() }
+                    .buttonStyle(LimeButtonStyle()).fixedSize()
+                Button("Взять с сервера") { viewModel.useServerClosing() }
+                    .buttonStyle(LimeButtonStyle(prominent: false)).fixedSize()
+            }
+        }
+        .padding(DS.Spacing.md)
+        .background(DS.Palette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
     }
 
     @ViewBuilder
@@ -443,7 +480,7 @@ private struct DayNotebookCard: View {
                     .font(DS.Typography.card)
                     .foregroundStyle(DS.Palette.textSecondary)
                 if let server = viewModel.notebookConflict {
-                    conflictCard(server)
+                    conflictCard(server, overwritten: viewModel.notebookConflictOverwritten)
                 }
                 TextEditor(text: $viewModel.notebook)
                     .scrollContentBackground(.hidden)
@@ -453,16 +490,18 @@ private struct DayNotebookCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
                 Button("Сохранить") { Task { await viewModel.saveNotebook() } }
                     .buttonStyle(LimeButtonStyle())
-                    .disabled(!viewModel.isNotebookDirty || viewModel.isSavingNotebook || viewModel.notebookConflict != nil)
+                    .disabled(!viewModel.isNotebookDirty || viewModel.isSavingNotebook || viewModel.isNotebookSaveBlocked)
             }
         }
     }
 
     /// The server's text changed (the web, another device) while this one holds unsaved text:
     /// both are shown and nothing is overwritten until the person picks.
-    private func conflictCard(_ server: String) -> some View {
+    private func conflictCard(_ server: String, overwritten: Bool) -> some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            Text("Блокнот изменили в другом месте. Ваш текст ниже ещё не сохранён.")
+            Text(overwritten
+                 ? "Это был текст с сервера, ваше сохранение его заменило."
+                 : "Блокнот изменили в другом месте. Ваш текст ниже ещё не сохранён.")
                 .font(DS.Typography.caption)
                 .foregroundStyle(DS.Palette.warning)
             Text(server.isEmpty ? "На сервере блокнот пуст" : server)
@@ -470,10 +509,15 @@ private struct DayNotebookCard: View {
                 .foregroundStyle(DS.Palette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
-                Button("Оставить мой") { viewModel.keepMyNotebook() }
-                    .buttonStyle(LimeButtonStyle()).fixedSize()
-                Button("Взять с сервера") { viewModel.useServerNotebook() }
-                    .buttonStyle(LimeButtonStyle(prominent: false)).fixedSize()
+                if overwritten {
+                    Button("Понятно") { viewModel.dismissNotebookConflict() }
+                        .buttonStyle(LimeButtonStyle(prominent: false)).fixedSize()
+                } else {
+                    Button("Оставить мой") { viewModel.keepMyNotebook() }
+                        .buttonStyle(LimeButtonStyle()).fixedSize()
+                    Button("Взять с сервера") { viewModel.useServerNotebook() }
+                        .buttonStyle(LimeButtonStyle(prominent: false)).fixedSize()
+                }
             }
         }
         .padding(DS.Spacing.md)

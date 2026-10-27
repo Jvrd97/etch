@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/211, PHASE-03/226
 // summary: pure-rule tests of the Day screen — typed value parsing (comma decimals, h:mm durations), progress/value/link-state texts, plan window text in a passed timezone (the device's by default, DST aware), day stepping, closing headline by stage
+import SwiftUI
 import XCTest
 @testable import HabitTracker
 
@@ -108,6 +109,15 @@ final class DayLogicTests: XCTestCase {
     func testMarkButtonNamesItsLineForVoiceOver() {
         XCTAssertEqual(DayFormat.markAccessibilityLabel(for: "Релиз iOS", state: "done"), "Отметка «Релиз iOS»: сделано")
         XCTAssertEqual(DayFormat.markAccessibilityLabel(for: "Релиз iOS", state: nil), "Отметка «Релиз iOS»: не отмечено")
+    }
+
+    func testTheScreenRereadsWhenTheSceneBecomesActiveFromAnyOtherPhase() {
+        // SwiftUI reports .background -> .inactive -> .active, never .background -> .active.
+        XCTAssertTrue(DayView.shouldReread(from: .inactive, to: .active))
+        XCTAssertTrue(DayView.shouldReread(from: .background, to: .active))
+        XCTAssertFalse(DayView.shouldReread(from: .active, to: .inactive))
+        XCTAssertFalse(DayView.shouldReread(from: .background, to: .inactive))
+        XCTAssertFalse(DayView.shouldReread(from: .active, to: .active))
     }
 
     func testAnchorsHintIsShownOnlyWhenTheDayHasAnchors() {
