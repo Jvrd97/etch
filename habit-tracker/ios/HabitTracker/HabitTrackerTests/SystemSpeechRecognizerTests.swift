@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
 // summary: tests for SystemSpeechRecognizer over faked microphone, audio session and recognition backend — a restart after the system stopped the engine never installs a second tap, stop and failures release the session, a call or a route change ends the stream with .interrupted, results flow and an error after stop is not reported
 import AVFoundation
 import Speech
@@ -250,5 +250,12 @@ final class SystemSpeechRecognizerTests: XCTestCase {
         let result = await collect(stream)
 
         XCTAssertNotNil(result.error)
+    }
+
+    func testTheSystemInputRefusesToStartBeforeATapGaveItAnEngine() {
+        // Starting an input nobody tapped would "succeed" into a session that never hears anything.
+        XCTAssertThrowsError(try EngineAudioInput().start()) { error in
+            XCTAssertEqual(error as? SpeechDictationError, .unavailable)
+        }
     }
 }

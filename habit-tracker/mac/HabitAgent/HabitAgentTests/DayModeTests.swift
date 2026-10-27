@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/228
-// summary: tests of the day mode in the floating window — the config's day_mode decodes with its source, the window says where the mode came from (schedule or hand), a decision goes to PUT /day-mode/{date} with kind and nocode both, a reset to DELETE, the window repaints from the next config after a write, and a refused write is shown instead of pretending; since #228 also: a source the window does not know does not fail the whole config, a second write while one is in flight is not sent (the window repaints only after the first, so its fields would be stale), the switcher view is locked while a write runs, and a fresh config clears «не сохранилось», the server's answer to a write stays on screen when the poll after it fails, and the slot of the write is taken synchronously (a second change in the same turn is refused)
+// [review:need-review] PHASE-03/241
+// summary: tests of the day mode in the floating window — since #241 the answer of a write is dropped only by a poll asked after it (modified or 304), and a poll that finishes after a later one does not paint its older config; before that: the config's day_mode decodes with its source, the window says where the mode came from (schedule or hand), a decision goes to PUT /day-mode/{date} with kind and nocode both, a reset to DELETE, the window repaints from the next config after a write, and a refused write is shown instead of pretending; since #228 also: a source the window does not know does not fail the whole config, a second write while one is in flight is not sent (the window repaints only after the first, so its fields would be stale), the switcher view is locked while a write runs, and a fresh config clears «не сохранилось», the server's answer to a write stays on screen when the poll after it fails, and the slot of the write is taken synchronously (a second change in the same turn is refused)
 import SwiftUI
 import XCTest
 @testable import HabitAgent
@@ -167,12 +167,20 @@ final class DayModeModelTests: XCTestCase {
         var holdWrites = false
         /// The next polls fail, as a poll right after a write may.
         var failPolls = false
+        /// While `holdPolls` is set, a poll takes its answer at once but delivers it only when the test lets it go.
+        var pollGates: [CheckedContinuation<Void, Never>] = []
+        var holdPolls = false
+        /// Every poll answers 304: what the poller holds is current.
+        var notModified = false
         var model: PanelModel!
 
         init() {
             let poller = ConditionalPoller<PanelConfig>(interval: 30, staleAfter: 120, maxRetryDelay: 60, sleep: { _ in }) { [unowned self] _ in
                 if failPolls { throw Refused() }
-                return .modified(PanelConfig(currentTask: nil, dayPath: "/day/2026-10-27", date: "2026-10-27", dayMode: mode), etag: nil)
+                if notModified { return .notModified }
+                let seen = mode
+                if holdPolls { await withCheckedContinuation { pollGates.append($0) } }
+                return .modified(PanelConfig(currentTask: nil, dayPath: "/day/2026-10-27", date: "2026-10-27", dayMode: seen), etag: nil)
             }
             model = PanelModel(
                 config: poller,
@@ -300,6 +308,52 @@ final class DayModeModelTests: XCTestCase {
         await world.model.config.pollOnce()
 
         XCTAssertEqual(world.model.dayMode?.kind, "sick")
+    }
+
+    func testAPollAskedBeforeTheWriteAnsweredDoesNotBringTheOldModeBack() async {
+        // The poll saw the server before the write; when it lands, the answer of the write must stay.
+        let world = World()
+        await world.model.config.pollOnce()
+        world.holdPolls = true
+        let early = Task { await world.model.config.pollOnce() }
+        while world.pollGates.isEmpty { await Task.yield() }
+        world.holdPolls = false
+        world.failPolls = true
+
+        await world.model.decideMode(kind: "work", nocode: false)?.value
+        world.pollGates.forEach { $0.resume() }
+        await early.value
+
+        XCTAssertEqual(world.model.dayMode?.nocode, false)
+        XCTAssertEqual(world.model.dayMode?.sourceText, "вручную")
+    }
+
+    func testAPollThatLandsAfterALaterOneDoesNotPaintItsOlderConfig() async {
+        let world = World()
+        await world.model.config.pollOnce()
+        world.holdPolls = true
+        let early = Task { await world.model.config.pollOnce() }
+        while world.pollGates.isEmpty { await Task.yield() }
+        world.holdPolls = false
+
+        await world.model.decideMode(kind: "work", nocode: false)?.value
+        world.pollGates.forEach { $0.resume() }
+        await early.value
+
+        // The write's own poll went through after the answer: it cleared the stay, and the early poll must not undo it.
+        XCTAssertEqual(world.model.config.value?.dayMode?.nocode, false)
+        XCTAssertEqual(world.model.dayMode?.nocode, false)
+    }
+
+    func testAPollAskedAfterTheAnswerEndsItsStayEvenWhenTheServerSaysNotModified() async {
+        let world = World()
+        await world.model.config.pollOnce()
+        world.notModified = true
+
+        await world.model.decideMode(kind: "vacation", nocode: true)?.value
+
+        // 304 says the poller's value is current: the window shows that, not the answer of the write.
+        XCTAssertEqual(world.model.dayMode?.kind, "work")
     }
 }
 

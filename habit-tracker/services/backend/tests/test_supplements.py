@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223
+# [review:need-review] PHASE-03/246
 # summary: tests for the supplement directory and the intake mark — add/list/edit/archive/restore, one mark per supplement per logical day, Idempotency-Key replay, the 04:00 boundary, the client-clock check, and no supplement name in any log line
 """
 Supplements: what the person takes, and the tick «принял».
@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import daytime
@@ -430,6 +431,11 @@ def blind_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     monkeypatch.setattr(supplement_crud, name, lookup)
 
 
+async def key_count(db: AsyncSession) -> int:
+    result = await db.execute(select(func.count()).select_from(SupplementIntakeKey))
+    return int(result.scalar_one())
+
+
 async def test_a_twin_that_wins_the_day_race_is_answered_with_its_mark(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -442,6 +448,50 @@ async def test_a_twin_that_wins_the_day_race_is_answered_with_its_mark(
     assert response.status_code == 200
     assert response.json()["id"] == first.json()["id"]
     assert await intake_count(db_session) == 1
+    assert await key_count(db_session) == 1
+
+    pin(monkeypatch, TOMORROW)
+    retry = await mark(client, created["id"], key="tap-2")
+    assert retry.status_code == 200
+    assert retry.json()["id"] == first.json()["id"]
+    assert await intake_count(db_session) == 1
+
+
+async def test_the_key_of_a_loser_survives_a_twin_that_wrote_it_first(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alias write itself loses a race: the key is already there, answer with it."""
+    created = await add(client)
+    first = await mark(client, created["id"])
+    blind_once(monkeypatch, "intake_on_day")
+    real_alias = supplement_crud.alias_intake_key
+
+    async def alias_then_collide(*args: Any, **kwargs: Any) -> None:
+        await real_alias(*args, **kwargs)
+        raise IntegrityError("insert", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr(supplement_crud, "alias_intake_key", alias_then_collide)
+
+    response = await mark(client, created["id"], key="tap-2")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == first.json()["id"]
+    assert await intake_count(db_session) == 1
+    assert await key_count(db_session) == 1
+
+
+async def test_an_empty_idempotency_key_is_422_and_stores_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    created = await add(client)
+
+    response = await client.post(
+        f"{URL}/{created['id']}/intakes", json={}, headers={"Idempotency-Key": ""}
+    )
+
+    assert response.status_code == 422
+    assert await intake_count(db_session) == 0
+    assert await key_count(db_session) == 0
 
 
 async def test_a_twin_that_wins_the_key_race_is_answered_with_its_mark(

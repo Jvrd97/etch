@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/228
-// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the server's answer to the write (and then from the next config); since #228 one mode write at a time (`modeSaving` is claimed synchronously in the handler and locks the switcher; a second change is dropped and logged) and a fresh config clears «не сохранилось»
+// [review:need-review] PHASE-03/241
+// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the server's answer to the write (and then from the next config); since #228 one mode write at a time (`modeSaving` is claimed synchronously in the handler and locks the switcher; a second change is dropped and logged) and a fresh config clears «не сохранилось»; since #241 the server's answer to a write stays until a poll started after that answer succeeds (modified or 304), not until any poll lands
 import Combine
 import Foundation
 import os
@@ -26,9 +26,11 @@ final class PanelModel: ObservableObject {
     private let openURL: (URL) -> Void
     private let now: () -> Date
     private let modeWrite: ModeWrite?
-    /// The server's answer to the last write, shown until a fresh config replaces it: a poll
-    /// right after the write may fail, and the window must not go back to the old mode then.
-    private var answeredMode: (date: String, mode: PanelDayMode)?
+    /// The server's answer to the last write, shown until a poll asked after that answer succeeds:
+    /// a poll right after the write may fail, and a poll asked before it may land late with the old
+    /// mode; the window must not go back to the old mode then. `afterPoll` is `pollsStarted` at the
+    /// moment of the answer: only a poll numbered above it was asked later.
+    private var answeredMode: (date: String, mode: PanelDayMode, afterPoll: Int)?
     private static let log = Logger(subsystem: "com.talvior.habitagent", category: "panel-mode")
     private var observers: [AnyCancellable] = []
 
@@ -52,9 +54,13 @@ final class PanelModel: ObservableObject {
         observers = [
             config.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
             timer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
-            // A poll that went through is a fresh look at the server: the mode on screen
-            // is its answer, so a note about an earlier refused write no longer fits.
-            config.$value.dropFirst().sink { [weak self] _ in self?.answeredMode = nil },
+            // A poll asked after the answer of the write and gone through is a fresh look at the server:
+            // the mode on screen is its answer. A poll asked before the answer proves nothing about the write.
+            config.$lastSuccessfulPoll.sink { [weak self] poll in
+                guard let answered = self?.answeredMode, poll > answered.afterPoll else { return }
+                self?.answeredMode = nil
+            },
+            // Likewise a note about an earlier refused write no longer fits a fresh config.
             config.$lastFailure.dropFirst().sink { [weak self] failure in
                 if failure == nil { self?.modeWriteFailed = false }
             },
@@ -141,7 +147,7 @@ final class PanelModel: ObservableObject {
         do {
             let answer = try await modeWrite(date, change)
             modeWriteFailed = false
-            answeredMode = answer.map { (date: date, mode: $0) }
+            answeredMode = answer.map { (date: date, mode: $0, afterPoll: config.pollsStarted) }
             await config.pollOnce()
         } catch {
             modeWriteFailed = true

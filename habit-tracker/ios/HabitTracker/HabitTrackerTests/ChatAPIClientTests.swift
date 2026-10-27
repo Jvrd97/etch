@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-01/212
+// [review:need-review] PHASE-01/212, PHASE-03/230
 // summary: tests for the chat endpoints — URLs, decoding of the conversation, message and plan, the apply body and its idempotency key, DELETE 409, and the streamed turn (events in order, refusals 409/429/502, a connection cut mid-answer, cancellation); no real model is called
 import XCTest
 @testable import HabitTracker
@@ -184,7 +184,7 @@ final class ChatAPIClientTests: XCTestCase {
         XCTAssertEqual(plan.status, ChatPlanDTO.proposedStatus)
         XCTAssertEqual(plan.plan.metrics.first?.value, 30)
         XCTAssertTrue(plan.plan.checklist[0].uncertain)
-        XCTAssertEqual(plan.plan.journal?.mode, "append")
+        XCTAssertEqual(plan.plan.journal?.mode, .append)
         XCTAssertEqual(plan.plan.dayPlan?.isRewrite, true)
         XCTAssertEqual(plan.plan.dayPlan?.itemCount, 1)
     }

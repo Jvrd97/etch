@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227
-// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments so RootView is unchanged
+// [review:need-review] PHASE-01/213, PHASE-01/208, PHASE-03/227, PHASE-03/230
+// summary: day-summary screen — pick the day (today by default, the project's chevron navigator), speak or type it, parse it into a draft (cancellable), review it with every row switchable, then write the checked part; dictation stops when the app leaves the foreground; the screen cannot be left over an unconfirmed write without asking (the sheet: Close button, swipe off; the pushed page: own Back button, swipe back off); an already-applied key (409) ends in a card, not a dead retry button; no NavigationStack of its own, init() takes no required arguments; the Today sheet hands Today a callback on every dismissal (applied, 409 or Close) so it reads the day again; on the More stack a retainer keeps a model with an unconfirmed write across a pop the system makes on its own, and the screen tells the root it must not be popped (#230)
 import SwiftUI
 
 /// The page pushed from More. It owns its view model, so leaving it drops the idempotency key of a
@@ -7,10 +7,14 @@ import SwiftUI
 struct DailySummaryView: View {
     @StateObject private var viewModel: DailySummaryViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.moreLeaveBlocked) private var leaveBlocked
     @State private var asksToLeave = false
+    private let retainer: DailySummaryRetainer?
 
-    init(onApplied: @escaping () -> Void = {}) {
-        _viewModel = StateObject(wrappedValue: .live(onApplied: onApplied))
+    /// With a retainer the model outlives a pop the system makes on its own (see `AppNavigation`).
+    init(onApplied: @escaping () -> Void = {}, retainer: DailySummaryRetainer? = nil) {
+        self.retainer = retainer
+        _viewModel = StateObject(wrappedValue: retainer?.model() ?? .live(onApplied: onApplied))
     }
 
     var body: some View {
@@ -18,7 +22,7 @@ struct DailySummaryView: View {
             .navigationBarBackButtonHidden(viewModel.closeNeedsConfirmation)
             .toolbar {
                 if viewModel.closeNeedsConfirmation {
-                    ToolbarItem(placement: .navigationBarLeading) {
+                    ToolbarItem(placement: .topBarLeading) {
                         Button { asksToLeave = true } label: {
                             Label("Назад", systemImage: "chevron.backward")
                         }
@@ -26,7 +30,13 @@ struct DailySummaryView: View {
                     }
                 }
             }
-            .unconfirmedWriteDialog(isPresented: $asksToLeave, leaveTitle: "Выйти без проверки") { dismiss() }
+            .holdsMoreScreen(viewModel.closeNeedsConfirmation)
+            .unconfirmedWriteDialog(isPresented: $asksToLeave, leaveTitle: "Выйти без проверки") {
+                // The person chose this: let the stack pop, and let the next visit start clean.
+                leaveBlocked.wrappedValue = false
+                retainer?.release()
+                dismiss()
+            }
     }
 }
 
@@ -257,10 +267,12 @@ struct DailySummaryContent: View {
     }
 }
 
-/// The button Today shows: opens the screen above in a sheet, closes it once the day is written,
-/// and tells Today to read the day again.
+/// The button Today shows: opens the screen above in a sheet and closes it once the day is written.
+/// Today reads the day again whenever the sheet goes away, whatever the way: after the write, after
+/// a 409 (the day already holds the plan, but the sheet only says so), or after a Close that left a
+/// write of unknown outcome behind.
 struct VoiceDayButton: View {
-    var onApplied: () -> Void = {}
+    var onDismiss: () -> Void = {}
     @State private var isPresented = false
 
     var body: some View {
@@ -272,14 +284,8 @@ struct VoiceDayButton: View {
         .buttonStyle(LimeButtonStyle(prominent: false))
         .frame(minHeight: 44)
         .accessibilityIdentifier("today.voiceDay")
-        .sheet(isPresented: $isPresented) {
-            VoiceDaySheet(
-                onApplied: {
-                    isPresented = false
-                    onApplied()
-                },
-                close: { isPresented = false }
-            )
+        .sheet(isPresented: $isPresented, onDismiss: onDismiss) {
+            VoiceDaySheet(onApplied: { isPresented = false }, close: { isPresented = false })
         }
     }
 }

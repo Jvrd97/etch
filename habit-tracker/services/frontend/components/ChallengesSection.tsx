@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
+// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, PHASE-03/237
 // summary: the Today block of obligations — the cards of the ones running now, the separate «Предложено» block of what the model proposed and nobody has taken on yet, the failure mode and budget chosen at creation, and the button that counts today by hand; one component so both shells mount the same behaviour
+// summary: takes the day of the screen as a prop and counts a day by hand into it, never into the browser's date; the button is not offered while the day is unknown
 
 import { useState } from 'react';
 import ChallengeCard from '@/components/ChallengeCard';
@@ -13,11 +14,15 @@ import type {
   ChallengeFailureMode,
   ChallengeRuleKind,
 } from '@/lib/api';
-import { todayISO } from '@/lib/date';
 
 interface ChallengesSectionProps {
   /** Categories already loaded by the Today screen; the rule points into one. */
   categories: Category[];
+  /**
+   * The day of the screen, as the server named it; empty while it is unknown.
+   * A day counted by hand goes to this date, never to the browser's clock.
+   */
+  date: string;
 }
 
 /** The four promises, with the wording a person reads rather than the code. */
@@ -58,7 +63,7 @@ function isoDaysFromToday(offset: number): string {
  * На Today показаны только идущие: завершённые остаются фактом в общем списке,
  * но сегодняшний экран — про то, что делается сегодня.
  */
-export default function ChallengesSection({ categories }: ChallengesSectionProps) {
+export default function ChallengesSection({ categories, date }: ChallengesSectionProps) {
   const {
     challenges,
     loading,
@@ -162,7 +167,8 @@ export default function ChallengesSection({ categories }: ChallengesSectionProps
         <ChallengeCard
           key={challenge.id}
           challenge={challenge}
-          onCountToday={(item: Challenge) => void countToday(item.id, todayISO())}
+          // Without a day there is nothing to count into, so the button is not offered.
+          onCountToday={date === '' ? undefined : (item: Challenge) => void countToday(item.id, date)}
           counting={counting.has(challenge.id)}
         />
       ))}

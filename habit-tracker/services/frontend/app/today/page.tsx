@@ -1,10 +1,11 @@
 'use client';
 // [review:need-review] PHASE-03/228
 // summary: desktop Today page — the day-mode badge with its switch sits under the title; the badge reads and writes the server's current day, not the browser's date
-// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
 // summary: desktop Today page — markup only; a tap on a quick-input card opens the full entry modal for today's record in that category, and "ask about the day" starts a conversation about the date this screen is showing
 // summary: desktop Today page — a quick-mark card opens the dialog with every set of its category beside the day's records while its plus (and its key) still adds one, and every tap or undo reads the day's records and the streak of its category again
+// summary: the date line and the empty-state card follow the server's day: no date line while the day is unknown, no «nothing to track» while a load error is on screen, the day goes to the obligations block
 
 import { useCallback, useState } from 'react';
 import QuickMarkSkeleton from '@/components/QuickMarkSkeleton';
@@ -104,7 +105,9 @@ export default function TodayPage() {
             Today
             <span className="text-lime">.</span>
           </h1>
-          <p className="mt-2 text-text-secondary">{date} — one tap to check things off</p>
+          {date !== '' && (
+            <p className="mt-2 text-text-secondary">{date} — one tap to check things off</p>
+          )}
         </div>
 
         {/* Рядом с заголовком, а не внизу экрана: разговор идёт про день целиком,
@@ -123,9 +126,9 @@ export default function TodayPage() {
 
         {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
-        <ChallengesSection categories={categories} />
+        <ChallengesSection categories={categories} date={date} />
 
-        {nothingToTrack ? (
+        {nothingToTrack && error === null ? (
           <div className="text-center py-16 bg-card border border-white/5 rounded-3xl">
             <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
               <Sun className="w-8 h-8 text-text-disabled" strokeWidth={2} />

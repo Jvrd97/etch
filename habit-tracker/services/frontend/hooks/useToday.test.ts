@@ -1,7 +1,8 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: tests for useToday — the targeted re-read after a quick mark (records, ticks and the one streak that can have moved, nothing else, and never an older answer over a newer one), silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// summary: the server day in useToday: the header, the records read, the re-read after a mark, the checklist tick and the increment use the day of GET /day-mode while the browser is a day behind; a changed day is followed on return to the tab and by the minute timer (fake timers); an older snapshot, a tick or a re-read of a finished day never lands over the new day; a day that cannot be read leaves no screen and no request for records
 
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type {
   Category,
@@ -15,6 +16,10 @@ import { numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
+// The day the browser believes it is: a zone behind the server (Pacific/Pago_Pago
+// at 23:00 UTC), or 00:30 before the boundary hour. Never the server's day, so
+// any read of the browser clock shows up as a different date in a request.
+const BROWSER_DAY = '2026-07-23';
 
 const GLASSES_FIELD: Field = {
   id: 7,
@@ -81,6 +86,11 @@ function totalOf(entries: Entry[]): number {
   return numberFieldSum(entries, CATEGORY.id, GLASSES_FIELD.id);
 }
 
+/** What `GET /day-mode` answers: the day the server is running, named by `date`. */
+function dayModeOf(date: string) {
+  return { date, kind: 'work', nocode: false, source: 'schedule' };
+}
+
 /** Resolves only when the test releases it, so a refetch can be observed mid-flight. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -92,6 +102,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
 let deleteEntry: ReturnType<typeof mock>;
 let upsertChecklist: ReturnType<typeof mock>;
@@ -174,6 +185,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -260,7 +272,7 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(undefined),
   },
   entriesAPI: {
-    getAll: () => getAllEntries(),
+    getAll: (params?: unknown) => getAllEntries(params),
     create: (data: unknown) => createEntry(data),
     update: () => Promise.resolve(null),
     delete: (id: number) => deleteEntry(id),
@@ -274,14 +286,15 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
 
-const { useToday, STREAKS_FAILED } = await import('./useToday');
+const { useToday, STREAKS_FAILED, DAY_RECHECK_MS } = await import('./useToday');
 const { entriesAPI } = await import('@/lib/api');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
+  readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
   deleteEntry = mock(() => Promise.resolve(undefined));
   upsertChecklist = mock(() => Promise.resolve(ENTRY));
@@ -419,6 +432,239 @@ describe('useToday', () => {
     });
 
     await waitFor(() => expect(result.current.error).toBeNull());
+  });
+});
+
+describe('useToday takes the day from the server', () => {
+  const NEXT_DAY = '2026-07-25';
+  const CHECKLIST: Category = {
+    ...CATEGORY,
+    id: 3,
+    display_mode: 'checklist',
+    fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+  };
+
+  it('names the server day in the header and reads the records of that day, not the browser\'s', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(readDayMode).toHaveBeenCalledWith();
+    expect(result.current.date).toBe(TODAY);
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: TODAY, endDate: TODAY });
+  });
+
+  it('writes a checklist tick and a number increment to the server day', async () => {
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, CHECKLIST]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.toggleField(CHECKLIST.id, 8);
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+
+    expect(upsertChecklist).toHaveBeenCalledWith(
+      expect.objectContaining({ category_id: CHECKLIST.id, entry_date: TODAY })
+    );
+    expect(createEntry).toHaveBeenCalledWith(expect.objectContaining({ entry_date: TODAY }));
+  });
+
+  it('reads the records of the server day again after a mark', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllEntries.mockClear();
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: TODAY, endDate: TODAY });
+  });
+
+  it('follows the server across the day boundary when the tab comes back', async () => {
+    createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+    expect(totalOf(result.current.entries)).toBe(250);
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: NEXT_DAY, endDate: NEXT_DAY });
+    // The increment belonged to yesterday and must not be counted into the new day.
+    expect(result.current.entries).toEqual([]);
+
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
+    });
+    expect(createEntry).toHaveBeenLastCalledWith(
+      expect.objectContaining({ entry_date: NEXT_DAY })
+    );
+  });
+
+  it('shows the failure and no screen when the server day cannot be read', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('day unknown')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.error).toBe('day unknown'));
+
+    // Falling back to the browser clock would write to a day the server does not run.
+    expect(result.current.categories).toEqual([]);
+    expect(result.current.date).toBe('');
+    expect(getAllEntries).not.toHaveBeenCalled();
+  });
+});
+
+describe('useToday keeps up with the server day', () => {
+  const NEXT_DAY = '2026-07-25';
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('moves to the next day on its own timer, with no tab switch, so a tick never lands on yesterday', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.date).toBe(TODAY);
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      jest.advanceTimersByTime(DAY_RECHECK_MS);
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: NEXT_DAY, endDate: NEXT_DAY });
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
+    });
+    expect(createEntry).toHaveBeenLastCalledWith(
+      expect.objectContaining({ entry_date: NEXT_DAY })
+    );
+  });
+
+  it('costs one light read per tick while the day stays the same', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllEntries.mockClear();
+    getAllCategories.mockClear();
+    readDayMode.mockClear();
+
+    await act(async () => {
+      jest.advanceTimersByTime(DAY_RECHECK_MS);
+    });
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+    expect(getAllEntries).not.toHaveBeenCalled();
+    expect(getAllCategories).not.toHaveBeenCalled();
+  });
+
+  it('keeps the day it has when a tick cannot read the server', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await act(async () => {
+      jest.advanceTimersByTime(DAY_RECHECK_MS);
+    });
+
+    expect(result.current.date).toBe(TODAY);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not put a checklist tick saved for yesterday into the list of the new day', async () => {
+    const checklist: Category = {
+      ...CATEGORY,
+      id: 3,
+      display_mode: 'checklist',
+      fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+    };
+    getAllCategories = mock(() => Promise.resolve([checklist]));
+    getAllEntries = mock(() => Promise.resolve([]));
+    const pending = deferred<Entry>();
+    upsertChecklist = mock(() => pending.promise);
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let toggled!: Promise<void>;
+    act(() => {
+      toggled = result.current.toggleField(checklist.id, 8);
+    });
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.date).toBe(NEXT_DAY);
+
+    await act(async () => {
+      pending.resolve({ ...ENTRY, id: 30, category_id: checklist.id, entry_date: TODAY });
+      await toggled;
+    });
+
+    expect(result.current.entries).toEqual([]);
+  });
+
+  it('drops the answer of an older snapshot that lands after a newer one', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const slowDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => slowDay.promise);
+    let older!: Promise<void>;
+    act(() => {
+      older = result.current.reload();
+    });
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.reload();
+    });
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
+    });
+    expect(result.current.date).toBe(NEXT_DAY);
+    expect(totalOf(result.current.entries)).toBe(100);
+
+    await act(async () => {
+      slowDay.resolve(dayModeOf(TODAY));
+      await older;
+    });
+
+    expect(result.current.date).toBe(NEXT_DAY);
+    expect(totalOf(result.current.entries)).toBe(100);
+  });
+
+  it('ignores the re-read of yesterday\'s records that returns after the day changed', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const slowRead = deferred<Entry[]>();
+    getAllEntries = mock(() => slowRead.promise);
+    let afterMark!: Promise<void>;
+    act(() => {
+      afterMark = result.current.reloadAfterMark(CATEGORY.id);
+    });
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.reload();
+    });
+
+    await act(async () => {
+      slowRead.resolve([ENTRY]);
+      await afterMark;
+    });
+
+    expect(result.current.entries).toEqual([]);
   });
 });
 

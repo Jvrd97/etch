@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/162
+// [review:need-review] PHASE-03/162, PHASE-03/237
 // summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read
+// summary: the desktop Today shows one server date in the title, the records read, the obligation count and the entry form while the browser clock is a day behind; with an unknown day there is no date line, no «nothing to track» and the ask-about-the-day button is disabled
 // [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
 // summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers, and the sets behind a quick-mark card — the dialog of every set opened from the card's name and counter, the plus and the key that still add one without opening it, the day's records read again after every tap, and a set taken back from the list lowering the card's counter
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Category, Entry, QuickMark, QuickMarkDayEvent } from '@/lib/api';
 
@@ -58,8 +59,35 @@ const WATER_MARK: QuickMark = {
 /** The mode the stub of the server answers for any date: a working no-code day by the schedule. */
 const TUESDAY_MODE = { date: '2026-07-30', kind: 'work', nocode: true, source: 'schedule' };
 
+/** A running obligation whose day is still waiting for a verdict. */
+const WATER_CHALLENGE = {
+  id: 4,
+  title: '7 дней подряд ≥ 2 л воды',
+  category_id: 5,
+  field_id: 9,
+  rule_kind: 'metric_at_least',
+  target: '2.000',
+  starts_on: '2026-07-28',
+  ends_on: '2026-08-03',
+  failure_mode: 'any_miss',
+  allowed_misses: 0,
+  status: 'active',
+  origin: 'human',
+  failed_on: null,
+  total_days: 7,
+  day_number: 3,
+  done_count: 2,
+  misses_used: 0,
+  misses_left: 0,
+  today_verdict: 'pending',
+  created_at: '2026-07-28T06:00:00Z',
+};
+
 let getCategories: ReturnType<typeof mock>;
 let getEntries: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
+let listChallenges: ReturnType<typeof mock>;
+let setDayVerdict: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
 let tapQuickMark: ReturnType<typeof mock>;
 let undoQuickMark: ReturnType<typeof mock>;
@@ -91,7 +119,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
-    dayMode: () => Promise.resolve(TUESDAY_MODE),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -125,12 +153,12 @@ mock.module('@/lib/api', () => ({
   },
   // Обязательства (#127). Есть в каждом моке api по причине, названной выше.
   challengesAPI: {
-    list: () => Promise.resolve([]),
+    list: () => listChallenges(),
     get: () => Promise.resolve(null),
     create: () => Promise.resolve(null),
     patch: () => Promise.resolve(null),
     recompute: () => Promise.resolve(null),
-    setDayVerdict: () => Promise.resolve(null),
+    setDayVerdict: (id: number, day: string, draft: unknown) => setDayVerdict(id, day, draft),
   },
   // Чат (#111). Есть в каждом моке api по причине, названной выше.
   chatAPI: {
@@ -205,6 +233,9 @@ async function renderToday() {
 beforeEach(() => {
   getCategories = mock(() => Promise.resolve([NUTRITION]));
   getEntries = mock(() => Promise.resolve([] as Entry[]));
+  readDayMode = mock(() => Promise.resolve(TUESDAY_MODE));
+  listChallenges = mock(() => Promise.resolve([]));
+  setDayVerdict = mock(() => Promise.resolve(null));
   listQuickMarks = mock(() => Promise.resolve([] as QuickMark[]));
   tapQuickMark = mock(() =>
     Promise.resolve({
@@ -315,6 +346,59 @@ describe('the day mode on /today', () => {
     await waitFor(() => expect(screen.getByLabelText('Вид дня')).toBeDefined());
     expect((screen.getByLabelText('no-code') as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText('по расписанию')).toBeDefined();
+  });
+});
+
+describe('the day of /today comes from the server', () => {
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  it('shows one date in the title, the records read and the buttons while the browser is a day behind', async () => {
+    // Local noon of the 29th: the browser says 07-29, the server runs 07-30.
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    expect(screen.getByText(/^2026-07-30 — /)).toBeDefined();
+    expect(getEntries).toHaveBeenCalledWith({ startDate: '2026-07-30', endDate: '2026-07-30' });
+    expect(screen.getByRole('button', { name: WATER_MARK.label })).toBeDefined();
+  });
+
+  it('counts a day of an obligation by the server date, not the browser one', async () => {
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    listChallenges = mock(() => Promise.resolve([WATER_CHALLENGE]));
+    await renderToday();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Засчитать день'));
+    });
+
+    expect(setDayVerdict).toHaveBeenCalledWith(WATER_CHALLENGE.id, '2026-07-30', { verdict: 'done' });
+  });
+
+  it('opens the entry form of a card on the server date, not the browser one', async () => {
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add entry' }));
+
+    const dateInput = document.querySelector('input[type="date"]') as HTMLInputElement;
+    expect(dateInput.value).toBe('2026-07-30');
+  });
+
+  it('says the day is unknown when the server cannot name it, instead of an empty date', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('day unknown')));
+    await renderToday();
+
+    expect(await screen.findByText('day unknown')).toBeDefined();
+    expect(screen.queryByText(/one tap to check things off/)).toBeNull();
+    // Nothing was read, so "nothing to track" would be a claim the screen cannot make.
+    expect(screen.queryByText('Nothing to track today')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Спросить про день' }) as HTMLButtonElement).disabled
+    ).toBe(true);
   });
 });
 
