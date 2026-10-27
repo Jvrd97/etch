@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
 // summary: PHASE-03/256 — a re-read of the records leaves the cache stamp at the age of the categories; a second load keeps the loaded screen (no loader, a failure is a line of text)
+// summary: PHASE-03/248 round 2 — a refresh that works takes back the failure line of an earlier refresh and leaves the error of another action
 // summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
@@ -838,6 +839,38 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.state, .loaded)
         XCTAssertEqual(viewModel.categories.map(\.id), [1], "the screen keeps what it showed")
         XCTAssertEqual(viewModel.saveErrorMessage, "\(TodayViewModel.refreshFailedMessage): \(APIClientError.unauthorized.userMessage)")
+    }
+
+    func testALaterLoadThatWorksTakesTheRefreshFailureLineAway() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+        await viewModel.load()
+        XCTAssertNotNil(viewModel.saveErrorMessage)
+
+        api.categoriesResult = .success([pushups])
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.saveErrorMessage, "the refresh worked: the red line must not outlive its cause")
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testALoadThatWorksKeepsTheErrorOfAnotherAction() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+        await viewModel.load()
+        // A save failed in between; its message replaced the refresh line.
+        viewModel.saveErrorMessage = "Не удалось сохранить запись"
+
+        api.categoriesResult = .success([pushups])
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.saveErrorMessage, "Не удалось сохранить запись")
     }
 
     func testAFailedFirstLoadStillTurnsTheScreenIntoTheErrorState() async {

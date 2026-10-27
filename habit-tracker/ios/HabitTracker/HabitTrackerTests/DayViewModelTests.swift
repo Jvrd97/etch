@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256
 // summary: PHASE-03/248 — false conflict after A→B→A, a third text in a stale answer, cancelled pull-to-refresh, a re-read answered while another day loads is not shown, the replaced-text card is not restored over the same server text; every hook a test sets must run
+// summary: PHASE-03/248 round 2 — a third text survives a quiet re-read as a conflict; tearDown calls super
 // summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking and per-day drafts and conflicts with a changed server text, closing fields across days, re-read on foreground and time zone change (a failed pull-to-refresh says so, the others stay quiet), saved notebook text remembered per day against late answers,  two-touch closing with keys and validation
 import Combine
 import XCTest
@@ -19,6 +20,7 @@ final class DayViewModelTests: XCTestCase {
     /// A hook a test set and the code never reached would leave its assertions vacuous.
     override func tearDown() async throws {
         XCTAssertEqual(api.hooksNeverRun, [], "a hook the test set never ran")
+        try await super.tearDown()
     }
 
     private func factsWrite(total: Double, markState: String?) throws -> PlanFactWriteDTO {
@@ -584,6 +586,16 @@ final class DayViewModelTests: XCTestCase {
         let callsBefore = api.notebookCalls.count
         await viewModel.saveNotebook()
         XCTAssertEqual(api.notebookCalls.count, callsBefore, "saving waits until the person picks a side")
+
+        // The next quiet re-read hands over the same third text: the choice is still the person's.
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Веб-правка")))]
+        await viewModel.rereadInPlace()
+        XCTAssertEqual(viewModel.notebook, "T")
+        XCTAssertEqual(viewModel.notebookConflict, "Веб-правка", "a re-read does not choose for the person")
+        XCTAssertTrue(viewModel.isNotebookSaveBlocked)
+        viewModel.useServerNotebook()
+        XCTAssertEqual(viewModel.notebook, "Веб-правка")
+        XCTAssertNil(viewModel.notebookConflict)
     }
 
     func testAnAnswerSentAfterTheSaveBringsTheServersTextAgain() async throws {

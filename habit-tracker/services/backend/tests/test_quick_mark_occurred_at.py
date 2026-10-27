@@ -90,6 +90,16 @@ async def day_total(client: AsyncClient, mark_id: int) -> float | None:
     return None if total is None else float(total)
 
 
+async def day_event_count(client: AsyncClient, category: dict[str, Any]) -> int:
+    """How many taps the journal lists for the category on the day of `NOW`."""
+    response = await client.get(
+        f"{QUICK_MARKS_URL}/events",
+        params={"category_id": category["id"], "date": NOW.date().isoformat()},
+    )
+    assert response.status_code == 200, response.text
+    return len(response.json())
+
+
 @contextmanager
 def statements_of(db: AsyncSession) -> Iterator[list[str]]:
     """Every SQL statement the session runs inside the block."""
@@ -381,6 +391,7 @@ async def test_a_key_found_only_after_a_lost_race_answers_like_a_replay(
     serve_at(monkeypatch, NOW)
     await tap(client, first_id, key="k-race")
     total_before = await day_total(client, second_id)
+    assert total_before == 250, "the winner's tap is on the shared day"
     real_lookup = quick_mark_crud.event_by_idempotency_key
     calls = 0
 
@@ -397,6 +408,9 @@ async def test_a_key_found_only_after_a_lost_race_answers_like_a_replay(
     assert status_code == expected_status, body
     total_after = await day_total(client, second_id)
     assert total_after == total_before, "the rolled-back insert changed the day total"
+    assert await day_event_count(client, water) == 1, "the loser left an event"
+    if not same_button:
+        assert "another quick mark" in body["detail"]
 
 
 @pytest.mark.asyncio
