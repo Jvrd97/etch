@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/159
-// summary: tests of the floating window — the timer's end cut at the last input, the config poller's outage behaviour on the shared Backoff, the requests the panel makes, the outbox of timer intervals, the date the button opens, and the panel's flags, saved frame and refusal to activate the app
+// [review:need-review] PHASE-03/241
+// summary: tests of the floating window (since #241 also: a poll that answers after a later poll's answer does not repaint it) — the timer's end cut at the last input, the config poller's outage behaviour on the shared Backoff, the requests the panel makes, the outbox of timer intervals, the date the button opens, and the panel's flags, saved frame and refusal to activate the app
 import AppKit
 import XCTest
 @testable import HabitAgent
@@ -175,6 +175,30 @@ final class ConditionalPollerTests: XCTestCase {
                 }
             )
         }
+    }
+
+    func testAnAnswerThatLandsAfterALaterPollsAnswerDoesNotRepaintIt() async {
+        // Two polls overlap (the loop and a poll after a write); the first one is slow and answers last.
+        var gates: [CheckedContinuation<Void, Never>] = []
+        var etagsAsked: [String?] = []
+        let poller = ConditionalPoller<String>(interval: 30, staleAfter: 120, maxRetryDelay: 60, sleep: { _ in }) { etag in
+            etagsAsked.append(etag)
+            guard etagsAsked.count == 1 else { return .modified("new", etag: "\"2\"") }
+            await withCheckedContinuation { gates.append($0) }
+            return .modified("old", etag: "\"1\"")
+        }
+        let slow = Task { await poller.pollOnce() }
+        while gates.isEmpty { await Task.yield() }
+
+        await poller.pollOnce()
+        gates.forEach { $0.resume() }
+        await slow.value
+
+        XCTAssertEqual(poller.value, "new")
+        XCTAssertEqual(poller.pollsStarted, 2)
+        XCTAssertEqual(poller.lastSuccessfulPoll, 2)
+        await poller.pollOnce()
+        XCTAssertEqual(etagsAsked.last, "\"2\"")
     }
 
     func testAnAnswerIsKeptAndItsETagIsSentNext() async {

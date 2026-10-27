@@ -1,6 +1,6 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/242
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send
-// summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
+// summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
 import Combine
 import Foundation
 
@@ -80,6 +80,7 @@ final class DayViewModel: ObservableObject {
     static let markFailedMessage = "Отметка не сохранилась"
     static let factFailedMessage = "Факт не сохранился"
     static let closingFailedMessage = "День не закрылся"
+    static let refreshFailedMessage = "День не обновился"
     static let closingNeedsServerMessage =
         "Нет сети. Закрыть день можно только со связью: вердикт считает сервер. Поля остались на экране."
     static let factNeedsServerMessage = "Нет сети. Исправить или удалить факт можно только со связью."
@@ -112,6 +113,9 @@ final class DayViewModel: ObservableObject {
     /// Bumped when a notebook save starts and when it ends. A re-read that was sent before
     /// either must not bring its notebook text: it may predate the save.
     private var notebookSaveEpoch = 0
+    /// The last text a save of each day put on the server, with the save's start epoch. A re-read of
+    /// that day sent no later than that epoch is older than the save, whatever day is on screen now.
+    private var savedNotebooks: [String: (text: String, epoch: Int)] = [:]
 
     /// Text typed over a server value, with the server value it was typed on.
     private struct Typed: Equatable {
@@ -214,11 +218,13 @@ final class DayViewModel: ObservableObject {
 
     /// Re-read after a write: counts and the verdict are the server's to recount.
     /// Silent — a failure leaves the screen as it is.
-    private func reloadSilently() async {
-        await fetch(showFailure: false)
+    private func reloadSilently(reportingFailure: Bool = false) async {
+        await fetch(showFailure: false, reportingFailure: reportingFailure)
     }
 
-    private func fetch(showFailure: Bool) async {
+    /// `showFailure` turns the screen into the error state; `reportingFailure` only raises `actionError`
+    /// for a read the person asked for, and leaves the screen as it is.
+    private func fetch(showFailure: Bool, reportingFailure: Bool = false) async {
         guard let api = apiProvider() else {
             if showFailure { state = .failure(Self.notConfiguredMessage) }
             return
@@ -253,16 +259,23 @@ final class DayViewModel: ObservableObject {
             // A notebook save that ran or is running since the request left makes this answer's
             // notebook stale for the day on screen; everything else in it is still current.
             let notebookIsStale = isSavingNotebook || notebookSaveEpoch != epochAtSend
-            apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate)
+            // Another day on screen cannot keep its notebook, but the text its save wrote outranks an older answer.
+            let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0.text : nil }
+            apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, serverNotebook: savedSince)
             state = .loaded
         } catch {
-            guard generation == loadGeneration, showFailure else { return }
-            state = .failure(Self.message(for: error))
+            guard generation == loadGeneration else { return }
+            if showFailure {
+                state = .failure(Self.message(for: error))
+            } else if reportingFailure, !Task.isCancelled {
+                actionError = Self.failure(Self.refreshFailedMessage, error)
+            }
         }
     }
 
     /// Writes still in the queue are not on the server yet: their marks and notebook are laid on top.
-    private func apply(_ fetched: DayDetailDTO, keepingNotebook: Bool) {
+    /// `serverNotebook` stands in for the answer's notebook text when that answer is known to be older.
+    private func apply(_ fetched: DayDetailDTO, keepingNotebook: Bool, serverNotebook: String?) {
         detail = fetched
         let waiting = waitingActions
         marks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
@@ -275,6 +288,8 @@ final class DayViewModel: ObservableObject {
         let date = fetched.day.date
         var notebookEdit = unsavedNotebook
         var closingEdit = unsentClosing
+        // The note "your save replaced the server text" belongs to the day it was raised on.
+        let replacedNote = loadedDate == date && notebookConflictOverwritten ? notebookConflict : nil
         if loadedDate != date {
             // Leaving a day keeps what was typed and not yet saved as that day's draft;
             // coming back restores it over the server's text.
@@ -289,7 +304,14 @@ final class DayViewModel: ObservableObject {
             closingKeys = [:]
         }
         let queuedNotebook = waiting.compactMap { $0.queuedNotebook(of: date) }.last
-        if !keepingNotebook { seedNotebook(server: queuedNotebook ?? fetched.notebook ?? "", unsaved: notebookEdit) }
+        if !keepingNotebook {
+            seedNotebook(server: queuedNotebook ?? serverNotebook ?? fetched.notebook ?? "", unsaved: notebookEdit)
+            if let replacedNote, notebookConflict == nil {
+                // Only "Понятно" takes the note away, not the next re-read.
+                notebookConflict = replacedNote
+                notebookConflictOverwritten = true
+            }
+        }
         seedClosing(from: fetched.summary, unsent: closingEdit)
         redrawQueued(outbox?.writes ?? [])
     }
@@ -350,11 +372,14 @@ final class DayViewModel: ObservableObject {
 
     /// Back from the background or past midnight: the server's today may have turned over and
     /// the web may have edited the day. Silent, no loader; a screen that is not loaded is left alone.
-    func rereadInPlace() async {
-        timeZone = timeZoneProvider()
+    /// `reportingFailure` is for pull-to-refresh, where the person is waiting for an answer and a
+    /// failure says so; the other callers stay quiet.
+    func rereadInPlace(reportingFailure: Bool = false) async {
+        let zone = timeZoneProvider()
+        if zone != timeZone { timeZone = zone }
         guard state == .loaded else { return }
         await outbox?.flush()
-        await reloadSilently()
+        await reloadSilently(reportingFailure: reportingFailure)
     }
 
     /// The device moved to another zone: plan windows are read on the new wall clock.
@@ -522,6 +547,7 @@ final class DayViewModel: ObservableObject {
         guard let date = shownDate, !isSavingNotebook, !isNotebookSaveBlocked else { return }
         isSavingNotebook = true
         notebookSaveEpoch += 1
+        let startEpoch = notebookSaveEpoch
         defer {
             isSavingNotebook = false
             notebookSaveEpoch += 1
@@ -542,6 +568,7 @@ final class DayViewModel: ObservableObject {
                     outbox?.enqueue(queued, label: label)
                 }
             }
+            savedNotebooks[date] = (text, startEpoch)
             // The person may have stepped to another day while this was in flight.
             if shownDate == date {
                 savedNotebook = text
@@ -555,9 +582,7 @@ final class DayViewModel: ObservableObject {
                 notebookDrafts[date] = nil
             }
         } catch {
-            let failed = "Блокнот за \(DayFormat.title(of: date)) не сохранился"
-            let reason = Self.message(for: error, fallback: failed)
-            actionError = reason == failed ? failed : "\(failed): \(reason)"
+            actionError = Self.failure("Блокнот за \(DayFormat.title(of: date)) не сохранился", error)
         }
     }
 
@@ -637,6 +662,8 @@ final class DayViewModel: ObservableObject {
     private func adoptSentClosing(_ answer: DaySummaryDTO, submitted: DayClosingRequestDTO) {
         savedClosingBody = answer.bodyMd
         savedClosingMinutes = answer.workMinutes.map(String.init) ?? ""
+        // A conflict raised by a re-read while the closing was in flight compared against the old base.
+        closingConflict = nil
         if submitted.bodyMd != nil, closingBody.trimmingCharacters(in: .whitespacesAndNewlines) == answer.bodyMd {
             closingBody = savedClosingBody
         }
@@ -662,6 +689,12 @@ final class DayViewModel: ObservableObject {
     }
 
     // MARK: Errors
+
+    /// "<what failed>: <why>", or the plain sentence when the reason is no more than that.
+    private static func failure(_ failed: String, _ error: Error) -> String {
+        let reason = message(for: error, fallback: failed)
+        return reason == failed ? failed : "\(failed): \(reason)"
+    }
 
     private static func message(for error: Error, fallback: String? = nil) -> String {
         if let apiError = error as? APIClientError {

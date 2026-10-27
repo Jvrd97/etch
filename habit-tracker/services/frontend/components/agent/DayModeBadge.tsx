@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/228
-// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out
+// [review:need-review] PHASE-03/241
+// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out; since #241 also when a mode is already on screen (it may be yesterday's): the controls are locked until a read goes through
 
 import Link from 'next/link';
 import type { DayMode, DayModeKind } from '@/lib/api';
@@ -13,7 +13,7 @@ export interface DayModeBadgeProps {
   saving: boolean;
   /** The last write failed. */
   error: string | null;
-  /** The read failed: the badge says so and offers `onRetry`. */
+  /** The read failed: the badge says so and offers `onRetry`; a mode still shown is locked, it may be stale. */
   loadFailed: boolean;
   onDecide: (kind: DayModeKind, nocode: boolean) => void;
   onReset: () => void;
@@ -22,6 +22,19 @@ export interface DayModeBadgeProps {
 
 const LOAD_FAILED = 'Не удалось прочитать режим дня';
 const RETRY_LABEL = 'Повторить';
+
+function LoadFailedNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <>
+      <p role="alert" className="text-warning">
+        {LOAD_FAILED}
+      </p>
+      <button type="button" onClick={onRetry} className="text-lime hover:underline">
+        {RETRY_LABEL}
+      </button>
+    </>
+  );
+}
 
 export default function DayModeBadge({
   mode,
@@ -36,15 +49,11 @@ export default function DayModeBadge({
     if (!loadFailed) return null;
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-3xl border border-white/5 bg-surface px-4 py-3 text-sm">
-        <p role="alert" className="text-warning">
-          {LOAD_FAILED}
-        </p>
-        <button type="button" onClick={onRetry} className="text-lime hover:underline">
-          {RETRY_LABEL}
-        </button>
+        <LoadFailedNotice onRetry={onRetry} />
       </div>
     );
   }
+  const locked = saving || loadFailed;
   return (
     <div
       data-source={mode.source}
@@ -53,7 +62,7 @@ export default function DayModeBadge({
       <select
         aria-label="Вид дня"
         value={mode.kind}
-        disabled={saving}
+        disabled={locked}
         onChange={(event) => onDecide(event.target.value as DayModeKind, mode.nocode)}
         className="rounded-xl bg-card border border-white/10 px-2 py-1 text-text-primary"
       >
@@ -67,7 +76,7 @@ export default function DayModeBadge({
         <input
           type="checkbox"
           checked={mode.nocode}
-          disabled={saving}
+          disabled={locked}
           onChange={() => onDecide(mode.kind, !mode.nocode)}
         />
         {NOCODE_LABEL}
@@ -76,7 +85,7 @@ export default function DayModeBadge({
       {mode.source === 'manual' && (
         <button
           type="button"
-          disabled={saving}
+          disabled={locked}
           onClick={onReset}
           className="text-lime hover:underline disabled:opacity-50"
         >
@@ -86,6 +95,11 @@ export default function DayModeBadge({
       <Link href={MODE_SCHEDULE_HREF} className="ml-auto text-text-secondary hover:text-text-primary">
         Расписание
       </Link>
+      {loadFailed && (
+        <div className="flex basis-full flex-wrap items-center gap-3">
+          <LoadFailedNotice onRetry={onRetry} />
+        </div>
+      )}
       {error !== null && (
         <p role="alert" className="basis-full text-warning">
           {error}
