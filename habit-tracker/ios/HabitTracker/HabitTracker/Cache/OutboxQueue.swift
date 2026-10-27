@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225
-// summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network, a wrong key or a 5xx keep it waiting, a refusal moves it to a visible "not sent" list with the reason; a newer "set" of one object replaces the waiting one; retry and discard from the list
+// summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
 import Combine
 import Foundation
 import Network
@@ -156,6 +156,18 @@ struct QueuedNotebook: Codable, Equatable {
     var expected: String?
 }
 
+/// Why a write sits in the "not sent" list; decides what a retry from the list does. Stored on disk.
+enum OutboxFailureKind: String, Codable {
+    /// The server said no for good (4xx); a retry sends the same write again.
+    case refused
+    /// The server failed `OutboxQueue.maxServerErrorAttempts` times in a row (5xx).
+    case serverErrors
+    /// A press carrying its day was refused with 409: the day turned (or the button is off).
+    case dayTurned
+    /// The replay check found the object changed on the server, or could not read it.
+    case changedOnServer
+}
+
 /// One queued write. `key` is the Idempotency-Key of every attempt, the failed direct one included,
 /// so a request that reached the server and lost its answer is not recorded twice.
 struct OutboxWrite: Identifiable, Equatable {
@@ -169,21 +181,25 @@ struct OutboxWrite: Identifiable, Equatable {
     /// What the person did, in words, for the list of waiting writes.
     let label: String
     var createdAt: Date
-    var attempts: Int
+    /// 5xx answers in a row; a dead network in between starts the count again.
+    var serverErrors: Int
     var status: PendingStatus
-    /// Why the write is in the "not sent" list.
+    /// Why the write is in the "not sent" list, in words, and what kind of reason it is.
     var failure: String?
+    var failureKind: OutboxFailureKind?
 
     /// The retry button of the "not sent" list says what a retry will do.
     var retryTitle: String {
-        guard failure == OutboxQueue.dayTurnedReason || failure == OutboxQueue.notebookChangedReason
-            || failure == OutboxQueue.markChangedReason else { return Self.retryTitle }
-        if case .tapQuickMark = action { return Self.retryTodayTitle }
-        return Self.retryOverwriteTitle
+        switch failureKind {
+        case .dayTurned: return Self.retryTodayTitle
+        case .changedOnServer: return Self.retryOverwriteTitle
+        case .refused, .serverErrors, nil: return Self.retryTitle
+        }
     }
 }
 
-/// The replay refused a write before sending it: the object moved on the server since it was made.
+/// The replay refused a write before sending it: the object moved on the server since it was made,
+/// or the check could not read the server's state.
 struct OutboxConflict: Error, Equatable {
     let reason: String
 }
@@ -242,9 +258,10 @@ final class PendingWriteRecord {
     var action: Data
     var label: String
     var createdAt: Date
-    var attempts: Int
+    var serverErrors: Int = 0
     var statusRaw: String
     var failure: String?
+    var failureKindRaw: String?
 
     init(write: OutboxWrite, action: Data) {
         self.id = write.id
@@ -252,9 +269,10 @@ final class PendingWriteRecord {
         self.action = action
         self.label = write.label
         self.createdAt = write.createdAt
-        self.attempts = write.attempts
+        self.serverErrors = write.serverErrors
         self.statusRaw = write.status.rawValue
         self.failure = write.failure
+        self.failureKindRaw = write.failureKind?.rawValue
     }
 }
 
@@ -309,9 +327,10 @@ final class SwiftDataOutboxStore: OutboxStore {
             return
         }
         record.createdAt = write.createdAt
-        record.attempts = write.attempts
+        record.serverErrors = write.serverErrors
         record.statusRaw = write.status.rawValue
         record.failure = write.failure
+        record.failureKindRaw = write.failureKind?.rawValue
         persist()
     }
 
@@ -351,8 +370,8 @@ final class SwiftDataOutboxStore: OutboxStore {
         }
         return OutboxWrite(
             id: record.id, key: record.key, action: action, label: record.label, createdAt: record.createdAt,
-            attempts: record.attempts, status: PendingStatus(rawValue: record.statusRaw) ?? .pending,
-            failure: record.failure
+            serverErrors: record.serverErrors, status: PendingStatus(rawValue: record.statusRaw) ?? .pending,
+            failure: record.failure, failureKind: record.failureKindRaw.flatMap(OutboxFailureKind.init(rawValue:))
         )
     }
 }
@@ -371,19 +390,26 @@ protocol NetworkPathMonitoring: AnyObject {
 ///
 /// - A dead network, a wrong API key (401), 408/429 and a 5xx stop the flush: nothing overtakes the
 ///   write that failed, so the writes of one object reach the server in the order they were made.
-///   A 5xx that repeats `maxServerErrorAttempts` times moves the write to "not sent" — never deleted.
+///   A 5xx that repeats `maxServerErrorAttempts` times in a row moves the write to "not sent" —
+///   never deleted. A 2xx whose body this app cannot read counts as delivered.
 /// - Any other 4xx and a replay check that refuses (`OutboxConflict`) move the write to "not sent"
 ///   with the reason; the writes behind it go on.
 /// - Every attempt carries the write's `key`, so a send cut mid-way is the same write on the server.
 @MainActor
 final class OutboxQueue: ObservableObject {
     static let maxServerErrorAttempts = 5
-    nonisolated static let dayTurnedReason = "День уже сменился: сервер не записывает отметку задним числом."
+    nonisolated static let dayTurnedReason =
+        "Сервер не принял отметку (409): день уже сменился, а задним числом отметки не пишутся, или кнопка выключена."
+    nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
     nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
     nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
+    nonisolated static let checkFailedReason =
+        "Не удалось сверить с сервером, что там сейчас: ответ на проверку не прочитан. Запись не отправлена."
 
     /// Every write, oldest first: waiting ones and the "not sent" list.
     @Published private(set) var writes: [OutboxWrite] = []
+    /// The last flush stopped on a refused API key (401): the queue waits for Settings, not for the network.
+    @Published private(set) var waitsForKey = false
     /// The writes a flush delivered; announced only when there is at least one.
     let delivered = PassthroughSubject<[OutboxWrite], Never>()
 
@@ -407,6 +433,12 @@ final class OutboxQueue: ObservableObject {
     var pendingCount: Int { pending.count }
     var failedCount: Int { failed.count }
 
+    /// Whether a write of `action`'s object still waits. A direct write of that object would overtake
+    /// it, and the older one would then land over the newer: such a write goes through the queue.
+    func hasPending(sameTargetAs action: OutboxAction) -> Bool {
+        pending.contains { $0.action.target == action.target }
+    }
+
     /// Queues a write that could not be sent now. `key` is the key of the attempt that failed.
     /// A whole-state write replaces a waiting one of the same object (unless that one is in flight).
     func enqueue(_ action: OutboxAction, key: String = UUID().uuidString, label: String) {
@@ -417,37 +449,37 @@ final class OutboxQueue: ObservableObject {
                 store.delete(id: older.id)
             }
         }
-        store.append(
-            OutboxWrite(
-                id: UUID(), key: key, action: action, label: label, createdAt: now(), attempts: 0,
-                status: .pending, failure: nil
-            )
-        )
-        reload()
+        append(action, key: key, label: label, createdAt: now())
     }
 
     /// Puts back a write carried over from an older queue, with its own key and time.
     func restore(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
+        append(action, key: key, label: label, createdAt: createdAt)
+    }
+
+    private func append(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
         store.append(
             OutboxWrite(
-                id: UUID(), key: key, action: action, label: label, createdAt: createdAt, attempts: 0,
-                status: .pending, failure: nil
+                id: UUID(), key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
+                status: .pending, failure: nil, failureKind: nil
             )
         )
         reload()
     }
 
-    /// Sends a "not sent" write again, as the newest action and without the check that refused it.
-    /// The key stays: the server has not recorded it, or a repeat of it is the same write.
-    func retry(id: UUID) {
+    /// Sends a "not sent" write again at once, as the newest action and without the check that refused
+    /// it. The key stays: the server has not recorded it, or a repeat of it is the same write.
+    func retry(id: UUID) async {
         guard var write = writes.first(where: { $0.id == id && $0.status == .failed }) else { return }
         write.action = write.action.forcedRetry()
         write.status = .pending
         write.failure = nil
-        write.attempts = 0
+        write.failureKind = nil
+        write.serverErrors = 0
         write.createdAt = now()
         store.update(write)
         reload()
+        await flush()
     }
 
     func discard(id: UUID) {
@@ -479,6 +511,7 @@ final class OutboxQueue: ObservableObject {
                 try await sender.send(write.action, idempotencyKey: write.key)
                 store.delete(id: write.id)
                 sent.append(write)
+                waitsForKey = false
             } catch {
                 if !settle(write, after: error) { break }
             }
@@ -499,23 +532,31 @@ final class OutboxQueue: ObservableObject {
     /// Records the failure of `write`. Returns true when the flush may go on to the next write.
     private func settle(_ write: OutboxWrite, after error: Error) -> Bool {
         var settled = write
-        settled.attempts += 1
         switch Self.outcome(of: error, for: write.action) {
         case .waitForNetwork:
+            settled.serverErrors = 0
+            store.update(settled)
+            return false
+        case .waitForKey:
+            waitsForKey = true
+            settled.serverErrors = 0
             store.update(settled)
             return false
         case .serverError(let status):
-            if settled.attempts >= Self.maxServerErrorAttempts {
+            settled.serverErrors += 1
+            if settled.serverErrors >= Self.maxServerErrorAttempts {
                 settled.status = .failed
-                settled.failure = "Сервер \(settled.attempts) раз ответил ошибкой \(status)."
+                settled.failure = "Сервер \(settled.serverErrors) раз подряд ответил ошибкой \(status)."
+                settled.failureKind = .serverErrors
                 store.update(settled)
                 return true
             }
             store.update(settled)
             return false
-        case .refused(let reason):
+        case .refused(let reason, let kind):
             settled.status = .failed
             settled.failure = reason
+            settled.failureKind = kind
             store.update(settled)
             return true
         case .delivered:
@@ -526,36 +567,43 @@ final class OutboxQueue: ObservableObject {
 
     private enum Outcome {
         case waitForNetwork
+        case waitForKey
         case serverError(Int)
-        case refused(String)
+        case refused(String, OutboxFailureKind)
         case delivered
     }
 
     private static func outcome(of error: Error, for action: OutboxAction) -> Outcome {
-        if let conflict = error as? OutboxConflict { return .refused(conflict.reason) }
+        if let conflict = error as? OutboxConflict { return .refused(conflict.reason, .changedOnServer) }
         guard let apiError = error as? APIClientError else { return .waitForNetwork }
         switch apiError {
-        case .timeout, .transport, .unauthorized, .invalidBaseURL:
+        case .timeout, .transport, .invalidBaseURL:
             return .waitForNetwork
+        case .unauthorized:
+            return .waitForKey
         case .invalidResponse:
-            // The server answered 2xx with a body this app could not read: the write is there.
+            // The write request answered 2xx with a body this app could not read: the write is there.
+            // (A replay check that cannot read the server's state throws `OutboxConflict` instead.)
             return .delivered
         case .unexpectedStatus(let status):
             switch status {
             case 408, 429: return .waitForNetwork
             case 500...: return .serverError(status)
-            case 409: return .refused(conflictReason(for: action))
-            case 404: return .refused("Сервер не нашёл, куда записать (404): объект удалён.")
-            case 400, 422: return .refused("Сервер не принял данные (\(status)).")
-            default: return .refused("Сервер отказал (\(status)).")
+            case 409: return conflict(for: action)
+            case 404: return .refused("Сервер не нашёл, куда записать (404): объект удалён.", .refused)
+            case 400, 422: return .refused("Сервер не принял данные (\(status)).", .refused)
+            default: return .refused("Сервер отказал (\(status)).", .refused)
             }
         }
     }
 
-    /// A 409 is a server-side rule saying no: for a press, the day guard (or a button switched off).
-    private static func conflictReason(for action: OutboxAction) -> String {
-        if case .tapQuickMark = action { return dayTurnedReason }
-        return "Сервер отказал (409): запись противоречит тому, что уже есть на сервере."
+    /// A 409 is a server-side rule saying no. A press that carried its day: the day turned or the button
+    /// is off (the status alone does not tell). A press without a day: the button is off.
+    private static func conflict(for action: OutboxAction) -> Outcome {
+        guard case .tapQuickMark(let tap) = action else {
+            return .refused("Сервер отказал (409): запись противоречит тому, что уже есть на сервере.", .refused)
+        }
+        return tap.serverDay == nil ? .refused(tapRefusedReason, .refused) : .refused(dayTurnedReason, .dayTurned)
     }
 
     private func reload() {
@@ -592,13 +640,14 @@ enum OutboxLive {
 
     static let shared: OutboxQueue = {
         let store: OutboxStore
+        // Set only once the on-disk store opened: importing the old queues into memory would lose them.
         var directory: URL?
         do {
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             )
-            directory = support
             store = try SwiftDataOutboxStore(url: support.appendingPathComponent(fileName))
+            directory = support
         } catch {
             logger.error("On-disk outbox unavailable, using memory: \(String(describing: error))")
             store = InMemoryOutboxStore()

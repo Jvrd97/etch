@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/225
-// summary: the one counter of the offline queue shown atop Today, Quick marks and Day — "written on the phone, waiting to send: N" and "not sent: M"; a tap opens the list of waiting writes with their day and the "not sent" ones with the reason, a retry that says what it will do, and discard
+// summary: the one counter of the offline queue shown atop Today, Quick marks and Day — "written on the phone, waiting to send: N", "not sent: M" and a word when the server refuses the API key; a tap opens the list of waiting writes with their day and the "not sent" ones with the reason, a retry that says what it will do and sends at once, and discard
 import SwiftUI
 
 /// A strip that appears while the queue holds anything. The count is the queue's, not a screen's:
@@ -8,9 +8,12 @@ struct OutboxQueueBar: View {
     @ObservedObject var queue: OutboxQueue
     @State private var showsList = false
 
-    static func caption(pending: Int, failed: Int) -> String {
+    static let keyRefusedCaption = "сервер не принял ключ API — проверьте Settings"
+
+    static func caption(pending: Int, failed: Int, waitsForKey: Bool = false) -> String {
         var parts: [String] = []
         if pending > 0 { parts.append("Записано на телефоне, ждёт отправки: \(pending)") }
+        if pending > 0 && waitsForKey { parts.append(keyRefusedCaption) }
         if failed > 0 { parts.append("Не отправлено: \(failed)") }
         return parts.joined(separator: " · ")
     }
@@ -20,7 +23,7 @@ struct OutboxQueueBar: View {
             Button { showsList = true } label: {
                 HStack(spacing: DS.Spacing.sm) {
                     Image(systemName: queue.failedCount > 0 ? "exclamationmark.icloud" : "icloud.and.arrow.up")
-                    Text(Self.caption(pending: queue.pendingCount, failed: queue.failedCount))
+                    Text(Self.caption(pending: queue.pendingCount, failed: queue.failedCount, waitsForKey: queue.waitsForKey))
                         .font(DS.Typography.caption)
                         .multilineTextAlignment(.leading)
                     Spacer(minLength: 0)
@@ -55,7 +58,7 @@ struct OutboxQueueList: View {
                         ForEach(queue.failed) { write in
                             row(write)
                             HStack {
-                                Button(write.retryTitle) { queue.retry(id: write.id) }
+                                Button(write.retryTitle) { Task { await queue.retry(id: write.id) } }
                                     .buttonStyle(.borderless)
                                 Spacer()
                                 Button("Удалить", role: .destructive) { queue.discard(id: write.id) }

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-03/225
-// summary: tests for the one offline write queue — airplane mode → write → network back → one record on a server that dedupes by key; a send cut mid-way is repeated under the same key; a relaunch with a non-empty queue; order across kinds; 5xx kept, 4xx in the visible "not sent" list with a reason, 401 waits; a newer "set" replaces the waiting one; retry and discard from the list; the day a write was made survives midnight (explicit dates stay, a quick-mark press is refused instead of landing in the next day); a stale notebook or mark is refused instead of overwriting fresher server data; one-time import of the two old queues
+// summary: tests for the one offline write queue — airplane mode → write → network back → one record on a server that dedupes by key; a send cut mid-way is repeated under the same key; a relaunch with a non-empty queue; order across kinds; 5xx kept (only five in a row give up, a dead network resets the count), 4xx in the visible "not sent" list with a reason, 401 waits and says so; an unreadable answer of the replay check refuses instead of passing for delivered; a 409 of a press without a day is not called a day turn; retry sends at once; a newer "set" replaces the waiting one; retry and discard from the list; the day a write was made survives midnight (explicit dates stay, a quick-mark press is refused instead of landing in the next day); a stale notebook or mark is refused instead of overwriting fresher server data; one-time import of the two old queues
 import Combine
 import SwiftData
 import XCTest
@@ -16,6 +16,8 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
     var notebooks: [String: String] = [:]
     var marks: [String: [UUID: String]] = [:]
     var unopenedFetches: [String] = []
+    /// Thrown by the read of the day the replay checks run on.
+    var dayFetchError: Error?
     /// Consumed one per write request before it is handled; empty answers normally.
     var failures: [Error] = []
     /// Fails after the server has stored the write: the answer is lost on the way back.
@@ -72,6 +74,7 @@ final class FakeOutboxServer: OutboxEntriesAPI, QuickMarksAPI, OutboxDayAPI {
 
     func fetchDayUnopened(date: String) async throws -> DayDetailDTO {
         unopenedFetches.append(date)
+        if let dayFetchError { throw dayFetchError }
         let marks = (marks[date] ?? [:]).map { DayMarkDTO(itemId: $0.key, state: $0.value, note: nil) }
         return try DayFixtures.day(date: date, notebook: .some(notebooks[date]), marks: marks)
     }
@@ -282,7 +285,7 @@ final class OutboxQueueTests: XCTestCase {
 
         XCTAssertEqual(server.requests.count, 1)
         XCTAssertEqual(queue.pendingCount, 2, "a 5xx loses nothing")
-        XCTAssertEqual(queue.pending.first?.attempts, 1)
+        XCTAssertEqual(queue.pending.first?.serverErrors, 1)
     }
 
     func testAServerErrorThatPersistsMovesTheWriteToNotSentInsteadOfDroppingIt() async {
@@ -396,10 +399,10 @@ final class OutboxQueueTests: XCTestCase {
         await queue.flush(using: replay(server))
         queue.enqueue(entry("2"), key: "k2", label: "b")
 
-        queue.retry(id: queue.failed[0].id)
+        await queue.retry(id: queue.failed[0].id)
 
         XCTAssertEqual(queue.pending.map(\.key), ["k2", "k1"], "a deliberate retry is the newest action")
-        XCTAssertEqual(queue.pending.last?.attempts, 0)
+        XCTAssertEqual(queue.pending.last?.serverErrors, 0)
         XCTAssertNil(queue.pending.last?.failure)
         await queue.flush(using: replay(server))
         XCTAssertEqual(server.rowCount, 2)
@@ -453,7 +456,7 @@ final class OutboxQueueTests: XCTestCase {
         server.today = "2026-10-27"
         await queue.flush(using: replay(server))
 
-        queue.retry(id: queue.failed[0].id)
+        await queue.retry(id: queue.failed[0].id)
         await queue.flush(using: replay(server))
 
         XCTAssertEqual(server.tapRequests.map(\.entryDate), ["2026-10-26", nil])
@@ -489,7 +492,7 @@ final class OutboxQueueTests: XCTestCase {
         XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.notebookChangedReason)
         XCTAssertEqual(queue.failed.first?.retryTitle, OutboxWrite.retryOverwriteTitle)
 
-        queue.retry(id: queue.failed[0].id)
+        await queue.retry(id: queue.failed[0].id)
         await queue.flush(using: replay(server))
         XCTAssertEqual(server.notebooks["2026-10-26"], "с телефона", "the person chose to write over it")
     }
@@ -542,6 +545,152 @@ final class OutboxQueueTests: XCTestCase {
 
         XCTAssertEqual(server.requests.map(\.key), ["fact-1"])
         XCTAssertEqual(server.factBodies, [body])
+    }
+
+    // MARK: Round 2: counters, checks, retry, key
+
+    func testADeadNetworkBetweenServerErrorsStartsTheCountAgain() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(entry("1"), label: "a")
+        let blackouts = OutboxQueue.maxServerErrorAttempts - 1
+        server.failures = Array(repeating: APIClientError.unexpectedStatus(502), count: blackouts)
+            + [APIClientError.timeout]
+            + Array(repeating: APIClientError.unexpectedStatus(502), count: blackouts)
+
+        for _ in 0..<(2 * blackouts + 1) {
+            await queue.flush(using: replay(server))
+        }
+
+        XCTAssertEqual(queue.pendingCount, 1, "never five 5xx in a row: the write keeps waiting")
+        XCTAssertEqual(queue.pending.first?.serverErrors, blackouts)
+    }
+
+    func testManyNetworkDropsThenOneServerErrorKeepTheWriteWaiting() async {
+        let server = FakeOutboxServer()
+        let queue = makeQueue()
+        queue.enqueue(entry("1"), label: "a")
+        server.failures = Array(repeating: APIClientError.timeout, count: OutboxQueue.maxServerErrorAttempts)
+            + [APIClientError.unexpectedStatus(502)]
+
+        for _ in 0...OutboxQueue.maxServerErrorAttempts {
+            await queue.flush(using: replay(server))
+        }
+
+        XCTAssertEqual(queue.pendingCount, 1)
+        XCTAssertEqual(queue.failedCount, 0)
+    }
+
+    func testAnUnreadableNotebookCheckRefusesTheReplayInsteadOfDroppingIt() async {
+        let server = FakeOutboxServer()
+        server.dayFetchError = APIClientError.invalidResponse
+        let queue = makeQueue()
+        queue.enqueue(notebook("с телефона", expected: "утро"), label: "Блокнот")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertNil(server.notebooks["2026-10-26"], "nothing was written")
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.checkFailedReason)
+        XCTAssertEqual(queue.failed.first?.retryTitle, OutboxWrite.retryOverwriteTitle)
+    }
+
+    func testAnUnreadableMarkCheckRefusesTheReplayInsteadOfDroppingIt() async {
+        let server = FakeOutboxServer()
+        server.dayFetchError = APIClientError.invalidResponse
+        let queue = makeQueue()
+        let mark = QueuedDayMark(date: "2026-10-26", itemID: DayFixtures.taskID, state: "done", note: nil, expected: "")
+        queue.enqueue(.setDayMark(mark), label: "Релиз")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertNil(server.marks["2026-10-26"])
+        XCTAssertEqual(queue.failed.map(\.label), ["Релиз"])
+    }
+
+    func testANetworkDropDuringTheCheckKeepsTheWriteWaiting() async {
+        let server = FakeOutboxServer()
+        server.dayFetchError = APIClientError.timeout
+        let queue = makeQueue()
+        queue.enqueue(notebook("с телефона", expected: "утро"), label: "Блокнот")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(queue.pendingCount, 1)
+    }
+
+    func testAnUnreadableAnswerOfTheWriteItselfCountsAsDelivered() async {
+        let server = FakeOutboxServer()
+        server.failures = [APIClientError.invalidResponse]
+        let queue = makeQueue()
+        queue.enqueue(entry("1"), label: "a")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertTrue(queue.writes.isEmpty)
+    }
+
+    func testARefusedPressWithoutADayIsNotCalledADayTurn() async {
+        let server = FakeOutboxServer()
+        server.failures = [APIClientError.unexpectedStatus(409)]
+        let queue = makeQueue()
+        queue.enqueue(tap(day: nil), label: "Вода")
+
+        await queue.flush(using: replay(server))
+
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.tapRefusedReason)
+        XCTAssertEqual(queue.failed.first?.retryTitle, OutboxWrite.retryTitle)
+    }
+
+    func testRetrySendsAtOnce() async {
+        let server = FakeOutboxServer()
+        server.failures = [APIClientError.unexpectedStatus(422)]
+        let queue = makeQueue(server: server)
+        queue.enqueue(entry("1"), label: "a")
+        await queue.flush()
+
+        await queue.retry(id: queue.failed[0].id)
+
+        XCTAssertTrue(queue.writes.isEmpty)
+        XCTAssertEqual(server.rowCount, 1)
+    }
+
+    func testARefusedKeyIsSaidUntilAWriteGoesThrough() async {
+        let server = FakeOutboxServer()
+        server.failures = [APIClientError.unauthorized]
+        let queue = makeQueue()
+        queue.enqueue(entry("1"), label: "a")
+
+        await queue.flush(using: replay(server))
+        XCTAssertTrue(queue.waitsForKey)
+        XCTAssertTrue(
+            OutboxQueueBar.caption(pending: 1, failed: 0, waitsForKey: true).contains(OutboxQueueBar.keyRefusedCaption)
+        )
+
+        await queue.flush(using: replay(server))
+        XCTAssertFalse(queue.waitsForKey)
+    }
+
+    func testTheOldQueuesAreImportedOnlyOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "outbox-import-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tapFile = directory.appendingPathComponent(OutboxLegacyImport.tapFileName)
+        let legacy = Data(#"[{"id":"\#(UUID().uuidString)","quickMarkId":3,"categoryId":1,"createdAt":10,"utcOffsetMinutes":0,"attempts":0}]"#.utf8)
+        let emptyStore = { () throws -> ModelContext in
+            ModelContext(try ModelContainer(for: PendingEntryRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
+        }
+        let queue = makeQueue()
+
+        try legacy.write(to: tapFile)
+        OutboxLegacyImport.runOnce(directory: directory, into: queue, defaults: defaults, oldEntries: emptyStore)
+        try legacy.write(to: tapFile)
+        OutboxLegacyImport.runOnce(directory: directory, into: queue, defaults: defaults, oldEntries: emptyStore)
+
+        XCTAssertEqual(queue.pendingCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tapFile.path), "the second run does not touch the files")
     }
 
     // MARK: Old queues

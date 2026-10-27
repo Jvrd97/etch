@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
+import Combine
 import XCTest
 @testable import HabitTracker
 
@@ -653,7 +654,6 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertTrue(saved, "airplane mode does not lose the record")
         XCTAssertNil(viewModel.saveErrorMessage)
         XCTAssertEqual(outbox.pendingCount, 1)
-        XCTAssertEqual(viewModel.pendingUploadCount, 1)
         XCTAssertEqual(outbox.pending.first?.key, api.createKeys.first ?? nil, "the replay is the same request")
         XCTAssertNotNil(api.createKeys.first ?? nil)
         XCTAssertEqual(outbox.pending.first?.label, "Pushups")
@@ -716,7 +716,6 @@ final class TodayViewModelTests: XCTestCase {
         }
 
         XCTAssertEqual(outbox.pendingCount, 0)
-        XCTAssertEqual(viewModel.pendingUploadCount, 0)
         XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered])
         XCTAssertEqual(Set(api.createKeys.compactMap { $0 }).count, 1, "one key across the direct try and every replay")
     }
@@ -733,6 +732,9 @@ final class TodayViewModelTests: XCTestCase {
         api.createEntryResult = .success(delivered)
         api.entriesResult = .success([delivered])
 
+        var states: [TodayViewModel.LoadState] = []
+        let watch = viewModel.$state.dropFirst().sink { states.append($0) }
+        defer { watch.cancel() }
         let monitor = MockNetworkMonitor()
         outbox.startAutoFlush(monitor: monitor)
         await monitor.simulateOnline()
@@ -742,5 +744,24 @@ final class TodayViewModelTests: XCTestCase {
 
         XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore)
         XCTAssertFalse(viewModel.todayEntries.contains(where: \.isPending))
+        XCTAssertFalse(states.contains(.loading), "a background delivery re-reads quietly, no loader")
+    }
+
+    func testASaveOfAChecklistStillWaitingGoesThroughTheQueueSoTheOldOneCannotLandLast() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([routine])
+        api.upsertChecklistResult = .failure(APIClientError.timeout)
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+        _ = await viewModel.saveEntry(categoryID: 2, values: [20: "false"])
+        api.upsertChecklistResult = .success(
+            EntryDTO(id: 200, categoryId: 2, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 20, value: "true")])
+        )
+
+        let saved = await viewModel.saveEntry(categoryID: 2, values: [20: "true"])
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": false], ["20": true]], "the old one never follows the new")
+        XCTAssertEqual(outbox.pendingCount, 0)
     }
 }

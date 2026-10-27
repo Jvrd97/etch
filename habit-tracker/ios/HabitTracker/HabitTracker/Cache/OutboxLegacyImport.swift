@@ -42,18 +42,27 @@ enum OutboxLegacyImport {
 
     /// Runs both imports once per install. The entry import opens the default store with the same
     /// schema the old outbox did, so it changes nothing the old build did not do on every launch.
-    static func runOnce(directory: URL, into queue: OutboxQueue, defaults: UserDefaults = .standard) {
+    /// Call only with a queue on disk: the old files are deleted once imported.
+    static func runOnce(
+        directory: URL, into queue: OutboxQueue, defaults: UserDefaults = .standard,
+        oldEntries: () throws -> ModelContext = defaultStoreContext
+    ) {
         guard !defaults.bool(forKey: doneDefaultsKey) else { return }
         importTaps(from: directory.appendingPathComponent(tapFileName), into: queue)
         do {
-            let container = try ModelContainer(
-                for: PendingEntryRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: false)
-            )
-            importEntries(from: ModelContext(container), into: queue)
+            importEntries(from: try oldEntries(), into: queue)
         } catch {
             logger.error("Old entry queue unreadable: \(String(describing: error))")
         }
         defaults.set(true, forKey: doneDefaultsKey)
+    }
+
+    /// The default SwiftData store, opened with the schema the old outbox used.
+    nonisolated static func defaultStoreContext() throws -> ModelContext {
+        let container = try ModelContainer(
+            for: PendingEntryRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: false)
+        )
+        return ModelContext(container)
     }
 
     /// The old presses, replayed to the server's today: the old queue did not know their day.

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/225
-// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the day it was made as entry_date; a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened), and a server that moved on refuses the replay instead of being overwritten
+// summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the day it was made as entry_date; a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened), and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
 import Foundation
 
 /// Entry writes the queue replays. `APIClient` is the production implementation.
@@ -43,7 +43,7 @@ struct OutboxReplay: OutboxSending {
             )
         case .setDayMark(let mark):
             if let expected = mark.expected {
-                let current = try await day.fetchDayUnopened(date: mark.date)
+                let current = try await serverDay(mark.date)
                     .marks.first { $0.itemId == mark.itemID }?.state ?? ""
                 guard current == expected || current == (mark.state ?? "") else {
                     throw OutboxConflict(reason: OutboxQueue.markChangedReason)
@@ -58,11 +58,21 @@ struct OutboxReplay: OutboxSending {
             )
         case .saveNotebook(let notebook):
             if let expected = notebook.expected {
-                let current = try await day.fetchDayUnopened(date: notebook.date).notebook ?? ""
+                let current = try await serverDay(notebook.date).notebook ?? ""
                 if current == notebook.content { return }
                 guard current == expected else { throw OutboxConflict(reason: OutboxQueue.notebookChangedReason) }
             }
             try await day.saveNotebook(date: notebook.date, content: notebook.content)
+        }
+    }
+
+    /// The day for a replay check. An answer this app cannot read must not pass for "delivered"
+    /// (the queue reads `invalidResponse` of a write that way): the write is refused, kept visible.
+    private func serverDay(_ date: String) async throws -> DayDetailDTO {
+        do {
+            return try await day.fetchDayUnopened(date: date)
+        } catch APIClientError.invalidResponse {
+            throw OutboxConflict(reason: OutboxQueue.checkFailedReason)
         }
     }
 }

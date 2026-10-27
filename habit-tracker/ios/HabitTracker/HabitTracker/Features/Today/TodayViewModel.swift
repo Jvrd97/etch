@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225
-// summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day is read again; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
+// summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
 
@@ -36,8 +36,6 @@ final class TodayViewModel: ObservableObject {
     /// When non-nil the screen is showing cached data because the last load fell back
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
-    /// How many writes of any screen wait in the shared outbox — the one counter of the app.
-    @Published private(set) var pendingUploadCount: Int = 0
     @Published var saveErrorMessage: String?
 
     /// Where an avoid card is in recording a relapse. The entry is the one the tap landed on.
@@ -91,7 +89,6 @@ final class TodayViewModel: ObservableObject {
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         self.dateFormatter = formatter
-        self.pendingUploadCount = outbox?.pendingCount ?? 0
         bindOutbox()
     }
 
@@ -108,13 +105,12 @@ final class TodayViewModel: ObservableObject {
         outbox.delivered
             .sink { [weak self] writes in
                 guard writes.contains(where: { $0.queuedEntry != nil }) else { return }
-                Task { await self?.load() }
+                Task { await self?.rereadEntries() }
             }
             .store(in: &cancellables)
     }
 
     private func redrawPending(_ writes: [OutboxWrite]) {
-        pendingUploadCount = writes.filter { $0.status == .pending }.count
         todayEntries = withQueuedRows(todayEntries.filter { !$0.isPending }, from: writes)
     }
 
@@ -389,15 +385,21 @@ final class TodayViewModel: ObservableObject {
     /// streak when the category is an avoid one. Pending rows of the offline outbox stay.
     func reloadAfterMark(categoryID: Int) async {
         guard let api = apiProvider() else { return }
+        await rereadEntries()
+        if categories.first(where: { $0.id == categoryID })?.isAvoid == true {
+            await refreshStreak(categoryID: categoryID, api: api)
+        }
+    }
+
+    /// Reads today's records again without the loader: the screen stays as it is while the read runs.
+    private func rereadEntries() async {
+        guard let api = apiProvider() else { return }
         let today = todayString
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
             todayEntries = withQueuedRows(fetched)
         } catch {
             saveErrorMessage = Self.entriesRefreshFailedMessage
-        }
-        if categories.first(where: { $0.id == categoryID })?.isAvoid == true {
-            await refreshStreak(categoryID: categoryID, api: api)
         }
     }
 
@@ -451,6 +453,13 @@ final class TodayViewModel: ObservableObject {
                         }
                     )
                 )
+                if let outbox, outbox.hasPending(sameTargetAs: .upsertChecklist(payload)) {
+                    // An older save of this day still waits: a direct one would land first and the old
+                    // one over it. The new one replaces it in the queue and goes out now if it can.
+                    outbox.enqueue(.upsertChecklist(payload), label: label)
+                    await outbox.flush()
+                    return true
+                }
                 do {
                     saved = try await api.upsertChecklistEntry(payload)
                 } catch let error as APIClientError where error.isConnectivity && outbox != nil {
@@ -503,7 +512,7 @@ private extension OutboxWrite {
         case .upsertChecklist(let list):
             let values = list.values
                 .sorted { $0.key < $1.key }
-                .map { EntryValueDTO(fieldId: Int($0.key) ?? 0, value: $0.value ? "true" : "false") }
+                .compactMap { key, ticked in Int(key).map { EntryValueDTO(fieldId: $0, value: ticked ? "true" : "false") } }
             return (EntryCreateDTO(categoryId: list.categoryId, entryDate: list.entryDate, notes: nil, values: values), true)
         case .tapQuickMark, .setDayMark, .recordPlanFact, .saveNotebook:
             return nil

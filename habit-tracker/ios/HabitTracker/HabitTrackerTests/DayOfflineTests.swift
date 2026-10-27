@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/225
-// summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a delivery reads the day again; the day opens from the read cache; closing and fact corrections say they need the server and keep what was typed
+// summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
 import XCTest
 @testable import HabitTracker
 
@@ -31,9 +31,12 @@ final class DayOfflineTests: XCTestCase {
         await viewModel.load()
     }
 
-    private func makeViewModel() -> DayViewModel {
+    private func makeViewModel(now: Date = Date(timeIntervalSince1970: 1_792_918_800)) -> DayViewModel {
         let day: MockDayAPI = api
-        return DayViewModel(apiProvider: { day }, outbox: outbox, cacheStore: cache)
+        return DayViewModel(
+            apiProvider: { day }, timeZoneProvider: { TimeZone(identifier: "UTC")! }, outbox: outbox,
+            cacheStore: cache, now: { now }
+        )
     }
 
     // MARK: Marks
@@ -160,5 +163,47 @@ final class DayOfflineTests: XCTestCase {
         XCTAssertEqual(viewModel.actionError, DayViewModel.closingNeedsServerMessage)
         XCTAssertEqual(viewModel.closingBody, "итог дня")
         XCTAssertEqual(outbox.pendingCount, 0)
+    }
+
+    // MARK: A write of an object that still waits
+
+    func testAMarkOfALineWhoseOlderMarkWaitsGoesThroughTheQueue() async throws {
+        api.markResult = .failure(offline)
+        await viewModel.cycleMark(DayFixtures.minimumID)
+        api.markResult = .success(DayFixtures.mark(DayFixtures.minimumID, "failed"))
+        api.fetchResults = [.success(try DayFixtures.day(marks: [DayFixtures.mark(DayFixtures.minimumID, "failed")]))]
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+
+        XCTAssertEqual(api.markCalls.map(\.body.state), ["done", "failed"], "the old tick is never sent after the new one")
+        XCTAssertEqual(outbox.pendingCount, 0)
+        XCTAssertEqual(viewModel.state(of: DayFixtures.minimumID), "failed")
+    }
+
+    func testANotebookSaveWhoseOlderSaveWaitsGoesThroughTheQueue() async {
+        api.notebookError = offline
+        viewModel.notebook = "первый"
+        await viewModel.saveNotebook()
+        api.notebookError = nil
+
+        viewModel.notebook = "второй"
+        await viewModel.saveNotebook()
+
+        XCTAssertEqual(api.notebookCalls, ["первый", "второй"])
+        XCTAssertEqual(outbox.pendingCount, 0)
+        XCTAssertFalse(viewModel.isNotebookDirty)
+    }
+
+    // MARK: The cached day after midnight
+
+    func testACachedDayThatIsNotTodaySaysSo() async {
+        api.fetchResults = [.failure(offline)]
+        let nextMorning = makeViewModel(now: Date(timeIntervalSince1970: 1_792_990_800)) // 2026-10-26 07:00 UTC
+
+        await nextMorning.load()
+
+        XCTAssertEqual(nextMorning.shownDate, DayFixtures.date)
+        XCTAssertEqual(nextMorning.cachedDayNotice, "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: DayFixtures.date)).")
+        XCTAssertNil(viewModel.cachedDayNotice)
     }
 }

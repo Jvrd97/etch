@@ -60,12 +60,13 @@ final class QuickMarksViewModelTests: XCTestCase {
         step: Double? = 1,
         total: Double? = nil,
         done: Bool = false,
-        planned: Bool = false
+        planned: Bool = false,
+        day: String = "2026-10-25"
     ) -> QuickMarkDTO {
         QuickMarkDTO(
             id: id, label: "Mark \(id)", categoryId: category, fieldId: 10 + id, kind: kind,
             step: step, unitLabel: nil, icon: nil, color: nil, hotkey: nil, order: id,
-            showInAgent: true, isActive: true, entryDate: "2026-10-25", todayTotal: total,
+            showInAgent: true, isActive: true, entryDate: day, todayTotal: total,
             done: done, planned: planned, planItemId: nil
         )
     }
@@ -359,5 +360,39 @@ final class QuickMarksViewModelTests: XCTestCase {
 
         XCTAssertEqual(queue.failed.map(\.label), ["Mark 1"], "kept in the not-sent list with its reason")
         XCTAssertEqual(viewModel.marks[0].todayTotal, 1, "a press that is not going to land is not counted")
+    }
+
+    func testAPressOnAButtonListReadYesterdayIsNotPinnedToYesterday() async {
+        let cache = InMemoryCacheStore()
+        let online = MockQuickMarksAPI()
+        online.marksResult = .success([mark(id: 1, total: 0, day: "2026-10-24")])
+        let (first, _) = makeViewModel(api: online, cache: cache)
+        await first.load()
+        let api = MockQuickMarksAPI()
+        api.marksResult = .failure(APIClientError.timeout)
+        api.tapResults = [.failure(APIClientError.timeout)]
+        let (viewModel, queue) = makeViewModel(api: api, cache: cache)
+        await viewModel.load()
+
+        await viewModel.tap(viewModel.marks[0])
+        api.tapResults = [.success(.stub(markId: 1, total: 1))]
+        await queue.flush(using: replay(api))
+
+        XCTAssertEqual(api.taps.last?.request.entryDate, nil, "the list's day is not the day of the press")
+        XCTAssertTrue(queue.writes.isEmpty, "delivered, not refused as a turned day")
+    }
+
+    func testDiscardingAWaitingPressTakesItOffTheButton() async {
+        let api = MockQuickMarksAPI()
+        api.marksResult = .success([mark(id: 1, total: 1)])
+        api.tapResults = [.failure(APIClientError.timeout)]
+        let (viewModel, queue) = makeViewModel(api: api)
+        await viewModel.load()
+        await viewModel.tap(viewModel.marks[0])
+        XCTAssertEqual(viewModel.marks[0].todayTotal, 2)
+
+        queue.discard(id: queue.pending[0].id)
+
+        XCTAssertEqual(viewModel.marks[0].todayTotal, 1)
     }
 }

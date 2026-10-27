@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225
-// summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
+// summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
 import Combine
 import Foundation
 
@@ -56,6 +56,21 @@ final class DayViewModel: ObservableObject {
     /// The notebook of the shown day waits in the queue.
     @Published private(set) var isNotebookQueued = false
 
+    /// Opened offline on "today", the cache may hold an older day (the last one read): say so.
+    var cachedDayNotice: String? {
+        guard offlineAsOf != nil, requestedDate == nil, let shown = shownDate, shown != localToday else { return nil }
+        return "Сегодняшнего дня в кэше нет: показан \(DayFormat.title(of: shown))."
+    }
+
+    private var localToday: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: now())
+    }
+
     static let notConfiguredMessage = "Укажите адрес сервера в настройках"
     static let unreadableValueMessage = "Введите число: «300», «3,5» или «1:30» для времени"
     static let unreadableMinutesMessage = "Минуты работы — целое число"
@@ -75,6 +90,7 @@ final class DayViewModel: ObservableObject {
     private let timeZoneProvider: () -> TimeZone
     private let outbox: OutboxQueue?
     private let cache: ReadThroughCache
+    private let now: () -> Date
     private var cancellables: Set<AnyCancellable> = []
     private var loadedDate: String?
     private var loadGeneration = 0
@@ -111,13 +127,15 @@ final class DayViewModel: ObservableObject {
         apiProvider: @escaping () -> DayAPI?,
         timeZoneProvider: @escaping () -> TimeZone = { .current },
         outbox: OutboxQueue? = nil,
-        cacheStore: CacheStore = InMemoryCacheStore()
+        cacheStore: CacheStore = InMemoryCacheStore(),
+        now: @escaping () -> Date = Date.init
     ) {
         self.apiProvider = apiProvider
         self.timeZoneProvider = timeZoneProvider
         self.timeZone = timeZoneProvider()
         self.outbox = outbox
-        self.cache = ReadThroughCache(store: cacheStore)
+        self.cache = ReadThroughCache(store: cacheStore, now: now)
+        self.now = now
         bindOutbox()
     }
 
@@ -362,6 +380,16 @@ final class DayViewModel: ObservableObject {
         marks[itemID] = DayMarkDTO(itemId: itemID, state: newState, note: previous?.note)
         busyItems.insert(itemID)
         defer { busyItems.remove(itemID) }
+        let queued = QueuedDayMark(
+            date: date, itemID: itemID, state: newState, note: previous?.note, expected: previous?.state ?? ""
+        )
+        if let outbox, outbox.hasPending(sameTargetAs: .setDayMark(queued)) {
+            // An older mark of this line still waits: a direct one would land first and the old one over
+            // it. The new one replaces it in the queue (keeping its base) and goes out now if it can.
+            outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»")
+            await outbox.flush()
+            return
+        }
         do {
             let stored = try await api.setMark(
                 date: date, itemID: itemID, DayMarkRequestDTO(state: newState, note: previous?.note)
@@ -371,15 +399,7 @@ final class DayViewModel: ObservableObject {
         } catch {
             if let outbox, Self.isOffline(error) {
                 // The tick stays: it is on the phone and reaches the server with the state it was made over.
-                outbox.enqueue(
-                    .setDayMark(
-                        QueuedDayMark(
-                            date: date, itemID: itemID, state: newState, note: previous?.note,
-                            expected: previous?.state ?? ""
-                        )
-                    ),
-                    label: "Отметка «\(itemTitle(itemID))»"
-                )
+                outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»")
                 return
             }
             marks[itemID] = previous
@@ -407,13 +427,16 @@ final class DayViewModel: ObservableObject {
         )
         busyItems.insert(itemID)
         defer { busyItems.remove(itemID) }
-        let key = entryID == nil ? factKey(for: itemID, body: body) : nil
+        // The key of a new fact's attempt; nil for a correction, which has no key and is not queued.
+        var recordKey: String?
         do {
             let written: PlanFactWriteDTO
             if let entryID {
                 written = try await api.correctFact(date: date, itemID: itemID, entryID: entryID, body)
             } else {
-                written = try await api.recordFact(date: date, itemID: itemID, body, idempotencyKey: key ?? "")
+                let key = factKey(for: itemID, body: body)
+                recordKey = key
+                written = try await api.recordFact(date: date, itemID: itemID, body, idempotencyKey: key)
                 factKeys[itemID] = nil
             }
             applyWrite(written, itemID: itemID)
@@ -421,7 +444,7 @@ final class DayViewModel: ObservableObject {
             return true
         } catch {
             if Self.isOffline(error), outbox != nil {
-                guard let key else {
+                guard let key = recordKey else {
                     actionError = Self.factNeedsServerMessage
                     return false
                 }
@@ -499,16 +522,20 @@ final class DayViewModel: ObservableObject {
             notebookSaveEpoch += 1
         }
         let text = notebook
-        let base = savedNotebook
+        let queued = OutboxAction.saveNotebook(QueuedNotebook(date: date, content: text, expected: savedNotebook))
+        let label = "Блокнот за \(DayFormat.title(of: date))"
         do {
-            do {
-                try await api.saveNotebook(date: date, content: text)
-            } catch let error where Self.isOffline(error) && outbox != nil {
-                // Kept on the phone as saved; the replay checks the server still holds `base`.
-                outbox?.enqueue(
-                    .saveNotebook(QueuedNotebook(date: date, content: text, expected: base)),
-                    label: "Блокнот за \(DayFormat.title(of: date))"
-                )
+            if let outbox, outbox.hasPending(sameTargetAs: queued) {
+                // An older save of this day still waits: the new one replaces it and goes out now if it can.
+                outbox.enqueue(queued, label: label)
+                await outbox.flush()
+            } else {
+                do {
+                    try await api.saveNotebook(date: date, content: text)
+                } catch let error where Self.isOffline(error) && outbox != nil {
+                    // Kept on the phone as saved; the replay checks the server still holds what it was typed over.
+                    outbox?.enqueue(queued, label: label)
+                }
             }
             // The person may have stepped to another day while this was in flight.
             if shownDate == date {
