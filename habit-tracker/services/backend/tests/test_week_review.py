@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/255, PHASE-03/221, PHASE-03/245
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/255
 # summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with an absent sleep metric, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
 """
 Weekly review: one answer for the whole week, cut on the day boundary.
@@ -27,6 +27,7 @@ from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.health.aggregate import HourBucket
 from app.llm.client import LLMClient, LLMError
+from app.day.debt import week_verdict_line
 from app.main import app
 from app.models import Category, Entry, EntryValue, Field
 from app.models.field import FieldType
@@ -325,6 +326,21 @@ async def test_the_window_says_whether_today_is_already_counted(
 
     assert open_today["today_counted"] is False
     assert closed_today["today_counted"] is True
+
+
+async def test_today_is_the_logical_day_before_four_in_the_morning(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """03:30 on Wednesday is still Tuesday: Tuesday closed means today is counted."""
+    night = datetime(2026, 8, 26, 1, 30, tzinfo=timezone.utc)  # 03:30 in Berlin
+    monkeypatch.setattr(daytime, "now_utc", lambda: night)
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    assert (await client.get(URL)).json()["window"]["today_counted"] is False
+
+    await close_day(db_session, MONDAY + timedelta(days=1), "won", done=1, total=1)
+    window = (await client.get(URL)).json()["window"]
+
+    assert (window["today_counted"], window["as_of"]) == (True, "2026-08-25")
 
 
 async def test_a_finished_or_a_future_week_does_not_count_today(
@@ -849,10 +865,10 @@ async def test_the_word_average_is_said_once_per_health_line(
     assert line.count("средн") == 1
 
 
-async def test_the_verdict_line_is_the_one_the_prompt_retells(
+async def test_the_verdict_line_for_the_screen_and_the_prompt_differ_only_in_the_debt(
     client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
 ) -> None:
-    """One line for the screen and the model: the server writes it, nobody re-types it."""
+    """One sentence, written once: the screen reads the debt as hours, the model as minutes."""
     for offset in range(5):
         await close_day(
             db_session, MONDAY + timedelta(days=offset), "won", done=1, total=1
@@ -864,9 +880,35 @@ async def test_the_verdict_line_is_the_one_the_prompt_retells(
 
     assert body["verdict_line"] == (
         "Неделя выиграна: нет (правило: выиграны все дни недели и нет долга за "
-        "переработку; выиграно 5 из 6 дней, долг 0 мин)."
+        "переработку; выиграно 5 из 6 дней, долг 0 ч 0 мин)."
     )
-    assert body["verdict_line"] in llm.prompts[0]
+    prompt_line = body["verdict_line"].replace("долг 0 ч 0 мин", "долг 0 мин")
+    assert prompt_line in llm.prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("debt", "screen", "prompt"),
+    [
+        (90, "долг 1 ч 30 мин", "долг 90 мин"),
+        (45, "долг 0 ч 45 мин", "долг 45 мин"),
+        (120, "долг 2 ч 0 мин", "долг 120 мин"),
+    ],
+)
+def test_the_debt_is_hours_on_the_screen_and_minutes_in_the_prompt(
+    debt: int, screen: str, prompt: str
+) -> None:
+    on_screen = week_verdict_line(False, 6, 6, debt, as_hours=True)
+    to_model = week_verdict_line(False, 6, 6, debt, as_hours=False)
+
+    assert screen in on_screen
+    assert prompt in to_model
+    assert on_screen.replace(screen, prompt) == to_model
+
+
+def test_a_week_that_runs_has_the_same_undecided_line_everywhere() -> None:
+    assert week_verdict_line(None, 0, 0, 0, as_hours=True) == week_verdict_line(
+        None, 0, 0, 0, as_hours=False
+    )
 
 
 async def test_a_running_week_says_its_verdict_is_not_decided(

@@ -605,21 +605,6 @@ async def test_a_dropped_answer_has_its_own_log_line_without_the_text(
     assert "LLM backend failed" not in caplog.text
 
 
-async def test_a_written_advice_leaves_a_line_to_count_the_tripped_ones_against(
-    client: AsyncClient,
-    db_session: AsyncSession,
-    llm: FakeLLM,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO)
-    await fill_window(db_session)
-
-    await ask(client)
-
-    ours = [r for r in caplog.records if r.name == "app.api.supplement_advice"]
-    assert [r.getMessage() for r in ours] == ["health advice written"]
-
-
 @pytest.mark.parametrize(
     "plain",
     [

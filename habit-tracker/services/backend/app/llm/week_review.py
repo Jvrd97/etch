@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.core.humanize import hours_and_minutes
+from app.day.debt import week_verdict_line
 from app.llm.client import LLMClient
 from app.llm.health_format import average_basis, comparison_text, health_value
 from app.schemas.week_review import WeekReviewResponse
@@ -75,7 +76,13 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"прошлая неделя взята за те же {window.compared_days}."
         )
     lines += [
-        review.verdict_line,
+        week_verdict_line(
+            review.is_won,
+            totals.won_days,
+            totals.days_total,
+            review.debt_minutes,
+            as_hours=False,
+        ),
         f"Выиграно дней: {totals.won_days} из {totals.closed_days} закрытых "
         f"(прошлая неделя: {review.previous_totals.won_days} из "
         f"{review.previous_totals.closed_days}).",

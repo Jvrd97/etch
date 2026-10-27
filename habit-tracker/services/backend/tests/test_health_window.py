@@ -199,6 +199,13 @@ class TestHealthValue:
     ) -> None:
         assert health_value("steps", "count", value) == text
 
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+    def test_a_number_that_is_not_finite_is_an_error_not_a_line_of_the_prompt(
+        self, value: float
+    ) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            health_value("steps", "count", value)
+
     def test_a_big_number_is_never_printed_with_an_exponent(self) -> None:
         assert "e" not in health_value("steps", "count", 12_345_678.0)
         assert "e" not in health_value("other", "kcal", 1e15)

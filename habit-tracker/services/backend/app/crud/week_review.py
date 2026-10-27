@@ -48,7 +48,7 @@ from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.crud import streak as streak_crud
 from app.crud.values import parse_number
-from app.day.debt import week_is_won
+from app.day.debt import week_is_won, week_verdict_line
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
 from app.day.week import DAYS_IN_WEEK, iso_code, week_bounds
 from app.models import Category, Entry, EntryValue, Field
@@ -68,7 +68,7 @@ from app.schemas.week_review import (
     WeekWindow,
 )
 
-__all__ = ["build_week_review", "verdict_line", "week_has_data"]
+__all__ = ["build_week_review", "week_has_data"]
 
 # Знаменатель доли в целых процентах.
 FULL_SHARE_PCT = 100
@@ -117,23 +117,6 @@ class _Facts:
 def _pct(part: int, whole: int) -> int | None:
     """Доля в целых процентах; пустой знаменатель — «не с чем делить», не ноль."""
     return round(part * FULL_SHARE_PCT / whole) if whole else None
-
-
-def verdict_line(is_won: bool | None, totals: WeekTotals, debt_minutes: int) -> str:
-    """
-    Вердикт недели готовой строкой: экран его печатает, модель пересказывает.
-
-    Правило одно — `week_is_won`, и считается оно здесь, на сервере: все дни
-    выиграны, дни есть и долга за переработку нет. «5 из 6» — это «нет», а не «почти».
-    """
-    if is_won is None:
-        return "Неделя выиграна: пока не решено, неделя идёт."
-    return (
-        f"Неделя выиграна: {'да' if is_won else 'нет'} "
-        f"(правило: выиграны все дни недели и нет долга за переработку; "
-        f"выиграно {totals.won_days} из {totals.days_total} дней, "
-        f"долг {debt_minutes} мин)."
-    )
 
 
 def _spans(starts_on: date, today: date, today_closed: bool) -> tuple[_Span, _Span]:
@@ -517,7 +500,9 @@ async def build_week_review(
         delta=_delta(totals, previous_totals),
         debt_minutes=debt,
         is_won=is_won,
-        verdict_line=verdict_line(is_won, totals, debt),
+        verdict_line=week_verdict_line(
+            is_won, totals.won_days, totals.days_total, debt, as_hours=True
+        ),
         days=days,
         best_day=best,
         worst_day=worst,

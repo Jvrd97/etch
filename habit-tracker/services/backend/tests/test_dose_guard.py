@@ -9,6 +9,8 @@ write) and what must pass (a net that trips on «в 3 местах» costs the p
 advice). Every case is a parameter, so a miss names the phrase.
 """
 
+import unicodedata
+
 import pytest
 
 from app.llm.dose_guard import names_a_dose
@@ -114,6 +116,19 @@ CAUGHT = [
     "Выпей 1/2 таблетки.",
     "Выпей ¼ таблетки.",
     "Выпей 0,5 таблетки.",
+    # the endings -ой / -ей / -ою, which a careless fold eats («й» -> «и»)
+    "Пей по одной таблетке.",
+    "Пей по одной капсуле.",
+    "Выпей одной капсулой.",
+    "Запей 1 таблеткой.",
+    "Запей 1 капсулой.",
+    "Выпей одной таблетки.",
+    "Капни одной каплей.",
+    "Вколи 1 ампулой.",
+    "Рассоси 1 пилюлей.",
+    "Добавь одной единицей.",
+    "Хватит двух граммов.",
+    "Хватит одним граммом.",
     # decomposed and invisible characters
     "Дели по трёх таблеток.",
     "Пей 4​00 мг.",
@@ -194,6 +209,19 @@ PASSED = [
     "Окно: 2026-10-20 - 2026-10-26, 7 дн. (сегодняшний день не входит).",
     "Добавки: принято 5 из 7 запланированных приёмов (71%).",
     "Совет: пройдись вечером и отметь приём в одно и то же время.",
+    # «единица» is also a point of a measure that is not a dose
+    "Пульс покоя снизился на 4 единицы.",
+    "Пульс покоя ниже на две единицы.",
+    "Пульс упал на 3 ед.",
+    "Пульс покоя вырос на одну единицу, а шагов стало больше.",
+]
+
+# Dose and a pulse in one text: only the unit after the pulse words is not a dose.
+CAUGHT_NEXT_TO_A_PULSE = [
+    "Пульс снизился. Пей 5000 ед.",
+    "Пульс снизился, добавь 5000 единиц витамина D.",
+    "Пульс 60, добавь пять тысяч единиц.",
+    "Пульс снизился на 4 единицы. Добавь 5000 МЕ.",
 ]
 
 
@@ -215,3 +243,76 @@ def test_a_text_without_digits_or_units_is_quick() -> None:
     """The net runs on every answer: a long text must not make it crawl."""
     assert not names_a_dose("слово " * 20_000)
     assert not names_a_dose("1 " * 20_000)
+
+
+@pytest.mark.parametrize("text", CAUGHT_NEXT_TO_A_PULSE)
+def test_a_dose_next_to_a_pulse_is_still_caught(text: str) -> None:
+    assert names_a_dose(text), text
+
+
+# Written by hand, apart from the patterns: the case is a class of error — a fold
+# that eats an ending shows up as a hole in one column of this table, not in a phrase.
+NUMERALS = [
+    "ноль", "нуль",
+    "один", "одна", "одно", "одну", "одной", "одного", "одному", "одним",
+    "два", "две", "двух", "двум", "двумя",
+    "три", "трёх", "трем", "тремя",
+    "четыре", "четырёх", "четырем", "четырьмя",
+    "пять", "пяти", "пятью", "шесть", "шести", "шестью",
+    "семь", "семи", "семью", "восемь", "восьми", "восемью",
+    "девять", "девяти", "девятью", "десять", "десяти", "десятью",
+    "одиннадцать", "двенадцати", "тринадцатью", "четырнадцать",
+    "пятнадцати", "шестнадцать", "семнадцати", "восемнадцать", "девятнадцати",
+    "двадцать", "двадцати", "двадцатью", "тридцать", "тридцати",
+    "сорок", "сорока", "пятьдесят", "пятидесяти", "шестьдесят", "шестидесяти",
+    "семьдесят", "семидесяти", "восемьдесят", "восьмидесяти",
+    "девяносто", "девяноста", "сто", "ста",
+    "двести", "двухсот", "триста", "трёхсот", "четыреста", "четырёхсот",
+    "пятьсот", "пятисот", "шестьсот", "шестисот", "семьсот", "семисот",
+    "восемьсот", "восьмисот", "девятьсот", "девятисот",
+    "тысяча", "тысячи", "тысяч", "полтора", "полторы", "полутора",
+]  # fmt: skip
+
+
+def _forms(stem: str, endings: str) -> list[str]:
+    return [stem + ending for ending in endings.split(",")]
+
+
+UNIT_FORMS = [
+    *_forms("таблетк", "а,и,у,е,ой,ою"), "таблеток", "таблеткам", "таблетками", "таблетках",
+    *_forms("капсул", "а,ы,у,е,ой,ою,ам,ами,ах"), "капсул",
+    *_forms("капл", "я,и,ю,е,ей,ею,ям,ями,ях"), "капель",
+    *_forms("ампул", "а,ы,у,е,ой,ою,ам,ами,ах"), "ампул",
+    *_forms("пилюл", "я,и,ю,е,ей,ею,ям,ями,ях"), "пилюль",
+    *_forms("единиц", "а,ы,у,е,ей,ею,ам,ами,ах"), "единиц", "ед.",
+    *_forms("грамм", "а,ов,у,ом,е,ы,ам,ами,ах"), "грамм", "гр.",
+    *_forms("миллиграмм", "а,ов,у,ом,е,ы,ам,ами,ах"), "миллиграмм",
+    *_forms("микрограмм", "а,ов,у,ом,е,ы,ам,ами,ах"), "микрограмм",
+    "мг", "мкг", "МЕ", "IU", "mg", "mcg", "мл", "ml", "капс.", "табл.", "таб.",
+]  # fmt: skip
+
+SHAPES = {
+    "plain": lambda text: text,
+    "decomposed": lambda text: unicodedata.normalize("NFD", text),
+    "capitalised": lambda text: text.capitalize(),
+    "shouted": lambda text: text.upper(),
+}
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("unit", UNIT_FORMS)
+def test_every_numeral_before_every_unit_form_is_a_dose(unit: str, shape: str) -> None:
+    """Each unit form after each numeral, plain and decomposed: no ending may be lost."""
+    missed = [
+        phrase
+        for numeral in NUMERALS
+        if not names_a_dose(phrase := SHAPES[shape](f"Выпей {numeral} {unit}"))
+    ]
+    assert not missed, missed
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("unit", UNIT_FORMS)
+def test_a_digit_before_every_unit_form_is_a_dose(unit: str, shape: str) -> None:
+    assert names_a_dose(SHAPES[shape](f"Выпей 5 {unit}")), unit
+    assert names_a_dose(SHAPES[shape](f"Выпей 1,5 {unit}")), unit

@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/179
+# [review:need-review] PHASE-03/179, PHASE-03/255
 # summary: the price of a raised ceiling — `accrue` counts the minutes a day ran over the **baseline** (never over the profile in force, and never for a day nobody measured) and `repay` picks the oldest open debt a short day can actually pay back, plus the reading of a week that is not won while anything is still owed
 """
 What a raised ceiling costs.
@@ -33,7 +33,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-__all__ = ["Debt", "accrue", "repay", "week_is_won"]
+from app.core.humanize import hours_and_minutes
+
+__all__ = ["Debt", "accrue", "repay", "week_is_won", "week_verdict_line"]
 
 
 @dataclass(frozen=True)
@@ -102,3 +104,29 @@ def week_is_won(won_days: int, total_days: int, open_debt_minutes: int) -> bool:
     that is precisely the trade the raised ceiling was sold on.
     """
     return total_days > 0 and won_days == total_days and open_debt_minutes == 0
+
+
+def week_verdict_line(
+    is_won: bool | None,
+    won_days: int,
+    total_days: int,
+    debt_minutes: int,
+    *,
+    as_hours: bool,
+) -> str:
+    """
+    The verdict of a week as one sentence, with its rule and its numbers.
+
+    Written once for two readers: the screen (`as_hours=True`, «долг 1 ч 30 мин»)
+    and the model prompt (`as_hours=False`, «долг 90 мин»). They differ in the
+    debt and nowhere else. `is_won` comes from `week_is_won`; None is a week that
+    is still running, whose verdict is not decided yet.
+    """
+    if is_won is None:
+        return "Неделя выиграна: пока не решено, неделя идёт."
+    debt = hours_and_minutes(debt_minutes) if as_hours else f"{debt_minutes} мин"
+    return (
+        f"Неделя выиграна: {'да' if is_won else 'нет'} "
+        f"(правило: выиграны все дни недели и нет долга за переработку; "
+        f"выиграно {won_days} из {total_days} дней, долг {debt})."
+    )

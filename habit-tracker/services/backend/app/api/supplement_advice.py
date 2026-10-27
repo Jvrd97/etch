@@ -55,8 +55,8 @@ async def write_advice(
     назначает доз и заканчивается оговоркой «не медицинская рекомендация».
     Данных мало — 422, и модель не вызывается. Бэкенд LLM недоступен — 503,
     сбой модели — 502 «Модель не ответила.», ответ с дозой — 502 «Совет
-    отклонён защитой.» (отдельная строка лога без текста). Ни названия добавок, ни значения здоровья, ни текст
-    совета в лог не пишутся.
+    отклонён защитой.» (отдельная строка лога без текста). Ни названия добавок,
+    ни значения здоровья, ни текст совета в лог не пишутся.
     """
     summary = await advice_crud.build_health_summary(db, payload.days, today_local())
     if not summary.enough_data:
@@ -78,8 +78,9 @@ async def write_advice(
     try:
         text = await write_health_advice(llm, summary)
     except DoseGuardTripped as error:
-        # Its own line, apart from a failed backend: the share of tripped answers
-        # in all asked ones is the false-positive rate of the net. No text of the answer.
+        # Its own WARNING line, apart from a failed backend; no text of the answer.
+        # The rate of the net is this line against the access log of `POST
+        # /api/v1/health-advice` with 200: the API configures no INFO logging.
         logger.warning("dose guard tripped")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=DOSE_GUARD_DETAIL
@@ -89,7 +90,6 @@ async def write_advice(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="Модель не ответила."
         ) from error
-    logger.info("health advice written")
     return HealthAdviceResponse(
         text=text,
         model=llm.model,

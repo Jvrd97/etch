@@ -10,8 +10,10 @@ not shown, and nothing of it reaches a log.
 **Сначала свёртка.** The text is decomposed (NFKD), the invisible characters
 (zero width, soft hyphen) and combining marks are dropped, and the letters are
 lowered. After it «ё» is «е», «½» is «1/2», fullwidth digits are plain, and
-`µ` (micro sign) equals `μ` (Greek mu). The patterns below are written for the
-folded text: no «ё» and no «й» in them.
+`µ` (micro sign) equals `μ` (Greek mu). The breve of «й» is the one combining
+mark that stays (the letter is recomposed): «одной» must keep its ending, or the
+most common prescription, «по одной таблетке», slips through. The patterns below
+are written for the folded text: no «ё» in them, «й» as it is.
 
 **Что считается дозой.**
 - число (с разделителем тысяч, дробью, «тыс.») и единица: «400 мг», «5 тыс. МЕ»,
@@ -23,6 +25,8 @@ folded text: no «ё» and no «й» in them.
 
 **Что не считается.** Одинокая буква «г» — год, если перед ней год или дата
 («в 2026 г.», «12.2026 г.»); шаги, проценты, пульс и минуты не единицы дозы.
+«Единица» после слов о пульсе в той же фразе («пульс снизился на 4 единицы») —
+пункт шкалы, а не доза.
 Известная щель: «2000 г» читается как год, а не как два килограмма.
 """
 
@@ -35,6 +39,8 @@ __all__ = ["names_a_dose"]
 
 # Invisible (Cf: zero width, soft hyphen, word joiner) and combining (Mn) marks.
 _DROPPED_CATEGORIES = frozenset({"Cf", "Mn"})
+_BREVE = "\u0306"
+_I_LETTERS = "иИ"
 
 _FRACTION_SLASH = "⁄"
 # «5000», «10 000», «1,5», «1/2», «1⁄2»; not a tail of a longer number, but a number
@@ -49,11 +55,11 @@ _UNIT = (
     r"[мm][гg]|[мm][кk][гg]|[мm][сc][гg]|[uμ][гg]|[мm][еe]|iu|[мm][лl]|"
     rf"милл?играмм?{_GRAM_ENDING}|микро?грамм?{_GRAM_ENDING}|грамм?{_GRAM_ENDING}|"
     r"гр(?!\w)|"
-    r"ед(?:иниц(?:а|ы|у|е|ей|ам|ами|ах)?)?|"
+    r"ед(?:иниц(?:а|ы|у|е|ей|ею|ам|ами|ах)?)?|"
     r"таблет(?:ка|ки|ку|ке|ок|кам|ками|ках|кой|кою)|табл(?!\w)|таб(?!\w)|"
     r"капсул(?:а|ы|у|е|ой|ою|ам|ами|ах)?|капс(?!\w)|"
-    r"капл(?:я|и|ю|ей|ям|ями)|капель|"
-    r"ампул(?:а|ы|у|е|ой|ам|ами)|пилюл(?:я|и|ю|ей|ям|ями)"
+    r"капл(?:я|и|ю|е|ей|ею|ям|ями|ях)|капель|"
+    r"ампул(?:а|ы|у|е|ой|ою|ам|ами|ах)?|пилюл(?:я|и|ю|е|ей|ею|ям|ями|ях|ь)"
     r")"
 )
 
@@ -89,14 +95,38 @@ _DOSE = re.compile(
 )
 
 
+_POINT_UNIT_TAIL = re.compile(r"ед(?:иниц\w*)?\.?$")
+_PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
+# A clause ends at a sentence mark or a comma followed by a space, or at a dash.
+_CLAUSE_END = re.compile(r"[.!?;:]\s|,\s|\s[—–-]\s")
+_CLAUSE_LOOKBACK = 120
+
+
 def _fold(text: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", text)
-    kept = "".join(
-        ch for ch in decomposed if unicodedata.category(ch) not in _DROPPED_CATEGORIES
-    )
-    return kept.casefold()
+    kept: list[str] = []
+    for ch in unicodedata.normalize("NFKD", text):
+        if ch == _BREVE and kept and kept[-1] in _I_LETTERS:
+            kept.append(ch)
+        elif unicodedata.category(ch) not in _DROPPED_CATEGORIES:
+            kept.append(ch)
+    return unicodedata.normalize("NFC", "".join(kept)).casefold()
 
 
 def names_a_dose(text: str) -> bool:
     """True when the text names a dose of anything: a number or a fraction and its unit."""
-    return _DOSE.search(_fold(text)) is not None
+    folded = _fold(text)
+    for match in _DOSE.finditer(folded):
+        if _is_a_pulse_point(folded, match):
+            continue
+        return True
+    return False
+
+
+def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
+    """«Пульс снизился на 4 единицы»: the unit «ед.» after pulse words of the same clause."""
+    if not _POINT_UNIT_TAIL.search(match.group()):
+        return False
+    clause = _CLAUSE_END.split(
+        folded[max(0, match.start() - _CLAUSE_LOOKBACK) : match.start()]
+    )[-1]
+    return _PULSE_WORDS.search(clause) is not None

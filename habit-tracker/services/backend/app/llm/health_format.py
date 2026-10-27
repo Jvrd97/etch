@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import math
+
 from app.core.humanize import hours_and_minutes
 
 __all__ = [
@@ -49,6 +51,8 @@ def number_text(value: float) -> str:
     «8000», «7421.5», «100000», «1000000»; `:g` дал бы «1e+06» и срезал бы шесть
     значащих цифр. Форму слова выбирает эта строка, а не исходное число.
     """
+    if not math.isfinite(value):
+        raise ValueError("a health value must be a finite number")
     text = f"{value:.{PRINTED_DIGITS}f}"
     if "." in text:
         text = text.rstrip("0").rstrip(".")
