@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/241
-// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried, a tab that comes back after the day boundary reads the new day and writes to it, a re-read that failed leaves no write to the stale date, and a read that overlapped a write never overwrites its answer (and is asked again after the write when it was dropped)
+// [review:need-review] PHASE-03/249
+// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried, a tab that comes back after the day boundary reads the new day and writes to it, a re-read that failed leaves no write to the stale date, and a read that overlapped a write never overwrites its answer (and is asked again after the write when it was dropped, but not once the hook is gone); since #249 two decides in one tick send one write, and nothing goes out while a read is on its way
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -213,43 +213,68 @@ describe('useDayMode', () => {
     expect(sent).toEqual(['set 2026-10-26']);
   });
 
-  it('drops a read that started before the write ended, so the answer of the write stays', async () => {
-    let releaseRead: (mode: DayMode) => void = () => {};
-    let reads = 0;
-    let server = SCHEDULED;
+  it('sends one write when two decides come in the same tick', async () => {
+    const sent: string[] = [];
     const api = client({
-      read: () => {
-        reads += 1;
-        // The first read is the mount one; the second is held until after the write; the server answers the rest as it stands.
-        if (reads !== 2) return Promise.resolve(server);
-        return new Promise<DayMode>((resolve) => {
-          releaseRead = resolve;
-        });
-      },
-      set: async (_date, draft) => {
-        server = { date: DATE, ...draft, source: 'manual' };
-        return server;
+      set: async (date, draft) => {
+        sent.push(draft.kind);
+        return { date, ...draft, source: 'manual' };
       },
     });
     const { result } = renderHook(() => useDayMode(api));
     await waitFor(() => expect(result.current.mode).not.toBeNull());
 
-    // The tab regains focus: a read starts, and its answer will be the old mode.
-    act(() => {
-      window.dispatchEvent(new Event('focus'));
+    // Both calls see `saving === false`: no render happens between them.
+    await act(async () => {
+      await Promise.all([
+        result.current.decide('sick', false),
+        result.current.decide('vacation', false),
+      ]);
     });
-    await waitFor(() => expect(reads).toBe(2));
+
+    expect(sent).toEqual(['sick']);
+    expect(result.current.saving).toBe(false);
+  });
+
+  it('sends nothing while a read is on its way, and writes again once it answered', async () => {
+    let releaseRead: (mode: DayMode) => void = () => {};
+    let reads = 0;
+    const sent: string[] = [];
+    const api = client({
+      read: () => {
+        reads += 1;
+        if (reads !== 2) return Promise.resolve({ ...SCHEDULED, date: '2026-10-26' });
+        return new Promise<DayMode>((resolve) => {
+          releaseRead = resolve;
+        });
+      },
+      set: async (date, draft) => {
+        sent.push(date);
+        return { date, ...draft, source: 'manual' };
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-26'));
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.reading).toBe(true));
+    await act(async () => {
+      await result.current.decide('work', false);
+      await result.current.reset();
+    });
+    expect(sent).toEqual([]);
+
+    await act(async () => {
+      releaseRead({ ...SCHEDULED, date: '2026-10-27' });
+    });
+    expect(result.current.reading).toBe(false);
     await act(async () => {
       await result.current.decide('work', false);
     });
-    expect(result.current.mode?.nocode).toBe(false);
 
-    await act(async () => {
-      releaseRead(SCHEDULED);
-    });
-
-    expect(result.current.mode?.nocode).toBe(false);
-    expect(result.current.mode?.source).toBe('manual');
+    expect(sent).toEqual(['2026-10-27']);
   });
 
   it('drops a read that started while a write was running', async () => {
@@ -298,8 +323,9 @@ describe('useDayMode', () => {
     expect(result.current.mode?.source).toBe('manual');
   });
 
-  it('asks again after the write when the read that crossed the day boundary was dropped', async () => {
+  it('asks again after the write when a read that crossed the day boundary was dropped', async () => {
     let releaseRead: (mode: DayMode) => void = () => {};
+    let releaseWrite: () => void = () => {};
     let reads = 0;
     const sent: string[] = [];
     const api = client({
@@ -313,34 +339,83 @@ describe('useDayMode', () => {
         }
         return Promise.resolve({ ...SCHEDULED, date: '2026-10-27' });
       },
-      set: async (date, draft) => {
-        sent.push(date);
-        return { date, ...draft, source: 'manual' };
-      },
+      set: (date, draft) =>
+        new Promise<DayMode>((resolve) => {
+          sent.push(date);
+          releaseWrite = () => resolve({ date, ...draft, source: 'manual' });
+        }),
     });
     const { result } = renderHook(() => useDayMode(api));
     await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-26'));
 
-    // After midnight the tab returns and a read starts; while it is on the way, the person decides.
+    // The write is in the air; after midnight the tab returns and a read starts.
+    let writing: Promise<void> = Promise.resolve();
+    act(() => {
+      writing = result.current.decide('work', false);
+    });
+    await waitFor(() => expect(result.current.saving).toBe(true));
     act(() => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
     await waitFor(() => expect(reads).toBe(2));
-    await act(async () => {
-      await result.current.decide('work', false);
-    });
-    expect(sent).toEqual(['2026-10-26']);
-    // The read answers with the new day, but it overlapped the write and is dropped...
+    // The read answers with the new day while the write is still on its way: dropped, not painted.
     await act(async () => {
       releaseRead({ ...SCHEDULED, date: '2026-10-27' });
     });
-    // ...so the hook asks again by itself once the write is over.
-    await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-27'));
+    expect(result.current.mode?.date).toBe('2026-10-26');
     await act(async () => {
-      await result.current.decide('sick', false);
+      releaseWrite();
+      await writing;
     });
 
-    expect(sent).toEqual(['2026-10-26', '2026-10-27']);
+    // The hook asked again by itself once the write was over.
+    await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-27'));
+    expect(reads).toBe(3);
+    expect(result.current.reading).toBe(false);
+    act(() => {
+      void result.current.decide('sick', false);
+    });
+    await waitFor(() => expect(sent).toEqual(['2026-10-26', '2026-10-27']));
+  });
+
+  it('does not ask again after the write when the hook is gone', async () => {
+    let releaseWrite: () => void = () => {};
+    let releaseRead: (mode: DayMode) => void = () => {};
+    let reads = 0;
+    const api = client({
+      read: () => {
+        reads += 1;
+        if (reads !== 2) return Promise.resolve(SCHEDULED);
+        return new Promise<DayMode>((resolve) => {
+          releaseRead = resolve;
+        });
+      },
+      set: (date, draft) =>
+        new Promise<DayMode>((resolve) => {
+          releaseWrite = () => resolve({ date, ...draft, source: 'manual' });
+        }),
+    });
+    const { result, unmount } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(result.current.mode).not.toBeNull());
+
+    let writing: Promise<void> = Promise.resolve();
+    act(() => {
+      writing = result.current.decide('work', false);
+    });
+    await waitFor(() => expect(result.current.saving).toBe(true));
+    act(() => {
+      void result.current.reload();
+    });
+    await waitFor(() => expect(reads).toBe(2));
+
+    unmount();
+    await act(async () => {
+      releaseRead(SCHEDULED);
+      releaseWrite();
+      await writing;
+    });
+
+    expect(reads).toBe(2);
   });
 
   it('takes a read that started after the write ended', async () => {
