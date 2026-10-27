@@ -100,6 +100,26 @@ describe('WeekReviewScreen', () => {
     );
   });
 
+  it('keeps the mobile reader inside /m on every link of the screen', async () => {
+    await ready(weekReviewFixture(), true);
+
+    expect(screen.getByText('← 2026-W34').closest('a')?.getAttribute('href')).toBe(
+      '/m/week/review/2026-W34'
+    );
+    expect(screen.getByText('2026-W36 →').closest('a')?.getAttribute('href')).toBe(
+      '/m/week/review/2026-W36'
+    );
+    expect(screen.getByText('Ретро недели').closest('a')?.getAttribute('href')).toBe(
+      '/m/week/2026-W35'
+    );
+  });
+
+  it('keeps the narrative block a polite live region', async () => {
+    await ready(weekReviewFixture());
+
+    expect(screen.getByLabelText('Итог от ИИ').getAttribute('aria-live')).toBe('polite');
+  });
+
   it('renders on the mobile type scale without changing the numbers', async () => {
     await ready(weekReviewFixture(), true);
 
@@ -111,6 +131,7 @@ describe('WeekReviewScreen', () => {
     const review = weekReviewFixture();
     review.totals = { ...review.totals, closed_days: 0, tasks_total: 0, role_minutes: 0 };
     review.categories = [];
+    review.habit_streaks = [];
     review.health = review.health.map((metric) => ({ ...metric, days_with_data: 0 }));
     render(<WeekReviewScreen iso="2026-W35" client={clientOf(review)} />);
 

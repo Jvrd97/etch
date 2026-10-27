@@ -63,6 +63,15 @@ afterEach(() => {
 });
 
 describe('WeekScreen', () => {
+  it('keeps the mobile retro page inside /m when it links to the review', async () => {
+    render(<WeekScreen iso="2026-W35" today={TODAY} compact />);
+
+    await waitFor(() => expect(screen.getByText('Обзор недели →')).toBeDefined());
+    expect(screen.getByText('Обзор недели →').closest('a')?.getAttribute('href')).toBe(
+      '/m/week/review/2026-W35'
+    );
+  });
+
   it('links the retro page to the review of the same week', async () => {
     render(<WeekScreen iso="2026-W35" today={TODAY} />);
 

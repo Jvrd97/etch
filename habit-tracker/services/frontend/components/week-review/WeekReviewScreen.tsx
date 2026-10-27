@@ -23,6 +23,7 @@ import {
   isEmptyWeek,
   partialNote,
   periodText,
+  retroHref,
   weekHref,
 } from '@/lib/week-review';
 
@@ -51,7 +52,7 @@ function Narrative({
 }) {
   const busy = state.status === 'loading';
   return (
-    <section aria-label="Итог от ИИ" className="space-y-3">
+    <section aria-label="Итог от ИИ" aria-live="polite" className="space-y-3">
       <h2 className="text-xl font-semibold text-text-primary">Итог от ИИ</h2>
       {state.status === 'ready' && (
         <div className="bg-card border border-white/5 rounded-3xl p-5">
@@ -108,13 +109,13 @@ export default function WeekReviewScreen({ iso, compact = false, client }: WeekR
           </p>
         )}
         <nav aria-label="Другие недели" className="flex flex-wrap gap-x-5">
-          <Link href={weekHref(window.previous_iso_code)} className={LINK}>
+          <Link href={weekHref(window.previous_iso_code, compact)} className={LINK}>
             ← {window.previous_iso_code}
           </Link>
-          <Link href={weekHref(window.next_iso_code)} className={LINK}>
+          <Link href={weekHref(window.next_iso_code, compact)} className={LINK}>
             {window.next_iso_code} →
           </Link>
-          <Link href={`/week/${window.iso_code}`} className={LINK}>
+          <Link href={retroHref(window.iso_code, compact)} className={LINK}>
             Ретро недели
           </Link>
         </nav>

@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/46-mobile-insights, PHASE-03/123
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/43-mobile-dashboard, PHASE-01/44-mobile-journal, PHASE-01/46-mobile-insights, PHASE-03/123, PHASE-03/221
+// summary: `/week/review/<iso>` (two segments under /week) is a mobile detail route with its own twin
 // summary: pure view-mode helpers — desktop/mobile route mapping over the screen registry (nested detail routes, plus the root `/` ↔ bare `/m` twin, both of which redirect into Today) and the persisted user preference
 
 import {
@@ -68,6 +69,14 @@ function isDirectChild(desktopPath: string, parent: string): boolean {
 }
 
 /**
+ * Routes whose mobile screen also serves one segment below them although the
+ * parent is itself a child of a screen: `/week/review/2026-W35` is the review of
+ * a named week, two segments under `/week`, with its own `/m/week/review/[iso]`.
+ * Listed by hand because the registry only knows screens one level deep.
+ */
+const NESTED_DETAIL_ROUTES: readonly string[] = ['/week/review'];
+
+/**
  * The whitelisted route serving `desktopPath` — itself when it is one, else the
  * nesting parent that owns it. Null when the mobile shell has no screen for it.
  */
@@ -78,7 +87,10 @@ function mobileRouteFor(desktopPath: string): string | null {
   // остаться на месте.
   if (desktopPath === ROOT_PATH) return ROOT_PATH;
   if (MOBILE_ROUTES.includes(desktopPath)) return desktopPath;
-  return NESTED_MOBILE_ROUTES.find((parent) => isDirectChild(desktopPath, parent)) ?? null;
+  const parent =
+    NESTED_MOBILE_ROUTES.find((route) => isDirectChild(desktopPath, route)) ??
+    NESTED_DETAIL_ROUTES.find((route) => isDirectChild(desktopPath, route));
+  return parent ?? null;
 }
 
 /**

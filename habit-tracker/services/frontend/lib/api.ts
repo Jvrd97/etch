@@ -4136,6 +4136,8 @@ export interface WeekReviewTotals {
   /** Null when no day measured work time. */
   work_minutes: number | null;
   role_minutes: number;
+  /** Days of the counted stretch that exist in the database: the denominator of the week verdict. */
+  days_total: number;
   day_streak_end: number | null;
 }
 
@@ -4211,6 +4213,10 @@ export interface WeekReview {
   totals: WeekReviewTotals;
   previous_totals: WeekReviewTotals;
   delta: WeekReviewDelta;
+  /** Minutes of overtime this week still owes. */
+  debt_minutes: number;
+  /** The week verdict by the one rule of the week; null while the week runs. */
+  is_won: boolean | null;
   days: WeekReviewDay[];
   best_day: string | null;
   worst_day: string | null;
@@ -4229,11 +4235,15 @@ export interface WeekNarrative {
 export const weekReviewAPI = {
   /** One week by its ISO code; `null` asks for the week the server's day boundary says is running. */
   get: async (iso: string | null) => {
-    return fetcher<WeekReview>(iso === null ? '/week-review' : `/week-review/${iso}`);
+    return fetcher<WeekReview>(
+      iso === null ? '/week-review' : `/week-review/${encodeURIComponent(iso)}`
+    );
   },
 
   /** The AI text for a week; written on request, not stored. */
   narrative: async (iso: string) => {
-    return fetcher<WeekNarrative>(`/week-review/${iso}/narrative`, { method: 'POST' });
+    return fetcher<WeekNarrative>(`/week-review/${encodeURIComponent(iso)}/narrative`, {
+      method: 'POST',
+    });
   },
 };

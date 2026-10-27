@@ -118,7 +118,7 @@ export function TotalsBlock({ review }: { review: WeekReview }) {
 
 /** Full word for screen readers and the tooltip; the cell itself prints the short form. */
 function dayCaption(day: WeekReviewDay): { full: string; short: string } {
-  if (!day.counted) return { full: 'впереди', short: '—' };
+  if (!day.counted) return { full: 'не учтён', short: '—' };
   if (day.verdict === 'won') return { full: 'выигран', short: 'выигр.' };
   if (day.verdict === 'lost') return { full: 'проигран', short: 'проигр.' };
   return { full: NOT_CLOSED, short: 'открыт' };

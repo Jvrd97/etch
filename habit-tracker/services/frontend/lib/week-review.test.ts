@@ -14,8 +14,11 @@ import {
   formatMinutes,
   isEmptyWeek,
   narrativeErrorText,
+  NO_COUNTED_DAYS_TEXT,
+  inShell,
   partialNote,
   periodText,
+  retroHref,
   shortDate,
   trendOf,
   weekHref,
@@ -67,10 +70,15 @@ describe('the note under an unfinished week', () => {
     expect(note).toContain('первыми 3 днями прошлой недели');
   });
 
-  it('says a week that has not started has not started', () => {
+  it('says nothing is counted yet when only the open day has come', () => {
     expect(partialNote(windowOf({ is_complete: false, counted_days: 0, compared_days: 0 }))).toBe(
-      'Неделя ещё не началась.'
+      NO_COUNTED_DAYS_TEXT
     );
+  });
+
+  it('tells the reader that today joins after it is closed', () => {
+    const note = partialNote(windowOf({ is_complete: false, counted_days: 2, compared_days: 2 }));
+    expect(note).toContain('сегодняшний день войдёт после закрытия');
   });
 });
 
@@ -82,6 +90,13 @@ describe('dates and links', () => {
 
   it('links to the review of a named week', () => {
     expect(weekHref('2026-W36')).toBe('/week/review/2026-W36');
+  });
+
+  it('keeps the reader in the mobile shell when the screen is the compact one', () => {
+    expect(weekHref('2026-W36', true)).toBe('/m/week/review/2026-W36');
+    expect(retroHref('2026-W36', true)).toBe('/m/week/2026-W36');
+    expect(retroHref('2026-W36')).toBe('/week/2026-W36');
+    expect(inShell('/week/review', true)).toBe('/m/week/review');
   });
 });
 
@@ -111,10 +126,23 @@ describe('an empty week', () => {
       ...weekReviewFixture(),
       totals: { ...weekReviewFixture().totals, closed_days: 0, tasks_total: 0, role_minutes: 0 },
       categories: [],
+      habit_streaks: [],
       health: weekReviewFixture().health.map((m) => ({ ...m, days_with_data: 0 })),
     };
     expect(isEmptyWeek(empty)).toBe(true);
     expect(isEmptyWeek(weekReviewFixture())).toBe(false);
+  });
+
+  it('is not empty while an avoid habit has a streak to show', () => {
+    const base = weekReviewFixture();
+    const streakOnly: WeekReview = {
+      ...base,
+      totals: { ...base.totals, closed_days: 0, tasks_total: 0, role_minutes: 0 },
+      categories: [],
+      health: base.health.map((m) => ({ ...m, days_with_data: 0 })),
+    };
+    expect(isEmptyWeek(streakOnly)).toBe(false);
+    expect(isEmptyWeek({ ...streakOnly, habit_streaks: [] })).toBe(true);
   });
 
   it('is not empty when only health has a day', () => {
@@ -123,6 +151,7 @@ describe('an empty week', () => {
       ...base,
       totals: { ...base.totals, closed_days: 0, tasks_total: 0, role_minutes: 0 },
       categories: [],
+      habit_streaks: [],
     };
     expect(isEmptyWeek(healthOnly)).toBe(false);
   });

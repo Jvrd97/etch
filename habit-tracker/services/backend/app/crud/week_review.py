@@ -19,6 +19,16 @@ Database access for the week review (`#221`).
 с понедельником-средой прошлой, а не со всей прошлой неделей: иначе неполная
 неделя всегда проигрывала бы.
 
+**Сегодняшний день учитывается, только когда он закрыт.** Итог дня появляется
+вечером, и до этого строки `day_summary` за сегодня нет: учти мы сегодня, неделя
+сравнивалась бы по понедельнику-вторнику против понедельника-среды прошлой, то
+есть с лишним днём в знаменателе. Минуты ролей и здоровье сегодняшнего дня тоже
+не входят, пока день не закрыт, — окно одно на все блоки.
+
+**Доли ролей считает `app.crud.role`.** Минуты по ролям берутся у
+`role_crud.minutes_by_role`, доля — у `_share_pct`: вторая реализация разошлась
+бы с недельной сводкой ролей на первом округлении.
+
 **Сутки — логические.** Дни недели — `day_date`, посчитанные границей суток
 (`app.core.daytime`); здоровье лежит по календарной дате устройства, и на границе
 04:00 они могут разойтись на запись глубокой ночи.
@@ -33,17 +43,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import current_boundary
+from app.crud import day_profile as profile_crud
 from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.crud import streak as streak_crud
 from app.crud.values import parse_number
+from app.day.debt import week_is_won
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
 from app.day.week import DAYS_IN_WEEK, iso_code, week_bounds
 from app.models import Category, Entry, EntryValue, Field
+from app.models.day import Day
 from app.models.field import FieldType
 from app.models.health import HealthMetric
 from app.models.role import RoleTimeBlock
-from app.models.summary import DaySummary
+from app.models.summary import STAGE_CLOSED, DaySummary
 from app.schemas.week_review import (
     WeekCategorySlice,
     WeekDayStat,
@@ -65,13 +78,14 @@ SECONDS_PER_MINUTE = 60
 # сон в часах, переведённый из минут, без округления тащил бы хвост из десятков.
 AVERAGE_DIGITS = 1
 
-# Метрики здоровья недели: ключ в ответе, подпись и идентификатор каталога.
-# Сон и тренировки в каталоге названы так, как их называет HealthKit; метрики,
-# которой в каталоге нет, ответ даёт с `available=false`, а не нулями.
+# Метрики здоровья недели: ключ в ответе, подпись на случай отсутствия метрики и
+# идентификатор каталога. Имя метрики, которая в каталоге есть, берётся у
+# каталога: «тренировки» было бы подменой названия `Минуты тренировки`. Метрика,
+# которой в каталоге нет, едет с `available=false`, а не нулями.
 HEALTH_SPECS: tuple[tuple[str, str, str], ...] = (
     ("sleep", "Сон", "HKCategoryTypeIdentifierSleepAnalysis"),
     ("steps", "Шаги", "HKQuantityTypeIdentifierStepCount"),
-    ("workouts", "Тренировки", "HKQuantityTypeIdentifierAppleExerciseTime"),
+    ("workouts", "Минуты тренировки", "HKQuantityTypeIdentifierAppleExerciseTime"),
 )
 
 
@@ -99,6 +113,7 @@ class _Summary:
     anchors_total: int
     work_minutes: int | None
     streak_after: int | None
+    closed: bool
 
 
 @dataclass
@@ -106,7 +121,8 @@ class _Facts:
     """Всё, что прочитано из базы за четырнадцать дней, ещё не разложенное по неделям."""
 
     summaries: dict[date, _Summary] = field(default_factory=dict)
-    role_minutes: dict[tuple[date, int], int] = field(default_factory=dict)
+    day_minutes: dict[date, int] = field(default_factory=dict)
+    day_rows: set[date] = field(default_factory=set)
 
 
 def _pct(part: int, whole: int) -> int | None:
@@ -114,13 +130,16 @@ def _pct(part: int, whole: int) -> int | None:
     return round(part * FULL_SHARE_PCT / whole) if whole else None
 
 
-def _share(part: int, whole: int) -> int:
-    return _pct(part, whole) or 0
+def _spans(starts_on: date, today: date, today_closed: bool) -> tuple[_Span, _Span]:
+    """
+    Учтённые дни этой недели и столько же первых дней прошлой.
 
-
-def _spans(starts_on: date, today: date) -> tuple[_Span, _Span]:
-    """Учтённые дни этой недели и столько же первых дней прошлой."""
-    counted = min(max((today - starts_on).days + 1, 0), DAYS_IN_WEEK)
+    Сегодня входит, только если день закрыт; прошедшие дни — всегда. Законченная
+    неделя даёт семь, как бы ни закрыт был её последний день.
+    """
+    counted = min(
+        max((today - starts_on).days + (1 if today_closed else 0), 0), DAYS_IN_WEEK
+    )
     return _Span(starts_on, counted), _Span(
         starts_on - timedelta(days=DAYS_IN_WEEK), counted
     )
@@ -143,6 +162,7 @@ async def _read_summaries(
             DaySummary.anchors_total,
             DaySummary.work_minutes,
             DaySummary.streak_after,
+            DaySummary.stage,
         ).where(DaySummary.day_date.between(start, end))
     )
     return {
@@ -154,27 +174,40 @@ async def _read_summaries(
             anchors_total=row.anchors_total,
             work_minutes=row.work_minutes,
             streak_after=row.streak_after,
+            closed=row.stage == STAGE_CLOSED,
         )
         for row in result
     }
 
 
-async def _read_role_minutes(
+async def _read_day_minutes(
     db: AsyncSession, start: date, end: date
-) -> dict[tuple[date, int], int]:
+) -> dict[date, int]:
+    """Минуты ролей по дням — только для колонки дней; доли считает `role_crud`."""
     result = await db.execute(
-        select(
-            RoleTimeBlock.work_day,
-            RoleTimeBlock.role_id,
-            func.sum(RoleTimeBlock.minutes),
-        )
+        select(RoleTimeBlock.work_day, func.sum(RoleTimeBlock.minutes))
         .where(RoleTimeBlock.work_day.between(start, end))
-        .group_by(RoleTimeBlock.work_day, RoleTimeBlock.role_id)
+        .group_by(RoleTimeBlock.work_day)
     )
-    return {(day, role_id): int(total) for day, role_id, total in result.all()}
+    return {day: int(total) for day, total in result.all()}
 
 
-def _totals(facts: _Facts, span: _Span) -> WeekTotals:
+async def _read_day_rows(db: AsyncSession, start: date, end: date) -> set[date]:
+    """Дни, заведённые в базе: знаменатель правила «неделя выиграна»."""
+    result = await db.execute(
+        select(Day.day_date).where(Day.day_date.between(start, end))
+    )
+    return set(result.scalars().all())
+
+
+async def _span_minutes(db: AsyncSession, span: _Span) -> dict[int, int]:
+    """Минуты по ролям за учтённые дни отрезка — свёртка недельной сводки ролей."""
+    if span.days == 0:
+        return {}
+    return await role_crud.minutes_by_role(db, span.start, span.end)
+
+
+def _totals(facts: _Facts, span: _Span, role_minutes: int) -> WeekTotals:
     rows = [facts.summaries[day] for day in _dates(span) if day in facts.summaries]
     judged = [row for row in rows if row.verdict is not None]
     done = sum(row.tasks_done for row in rows)
@@ -190,11 +223,8 @@ def _totals(facts: _Facts, span: _Span) -> WeekTotals:
         anchors_done=sum(row.anchors_done for row in rows),
         anchors_total=sum(row.anchors_total for row in rows),
         work_minutes=sum(measured) if measured else None,
-        role_minutes=sum(
-            minutes
-            for (day, _), minutes in facts.role_minutes.items()
-            if span.holds(day)
-        ),
+        role_minutes=role_minutes,
+        days_total=sum(1 for day in _dates(span) if day in facts.day_rows),
         day_streak_end=judged[-1].streak_after if judged else None,
     )
 
@@ -228,11 +258,7 @@ def _days(facts: _Facts, starts_on: date, span: _Span) -> list[WeekDayStat]:
                 tasks_total=row.tasks_total if row else 0,
                 plan_pct=_pct(row.tasks_done, row.tasks_total) if row else None,
                 work_minutes=row.work_minutes if row else None,
-                role_minutes=sum(
-                    minutes
-                    for (day, _), minutes in facts.role_minutes.items()
-                    if day == on and counted
-                ),
+                role_minutes=facts.day_minutes.get(on, 0) if counted else 0,
                 streak_after=row.streak_after if row else None,
             )
         )
@@ -262,29 +288,20 @@ def _best_and_worst(days: list[WeekDayStat]) -> tuple[date | None, date | None]:
 
 
 async def _roles(
-    db: AsyncSession, facts: _Facts, now: _Span, before: _Span
+    db: AsyncSession, now: dict[int, int], before: dict[int, int]
 ) -> list[WeekRoleSlice]:
     roles = await role_crud.list_roles(db)
-
-    def minutes_of(role_id: int, span: _Span) -> int:
-        return sum(
-            minutes
-            for (day, rid), minutes in facts.role_minutes.items()
-            if rid == role_id and span.holds(day)
-        )
-
-    own = {role.id: minutes_of(role.id, now) for role in roles}
-    whole = sum(own.values())
+    whole = sum(now.values())
     return [
         WeekRoleSlice(
             role_id=role.id,
             role_code=role.code,
             title=role.title,
-            minutes=own[role.id],
-            share_pct=_share(own[role.id], whole),
+            minutes=(own := now.get(role.id, 0)),
+            share_pct=role_crud._share_pct(own, whole),
             target_share_pct=role.target_share_pct,
-            previous_minutes=(previous := minutes_of(role.id, before)),
-            delta_minutes=own[role.id] - previous,
+            previous_minutes=(previous := before.get(role.id, 0)),
+            delta_minutes=own - previous,
         )
         for role in roles
     ]
@@ -434,7 +451,7 @@ async def _health(
         metrics.append(
             WeekHealthMetric(
                 key=key,
-                name=name,
+                name=metric.display_name,
                 unit=metric.canonical_unit,
                 available=True,
                 total=sum(current) if current else None,
@@ -468,14 +485,28 @@ async def build_week_review(
     clock stays `app.core.daytime` and a test can pin it.
     """
     starts_on, ends_on = week_bounds(iso)
-    now, before = _spans(starts_on, today)
-    window_start, window_end = before.start, ends_on
+    window_start, window_end = starts_on - timedelta(days=DAYS_IN_WEEK), ends_on
+
+    summaries = await _read_summaries(db, window_start, window_end)
+    today_row = summaries.get(today)
+    now, before = _spans(starts_on, today, today_row is not None and today_row.closed)
 
     facts = _Facts(
-        summaries=await _read_summaries(db, window_start, window_end),
-        role_minutes=await _read_role_minutes(db, window_start, window_end),
+        summaries=summaries,
+        day_minutes=await _read_day_minutes(db, window_start, window_end),
+        day_rows=await _read_day_rows(db, window_start, window_end),
     )
-    totals, previous_totals = _totals(facts, now), _totals(facts, before)
+    minutes_now, minutes_before = (
+        await _span_minutes(db, now),
+        await _span_minutes(db, before),
+    )
+    totals = _totals(facts, now, sum(minutes_now.values()))
+    previous_totals = _totals(facts, before, sum(minutes_before.values()))
+    # Правило выигранной недели — одно, `app.day.debt.week_is_won`, как у `/weeks`:
+    # все дни выиграны, дни есть и долга за переработку нет. Решается только для
+    # законченной недели; идущая ещё не выиграна и не проиграна.
+    debt = await profile_crud.open_debt_minutes(db, starts_on, ends_on)
+    complete = today > ends_on
     days = _days(facts, starts_on, now)
     best, worst = _best_and_worst(days)
     boundary = current_boundary()
@@ -487,7 +518,7 @@ async def build_week_review(
             ends_on=ends_on,
             timezone=boundary.timezone,
             day_start_hour=boundary.day_start_hour,
-            is_complete=today > ends_on,
+            is_complete=complete,
             counted_days=now.days,
             as_of=now.end if now.days else None,
             previous_iso_code=iso_code(before.start),
@@ -497,10 +528,14 @@ async def build_week_review(
         totals=totals,
         previous_totals=previous_totals,
         delta=_delta(totals, previous_totals),
+        debt_minutes=debt,
+        is_won=(
+            week_is_won(totals.won_days, totals.days_total, debt) if complete else None
+        ),
         days=days,
         best_day=best,
         worst_day=worst,
-        roles=await _roles(db, facts, now, before),
+        roles=await _roles(db, minutes_now, minutes_before),
         categories=await _categories(db, now, before, window_start, window_end),
         habit_streaks=await _habit_streaks(db, now),
         health=await _health(db, now, before, starts_on, window_start, window_end),
@@ -514,5 +549,6 @@ def week_has_data(review: WeekReviewResponse) -> bool:
         or review.totals.tasks_total
         or review.totals.role_minutes
         or review.categories
+        or review.habit_streaks
         or any(metric.days_with_data for metric in review.health)
     )

@@ -71,6 +71,9 @@ class WeekTotals(BaseModel):
         None, description="Измеренные рабочие минуты; null — не измерено ни в один день"
     )
     role_minutes: int = Field(0, description="Минуты, разложенные по ролям")
+    days_total: int = Field(
+        0, description="Сколько учтённых дней заведено в базе: знаменатель «5 из 7»"
+    )
     day_streak_end: int | None = Field(
         None,
         description=(
@@ -170,6 +173,16 @@ class WeekReviewResponse(BaseModel):
     totals: WeekTotals
     previous_totals: WeekTotals
     delta: WeekDelta
+    debt_minutes: int = Field(
+        0, description="Минуты переработки этой недели, которые ещё не вернулись"
+    )
+    is_won: bool | None = Field(
+        None,
+        description=(
+            "Неделя выиграна по правилу `week_is_won`: все дни выиграны, дни есть, "
+            "долга нет. null — неделя ещё идёт, итог не решён"
+        ),
+    )
     days: list[WeekDayStat]
     best_day: date | None = Field(
         None, description="Лучший из судимых дней: выигранный, затем по доле плана"

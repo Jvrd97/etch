@@ -67,7 +67,7 @@ export default function WeekScreen({ iso, compact = false, today = new Date() }:
         </p>
         {/* Цифры недели и сравнение с прошлой живут на экране обзора (#221). */}
         <Link
-          href={weekHref(week.iso_code)}
+          href={weekHref(week.iso_code, compact)}
           className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-lime hover:underline"
         >
           Обзор недели →

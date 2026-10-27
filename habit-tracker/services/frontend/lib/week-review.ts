@@ -2,6 +2,7 @@
 // summary: vocabulary of the week review screen — minutes and deltas as words, the note under an unfinished week, health values by unit, the empty test mirrored from the server, narrative errors by HTTP status, and the links between weeks
 
 import { WEEKDAY_SHORT } from '@/lib/life';
+import { MOBILE_PATH_PREFIX } from '@/lib/routes';
 import type { WeekReview, WeekReviewHealth, WeekReviewWindow } from '@/lib/api';
 
 const MINUTES_PER_HOUR = 60;
@@ -16,6 +17,10 @@ export const NOT_CLOSED = 'не закрыт';
 
 /** Said in place of the screen's numbers when the week holds nothing at all. */
 export const EMPTY_WEEK_TEXT = 'За эту неделю данных пока нет.';
+
+/** Nothing is counted: the week has not begun, or its first day is still open. */
+export const NO_COUNTED_DAYS_TEXT =
+  'Пока нет ни одного учтённого дня: неделя не началась или её первый день ещё не закрыт.';
 
 export const METRIC_MISSING_TEXT = 'Метрика не подключена';
 
@@ -66,8 +71,8 @@ export function trendOf(delta: number | null): Trend {
  */
 export function partialNote(window: WeekReviewWindow): string | null {
   if (window.is_complete) return null;
-  if (window.counted_days === 0) return 'Неделя ещё не началась.';
-  return `Неделя не закончилась: учтено ${window.counted_days} из 7 дней. Сравнение — с первыми ${window.compared_days} днями прошлой недели.`;
+  if (window.counted_days === 0) return NO_COUNTED_DAYS_TEXT;
+  return `Неделя не закончилась: учтено ${window.counted_days} из 7 дней — закрытые и прошедшие, сегодняшний день войдёт после закрытия. Сравнение — с первыми ${window.compared_days} днями прошлой недели.`;
 }
 
 /** `YYYY-MM-DD` as «24.08», parsed by hand so no timezone can move the day. */
@@ -84,8 +89,25 @@ export function weekdayShort(weekday: number): string {
   return WEEKDAY_SHORT[weekday] ?? '';
 }
 
-export function weekHref(iso: string): string {
-  return `${WEEK_REVIEW_PATH}/${iso}`;
+/**
+ * A desktop address in the shell the screen is drawn in.
+ *
+ * `compact` is the mobile shell's flag, and a link from a `/m` page that led to
+ * `/week/...` would drop the reader out of the shell; the pair of routes exists
+ * on both sides, so the prefix is all that differs.
+ */
+export function inShell(desktopHref: string, compact: boolean): string {
+  return compact ? `${MOBILE_PATH_PREFIX}${desktopHref}` : desktopHref;
+}
+
+/** The review of a named week, in the reader's shell. */
+export function weekHref(iso: string, compact = false): string {
+  return inShell(`${WEEK_REVIEW_PATH}/${iso}`, compact);
+}
+
+/** The retro page of a named week, in the reader's shell. */
+export function retroHref(iso: string, compact = false): string {
+  return inShell(`/week/${iso}`, compact);
 }
 
 /** A health value in the unit the catalog gave it: minutes as hours, counts as integers. */
@@ -109,6 +131,7 @@ export function isEmptyWeek(review: WeekReview): boolean {
     review.totals.tasks_total === 0 &&
     review.totals.role_minutes === 0 &&
     review.categories.length === 0 &&
+    review.habit_streaks.length === 0 &&
     review.health.every((metric) => metric.days_with_data === 0)
   );
 }

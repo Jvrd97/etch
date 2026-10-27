@@ -19,7 +19,7 @@ from datetime import date
 
 from app.core.humanize import hours_and_minutes
 from app.llm.client import LLMClient
-from app.schemas.week_review import WeekReviewResponse
+from app.schemas.week_review import WeekHealthMetric, WeekReviewResponse
 
 WEEK_REVIEW_SYSTEM_PROMPT = """\
 Ты помощник личного трекера привычек. Тебе дают цифры одной недели и прошлой
@@ -28,7 +28,8 @@ WEEK_REVIEW_SYSTEM_PROMPT = """\
 
 Правила:
 - Опирайся только на цифры из данных, ничего не выдумывай и не округляй иначе.
-- Начни с главного: выиграна ли неделя и как она соотносится с прошлой.
+- Начни с главного: строка «Неделя выиграна» в данных — готовый вердикт, повтори
+  его и не пересуживай по своим правилам; затем сравни с прошлой неделей.
 - Назови лучший и худший день, если они есть в данных, и одну заметную
   разницу в ролях, категориях или здоровье.
 - Если неделя не закончилась, скажи об этом прямо и не делай выводов о ней
@@ -53,6 +54,44 @@ def _weekday(review: WeekReviewResponse, day: date) -> str:
     return _WEEKDAYS[next(d.weekday for d in review.days if d.date == day)]
 
 
+_HEALTH_UNIT_WORDS = {"steps": "шагов"}
+
+
+def _health_value(metric: WeekHealthMetric, value: float) -> str:
+    """Число здоровья со словом единицы по-русски: «7421 шагов», «7 ч 10 мин»."""
+    if metric.unit == "min":
+        return hours_and_minutes(round(value))
+    word = _HEALTH_UNIT_WORDS.get(metric.key, metric.unit or "")
+    return f"{value:g} {word}".strip()
+
+
+def _signed_health(metric: WeekHealthMetric) -> str:
+    delta = metric.delta_avg_per_day
+    if delta is None:
+        return "нет данных для сравнения"
+    return ("+" if delta > 0 else "-" if delta < 0 else "") + _health_value(
+        metric, abs(delta)
+    )
+
+
+def _outcome_line(review: WeekReviewResponse) -> str:
+    """
+    Вердикт недели готовой строкой: модель его не судит, а пересказывает.
+
+    Правило одно — `week_is_won`, и считается оно на сервере: все дни выиграны,
+    дни есть и долга за переработку нет. «5 из 6» — это «нет», а не «почти».
+    """
+    if review.is_won is None:
+        return "Неделя выиграна: пока не решено, неделя идёт."
+    totals = review.totals
+    return (
+        f"Неделя выиграна: {'да' if review.is_won else 'нет'} "
+        f"(правило: выиграны все дни недели и нет долга за переработку; "
+        f"выиграно {totals.won_days} из {totals.days_total} дней, "
+        f"долг {review.debt_minutes} мин)."
+    )
+
+
 def _signed(value: int | float | None, suffix: str = "") -> str:
     if value is None:
         return "нет данных для сравнения"
@@ -73,6 +112,7 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"прошлая неделя взята за те же {window.compared_days}."
         )
     lines += [
+        _outcome_line(review),
         f"Выиграно дней: {totals.won_days} из {totals.closed_days} закрытых "
         f"(прошлая неделя: {review.previous_totals.won_days} из "
         f"{review.previous_totals.closed_days}).",
@@ -110,9 +150,9 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
         )
     for metric in (m for m in review.health if m.days_with_data):
         lines.append(
-            f"{metric.name}: в среднем {metric.avg_per_day:g} {metric.unit or ''} в день "
+            f"{metric.name}: в среднем {_health_value(metric, metric.avg_per_day or 0)} в день "
             f"за {metric.days_with_data} дн. "
-            f"({_signed(metric.delta_avg_per_day)} к прошлой неделе)."
+            f"({_signed_health(metric)} к прошлой неделе)."
         )
     return WEEK_REVIEW_SYSTEM_PROMPT + "\n\nДанные:\n" + "\n".join(lines)
 

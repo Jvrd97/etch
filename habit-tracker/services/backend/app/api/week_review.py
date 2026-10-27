@@ -80,8 +80,8 @@ async def write_week_narrative(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Week narrative is disabled: no LLM backend available "
-                "(set ANTHROPIC_API_KEY or install the claude CLI)"
+                "Итог недели от ИИ выключен: нет бэкенда модели "
+                "(задай ANTHROPIC_API_KEY или поставь claude CLI)."
             ),
         )
     try:
@@ -89,6 +89,6 @@ async def write_week_narrative(
     except LLMError as error:
         logger.warning("week narrative LLM backend failed")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail="LLM request failed"
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Модель не ответила."
         ) from error
     return WeekNarrativeResponse(iso_code=iso, text=text, model=llm.model)

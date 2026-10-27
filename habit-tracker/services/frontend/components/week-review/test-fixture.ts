@@ -29,6 +29,7 @@ export function weekReviewFixture(): WeekReview {
       anchors_total: 2,
       work_minutes: 1200,
       role_minutes: 400,
+      days_total: 3,
       day_streak_end: 1,
     },
     previous_totals: {
@@ -42,9 +43,12 @@ export function weekReviewFixture(): WeekReview {
       anchors_total: 0,
       work_minutes: 400,
       role_minutes: 100,
+      days_total: 2,
       day_streak_end: 0,
     },
     delta: { won_days: 1, tasks_done: 5, plan_pct: 29, work_minutes: 800, role_minutes: 300 },
+    debt_minutes: 0,
+    is_won: false,
     days: [
       day(0, 'won', 4, 4, 100),
       day(1, 'lost', 1, 4, 25),
@@ -117,7 +121,7 @@ export function weekReviewFixture(): WeekReview {
       },
       {
         key: 'workouts',
-        name: 'Тренировки',
+        name: 'Минуты тренировки',
         unit: 'min',
         available: true,
         total: 45,
