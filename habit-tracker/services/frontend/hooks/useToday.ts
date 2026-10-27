@@ -1,12 +1,14 @@
 'use client';
 // [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
-// summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it, it is read again with the rest of the snapshot when the tab returns, and increments of a finished day are dropped when the day changes
+// summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it; the day is read again with the snapshot when the tab returns and on a one-minute timer for a tab that stays in front across the boundary; only the newest snapshot is applied, a tick saved for a finished day is not shown in the new one, and increments of a finished day are dropped; a day that cannot be read leaves date empty and the screen without data
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
+// A namespace import read at call time, as in `useDayMode`: suites that mock
+// `@/lib/api` with a fixed list of names must still link every screen of Today.
+import * as api from '@/lib/api';
 import {
-  agentAPI,
   categoriesAPI,
   entriesAPI,
   quickMarksAPI,
@@ -28,6 +30,16 @@ import {
   type CheckedMap,
   type StreakMap,
 } from '@/lib/today-entries';
+
+/**
+ * How often a page that stays open asks the server which day it is running.
+ *
+ * A tab that never loses focus gets no visibility event at the day boundary, and
+ * until it learns the new day every tick and increment would be written to the
+ * old one. One light read a minute bounds that gap; the full snapshot is taken
+ * only when the answer differs.
+ */
+export const DAY_RECHECK_MS = 60_000;
 
 /**
  * What the streak section says when its own round failed.
@@ -156,6 +168,9 @@ export function useToday(): UseTodayResult {
   // stable callbacks that must see the day of the latest snapshot.
   const [day, setDay] = useState('');
   const dayRef = useRef('');
+  // The newest snapshot read; an older one still in flight is stale and must not
+  // put the day back or wipe what the new day has already collected.
+  const loadSeq = useRef(0);
   // The newest re-read after a mark; an older one still in flight is stale.
   const markReadSeq = useRef(0);
   const [checked, setChecked] = useState<CheckedMap>({});
@@ -165,15 +180,6 @@ export function useToday(): UseTodayResult {
   const [streaksError, setStreaksError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  /**
-   * Fetch the whole Today snapshot.
-   *
-   * `showSpinner` is the difference between the first load (nothing on screen
-   * yet, so a spinner is the honest state) and a background refetch triggered
-   * by the tab becoming visible again: there the old snapshot stays rendered
-   * until the new one lands, so flipping `loading` would blank a screen the
-   * user is already looking at.
-   */
   /**
    * The second round: one streak per avoid category.
    *
@@ -214,13 +220,28 @@ export function useToday(): UseTodayResult {
     setChecked(buildCheckedMap(categoriesData, entriesData));
   }, []);
 
+  /**
+   * Fetch the whole Today snapshot: the server's day first, and the records of
+   * that day with it.
+   *
+   * `showSpinner` is the difference between the first load (nothing on screen
+   * yet, so a spinner is the honest state) and a background refetch — the tab
+   * returning, the day-boundary timer, a save that asks for a fresh read: there
+   * the old snapshot stays rendered until the new one lands, so flipping
+   * `loading` would blank a screen the user is already looking at.
+   *
+   * Only the newest call is applied. An older one that lands late would put the
+   * day back and wipe the increments the new day already holds.
+   */
   const loadData = useCallback(async ({ showSpinner = false } = {}) => {
+    loadSeq.current += 1;
+    const mine = loadSeq.current;
     try {
       if (showSpinner) setLoading(true);
       // No date is sent: which day is running is the server's answer, and a
       // browser computing its own would disagree with it between midnight and
       // the boundary hour. The records wait for that answer, the rest does not.
-      const dayAndEntries = agentAPI.dayMode().then(async ({ date }) => ({
+      const dayAndEntries = api.agentAPI.dayMode().then(async ({ date }) => ({
         date,
         entries: await entriesAPI.getAll({ startDate: date, endDate: date }),
       }));
@@ -229,6 +250,7 @@ export function useToday(): UseTodayResult {
         dayAndEntries,
         quickMarksAPI.list(),
       ]);
+      if (mine !== loadSeq.current) return;
       // Increments of a day that has ended are not part of the new one.
       if (dayRef.current !== '' && dayRef.current !== date) setOptimisticEntries([]);
       dayRef.current = date;
@@ -253,9 +275,12 @@ export function useToday(): UseTodayResult {
       );
       void refreshStreaks(avoidIds);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load today data');
+      if (mine === loadSeq.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load today data');
+      }
     } finally {
-      setLoading(false);
+      // A newer snapshot owns the spinner too.
+      if (mine === loadSeq.current) setLoading(false);
     }
   }, [adoptEntries, refreshStreaks]);
 
@@ -319,7 +344,10 @@ export function useToday(): UseTodayResult {
       try {
         const date = dayRef.current;
         const fresh = await entriesAPI.getAll({ startDate: date, endDate: date });
-        if (mine === markReadSeq.current) adoptEntries(categories, fresh);
+        // A read of a day that has ended since is not the screen's any more.
+        if (mine === markReadSeq.current && date === dayRef.current) {
+          adoptEntries(categories, fresh);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to refresh today');
       }
@@ -340,6 +368,27 @@ export function useToday(): UseTodayResult {
   // rendering the snapshot fetched when the app was launched.
   useRefreshOnVisible(refresh);
 
+  // A tab that stays in front across the day boundary: see DAY_RECHECK_MS.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      // No day yet: the first snapshot failed, and this tick is its retry.
+      if (dayRef.current === '') {
+        void loadData();
+        return;
+      }
+      api.agentAPI
+        .dayMode()
+        .then(({ date }) => {
+          if (date !== dayRef.current) void loadData();
+        })
+        .catch(() => {
+          // One lost read is not news about the day: the next tick asks again.
+        });
+    }, DAY_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [loadData]);
+
   const toggleField = useCallback(
     async (categoryId: number, fieldId: number) => {
       const current = isFieldChecked(checked, categoryId, fieldId);
@@ -353,12 +402,16 @@ export function useToday(): UseTodayResult {
           entry_date: dayRef.current,
           values: { [fieldId]: next },
         });
-        setEntries((previous) => {
-          const hasSaved = previous.some((entry) => entry.id === saved.id);
-          return hasSaved
-            ? previous.map((entry) => entry.id === saved.id ? saved : entry)
-            : [...previous, saved];
-        });
+        // A tick that was answered after the day changed belongs to the day it was
+        // written for, not to the list now on screen.
+        if (saved.entry_date === dayRef.current) {
+          setEntries((previous) => {
+            const hasSaved = previous.some((entry) => entry.id === saved.id);
+            return hasSaved
+              ? previous.map((entry) => entry.id === saved.id ? saved : entry)
+              : [...previous, saved];
+          });
+        }
       } catch (err) {
         setChecked((prev) => setFieldChecked(prev, categoryId, fieldId, current));
         setError(err instanceof Error ? err.message : 'Failed to save check');

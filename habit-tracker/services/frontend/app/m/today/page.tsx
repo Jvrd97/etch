@@ -1,8 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 // summary: mobile Today screen — a quick-mark card opens a full-screen list of every set of its category beside the day's records while its plus still adds one, and every tap or undo reads the day's records and the streak of its category again
+// summary: the date line and the empty-state card follow the server's day: no date line while the day is unknown, no «nothing to track» while a load error is on screen, the day goes to the obligations block and the add-entry sheet
 
 import { useState } from 'react';
 import QuickMarkSkeleton from '@/components/QuickMarkSkeleton';
@@ -97,11 +98,11 @@ export default function MobileTodayPage() {
   return (
     <>
       <div className="space-y-6 animate-fade-rise">
-        <p className="text-sm text-text-secondary">{date}</p>
+        {date !== '' && <p className="text-sm text-text-secondary">{date}</p>}
 
         {error && <ErrorAlert message={error} onDismiss={() => setError(null)} />}
 
-        <ChallengesSection categories={categories} />
+        <ChallengesSection categories={categories} date={date} />
 
         {/* Above the sections rather than beside one of them: dictation fills in
             the whole day — several categories, the checklist and the day's text
@@ -123,7 +124,7 @@ export default function MobileTodayPage() {
             целиком, и оба открываются одним большим касанием. */}
         <AskAboutDayButton date={date} onError={setError} className="w-full" />
 
-        {nothingToTrack ? (
+        {nothingToTrack && error === null ? (
           <div className="text-center py-12 bg-card border border-white/5 rounded-3xl">
             <div className="inline-flex p-4 rounded-3xl bg-surface mb-4">
               <Sun className="w-7 h-7 text-text-disabled" strokeWidth={2} />
@@ -290,6 +291,7 @@ export default function MobileTodayPage() {
           entry={editing.entry}
           categories={[editing.category]}
           lockedCategory={editing.category}
+          date={date}
           onUpdateExisting={updateEntry}
           onCancel={() => setEditing(null)}
           onSaved={() => {

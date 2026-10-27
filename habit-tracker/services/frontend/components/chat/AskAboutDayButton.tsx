@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/118
+// [review:need-review] PHASE-03/118, PHASE-03/237
 // summary: the "ask about the day" entry point on both Today screens — starts a conversation carrying the date of the screen the reader is looking at (never the server's idea of today) and opens it in the shell the reader is already in
+// summary: the button is disabled while the day is unknown (empty date) instead of starting a conversation with no date
 
 import { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
@@ -15,7 +16,8 @@ export interface AskAboutDayButtonProps {
    *
    * Передаётся явно, а не берётся сервером по умолчанию: экран дня открывают и
    * за третье августа, и разговор о нём обязан быть привязан к третьему
-   * августа, а не к сегодняшнему числу.
+   * августа, а не к сегодняшнему числу. Пустая строка — день ещё не известен
+   * (сервер не назвал его): кнопка тогда неактивна, а не шлёт пустую дату.
    */
   date: string;
   /** Классы обёртки: на телефоне кнопка во всю ширину, на десктопе — нет. */
@@ -67,7 +69,7 @@ export default function AskAboutDayButton({
     <button
       type="button"
       onClick={() => void open()}
-      disabled={busy}
+      disabled={busy || date === ''}
       aria-label={ASK_ABOUT_DAY_LABEL}
       style={{ minHeight: TAP_TARGET_PX }}
       className={className ? `${BASE_CLASS} ${className}` : BASE_CLASS}

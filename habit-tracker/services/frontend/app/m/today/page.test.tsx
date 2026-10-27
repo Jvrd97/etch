@@ -1,6 +1,6 @@
 // [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: tests for the two entry points on the mobile Today screen — dictation (the button opens the sheet, cancelling leaves the day untouched, a written day closes the sheet and reloads what Today shows) and the chat, whose conversation is started on the very date this screen is displaying
-// summary: the mobile Today shows the server date, reads and asks about that day while the browser clock is a day behind
+// summary: the mobile Today shows the server date, reads, counts an obligation, opens the add-entry sheet and asks about that day while the browser clock is a day behind; with an unknown day there is no date line, no «nothing to track» and the ask-about-the-day button is disabled
 // summary: tests for the mobile Today screen — the dictation entry point (sheet opens, cancel leaves the day alone, a written day reloads it) and the quick-mark section, which is drawn from the directory and absent entirely when the directory is empty
 // summary: the sets behind a quick-mark card on the mobile Today screen — the card's name and counter open a full-screen list of every set, the plus beside them still adds one and opens nothing, every tap reads the day's records and the streak of its category again, and a set taken back from the list lowers the card's counter
 
@@ -58,12 +58,39 @@ const MEAL_PLAN = {
   journal: null,
 };
 
+/** A running obligation whose day is still waiting for a verdict. */
+const WATER_CHALLENGE = {
+  id: 4,
+  title: '7 дней подряд ≥ 2 л воды',
+  category_id: 5,
+  field_id: 9,
+  rule_kind: 'metric_at_least',
+  target: '2.000',
+  starts_on: '2026-07-28',
+  ends_on: '2026-08-03',
+  failure_mode: 'any_miss',
+  allowed_misses: 0,
+  status: 'active',
+  origin: 'human',
+  failed_on: null,
+  total_days: 7,
+  day_number: 3,
+  done_count: 2,
+  misses_used: 0,
+  misses_left: 0,
+  today_verdict: 'pending',
+  created_at: '2026-07-28T06:00:00Z',
+};
+
 let getCategories: ReturnType<typeof mock>;
 /** The day the server is running: Today reads it and never the browser's clock. */
 const SERVER_DAY = '2026-07-30';
 const SERVER_DAY_MODE = { date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' };
 
 let getEntries: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
+let listChallenges: ReturnType<typeof mock>;
+let setDayVerdict: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
 let tapQuickMark: ReturnType<typeof mock>;
 let undoQuickMark: ReturnType<typeof mock>;
@@ -122,7 +149,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
-    dayMode: () => Promise.resolve(SERVER_DAY_MODE),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -213,11 +240,12 @@ mock.module('@/lib/api', () => ({
   // the same reason as the rest: bun fixes a module's export names on first
   // link, and an omitted one is deleted for whoever imports it next.
   challengesAPI: {
-    list: () => Promise.resolve([]),
+    list: () => listChallenges(),
     get: () => Promise.resolve(null),
     create: () => Promise.resolve(null),
     patch: () => Promise.resolve(null),
     recompute: () => Promise.resolve(null),
+    setDayVerdict: (id: number, day: string, draft: unknown) => setDayVerdict(id, day, draft),
   },
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
@@ -305,6 +333,9 @@ beforeEach(() => {
   (globalThis as SpeechWindow).SpeechRecognition = FakeRecognition;
   getCategories = mock(() => Promise.resolve([NUTRITION]));
   getEntries = mock(() => Promise.resolve([] as Entry[]));
+  readDayMode = mock(() => Promise.resolve(SERVER_DAY_MODE));
+  listChallenges = mock(() => Promise.resolve([]));
+  setDayVerdict = mock(() => Promise.resolve(null));
   draft = mock(() => Promise.resolve(MEAL_PLAN));
   applyPlan = mock(() => Promise.resolve({ entry_ids: [1] }));
   listQuickMarks = mock(() => Promise.resolve([] as QuickMark[]));
@@ -454,11 +485,47 @@ describe('the day of /m/today comes from the server', () => {
 
     expect(screen.getByText(SERVER_DAY)).toBeDefined();
     expect(getEntries).toHaveBeenCalledWith({ startDate: SERVER_DAY, endDate: SERVER_DAY });
-    expect(WATER_MARK.entry_date).toBe(SERVER_DAY);
+    expect(screen.getByRole('button', { name: WATER_MARK.label })).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }));
     await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
     expect(createConversation.mock.calls[0][0]).toEqual({ started_on: SERVER_DAY, kind: 'general' });
+  });
+
+  it('counts a day of an obligation by the server date, not the browser one', async () => {
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    listChallenges = mock(() => Promise.resolve([WATER_CHALLENGE]));
+    await renderToday();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Засчитать день'));
+    });
+
+    expect(setDayVerdict).toHaveBeenCalledWith(WATER_CHALLENGE.id, SERVER_DAY, { verdict: 'done' });
+  });
+
+  it('opens the add-entry sheet on the server date, not the browser one', async () => {
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    await renderToday();
+
+    fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
+    const list = screen.getByRole('dialog', { name: 'Питание — сегодня' });
+    fireEvent.click(within(list).getByRole('button', { name: 'Добавить' }));
+
+    const sheetDate = document.getElementById('entry-date') as HTMLInputElement;
+    expect(sheetDate.value).toBe(SERVER_DAY);
+  });
+
+  it('says the day is unknown when the server cannot name it, instead of an empty date', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('day unknown')));
+    render(<MobileTodayPage />);
+
+    expect(await screen.findByText('day unknown')).toBeDefined();
+    expect(screen.queryByText(/^\d{4}-\d{2}-\d{2}$/)).toBeNull();
+    expect(screen.queryByText('Nothing to track today')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }) as HTMLButtonElement).disabled
+    ).toBe(true);
   });
 });
 
