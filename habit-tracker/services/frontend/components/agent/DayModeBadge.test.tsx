@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/241
-// summary: component tests of the day-mode badge — since #241 a failed re-read with a mode already on screen says so, offers a retry and locks the controls; before that: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry
+// summary: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry, also over a mode already on screen (locked, since it may be yesterday's)
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';

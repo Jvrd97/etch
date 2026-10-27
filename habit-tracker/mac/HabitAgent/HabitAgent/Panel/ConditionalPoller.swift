@@ -74,6 +74,8 @@ final class ConditionalPoller<Value: Equatable>: ObservableObject {
             switch try await fetch(etag) {
             case let .modified(newValue, newEtag):
                 // Polls can overlap (the loop and a poll after a write): the older answer must not repaint the newer one.
+                // «Older» is the order of starts, not the moment the server answered: a slow poll that began first loses
+                // even if the server computed it later. The window corrects itself on the next interval.
                 if number > lastSuccessfulPoll {
                     value = newValue
                     etag = newEtag
