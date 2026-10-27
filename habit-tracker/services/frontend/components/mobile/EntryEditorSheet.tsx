@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder, #176, PHASE-01/177
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/73-category-field-reorder, #176, PHASE-01/177, PHASE-03/237
 // summary: mobile entry editor combines unit-aware quick steps with optimistic Today-list edits
+// summary: takes an optional date to prefill, so the Today screen can open the sheet on the server's day
 
 import { FieldValueInput } from '@/components/FieldValueInput';
 import FullScreenSheet from '@/components/mobile/FullScreenSheet';
@@ -24,6 +25,8 @@ export interface EntryEditorSheetProps {
    */
   lockedCategory?: Category | null;
   initialCategoryId?: number;
+  /** Prefill the entry date, e.g. the day the Today screen is showing. */
+  date?: string;
   /** Lets the Today screen own optimistic PATCH and rollback. */
   onUpdateExisting?: (entry: Entry, data: Partial<EntryCreate>) => Promise<Entry>;
   onCancel: () => void;
@@ -45,6 +48,7 @@ export default function EntryEditorSheet({
   entry = null,
   lockedCategory = null,
   initialCategoryId,
+  date,
   onUpdateExisting,
   onCancel,
   onSaved,
@@ -57,6 +61,7 @@ export default function EntryEditorSheet({
     categories: draftCategories,
     entry,
     categoryId: lockedCategory?.id ?? initialCategoryId,
+    date,
     onSaved,
     onUpdateExisting,
   });
