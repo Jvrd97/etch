@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/211
-// summary: Day screen state — loads GET /day for the server's today or a stepped date, optimistic mark cycle with rollback, category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook save with a per-day draft kept across stepping, two-touch closing (review 15:40, final evening); silent re-read after each write refreshes counts and the verdict
+// [review:need-review] PHASE-01/211, PHASE-03/226
+// summary: Day screen state — loads GET /day for the server's today or a stepped date, optimistic mark cycle with rollback, category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
 import Foundation
 
 @MainActor
@@ -30,8 +30,13 @@ final class DayViewModel: ObservableObject {
     @Published var notebook = ""
     /// The notebook text as the server holds it; `notebook` differing from it is unsaved work.
     @Published private(set) var savedNotebook = ""
+    /// The server's notebook text when it moved on while unsaved text sits on the screen;
+    /// nil when there is no disagreement. Saving waits until the person picks a side.
+    @Published private(set) var notebookConflict: String?
     @Published var closingBody = ""
     @Published var closingMinutes = ""
+    /// The zone plan windows are read in; follows the device when it changes.
+    @Published private(set) var timeZone: TimeZone
     @Published var actionError: String?
 
     static let notConfiguredMessage = "Укажите адрес сервера в настройках"
@@ -39,7 +44,6 @@ final class DayViewModel: ObservableObject {
     static let unreadableMinutesMessage = "Минуты работы — целое число"
     static let markFailedMessage = "Отметка не сохранилась"
     static let factFailedMessage = "Факт не сохранился"
-    static let notebookFailedMessage = "Блокнот не сохранился"
     static let closingFailedMessage = "День не закрылся"
 
     /// `nil` asks the server for its today.
@@ -48,18 +52,38 @@ final class DayViewModel: ObservableObject {
     var shownDate: String? { detail?.day.date }
 
     private let apiProvider: () -> DayAPI?
+    private let timeZoneProvider: () -> TimeZone
     private var loadedDate: String?
     private var loadGeneration = 0
-    /// Unsaved notebook text of days the person stepped away from, by `yyyy-MM-dd`.
-    /// In memory only: it survives stepping between days, not a relaunch.
-    private var notebookDrafts: [String: String] = [:]
+    /// Unsaved notebook text of days the person stepped away from, by `yyyy-MM-dd`, with the
+    /// server text it was typed on. In memory only: it survives stepping, not a relaunch.
+    private var notebookDrafts: [String: NotebookEdit] = [:]
+    /// The same for the closing fields (minutes, what happened).
+    private var closingDrafts: [String: ClosingEdit] = [:]
+    /// What the server holds for the closing fields; typed values differing from it are unsent work.
+    private var savedClosingBody = ""
+    private var savedClosingMinutes = ""
     /// Keys of writes that have not been answered yet: a retry of the same body goes
     /// under the same key, so a lost answer cannot record a fact or a touch twice.
     private var factKeys: [UUID: (body: PlanFactRequestDTO, key: String)] = [:]
     private var closingKeys: [String: (body: DayClosingRequestDTO, key: String)] = [:]
 
-    init(apiProvider: @escaping () -> DayAPI?) {
+    private struct NotebookEdit: Equatable {
+        let text: String
+        /// The server text this edit was typed on.
+        let base: String
+    }
+
+    /// A field the person touched; nil is untouched and follows the server.
+    private struct ClosingEdit: Equatable {
+        let body: String?
+        let minutes: String?
+    }
+
+    init(apiProvider: @escaping () -> DayAPI?, timeZoneProvider: @escaping () -> TimeZone = { .current }) {
         self.apiProvider = apiProvider
+        self.timeZoneProvider = timeZoneProvider
+        self.timeZone = timeZoneProvider()
     }
 
     convenience init(api: DayAPI) {
@@ -108,21 +132,57 @@ final class DayViewModel: ObservableObject {
         facts = Dictionary(fetched.planFacts.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
         summary = fetched.summary
         counts = fetched.taskCounts
-        // Drafts are seeded when a different day arrives, never on a re-read:
-        // text typed and not yet saved must survive the refresh after a mark.
-        if loadedDate != fetched.day.date {
-            // Leaving a day with unsaved notebook text keeps it as that day's draft;
+        let date = fetched.day.date
+        var notebookEdit = unsavedNotebook
+        var closingEdit = unsentClosing
+        if loadedDate != date {
+            // Leaving a day keeps what was typed and not yet saved as that day's draft;
             // coming back restores it over the server's text.
-            if let leaving = loadedDate, isNotebookDirty { notebookDrafts[leaving] = notebook }
-            loadedDate = fetched.day.date
-            savedNotebook = fetched.notebook ?? ""
-            let draft = notebookDrafts.removeValue(forKey: fetched.day.date)
-            notebook = draft.flatMap { $0 == savedNotebook ? nil : $0 } ?? savedNotebook
-            closingBody = fetched.summary.bodyMd
-            closingMinutes = fetched.summary.workMinutes.map(String.init) ?? ""
+            if let leaving = loadedDate {
+                notebookDrafts[leaving] = notebookEdit
+                closingDrafts[leaving] = closingEdit
+            }
+            loadedDate = date
+            notebookEdit = notebookDrafts.removeValue(forKey: date)
+            closingEdit = closingDrafts.removeValue(forKey: date)
             factKeys = [:]
             closingKeys = [:]
         }
+        seedNotebook(server: fetched.notebook ?? "", unsaved: notebookEdit)
+        seedClosing(from: fetched.summary, unsent: closingEdit)
+    }
+
+    /// A re-read of the same day brings the server's text unless something is typed and
+    /// unsaved: that stays, and a server text that moved since is shown beside it as a conflict.
+    private func seedNotebook(server: String, unsaved: NotebookEdit?) {
+        guard let unsaved, unsaved.text != server else {
+            notebook = server
+            savedNotebook = server
+            notebookConflict = nil
+            return
+        }
+        notebook = unsaved.text
+        savedNotebook = unsaved.base
+        notebookConflict = server == unsaved.base ? nil : server
+    }
+
+    private func seedClosing(from summary: DaySummaryDTO, unsent: ClosingEdit?) {
+        savedClosingBody = summary.bodyMd
+        savedClosingMinutes = summary.workMinutes.map(String.init) ?? ""
+        closingBody = unsent?.body ?? savedClosingBody
+        closingMinutes = unsent?.minutes ?? savedClosingMinutes
+    }
+
+    private var unsavedNotebook: NotebookEdit? {
+        isNotebookDirty ? NotebookEdit(text: notebook, base: savedNotebook) : nil
+    }
+
+    private var unsentClosing: ClosingEdit? {
+        let edit = ClosingEdit(
+            body: closingBody == savedClosingBody ? nil : closingBody,
+            minutes: closingMinutes == savedClosingMinutes ? nil : closingMinutes
+        )
+        return edit == ClosingEdit(body: nil, minutes: nil) ? nil : edit
     }
 
     func showPreviousDay() async { await step(by: -1) }
@@ -131,6 +191,20 @@ final class DayViewModel: ObservableObject {
     func showToday() async {
         requestedDate = nil
         await load()
+    }
+
+    /// Back from the background or past midnight: the server's today may have turned over and
+    /// the web may have edited the day. Silent, no loader; a screen that is not loaded is left alone.
+    func rereadInPlace() async {
+        guard state == .loaded else { return }
+        await reloadSilently()
+    }
+
+    /// The device moved to another zone: plan windows are read on the new wall clock.
+    func systemTimeZoneDidChange() async {
+        NSTimeZone.resetSystemTimeZone()
+        timeZone = timeZoneProvider()
+        await rereadInPlace()
     }
 
     private func step(by days: Int) async {
@@ -258,17 +332,39 @@ final class DayViewModel: ObservableObject {
 
     func saveNotebook() async {
         guard let api = apiProvider() else { actionError = Self.notConfiguredMessage; return }
-        guard let date = shownDate, !isSavingNotebook else { return }
+        guard let date = shownDate, !isSavingNotebook, notebookConflict == nil else { return }
         isSavingNotebook = true
         defer { isSavingNotebook = false }
         let text = notebook
         do {
             try await api.saveNotebook(date: date, content: text)
             // The person may have stepped to another day while this was in flight.
-            if shownDate == date { savedNotebook = text }
+            if shownDate == date {
+                savedNotebook = text
+                notebookConflict = nil
+            } else if notebookDrafts[date]?.text == text {
+                notebookDrafts[date] = nil
+            }
         } catch {
-            actionError = Self.message(for: error, fallback: Self.notebookFailedMessage)
+            let failed = "Блокнот за \(DayFormat.title(of: date)) не сохранился"
+            let reason = Self.message(for: error, fallback: failed)
+            actionError = reason == failed ? failed : "\(failed): \(reason)"
         }
+    }
+
+    /// Conflict: keep the typed text. The server text is taken as the new base, so the next save is a deliberate overwrite.
+    func keepMyNotebook() {
+        guard let server = notebookConflict else { return }
+        savedNotebook = server
+        notebookConflict = nil
+    }
+
+    /// Conflict: drop the typed text for the server's.
+    func useServerNotebook() {
+        guard let server = notebookConflict else { return }
+        notebook = server
+        savedNotebook = server
+        notebookConflict = nil
     }
 
     // MARK: Closing

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/211
-// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double for the Day tests
+// [review:need-review] PHASE-01/211, PHASE-03/226
+// summary: server-shaped JSON of GET /day (built from the backend schemas DayDetailResponse, PlanResponse, PlanItemFactsResponse, DaySummaryResponse, with the blocks iOS ignores left in) and a scriptable DayAPI double (its notebook save can run a hook while in flight) for the Day tests
 import Foundation
 @testable import HabitTracker
 
@@ -136,6 +136,8 @@ final class MockDayAPI: DayAPI {
     var removeCalls: [(id: UUID, entry: Int, unmark: Bool)] = []
     var notebookCalls: [String] = []
     var notebookError: Error?
+    /// Runs inside `saveNotebook`, before the answer: lets a test act while the save is in flight.
+    var duringNotebookSave: (@MainActor () async -> Void)?
     var closingResult: Result<DaySummaryDTO, Error> = .failure(APIClientError.invalidResponse)
     var closingCalls: [(touch: String, body: DayClosingRequestDTO, key: String)] = []
 
@@ -168,6 +170,7 @@ final class MockDayAPI: DayAPI {
 
     func saveNotebook(date: String, content: String) async throws {
         notebookCalls.append(content)
+        await duringNotebookSave?()
         if let notebookError { throw notebookError }
     }
 
