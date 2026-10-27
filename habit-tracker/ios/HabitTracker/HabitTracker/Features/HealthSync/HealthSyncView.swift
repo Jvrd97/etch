@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233
+// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233, PHASE-03/254
 // summary: Health section that requests access on first entry, shows four groups with honest empty values, and sends the last 7 days to the server with the result in words, including a joined launch run and a failed permission request
 
 import SwiftUI
@@ -57,7 +57,7 @@ final class HealthSyncViewModel: ObservableObject {
         case .notConfigured:
             return "Укажите адрес сервера в More → Settings"
         case .skipped:
-            return "Отправка при запуске ничего не отправила: доступ к «Здоровью» ещё не запрошен. Нажмите ещё раз"
+            return "Отправка при запуске ничего не отправила: на этом устройстве нет данных «Здоровья» или доступ к ним ещё не запрошен"
         case .failed(let failure):
             return Self.message(for: failure)
         }

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet
 import HealthKit
 import XCTest
@@ -213,7 +213,7 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(api.posted[0], api.posted[1])
     }
 
-    func testPhoneAndWatchCountingTheSameStepsSendHealthKitsSumOnce() async {
+    func testStepsGoOnlyThroughHourlySumsAsOneRecordEvenWhenPhoneAndWatchBothCounted() async {
         // Both devices recorded the same 1000 steps; HealthKit's statistics keep one
         // source per moment by priority, as the Health app does. Raw samples are not read.
         store.samples[.stepCount] = [
@@ -284,6 +284,42 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(outcome, .failed(.healthDataUnavailable))
     }
 
+    func testNoDataErrorOnTheStepWindowIsAnEmptyWeekNotAReadFailure() async {
+        store.sumError = HKError(.errorNoData)
+        store.samples[.restingHeartRate] = [
+            FakeHealthStore.sample(.restingHeartRate, 54, HKUnit(from: "count/min"), "2026-10-20T03:00:00Z"),
+        ]
+
+        let withHeartRate = await makePump().sync()
+        store.samples = [:]
+        let withNothing = await makePump().sync()
+
+        guard case .sent = withHeartRate else {
+            return XCTFail("a window without steps must still send the heart rate, got \(withHeartRate)")
+        }
+        XCTAssertEqual(
+            api.posted.first?.samples.map(\.identifier), ["HKQuantityTypeIdentifierRestingHeartRate"]
+        )
+        XCTAssertEqual(withNothing, .nothingToSend)
+    }
+
+    func testAnyOtherErrorOfTheStepWindowIsAReadFailure() async {
+        store.sumError = HKError(.errorDatabaseInaccessible)
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.readFailed))
+        XCTAssertTrue(api.posted.isEmpty)
+    }
+
+    func testPumpBuiltWithoutZoneArgumentsFollowsTheDeviceZoneLive() {
+        let pump = HealthPump(store: store, api: { nil })
+
+        XCTAssertEqual(pump.calendar, Calendar.autoupdatingCurrent)
+        XCTAssertNotEqual(pump.calendar, Calendar.current)
+        XCTAssertEqual(pump.mapper.timeZone, TimeZone.autoupdatingCurrent)
+    }
+
     func testConcurrentCallersShareOneRun() async {
         fillWeek()
         store.suspendReads = true
@@ -301,7 +337,11 @@ final class HealthPumpTests: XCTestCase {
 // MARK: - Fakes
 
 /// Stands in for `HKHealthStore`: scripted availability, request status and samples.
-final class FakeHealthStore: HealthStoreQuerying {
+///
+/// `@unchecked Sendable`: the protocol is `Sendable` because the pump reads off the main
+/// actor. The fake is built and scripted before a run, mutated by one run at a time, and
+/// read by assertions after it ends; no test touches it from two tasks at once.
+final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var available = true
     var requestStatus: HKAuthorizationRequestStatus = .unnecessary
     var samples: [HKQuantityTypeIdentifier: [HKQuantitySample]] = [:]
@@ -309,6 +349,8 @@ final class FakeHealthStore: HealthStoreQuerying {
     var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
     var latest: [HKQuantityTypeIdentifier: HKQuantitySample] = [:]
     var readError: Error?
+    /// Fails only the hourly-sum query; samples and the latest reading are unaffected.
+    var sumError: Error?
     var authorizationError: Error?
     /// Yields inside every read so a second caller gets a turn mid-run.
     var suspendReads = false
@@ -351,8 +393,8 @@ final class FakeHealthStore: HealthStoreQuerying {
         if suspendReads {
             await Task.yield()
         }
-        if let readError {
-            throw readError
+        if let failure = sumError ?? readError {
+            throw failure
         }
         return hourSums[HKQuantityTypeIdentifier(rawValue: type.identifier)] ?? []
     }

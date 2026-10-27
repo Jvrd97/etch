@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: the one read-only seam over HKHealthStore (availability, request status, read request, samples of a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO
 import Foundation
 import HealthKit
@@ -14,8 +14,8 @@ struct HealthHourSum: Equatable {
 
 /// Everything the app reads from `HKHealthStore`, for the pump and the Health screen
 /// alike. Read-only by construction: no method takes a share set, so the app cannot
-/// ask to write health data. Tests use a fake.
-protocol HealthStoreQuerying {
+/// ask to write health data. Tests use a fake. `Sendable`: the pump reads it off the main actor.
+protocol HealthStoreQuerying: Sendable {
     var healthDataAvailable: Bool { get }
     /// `.unnecessary` once the person has answered the sheet for these types.
     func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus
@@ -24,6 +24,7 @@ protocol HealthStoreQuerying {
     /// Raw samples that start inside `[from, to)`, oldest first. For discrete metrics.
     func quantitySamples(of type: HKQuantityType, from: Date, to: Date) async throws -> [HKQuantitySample]
     /// Hour-long sums covering `[from, to)`, anchored at `from`. For cumulative metrics.
+    /// A window with no data at all may throw `HKError.errorNoData`; the pump reads that as an empty week.
     func hourlySums(of type: HKQuantityType, from: Date, to: Date) async throws -> [HealthHourSum]
     /// The most recent sample of the type, if any.
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample?
@@ -88,8 +89,13 @@ extension HKHealthStore: HealthStoreQuerying {
 struct HealthSampleMapper {
     private static let secondsPerMinute = 60
 
-    /// The device zone; a sample that recorded its own zone (`HKMetadataKeyTimeZone`) wins.
+    /// The device zone, read live: a change of zone applies without restarting the app.
+    /// A sample that recorded its own zone (`HKMetadataKeyTimeZone`) wins.
     let timeZone: TimeZone
+
+    init(timeZone: TimeZone = .autoupdatingCurrent) {
+        self.timeZone = timeZone
+    }
 
     func dto(_ sample: HKQuantitySample, metric: HealthMetricDefinition) -> HealthSampleDTO {
         dto(

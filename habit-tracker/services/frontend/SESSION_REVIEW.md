@@ -2337,3 +2337,14 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - Тесты: `hooks/useToday.test.ts`, `hooks/useDailySummary.test.ts`, `hooks/useDashboard.test.ts`, `app/today/page.test.tsx`, `app/m/today/page.test.tsx`, `app/m/entries/page.test.tsx`, `app/m/categories/[id]/page.test.tsx`, `components/CategoryChart.test.tsx`, `components/chat/ChatHistorySheet.test.tsx` (new), `components/week/WeekScreen.test.tsx`, `components/day/DaySidebar.test.tsx`, `components/life/LifeGrid.test.tsx` — mod.
 
 Живая проверка: заглушка API на 8892 (день на сутки впереди браузера, 150 мс на ответ) и dev-фронт на 3892, headless Chrome по сырому CDP. Настоящий бэкенд не поднимался: `habit_test_247` пуста (миграции в рое не запускаются).
+||||||| 5d9190c
+
+## 2026-10-27 — PHASE-03/249: слот записи режима дня (веб)
+
+Тронуто 5 файлов: `hooks/useDayMode.ts`, `hooks/useDayMode.test.ts`, `components/agent/DayModeBadge.tsx`, `components/agent/DayModeBadge.test.tsx` (mod), `app/today/page.tsx` (mod, одна строка `reading=`).
+
+- Слот записи (`writing` — счётчик) занимается синхронно в `write`: два `decide` в одном такте дают одну запись.
+- `reading`: пока чтение в пути, `decide`/`reset` не уходят, контролы бейджа заблокированы. Чтение, начатое во время записи и ответившее до её конца, теперь тоже отбрасывается (раньше принималось).
+- Повторное чтение из `finally` не запускается после размонтирования; в `useDayMode.ts` возвращены одинарные кавычки.
+
+Не проверено: браузер (только тесты хука и компонента).

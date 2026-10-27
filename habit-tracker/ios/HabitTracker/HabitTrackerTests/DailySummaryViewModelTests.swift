@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
-// summary: tests for DailySummaryViewModel with a faked recognizer and API — the day (today, another day, a key per day), a plan frozen after an unanswered write, a cancellable draft, dictation stopped by a call or the background, dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230, PHASE-03/250
+// summary: tests for DailySummaryViewModel with a faked recognizer and API — the day (today, another day, a key per day), a plan frozen after an unanswered write, a cancellable draft, dictation stopped by a call or the background, dictation lands in the editable text and survives a refusal or a failure, nothing is sent before the person confirms, uncertain rows start off, one Idempotency-Key per plan across retries, journal replace only when asked and possible, ids are named from the catalogue; the on-device flag of the real recognizer request; whether a write ever left the model (a sheet closed without one owes Today no re-read); the retainer keeps only the model the screen adopted and lets it go after an ordinary exit
 import Speech
 import XCTest
 @testable import HabitTracker
@@ -692,20 +692,182 @@ final class DailySummaryViewModelTests: XCTestCase {
 
         let first = retainer.model()
         XCTAssertTrue(first === held.viewModel)
+        retainer.adopt(first)
+        retainer.screenLeft(first)
         XCTAssertTrue(retainer.model() === held.viewModel, "the system popped the screen; the write is still unanswered")
 
         retainer.release()
         XCTAssertTrue(retainer.model() === spare.viewModel, "the person chose to leave: the next visit starts clean")
     }
 
-    func testTheRetainerDoesNotKeepAModelThatHasNothingToLose() {
+    func testTheRetainerLetsGoOfAModelThatHasNothingToLoseWhenTheScreenLeaves() {
         let first = makeHarness()
         let second = makeHarness()
         var queue = [first.viewModel, second.viewModel]
         let retainer = DailySummaryRetainer { queue.removeFirst() }
 
-        XCTAssertTrue(retainer.model() === first.viewModel)
+        let shown = retainer.model()
+        XCTAssertTrue(shown === first.viewModel)
+        retainer.adopt(shown)
+        retainer.screenLeft(shown)
+
         XCTAssertTrue(retainer.model() === second.viewModel)
+    }
+
+    func testAModelAskedForButNeverShownIsNotTheOneTheRetainerKeeps() async {
+        // The screen's init may run more than once; only the model it adopts counts.
+        let shown = makeHarness()
+        shown.viewModel.transcript = "день"
+        shown.api.draftResult = .success(plan(metrics: [metric()]))
+        await shown.viewModel.generate()
+        shown.api.applyResult = .failure(APIClientError.timeout)
+        await shown.viewModel.apply()
+        let askedOnly = makeHarness()
+        var queue = [askedOnly.viewModel]
+        let retainer = DailySummaryRetainer { queue.removeFirst() }
+
+        let neverShown = retainer.model()
+        XCTAssertTrue(neverShown === askedOnly.viewModel)
+        retainer.adopt(shown.viewModel)
+        retainer.screenLeft(neverShown)
+
+        XCTAssertTrue(retainer.model() === shown.viewModel, "leaving of a model that was not adopted changes nothing")
+    }
+
+    // MARK: - Whether a write ever left the model
+
+    func testASheetThatSentNothingHasNotChangedTheDay() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+
+        XCTAssertFalse(h.viewModel.mayHaveChangedTheDay)
+        await h.viewModel.generate()
+
+        XCTAssertFalse(h.viewModel.mayHaveChangedTheDay, "a draft writes nothing")
+        XCTAssertTrue(h.api.applies.isEmpty)
+    }
+
+    func testEveryAnswerToAWriteLeavesTheMarkThatTheDayMayHaveChanged() async {
+        let answers: [Result<DailySummaryApplyResponseDTO, Error>] = [
+            .success(DailySummaryApplyResponseDTO(entryIds: [1], journalEntryId: nil)),
+            .failure(APIClientError.unexpectedStatus(409)),
+            .failure(APIClientError.timeout),
+            .failure(APIClientError.unexpectedStatus(422)),
+        ]
+        for answer in answers {
+            let h = makeHarness()
+            h.viewModel.transcript = "день"
+            h.api.draftResult = .success(plan(metrics: [metric()]))
+            await h.viewModel.generate()
+            h.api.applyResult = answer
+
+            await h.viewModel.apply()
+
+            XCTAssertTrue(h.viewModel.mayHaveChangedTheDay, "\(answer)")
+        }
+    }
+
+    func testTodayIsToldOfASheetOnlyWhenItSentAWrite() async {
+        let silent = makeHarness()
+        silent.viewModel.transcript = "день"
+        silent.api.draftResult = .success(plan(metrics: [metric()]))
+        await silent.viewModel.generate()
+        let sent = makeHarness()
+        sent.viewModel.transcript = "день"
+        sent.api.draftResult = .success(plan(metrics: [metric()]))
+        await sent.viewModel.generate()
+        sent.api.applyResult = .failure(APIClientError.timeout)
+        await sent.viewModel.apply()
+
+        XCTAssertFalse(VoiceDayDismissal.shouldReloadToday(after: silent.viewModel), "a draft and a Close change nothing")
+        XCTAssertFalse(VoiceDayDismissal.shouldReloadToday(after: nil), "a sheet that never opened owes nothing")
+        XCTAssertTrue(VoiceDayDismissal.shouldReloadToday(after: sent.viewModel), "a write that lost its answer may have landed")
+    }
+
+    /// A sheet whose model reports to `presentation` the way the Today button wires it.
+    private func openSheet(
+        _ presentation: inout VoiceDayPresentation, api: MockDailySummaryAPI, report: @escaping (VoiceDaySession) -> Void
+    ) -> VoiceDaySession {
+        let session = VoiceDaySession(
+            make: { onApplied in
+                DailySummaryViewModel(apiProvider: { api }, speech: FakeSpeech(), onApplied: onApplied)
+            },
+            onApplied: report
+        )
+        presentation.open(session)
+        return session
+    }
+
+    private func startWriting(_ session: VoiceDaySession, api: MockDailySummaryAPI) async -> Task<Void, Never> {
+        session.model.transcript = "день"
+        api.draftResult = .success(plan(metrics: [metric()]))
+        await session.model.generate()
+        let writing = Task { await session.model.apply() }
+        await waitUntil { session.model.applyState == .applying }
+        return writing
+    }
+
+    func testClosingTwiceInARowDoesNotForgetTheFirstClose() async {
+        let api = MockDailySummaryAPI()
+        api.applyDelay = .milliseconds(50)
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let session = openSheet(&presentation, api: api) { box.late.append($0) }
+        let writing = await startWriting(session, api: api)
+
+        presentation.close() // Close pressed while the write waits
+        await writing.value // its answer arrives: onApplied names the session, the close is written again
+        for answered in box.late { presentation.close(ifShowing: answered) }
+        presentation.close() // and the binding writes nil once more
+
+        let dismissed = presentation.takeDismissedModel()
+        XCTAssertTrue(dismissed === session.model)
+        XCTAssertTrue(VoiceDayDismissal.shouldReloadToday(after: dismissed), "the write went through: Today must read the day")
+        XCTAssertNil(presentation.takeDismissedModel(), "the model is handed over once")
+    }
+
+    func testTheLateAnswerOfAnOldSheetDoesNotCloseTheNewOne() async {
+        let api = MockDailySummaryAPI()
+        api.applyDelay = .milliseconds(50)
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let old = openSheet(&presentation, api: api) { box.late.append($0) }
+        let writing = await startWriting(old, api: api)
+        presentation.close()
+        _ = presentation.takeDismissedModel()
+        let fresh = openSheet(&presentation, api: MockDailySummaryAPI()) { box.late.append($0) }
+
+        await writing.value // the old write is answered now
+        XCTAssertTrue(box.late.contains { $0 === old }, "the answer names the old sheet")
+        for answered in box.late { presentation.close(ifShowing: answered) }
+
+        XCTAssertTrue(presentation.session === fresh, "the new sheet stays open")
+    }
+
+    func testAnAnswerOfTheSheetOnScreenClosesIt() async {
+        let api = MockDailySummaryAPI()
+        var presentation = VoiceDayPresentation()
+        let box = PresentationBox()
+        let session = openSheet(&presentation, api: api) { box.late.append($0) }
+
+        await startWriting(session, api: api).value
+        for answered in box.late { presentation.close(ifShowing: answered) }
+
+        XCTAssertNil(presentation.session)
+        XCTAssertTrue(presentation.takeDismissedModel() === session.model)
+    }
+
+    func testStartingAgainDoesNotForgetThatAWriteLeft() async {
+        let h = makeHarness()
+        h.viewModel.transcript = "день"
+        h.api.draftResult = .success(plan(metrics: [metric()]))
+        await h.viewModel.generate()
+        await h.viewModel.apply()
+
+        h.viewModel.reset()
+
+        XCTAssertTrue(h.viewModel.mayHaveChangedTheDay)
     }
 
     func testApplyWithoutAServerAddressSaysSoInsteadOfDoingNothing() async {
@@ -950,4 +1112,10 @@ final class DailySummaryViewModelTests: XCTestCase {
         let server = SystemSpeechRecognizer.makeRequest(supportsOnDevice: false)
         XCTAssertFalse(server.requiresOnDeviceRecognition)
     }
+}
+
+/// Collects the sessions whose model reported an answer.
+@MainActor
+private final class PresentationBox {
+    var late: [VoiceDaySession] = []
 }
