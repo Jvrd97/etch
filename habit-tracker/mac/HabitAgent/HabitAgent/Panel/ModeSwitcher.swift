@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/228
-// summary: the day-mode section of the floating window — the kind in a menu and no-code as its own switch (a working Tuesday is both), who decided it (schedule or hand), a way back to the schedule for a day decided by hand, and a note when a write did not go through; the controls are locked while a write runs
+// summary: the day-mode section of the floating window — the kind in a menu and no-code as its own switch (a working Tuesday is both), who decided it (schedule or hand), a way back to the schedule for a day decided by hand, and a note when a write did not go through; the controls are locked while a write runs, from the handler itself (the model takes the slot synchronously)
 import SwiftUI
 
 /// A change of the day mode the window asks the server for.
@@ -39,7 +39,7 @@ struct ModeSwitcher: View {
                         .font(.caption)
                         .foregroundStyle(model.modeWriteFailed ? .orange : .secondary)
                     if mode.source == .manual {
-                        Button("К расписанию") { Task { await model.resetMode() } }
+                        Button("К расписанию") { model.resetMode() }
                             .buttonStyle(.link)
                             .font(.caption)
                             .disabled(model.modeSaving)
@@ -52,14 +52,14 @@ struct ModeSwitcher: View {
     private func kindBinding(_ mode: PanelDayMode) -> Binding<String> {
         Binding(
             get: { mode.kind },
-            set: { kind in Task { await model.decideMode(kind: kind, nocode: mode.nocode) } }
+            set: { kind in model.decideMode(kind: kind, nocode: mode.nocode) }
         )
     }
 
     private func nocodeBinding(_ mode: PanelDayMode) -> Binding<Bool> {
         Binding(
             get: { mode.nocode },
-            set: { nocode in Task { await model.decideMode(kind: mode.kind, nocode: nocode) } }
+            set: { nocode in model.decideMode(kind: mode.kind, nocode: nocode) }
         )
     }
 }

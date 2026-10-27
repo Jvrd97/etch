@@ -110,9 +110,10 @@ async def test_current_day_is_the_servers_day_not_the_utc_date(
     """
     Между полуночью и часом границы сервер ещё живёт в прошлом дне.
 
-    01:30 по Берлину при границе 04:00 — это 23:30 UTC того же вчерашнего числа
-    и вторник по серверу; бейдж, спросивший «сегодня», получает дату сервера и
-    пишет на неё.
+    01:30 по Берлину 28.10.2026 (там уже CET, UTC+1) — это 00:30 UTC 28-го, то есть
+    календарная дата UTC уже 28.10, а при границе 04:00 сервер ещё живёт во
+    вторнике 27.10; бейдж, спросивший «сегодня», получает дату сервера и пишет
+    на неё.
     """
     daytime.use_boundary(DayBoundary(timezone="Europe/Berlin", day_start_hour=4))
     moment = datetime(2026, 10, 28, 1, 30, tzinfo=ZoneInfo("Europe/Berlin"))
@@ -250,6 +251,9 @@ async def test_a_date_outside_the_calendar_of_the_app_is_422(
     response = await client.request(method.upper(), url, **kwargs)
 
     assert response.status_code == 422
+    problems = response.json()["detail"]
+    assert isinstance(problems, list)
+    assert problems[0]["loc"] == ["path", "on"]
     count = await db_session.scalar(select(func.count()).select_from(DayMode))
     assert count == 0
 

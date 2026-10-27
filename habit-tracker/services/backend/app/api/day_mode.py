@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.daytime import today_local
@@ -35,12 +36,19 @@ router = APIRouter(tags=["day-mode"])
 def _calendar_day(on: date_type) -> date_type:
     """The `{on}` of the path, refused when it is outside the calendar of the app."""
     if not DAY_MODE_MIN_DATE <= on <= DAY_MODE_MAX_DATE:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Дата вне календаря приложения: "
-                f"{DAY_MODE_MIN_DATE.isoformat()}..{DAY_MODE_MAX_DATE.isoformat()}."
-            ),
+        # The same shape as every other 422 of the API: a list of problems, not a string.
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("path", "on"),
+                    "msg": (
+                        "Дата вне календаря приложения: "
+                        f"{DAY_MODE_MIN_DATE.isoformat()}..{DAY_MODE_MAX_DATE.isoformat()}."
+                    ),
+                    "input": on.isoformat(),
+                }
+            ]
         )
     return on
 

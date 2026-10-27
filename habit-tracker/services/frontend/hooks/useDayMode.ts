@@ -1,8 +1,9 @@
 'use client';
 // [review:need-review] PHASE-03/228
-// summary: the day mode of the server's current day for the Today screen — read on mount without a date (the answer names the day), every decision or reset goes to the date of that answer and is replaced by the server's reply, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) is reported as `loadFailed` and can be retried
+// summary: the day mode of the server's current day for the Today screen — read on mount without a date (the answer names the day), every decision or reset goes to the date of that answer and is replaced by the server's reply, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) is reported as `loadFailed` and can be retried, and it is read again whenever the tab becomes visible so a page left open across the day boundary follows the server's day
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 // A namespace import read at call time, not a named import: suites that mock
 // `@/lib/api` with a fixed list of names would fail to link every screen that
 // renders Today if this hook imported a new client by name.
@@ -72,6 +73,9 @@ export function useDayMode(client: DayModeClient = API_CLIENT): UseDayModeResult
   }, [load]);
 
   const reload = useCallback(() => load(() => true), [load]);
+  // A page left open across the day boundary (a laptop asleep overnight) must not keep writing to yesterday.
+  const refreshQuietly = useCallback(() => void reload(), [reload]);
+  useRefreshOnVisible(refreshQuietly);
 
   const write = useCallback(async (call: () => Promise<DayMode>) => {
     setSaving(true);

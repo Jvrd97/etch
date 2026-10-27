@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/228
-// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried
+// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried, and a tab that comes back after the day boundary reads the new day and writes to it
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -139,5 +139,31 @@ describe('useDayMode', () => {
 
     await waitFor(() => expect(result.current.loadFailed).toBe(true));
     expect(result.current.mode).toBeNull();
+  });
+
+  it('reads the server day again when the tab becomes visible, and writes to the new date', async () => {
+    let serverDay = '2026-10-26';
+    const calls: string[] = [];
+    const api = client({
+      read: async () => ({ ...SCHEDULED, date: serverDay }),
+      set: async (date, draft) => {
+        calls.push(date);
+        return { date, ...draft, source: 'manual' };
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-26'));
+
+    // The laptop slept through the boundary: the server is on the next day now.
+    serverDay = '2026-10-27';
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.mode?.date).toBe('2026-10-27'));
+    await act(async () => {
+      await result.current.decide('sick', false);
+    });
+
+    expect(calls).toEqual(['2026-10-27']);
   });
 });

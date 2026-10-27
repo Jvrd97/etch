@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/228
-// summary: tests of the day mode in the floating window — the config's day_mode decodes with its source, the window says where the mode came from (schedule or hand), a decision goes to PUT /day-mode/{date} with kind and nocode both, a reset to DELETE, the window repaints from the next config after a write, and a refused write is shown instead of pretending; since #228 also: a source the window does not know does not fail the whole config, a second write while one is in flight is not sent (the window repaints only after the first, so its fields would be stale), the switcher view is locked while a write runs, and a fresh config clears «не сохранилось»
+// summary: tests of the day mode in the floating window — the config's day_mode decodes with its source, the window says where the mode came from (schedule or hand), a decision goes to PUT /day-mode/{date} with kind and nocode both, a reset to DELETE, the window repaints from the next config after a write, and a refused write is shown instead of pretending; since #228 also: a source the window does not know does not fail the whole config, a second write while one is in flight is not sent (the window repaints only after the first, so its fields would be stale), the switcher view is locked while a write runs, and a fresh config clears «не сохранилось», the server's answer to a write stays on screen when the poll after it fails, and the slot of the write is taken synchronously (a second change in the same turn is refused)
 import SwiftUI
 import XCTest
 @testable import HabitAgent
@@ -34,6 +34,8 @@ private func configJSON(kind: String, nocode: Bool, source: String) -> String {
      "title_rules": [], "current_task": null, "day_path": "/day/2026-10-27"}
     """
 }
+
+private let answerJSON = #"{"date": "2026-10-27", "kind": "vacation", "nocode": true, "source": "manual"}"#
 
 private func requestBody(_ request: URLRequest) -> Data {
     if let body = request.httpBody { return body }
@@ -100,17 +102,29 @@ final class DayModeRequestTests: XCTestCase {
         ModeStubProtocol.handler = { request in
             seen = request
             sent = requestBody(request)
-            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(answerJSON.utf8))
         }
 
-        try await client().change(mode: .decide(kind: "vacation", nocode: true), date: "2026-10-27")
+        let answer = try await client().change(mode: .decide(kind: "vacation", nocode: true), date: "2026-10-27")
 
+        XCTAssertEqual(answer, PanelDayMode(kind: "vacation", nocode: true, source: .manual))
         XCTAssertEqual(seen?.httpMethod, "PUT")
         XCTAssertEqual(seen?.url?.absoluteString, "https://habit.example/api/v1/day-mode/2026-10-27")
         XCTAssertEqual(seen?.value(forHTTPHeaderField: "X-API-Key"), "secret")
         let body = try JSONSerialization.jsonObject(with: sent) as? [String: Any]
         XCTAssertEqual(body?["kind"] as? String, "vacation")
         XCTAssertEqual(body?["nocode"] as? Bool, true)
+    }
+
+    func testAnAnswerWithASourceTheWindowDoesNotKnowIsStillASuccess() async throws {
+        ModeStubProtocol.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             Data(#"{"date": "2026-10-27", "kind": "work", "nocode": true, "source": "calendar"}"#.utf8))
+        }
+
+        let answer = try await client().change(mode: .reset, date: "2026-10-27")
+
+        XCTAssertNil(answer)
     }
 
     func testAResetIsADelete() async throws {
@@ -151,11 +165,14 @@ final class DayModeModelTests: XCTestCase {
         /// While `holdWrites` is set, every write waits here until the test lets it go.
         var gates: [CheckedContinuation<Void, Never>] = []
         var holdWrites = false
+        /// The next polls fail, as a poll right after a write may.
+        var failPolls = false
         var model: PanelModel!
 
         init() {
             let poller = ConditionalPoller<PanelConfig>(interval: 30, staleAfter: 120, maxRetryDelay: 60, sleep: { _ in }) { [unowned self] _ in
-                .modified(PanelConfig(currentTask: nil, dayPath: "/day/2026-10-27", date: "2026-10-27", dayMode: mode), etag: nil)
+                if failPolls { throw Refused() }
+                return .modified(PanelConfig(currentTask: nil, dayPath: "/day/2026-10-27", date: "2026-10-27", dayMode: mode), etag: nil)
             }
             model = PanelModel(
                 config: poller,
@@ -170,6 +187,7 @@ final class DayModeModelTests: XCTestCase {
                     case let .decide(kind, nocode): mode = PanelDayMode(kind: kind, nocode: nocode, source: .manual)
                     case .reset: mode = PanelDayMode(kind: "work", nocode: true, source: .schedule)
                     }
+                    return mode
                 }
             )
         }
@@ -188,7 +206,7 @@ final class DayModeModelTests: XCTestCase {
         let world = World()
         await world.model.config.pollOnce()
 
-        await world.model.decideMode(kind: "vacation", nocode: true)
+        await world.model.decideMode(kind: "vacation", nocode: true)?.value
 
         XCTAssertEqual(world.writes.first?.0, "2026-10-27")
         XCTAssertEqual(world.writes.first?.1, .decide(kind: "vacation", nocode: true))
@@ -200,7 +218,7 @@ final class DayModeModelTests: XCTestCase {
         let world = World()
         await world.model.config.pollOnce()
 
-        await world.model.decideMode(kind: "work", nocode: false)
+        await world.model.decideMode(kind: "work", nocode: false)?.value
 
         XCTAssertEqual(world.model.dayMode?.kind, "work")
         XCTAssertEqual(world.model.dayMode?.nocode, false)
@@ -211,7 +229,7 @@ final class DayModeModelTests: XCTestCase {
         world.mode = PanelDayMode(kind: "sick", nocode: false, source: .manual)
         await world.model.config.pollOnce()
 
-        await world.model.resetMode()
+        await world.model.resetMode()?.value
 
         XCTAssertEqual(world.writes.first?.1, .reset)
         XCTAssertEqual(world.model.dayMode?.sourceText, "по расписанию")
@@ -222,7 +240,7 @@ final class DayModeModelTests: XCTestCase {
         await world.model.config.pollOnce()
         world.refuse = true
 
-        await world.model.decideMode(kind: "dayoff", nocode: false)
+        await world.model.decideMode(kind: "dayoff", nocode: false)?.value
 
         XCTAssertEqual(world.model.dayMode?.kind, "work")
         XCTAssertTrue(world.model.modeWriteFailed)
@@ -235,15 +253,16 @@ final class DayModeModelTests: XCTestCase {
         await world.model.config.pollOnce()
         world.holdWrites = true
 
-        let first = Task { await world.model.decideMode(kind: "work", nocode: false) }
-        while world.gates.isEmpty { await Task.yield() }
+        let first = world.model.decideMode(kind: "work", nocode: false)
+        // The slot is taken before the call returns: a second handler in the same turn finds it busy.
         XCTAssertTrue(world.model.modeSaving)
-        let second = Task { await world.model.decideMode(kind: "vacation", nocode: true) }
-        for _ in 0..<20 { await Task.yield() }
+        let second = world.model.decideMode(kind: "vacation", nocode: true)
+        XCTAssertNil(second)
+        while world.gates.isEmpty { await Task.yield() }
         world.holdWrites = false
         world.gates.forEach { $0.resume() }
-        await first.value
-        await second.value
+        await first?.value
+        await second?.value
 
         XCTAssertEqual(world.writes.count, 1)
         XCTAssertEqual(world.writes.first?.1, .decide(kind: "work", nocode: false))
@@ -255,18 +274,39 @@ final class DayModeModelTests: XCTestCase {
         let world = World()
         await world.model.config.pollOnce()
         world.refuse = true
-        await world.model.decideMode(kind: "dayoff", nocode: false)
+        await world.model.decideMode(kind: "dayoff", nocode: false)?.value
         XCTAssertTrue(world.model.modeWriteFailed)
 
         await world.model.config.pollOnce()
 
         XCTAssertFalse(world.model.modeWriteFailed)
     }
+
+    func testAFailedPollAfterAWriteDoesNotBringTheOldModeBack() async {
+        // Otherwise the controls come back with the old no-code and the next choice undoes the first.
+        let world = World()
+        await world.model.config.pollOnce()
+        world.failPolls = true
+
+        await world.model.decideMode(kind: "work", nocode: false)?.value
+
+        XCTAssertFalse(world.model.modeSaving)
+        XCTAssertEqual(world.model.dayMode?.nocode, false)
+        XCTAssertEqual(world.model.dayMode?.sourceText, "вручную")
+        XCTAssertFalse(world.model.modeWriteFailed)
+
+        world.failPolls = false
+        world.mode = PanelDayMode(kind: "sick", nocode: false, source: .manual)
+        await world.model.config.pollOnce()
+
+        XCTAssertEqual(world.model.dayMode?.kind, "sick")
+    }
 }
 
 /// The view is drawn into a real `NSHostingView`: SwiftUI hosts its picker, switch and
 /// link button as AppKit controls there, so what the person can press is countable
 /// and its `isEnabled` is the lock.
+/// Depends on the SwiftUI of macOS 14+ hosting these controls as NSControl subviews; a new OS may change the count.
 @MainActor
 final class ModeSwitcherViewTests: XCTestCase {
     private final class Gate {
@@ -284,6 +324,7 @@ final class ModeSwitcherViewTests: XCTestCase {
             openURL: { _ in },
             modeWrite: { _, _ in
                 if let gate { await withCheckedContinuation { gate.continuation = $0 } }
+                return nil
             }
         )
         await poller.pollOnce()
@@ -294,6 +335,9 @@ final class ModeSwitcherViewTests: XCTestCase {
         let host = NSHostingView(rootView: ModeSwitcher(model: model))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
+        // ARC owns the window; the default would release it a second time on close.
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         host.layoutSubtreeIfNeeded()
         func collect(_ view: NSView) -> [NSControl] {
@@ -327,7 +371,7 @@ final class ModeSwitcherViewTests: XCTestCase {
         let gate = Gate()
         let panel = await model(mode: PanelDayMode(kind: "sick", nocode: false, source: .manual), gate: gate)
 
-        let write = Task { await panel.decideMode(kind: "work", nocode: true) }
+        let write = Task { await panel.decideMode(kind: "work", nocode: true)?.value }
         while gate.continuation == nil { await Task.yield() }
         let locked = controls(of: panel)
         gate.continuation?.resume()
