@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/162
+// [review:need-review] PHASE-03/162, PHASE-03/237
 // summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read
+// summary: the desktop Today shows one server date in the title, the records read and the buttons while the browser clock is a day behind
 // [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
 // summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers, and the sets behind a quick-mark card — the dialog of every set opened from the card's name and counter, the plus and the key that still add one without opening it, the day's records read again after every tap, and a set taken back from the list lowering the card's counter
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Category, Entry, QuickMark, QuickMarkDayEvent } from '@/lib/api';
 
@@ -315,6 +316,23 @@ describe('the day mode on /today', () => {
     await waitFor(() => expect(screen.getByLabelText('Вид дня')).toBeDefined());
     expect((screen.getByLabelText('no-code') as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText('по расписанию')).toBeDefined();
+  });
+});
+
+describe('the day of /today comes from the server', () => {
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  it('shows one date in the title, the records read and the buttons while the browser is a day behind', async () => {
+    // Local noon of the 29th: the browser says 07-29, the server runs 07-30.
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    expect(screen.getByText(/^2026-07-30 — /)).toBeDefined();
+    expect(getEntries).toHaveBeenCalledWith({ startDate: '2026-07-30', endDate: '2026-07-30' });
+    expect(WATER_MARK.entry_date).toBe('2026-07-30');
   });
 });
 

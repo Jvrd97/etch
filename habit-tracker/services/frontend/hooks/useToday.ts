@@ -1,10 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the snapshot fetched in one round (categories, entries and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
+// summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it, it is read again with the rest of the snapshot when the tab returns, and increments of a finished day are dropped when the day changes
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 import {
+  agentAPI,
   categoriesAPI,
   entriesAPI,
   quickMarksAPI,
@@ -14,7 +16,6 @@ import {
   type QuickMark,
   type QuickMarkEvent,
 } from '@/lib/api';
-import { todayISO } from '@/lib/date';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
 import { applyQuickMarkEvent, applyQuickMarkUndo, newTapKey } from '@/lib/quick-marks';
 import {
@@ -38,6 +39,11 @@ export const STREAKS_FAILED = 'Стрики не загрузились';
 
 /** Everything a Today screen needs; the two shells differ only in markup. */
 export interface UseTodayResult {
+  /**
+   * The day the server is running, as `YYYY-MM-DD`; empty until its first
+   * answer. The browser's own clock is never consulted: between midnight and
+   * the boundary hour, or in another zone, it names a different day.
+   */
   date: string;
   entries: Entry[];
   /**
@@ -146,6 +152,10 @@ export function useToday(): UseTodayResult {
   // so a refetch can replace the snapshot without discarding them.
   const [optimisticEntries, setOptimisticEntries] = useState<Entry[]>([]);
   const nextOptimisticId = useRef(-1);
+  // The server's day, also kept in a ref: the writes and the targeted re-read are
+  // stable callbacks that must see the day of the latest snapshot.
+  const [day, setDay] = useState('');
+  const dayRef = useRef('');
   // The newest re-read after a mark; an older one still in flight is stale.
   const markReadSeq = useRef(0);
   const [checked, setChecked] = useState<CheckedMap>({});
@@ -207,15 +217,22 @@ export function useToday(): UseTodayResult {
   const loadData = useCallback(async ({ showSpinner = false } = {}) => {
     try {
       if (showSpinner) setLoading(true);
-      const date = todayISO();
-      const [categoriesData, entriesData, quickMarksData] = await Promise.all([
+      // No date is sent: which day is running is the server's answer, and a
+      // browser computing its own would disagree with it between midnight and
+      // the boundary hour. The records wait for that answer, the rest does not.
+      const dayAndEntries = agentAPI.dayMode().then(async ({ date }) => ({
+        date,
+        entries: await entriesAPI.getAll({ startDate: date, endDate: date }),
+      }));
+      const [categoriesData, { date, entries: entriesData }, quickMarksData] = await Promise.all([
         categoriesAPI.getAll(),
-        entriesAPI.getAll({ startDate: date, endDate: date }),
-        // No date is sent: which day is running is the server's answer, and a
-        // browser computing its own would disagree with it between midnight
-        // and the boundary hour.
+        dayAndEntries,
         quickMarksAPI.list(),
       ]);
+      // Increments of a day that has ended are not part of the new one.
+      if (dayRef.current !== '' && dayRef.current !== date) setOptimisticEntries([]);
+      dayRef.current = date;
+      setDay(date);
       setCategories(categoriesData);
       setQuickMarks(quickMarksData);
       // The snapshot is the server's, not this session's: whatever tap the
@@ -300,7 +317,7 @@ export function useToday(): UseTodayResult {
       markReadSeq.current += 1;
       const mine = markReadSeq.current;
       try {
-        const date = todayISO();
+        const date = dayRef.current;
         const fresh = await entriesAPI.getAll({ startDate: date, endDate: date });
         if (mine === markReadSeq.current) adoptEntries(categories, fresh);
       } catch (err) {
@@ -333,7 +350,7 @@ export function useToday(): UseTodayResult {
       try {
         const saved = await entriesAPI.upsertChecklist({
           category_id: categoryId,
-          entry_date: todayISO(),
+          entry_date: dayRef.current,
           values: { [fieldId]: next },
         });
         setEntries((previous) => {
@@ -358,7 +375,7 @@ export function useToday(): UseTodayResult {
     async (categoryId: number, fieldId: number, amount: number): Promise<boolean> => {
       const localId = nextOptimisticId.current;
       nextOptimisticId.current -= 1;
-      const entryDate = todayISO();
+      const entryDate = dayRef.current;
 
       setOptimisticEntries((prev) => [
         ...prev,
@@ -488,7 +505,7 @@ export function useToday(): UseTodayResult {
     groups.quickForm.length === 0;
 
   return {
-    date: todayISO(),
+    date: day,
     entries: mergeOptimisticEntries(entries, optimisticEntries),
     categories,
     groups,

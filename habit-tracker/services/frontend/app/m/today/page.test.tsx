@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-03/118, PHASE-03/121, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: tests for the two entry points on the mobile Today screen — dictation (the button opens the sheet, cancelling leaves the day untouched, a written day closes the sheet and reloads what Today shows) and the chat, whose conversation is started on the very date this screen is displaying
+// summary: the mobile Today shows the server date, reads and asks about that day while the browser clock is a day behind
 // summary: tests for the mobile Today screen — the dictation entry point (sheet opens, cancel leaves the day alone, a written day reloads it) and the quick-mark section, which is drawn from the directory and absent entirely when the directory is empty
 // summary: the sets behind a quick-mark card on the mobile Today screen — the card's name and counter open a full-screen list of every set, the plus beside them still adds one and opens nothing, every tap reads the day's records and the streak of its category again, and a set taken back from the list lowers the card's counter
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Category, Entry, QuickMark, QuickMarkDayEvent } from '@/lib/api';
 import { TELL_DAY_LABEL } from '@/lib/ui-constants';
@@ -58,6 +59,10 @@ const MEAL_PLAN = {
 };
 
 let getCategories: ReturnType<typeof mock>;
+/** The day the server is running: Today reads it and never the browser's clock. */
+const SERVER_DAY = '2026-07-30';
+const SERVER_DAY_MODE = { date: SERVER_DAY, kind: 'work', nocode: false, source: 'schedule' };
+
 let getEntries: ReturnType<typeof mock>;
 let listQuickMarks: ReturnType<typeof mock>;
 let tapQuickMark: ReturnType<typeof mock>;
@@ -117,6 +122,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => Promise.resolve(SERVER_DAY_MODE),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -432,6 +438,27 @@ describe('the quick marks of /m/today', () => {
     fireEvent.click(screen.getByRole('button', { name: "Open today's Питание entry" }));
     expect(screen.getByRole('dialog', { name: 'Питание — сегодня' })).toBeDefined();
     expect(screen.getByText('Калории 300')).toBeDefined();
+  });
+});
+
+describe('the day of /m/today comes from the server', () => {
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  it('shows the server date and reads and asks about that day while the browser is a day behind', async () => {
+    // Local noon of the 29th: the browser says 07-29, the server runs 07-30.
+    setSystemTime(new Date(2026, 6, 29, 12, 0, 0));
+    listQuickMarks = mock(() => Promise.resolve([WATER_MARK]));
+    await renderToday();
+
+    expect(screen.getByText(SERVER_DAY)).toBeDefined();
+    expect(getEntries).toHaveBeenCalledWith({ startDate: SERVER_DAY, endDate: SERVER_DAY });
+    expect(WATER_MARK.entry_date).toBe(SERVER_DAY);
+
+    fireEvent.click(screen.getByRole('button', { name: ASK_ABOUT_DAY_LABEL }));
+    await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+    expect(createConversation.mock.calls[0][0]).toEqual({ started_on: SERVER_DAY, kind: 'general' });
   });
 });
 

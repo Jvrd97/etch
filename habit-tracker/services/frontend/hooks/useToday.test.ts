@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
 // summary: tests for useToday — the targeted re-read after a quick mark (records, ticks and the one streak that can have moved, nothing else, and never an older answer over a newer one), silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// summary: the server day in useToday: the header, the records read, the re-read after a mark, the checklist tick and the increment use the day of GET /day-mode while the browser is a day behind; a changed day is followed on return to the tab; a day that cannot be read leaves no screen
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -15,6 +16,10 @@ import { numberFieldSum } from '@/lib/today-entries';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 const TODAY = '2026-07-24';
+// The day the browser believes it is: a zone behind the server (Pacific/Pago_Pago
+// at 23:00 UTC), or 00:30 before the boundary hour. Never the server's day, so
+// any read of the browser clock shows up as a different date in a request.
+const BROWSER_DAY = '2026-07-23';
 
 const GLASSES_FIELD: Field = {
   id: 7,
@@ -81,6 +86,11 @@ function totalOf(entries: Entry[]): number {
   return numberFieldSum(entries, CATEGORY.id, GLASSES_FIELD.id);
 }
 
+/** What `GET /day-mode` answers: the day the server is running, named by `date`. */
+function dayModeOf(date: string) {
+  return { date, kind: 'work', nocode: false, source: 'schedule' };
+}
+
 /** Resolves only when the test releases it, so a refetch can be observed mid-flight. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -92,6 +102,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
 let deleteEntry: ReturnType<typeof mock>;
 let upsertChecklist: ReturnType<typeof mock>;
@@ -174,6 +185,7 @@ mock.module('@/lib/api', () => ({
     reorderTitleRules: () => Promise.resolve([]),
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
+    dayMode: () => readDayMode(),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -260,7 +272,7 @@ mock.module('@/lib/api', () => ({
     delete: () => Promise.resolve(undefined),
   },
   entriesAPI: {
-    getAll: () => getAllEntries(),
+    getAll: (params?: unknown) => getAllEntries(params),
     create: (data: unknown) => createEntry(data),
     update: () => Promise.resolve(null),
     delete: (id: number) => deleteEntry(id),
@@ -274,7 +286,7 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
 
 const { useToday, STREAKS_FAILED } = await import('./useToday');
 const { entriesAPI } = await import('@/lib/api');
@@ -282,6 +294,7 @@ const { entriesAPI } = await import('@/lib/api');
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
+  readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
   deleteEntry = mock(() => Promise.resolve(undefined));
   upsertChecklist = mock(() => Promise.resolve(ENTRY));
@@ -419,6 +432,93 @@ describe('useToday', () => {
     });
 
     await waitFor(() => expect(result.current.error).toBeNull());
+  });
+});
+
+describe('useToday takes the day from the server', () => {
+  const NEXT_DAY = '2026-07-25';
+  const CHECKLIST: Category = {
+    ...CATEGORY,
+    id: 3,
+    display_mode: 'checklist',
+    fields: [{ ...GLASSES_FIELD, id: 8, category_id: 3, field_type: 'boolean' }],
+  };
+
+  it('names the server day in the header and reads the records of that day, not the browser\'s', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(readDayMode).toHaveBeenCalledWith();
+    expect(result.current.date).toBe(TODAY);
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: TODAY, endDate: TODAY });
+    // The header, the records and the buttons all say the same date.
+    expect(result.current.quickMarks.map((mark) => mark.entry_date)).toEqual([TODAY]);
+  });
+
+  it('writes a checklist tick and a number increment to the server day', async () => {
+    getAllCategories = mock(() => Promise.resolve([CATEGORY, CHECKLIST]));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.toggleField(CHECKLIST.id, 8);
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+
+    expect(upsertChecklist).toHaveBeenCalledWith(
+      expect.objectContaining({ category_id: CHECKLIST.id, entry_date: TODAY })
+    );
+    expect(createEntry).toHaveBeenCalledWith(expect.objectContaining({ entry_date: TODAY }));
+  });
+
+  it('reads the records of the server day again after a mark', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllEntries.mockClear();
+
+    await act(async () => {
+      await result.current.reloadAfterMark(CATEGORY.id);
+    });
+
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: TODAY, endDate: TODAY });
+  });
+
+  it('follows the server across the day boundary when the tab comes back', async () => {
+    createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 250);
+    });
+    expect(totalOf(result.current.entries)).toBe(250);
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: NEXT_DAY, endDate: NEXT_DAY });
+    // The increment belonged to yesterday and must not be counted into the new day.
+    expect(result.current.entries).toEqual([]);
+
+    await act(async () => {
+      await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
+    });
+    expect(createEntry).toHaveBeenLastCalledWith(
+      expect.objectContaining({ entry_date: NEXT_DAY })
+    );
+  });
+
+  it('shows the failure and no screen when the server day cannot be read', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('day unknown')));
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.error).toBe('day unknown'));
+
+    // Falling back to the browser clock would write to a day the server does not run.
+    expect(result.current.categories).toEqual([]);
+    expect(getAllEntries).not.toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: BROWSER_DAY });
   });
 });
 
