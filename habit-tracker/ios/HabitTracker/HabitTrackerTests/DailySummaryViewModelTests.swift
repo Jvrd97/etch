@@ -768,6 +768,23 @@ final class DailySummaryViewModelTests: XCTestCase {
         }
     }
 
+    func testTodayIsToldOfASheetOnlyWhenItSentAWrite() async {
+        let silent = makeHarness()
+        silent.viewModel.transcript = "день"
+        silent.api.draftResult = .success(plan(metrics: [metric()]))
+        await silent.viewModel.generate()
+        let sent = makeHarness()
+        sent.viewModel.transcript = "день"
+        sent.api.draftResult = .success(plan(metrics: [metric()]))
+        await sent.viewModel.generate()
+        sent.api.applyResult = .failure(APIClientError.timeout)
+        await sent.viewModel.apply()
+
+        XCTAssertFalse(VoiceDayDismissal.shouldReloadToday(after: silent.viewModel), "a draft and a Close change nothing")
+        XCTAssertFalse(VoiceDayDismissal.shouldReloadToday(after: nil), "a sheet that never opened owes nothing")
+        XCTAssertTrue(VoiceDayDismissal.shouldReloadToday(after: sent.viewModel), "a write that lost its answer may have landed")
+    }
+
     func testStartingAgainDoesNotForgetThatAWriteLeft() async {
         let h = makeHarness()
         h.viewModel.transcript = "день"

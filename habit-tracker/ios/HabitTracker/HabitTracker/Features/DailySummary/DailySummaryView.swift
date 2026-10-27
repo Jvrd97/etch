@@ -290,30 +290,58 @@ struct DailySummaryContent: View {
 /// would swap Today for its loader and lose the scroll for no reason.
 struct VoiceDayButton: View {
     var onDismiss: () -> Void = {}
-    @State private var isPresented = false
-    @State private var model: DailySummaryViewModel?
+    /// The sheet's item: the sheet is built from the item itself, so its content never reads an older `nil`.
+    @State private var session: VoiceDaySession?
+    /// The model of the sheet that just went away, kept until `onDismiss` of the sheet has looked at it.
+    @State private var dismissedModel: DailySummaryViewModel?
+
+    private var item: Binding<VoiceDaySession?> {
+        Binding(
+            get: { session },
+            set: { newValue in
+                if newValue == nil { dismissedModel = session?.model }
+                session = newValue
+            }
+        )
+    }
 
     var body: some View {
         Button {
-            model = .live(onApplied: { isPresented = false })
-            isPresented = true
+            session = VoiceDaySession(model: .live(onApplied: { item.wrappedValue = nil }))
         } label: {
             Label("Рассказать день", systemImage: "mic.fill")
         }
         .buttonStyle(LimeButtonStyle(prominent: false))
         .frame(minHeight: 44)
         .accessibilityIdentifier("today.voiceDay")
-        .sheet(isPresented: $isPresented, onDismiss: sheetDismissed) {
-            if let model {
-                VoiceDaySheet(viewModel: model, close: { isPresented = false })
-            }
+        .sheet(item: item, onDismiss: sheetDismissed) { session in
+            VoiceDaySheet(viewModel: session.model, close: { item.wrappedValue = nil })
         }
     }
 
     private func sheetDismissed() {
-        let sentAWrite = model?.mayHaveChangedTheDay ?? false
-        model = nil
-        if sentAWrite { onDismiss() }
+        let owes = VoiceDayDismissal.shouldReloadToday(after: dismissedModel)
+        dismissedModel = nil
+        if owes { onDismiss() }
+    }
+}
+
+/// One opening of the sheet: the model it works on, under an identity of its own.
+final class VoiceDaySession: Identifiable {
+    let model: DailySummaryViewModel
+
+    init(model: DailySummaryViewModel) {
+        self.model = model
+    }
+}
+
+/// Whether Today owes a re-read when the voice sheet goes away.
+enum VoiceDayDismissal {
+    /// Only a sheet that sent a write may have changed the day; a sheet closed without one, or one that
+    /// never opened, leaves Today as it was.
+    @MainActor
+    static func shouldReloadToday(after model: DailySummaryViewModel?) -> Bool {
+        model?.mayHaveChangedTheDay ?? false
     }
 }
 

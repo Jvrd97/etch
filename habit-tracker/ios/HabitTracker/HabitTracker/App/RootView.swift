@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
-// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229)
+// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229; the More stack hands its pushed screens a hold/release by token, so several instances of one screen cannot lift each other's block, #250)
 import SwiftUI
 
 /// The app's root: one `NavigationStack` per tab, screens never create their own.

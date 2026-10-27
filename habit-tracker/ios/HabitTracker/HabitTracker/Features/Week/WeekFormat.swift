@@ -151,12 +151,18 @@ enum WeekFormat {
             + "Сравнение — с первыми \(window.comparedDays) днями прошлой недели."
     }
 
-    /// Whether the week is the one running now by the server's flags: it has begun and is not complete.
-    static func isRunning(_ window: WeekWindowDTO) -> Bool {
-        !window.isComplete && window.asOf != nil
+    /// The week is the one running at `date`: not complete, begun, and its last day not behind us. Decided by
+    /// the calendar, not by `as_of`: the server sends no «as of» while no day is closed, and that is also
+    /// what a Monday looks like before Monday closes.
+    static func isRunning(_ window: WeekWindowDTO, at date: Date) -> Bool {
+        let today = serverDay(date, in: window)
+        return !window.isComplete && window.startsOn <= today && window.endsOn >= today
     }
 
     /// The server's day for `date`: the clock of the week's own time zone, cut at the day-start hour.
+    /// The cut subtracts whole hours of absolute time, so in the hour after a clock change it can differ
+    /// from the server's own cut; that hour moves neither the end of a week nor the start of one by a day
+    /// in a way a reader of this screen can see.
     static func serverDay(_ date: Date, in window: WeekWindowDTO) -> String {
         let zone = TimeZone(identifier: window.timezone) ?? .current
         var calendar = Calendar(identifier: .gregorian)

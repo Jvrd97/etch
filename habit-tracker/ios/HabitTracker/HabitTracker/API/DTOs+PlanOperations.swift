@@ -108,14 +108,15 @@ struct JournalOpDTO: Codable, Equatable {
     }
 
     /// `op` is a tag the app writes when it echoes the operation back; a journal read from the chat's
-    /// history may come without it, and a missing tag must not fail the whole message.
+    /// history may come without it, and a missing tag must not fail the whole message. A missing `mode`
+    /// reads as the server's default, `append`: it adds to the day and overwrites nothing.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         content = try container.decode(String.self, forKey: .content)
         mood = try container.decodeIfPresent(String.self, forKey: .mood)
         tags = try container.decodeIfPresent(String.self, forKey: .tags)
-        mode = try container.decode(Mode.self, forKey: .mode)
+        mode = try container.decodeIfPresent(Mode.self, forKey: .mode) ?? .append
         existingEntryId = try container.decodeIfPresent(Int.self, forKey: .existingEntryId)
     }
 }

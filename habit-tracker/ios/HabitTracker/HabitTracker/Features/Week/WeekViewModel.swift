@@ -29,9 +29,11 @@ final class WeekViewModel: ObservableObject {
     /// The week asked for; `nil` is the server's running week.
     private(set) var requestedIso: String?
 
-    /// The AI text is written on the server by a model. The server gives the model 120 s
-    /// (`LLM_TIMEOUT_SECONDS`) and answers 502 when it runs out; the client waits longer, so that
-    /// answer arrives before the client's own timeout fires.
+    /// The AI text is written on the server by a model. The server gives the model 120 s per attempt
+    /// (`LLM_TIMEOUT_SECONDS`) and answers 502 when it gives up. The client waits 150 s, so the usual
+    /// refusal arrives before the client's own timeout. With `LLM_BACKEND=api` the SDK retries a timeout
+    /// (two retries by default), so a slow answer can take up to about 360 s: the client then times out
+    /// first and says «модель отвечает долго», which is true.
     static let narrativeTimeout: TimeInterval = 150
 
     private let apiProvider: () -> WeekAPI?
@@ -103,8 +105,8 @@ final class WeekViewModel: ObservableObject {
 
     /// The week on screen is the running one; the button back to it has nothing to do there.
     var isShowingRunningWeek: Bool {
-        guard let window = review?.window, WeekFormat.isRunning(window) else { return false }
-        return offlineAsOf == nil || !WeekFormat.hasEnded(window, at: now())
+        guard let window = review?.window else { return false }
+        return WeekFormat.isRunning(window, at: now())
     }
 
     var showsCurrentButton: Bool {
@@ -168,7 +170,7 @@ final class WeekViewModel: ObservableObject {
             if iso == nil {
                 // The running week is also kept under its own code: stepping away and back must not need the network.
                 store.save(value, forKey: Self.cacheKey(for: value.window.isoCode), updatedAt: now())
-            } else if WeekFormat.isRunning(value.window) {
+            } else if WeekFormat.isRunning(value.window, at: now()) {
                 // …and the other way round: the running week opened by its code is the one «current» means.
                 store.save(value, forKey: Self.cacheKey(for: nil), updatedAt: now())
             }

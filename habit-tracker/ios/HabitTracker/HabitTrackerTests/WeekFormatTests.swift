@@ -238,16 +238,35 @@ final class WeekFormatTests: XCTestCase {
         XCTAssertTrue(WeekFormat.hasEnded(window, at: try moment("2026-08-31T02:30:00Z")))
     }
 
-    func testOnlyAWeekThatHasBegunAndNotFinishedIsRunning() throws {
-        XCTAssertTrue(WeekFormat.isRunning(try WeekFixtures.runningWeek().window))
-        XCTAssertFalse(WeekFormat.isRunning(try WeekFixtures.review().window))
-        let future = try WeekFixtures.review { object in
-            var window = object["window"] as? [String: Any] ?? [:]
-            window["is_complete"] = false
-            window["counted_days"] = 0
-            window["as_of"] = NSNull()
-            object["window"] = window
-        }.window
-        XCTAssertFalse(WeekFormat.isRunning(future), "a week that has not begun is not the current one")
+    func testTheCalendarSaysWhichWeekIsRunningNotTheServersAsOf() throws {
+        let running = try WeekFixtures.runningWeek().window
+        let wednesday = try moment("2026-08-26T10:00:00Z")
+
+        XCTAssertTrue(WeekFormat.isRunning(running, at: wednesday))
+        XCTAssertFalse(WeekFormat.isRunning(try WeekFixtures.review().window, at: wednesday), "complete is never running")
+        XCTAssertFalse(
+            WeekFormat.isRunning(running, at: try moment("2026-08-31T02:30:00Z")),
+            "the Sunday of the week is behind us"
+        )
+    }
+
+    func testOnMondayAfterTheDayStartTheWeekIsRunningThoughNoDayIsCounted() throws {
+        let monday = try WeekFixtures.unclosedWeek(iso: "2026-W35").window
+        XCTAssertEqual(monday.countedDays, 0)
+        XCTAssertNil(monday.asOf)
+
+        // 10:00 in Berlin on Monday: running. 03:00 on Monday is still Sunday's night, so the week has not begun.
+        XCTAssertTrue(WeekFormat.isRunning(monday, at: try moment("2026-08-24T08:00:00Z")))
+        XCTAssertTrue(WeekFormat.isRunning(monday, at: try moment("2026-08-24T02:30:00Z")))
+        XCTAssertFalse(WeekFormat.isRunning(monday, at: try moment("2026-08-24T01:30:00Z")))
+    }
+
+    func testAWeekStartingInTheFutureIsNotRunning() throws {
+        let future = try WeekFixtures.unclosedWeek(iso: "2026-W36").window
+
+        XCTAssertEqual(future.startsOn, "2026-08-31")
+        XCTAssertEqual(future.endsOn, "2026-09-06")
+        XCTAssertFalse(WeekFormat.isRunning(future, at: try moment("2026-08-26T10:00:00Z")))
+        XCTAssertTrue(WeekFormat.isRunning(future, at: try moment("2026-09-02T10:00:00Z")))
     }
 }

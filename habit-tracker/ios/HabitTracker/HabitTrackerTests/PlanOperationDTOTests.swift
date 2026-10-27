@@ -70,6 +70,14 @@ final class PlanOperationDTOTests: XCTestCase {
         XCTAssertEqual(journal.op, "write_journal")
     }
 
+    func testAJournalWithoutAModeAppends() throws {
+        let journal = try decode(JournalOpDTO.self, """
+        {"title": null, "content": "День", "mood": null, "tags": null}
+        """)
+
+        XCTAssertEqual(journal.mode, .append, "adding to the day overwrites nothing")
+    }
+
     func testAChatPlanWhoseJournalHasNoOpTagIsStillAPlan() throws {
         let body = try decode(ChatPlanBodyDTO.self, """
         {"entry_date": "2026-10-25", "metrics": [], "checklist": [],

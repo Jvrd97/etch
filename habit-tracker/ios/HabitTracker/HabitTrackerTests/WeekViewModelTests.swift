@@ -33,6 +33,8 @@ final class WeekViewModelTests: XCTestCase {
 
     /// 12:00 UTC on a Wednesday of the fixture's running week.
     private let midWeek = Date(timeIntervalSince1970: 1_787_745_600)
+    /// Monday 24 August 2026, 10:00 in Berlin: the day has begun and is not closed.
+    private let mondayMorning = Date(timeIntervalSince1970: 1_787_558_400)
 
     private func neighbours(_ iso: String) throws -> WeekReviewDTO {
         switch iso {
@@ -329,19 +331,38 @@ final class WeekViewModelTests: XCTestCase {
         let store = InMemoryCacheStore()
         let api = MockWeekAPI()
         api.fetchHandler = { iso in
-            switch iso {
-            case "2026-W36": return try WeekFixtures.runningWeek(iso: "2026-W36")
-            default: return try WeekFixtures.review()
-            }
+            iso == "2026-W35" ? try WeekFixtures.runningWeek() : try self.neighbours("2026-W34")
         }
-        let viewModel = makeViewModel(api, store: store)
+        let viewModel = makeViewModel(api, store: store, now: midWeek)
         await viewModel.load()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W34")
         await viewModel.showNext()
-        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W36")
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
 
         let current = store.load(WeekReviewDTO.self, forKey: WeekViewModel.cacheKey(for: nil))
 
-        XCTAssertEqual(current?.value.window.isoCode, "2026-W36")
+        XCTAssertEqual(current?.value.window.isoCode, "2026-W35")
+    }
+
+    func testOnMondayBeforeTheDayClosesTheCurrentWeekIsStillCurrent() async throws {
+        // The server counts no day yet and sends no «as of»; the calendar says the week began.
+        let store = InMemoryCacheStore()
+        let api = MockWeekAPI()
+        api.fetchHandler = { iso in
+            switch iso {
+            case "2026-W35": return try WeekFixtures.unclosedWeek(iso: "2026-W35")
+            default: return try self.neighbours("2026-W34")
+            }
+        }
+        let viewModel = makeViewModel(api, store: store, now: mondayMorning)
+        await viewModel.load()
+        await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
+
+        XCTAssertTrue(viewModel.isShowingRunningWeek)
+        XCTAssertFalse(viewModel.showsCurrentButton)
+        let current = store.load(WeekReviewDTO.self, forKey: WeekViewModel.cacheKey(for: nil))
+        XCTAssertEqual(current?.value.window.isoCode, "2026-W35")
     }
 
     func testAFinishedWeekOpenedByItsCodeIsNotKeptAsCurrent() async throws {
@@ -389,7 +410,8 @@ final class WeekViewModelTests: XCTestCase {
         let api = MockWeekAPI()
         api.fetchHandler = { iso in
             switch iso {
-            case "2026-W36": return try WeekFixtures.runningWeek(iso: "2026-W36")
+            case nil, "2026-W35": return try WeekFixtures.runningWeek()
+            case "2026-W36": return try WeekFixtures.unclosedWeek(iso: "2026-W36")
             default: return try self.neighbours(iso ?? "2026-W35")
             }
         }
@@ -401,9 +423,12 @@ final class WeekViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.showsCurrentButton)
 
         await viewModel.showNext()
+        XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W35")
+        XCTAssertFalse(viewModel.showsCurrentButton, "the running week opened by its code is the current one")
+
         await viewModel.showNext()
         XCTAssertEqual(viewModel.review?.window.isoCode, "2026-W36")
-        XCTAssertFalse(viewModel.showsCurrentButton, "the running week opened by its code is the current one")
+        XCTAssertTrue(viewModel.showsCurrentButton, "a week that has not begun is not the current one")
     }
 
     // MARK: Narrative
