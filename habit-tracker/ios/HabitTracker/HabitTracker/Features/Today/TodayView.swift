@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227
-// summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner + queued-uploads badge atop when data came from the read cache / a save was queued offline
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225
+// summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
 import SwiftUI
 
 /// What a card of Today opened: the day of one category — its sets (when a button answers for it)
@@ -31,9 +31,7 @@ struct TodayView: View {
             if let offlineAsOf = viewModel.offlineAsOf {
                 OfflineBanner(updatedAt: offlineAsOf)
             }
-            if viewModel.pendingUploadCount > 0 {
-                PendingUploadsBadge(count: viewModel.pendingUploadCount)
-            }
+            OutboxQueueBar(queue: OutboxLive.shared)
             content
         }
         .navigationTitle("Today")
@@ -357,32 +355,6 @@ struct PendingRowTag: View {
         .overlay(
             Capsule().stroke(DS.Palette.textSecondary.opacity(0.4), lineWidth: 1)
         )
-    }
-}
-
-/// Slim badge shown above Today when the outbox holds creates that could not reach the
-/// server yet (airplane mode). Tells the user their taps are safe, just not synced.
-struct PendingUploadsBadge: View {
-    let count: Int
-
-    /// "1 entry waiting to send" / "3 entries waiting to send".
-    static func caption(for count: Int) -> String {
-        "\(count) \(count == 1 ? "entry" : "entries") waiting to send"
-    }
-
-    var body: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            Image(systemName: "arrow.up.circle")
-            Text(PendingUploadsBadge.caption(for: count))
-                .font(DS.Typography.caption)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(DS.Palette.lime)
-        .padding(.vertical, DS.Spacing.sm)
-        .padding(.horizontal, DS.Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.Palette.card)
     }
 }
 

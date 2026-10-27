@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/210
-// summary: state of the quick-mark buttons — the directory through the read cache, one POST per tap that repaints the button from its own answer, an offline tap queued under the same key and shown at once, undo of the last tap or of a named set, and a word to the screen when a day moved
+// [review:need-review] PHASE-01/210, PHASE-03/225
+// summary: state of the quick-mark buttons — the directory through the read cache, one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the server's day and shown at once, undo of the last tap or of a named set, and a word to the screen when a day moved
 import Combine
 import Foundation
 
@@ -19,7 +19,6 @@ final class QuickMarksViewModel: ObservableObject {
     @Published private(set) var offlineAsOf: Date?
     /// The tap that can still be taken back, or nil when none can.
     @Published private(set) var lastEvent: QuickMarkEventDTO?
-    @Published private(set) var pendingTapCount = 0
     @Published var errorMessage: String?
 
     /// A tap or an undo went through (or a queued tap was delivered): the day of this category
@@ -30,12 +29,11 @@ final class QuickMarksViewModel: ObservableObject {
     static let notConfiguredMessage = "Set the server address in Settings"
     static let tapFailedMessage = "Отметку записать не удалось."
     static let undoFailedMessage = "Отменить отметку не удалось."
-    static let rejectedTapsMessage = "Сервер не принял часть отметок, сделанных без сети."
     static let cacheKey = "today.quickmarks"
 
     private let apiProvider: () -> QuickMarksAPI?
     private let cache: ReadThroughCache
-    private let queue: QuickMarkTapQueue
+    private let outbox: OutboxQueue
     private let timeZone: TimeZone
     private let now: () -> Date
     private var cancellables: Set<AnyCancellable> = []
@@ -43,29 +41,27 @@ final class QuickMarksViewModel: ObservableObject {
     init(
         apiProvider: @escaping () -> QuickMarksAPI?,
         cacheStore: CacheStore = InMemoryCacheStore(),
-        queue: QuickMarkTapQueue? = nil,
+        outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
         now: @escaping () -> Date = Date.init
     ) {
         self.apiProvider = apiProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
-        let queue = queue ?? QuickMarkTapQueue(store: InMemoryTapStore())
-        self.queue = queue
+        self.outbox = outbox ?? OutboxQueue(store: InMemoryOutboxStore())
         self.timeZone = timeZone
         self.now = now
-        self.pendingTapCount = queue.pendingCount
-        bindQueue()
+        bindOutbox()
     }
 
     convenience init(
         api: QuickMarksAPI,
         cacheStore: CacheStore = InMemoryCacheStore(),
-        queue: QuickMarkTapQueue? = nil,
+        outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
         now: @escaping () -> Date = Date.init
     ) {
         self.init(
-            apiProvider: { api }, cacheStore: cacheStore, queue: queue, timeZone: timeZone,
+            apiProvider: { api }, cacheStore: cacheStore, outbox: outbox, timeZone: timeZone,
             now: now
         )
     }
@@ -74,7 +70,7 @@ final class QuickMarksViewModel: ObservableObject {
         QuickMarksViewModel(
             apiProvider: { APIClient.live() },
             cacheStore: ReadCacheLive.shared,
-            queue: QuickMarkTapLive.shared
+            outbox: OutboxLive.shared
         )
     }
 
@@ -93,14 +89,12 @@ final class QuickMarksViewModel: ObservableObject {
         return "Отменить «\(mark.label)»"
     }
 
-    private func bindQueue() {
-        queue.$pending
-            .sink { [weak self] pending in
-                MainActor.assumeIsolated { self?.pendingTapCount = pending.count }
-            }
-            .store(in: &cancellables)
-        queue.flushCompleted
-            .sink { [weak self] categories in
+    /// A delivered press moved the day of its category: read the totals again and say which days moved.
+    private func bindOutbox() {
+        outbox.delivered
+            .sink { [weak self] writes in
+                let categories = Set(writes.compactMap(\.tapCategoryID)).sorted()
+                guard !categories.isEmpty else { return }
                 Task { await self?.reconcileAfterFlush(categoryIDs: categories) }
             }
             .store(in: &cancellables)
@@ -114,9 +108,7 @@ final class QuickMarksViewModel: ObservableObject {
             state = .failure(Self.notConfiguredMessage)
             return
         }
-        if queue.pendingCount > 0 {
-            await queue.flush(using: api)
-        }
+        await outbox.flush()
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 try await api.fetchQuickMarks()
@@ -128,9 +120,6 @@ final class QuickMarksViewModel: ObservableObject {
             case .stale(let directory, let updatedAt):
                 offlineAsOf = updatedAt
                 marks = withQueuedTaps(directory)
-            }
-            if queue.takeRejectedCount() > 0 {
-                errorMessage = Self.rejectedTapsMessage
             }
             state = .loaded
         } catch let error as APIClientError {
@@ -148,19 +137,16 @@ final class QuickMarksViewModel: ObservableObject {
             offlineAsOf = nil
             marks = withQueuedTaps(directory)
         }
-        if queue.takeRejectedCount() > 0 {
-            errorMessage = Self.rejectedTapsMessage
-        }
         categoryIDs.forEach { onDayChanged?($0) }
     }
 
     /// Presses still waiting in the queue are laid over the directory, so a cached or just-read
-    /// total does not swallow them.
+    /// total does not swallow them. A press in the "not sent" list is not counted: it has not landed.
     private func withQueuedTaps(_ directory: [QuickMarkDTO]) -> [QuickMarkDTO] {
-        let waiting = queue.pending
+        let waiting = outbox.pending.compactMap(\.tapMarkID)
         guard !waiting.isEmpty else { return directory }
         return directory.map { mark in
-            waiting.filter { $0.quickMarkId == mark.id }.reduce(mark) { folded, _ in
+            waiting.filter { $0 == mark.id }.reduce(mark) { folded, _ in
                 folded.afterOfflineTap()
             }
         }
@@ -170,7 +156,7 @@ final class QuickMarksViewModel: ObservableObject {
 
     /// Records one tap. One network call: the answer carries the new total and `done`, so the
     /// button repaints from it. Without a network the press is queued under the key of this
-    /// attempt and shown at once.
+    /// attempt, with the server's day from the button list, and shown at once.
     func tap(_ mark: QuickMarkDTO) async {
         errorMessage = nil
         guard let api = apiProvider() else {
@@ -184,7 +170,7 @@ final class QuickMarksViewModel: ObservableObject {
                 id: mark.id,
                 request: QuickMarkEventRequestDTO(
                     value: nil, entryDate: nil, utcOffsetMinutes: offsetMinutes,
-                    source: QuickMarkTapQueue.tapSource
+                    source: QuickMarkEventRequestDTO.iosSource
                 ),
                 idempotencyKey: key.uuidString
             )
@@ -192,9 +178,14 @@ final class QuickMarksViewModel: ObservableObject {
             lastEvent = event
             onDayChanged?(mark.categoryId)
         } catch let error as APIClientError where error.isConnectivity {
-            queue.enqueue(
-                key: key, quickMarkId: mark.id, categoryId: mark.categoryId,
-                utcOffsetMinutes: offsetMinutes
+            outbox.enqueue(
+                .tapQuickMark(
+                    QueuedTap(
+                        quickMarkId: mark.id, categoryId: mark.categoryId, utcOffsetMinutes: offsetMinutes,
+                        serverDay: mark.entryDate
+                    )
+                ),
+                key: key.uuidString, label: mark.label
             )
             replace(markID: mark.id) { $0.afterOfflineTap() }
         } catch let error as APIClientError {
@@ -241,5 +232,17 @@ final class QuickMarksViewModel: ObservableObject {
     private func replace(markID: Int, _ transform: (QuickMarkDTO) -> QuickMarkDTO) {
         guard let index = marks.firstIndex(where: { $0.id == markID }) else { return }
         marks[index] = transform(marks[index])
+    }
+}
+
+private extension OutboxWrite {
+    var tapMarkID: Int? {
+        if case .tapQuickMark(let tap) = action { return tap.quickMarkId }
+        return nil
+    }
+
+    var tapCategoryID: Int? {
+        if case .tapQuickMark(let tap) = action { return tap.categoryId }
+        return nil
     }
 }

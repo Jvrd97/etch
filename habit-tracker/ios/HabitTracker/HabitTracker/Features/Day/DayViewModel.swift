@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226
-// summary: Day screen state — loads GET /day for the server's today or a stepped date, optimistic mark cycle with rollback, category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225
+// summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save, two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change
+import Combine
 import Foundation
 
 @MainActor
@@ -48,6 +49,12 @@ final class DayViewModel: ObservableObject {
     /// The zone plan windows are read in; follows the device when it changes.
     @Published private(set) var timeZone: TimeZone
     @Published var actionError: String?
+    /// Non-nil while the day shown is the cached copy; the moment it was cached.
+    @Published private(set) var offlineAsOf: Date?
+    /// Lines of the shown day with a mark or a fact written on the phone and not yet on the server.
+    @Published private(set) var queuedItems: Set<UUID> = []
+    /// The notebook of the shown day waits in the queue.
+    @Published private(set) var isNotebookQueued = false
 
     static let notConfiguredMessage = "Укажите адрес сервера в настройках"
     static let unreadableValueMessage = "Введите число: «300», «3,5» или «1:30» для времени"
@@ -55,6 +62,9 @@ final class DayViewModel: ObservableObject {
     static let markFailedMessage = "Отметка не сохранилась"
     static let factFailedMessage = "Факт не сохранился"
     static let closingFailedMessage = "День не закрылся"
+    static let closingNeedsServerMessage =
+        "Нет сети. Закрыть день можно только со связью: вердикт считает сервер. Поля остались на экране."
+    static let factNeedsServerMessage = "Нет сети. Исправить или удалить факт можно только со связью."
 
     /// `nil` asks the server for its today.
     private(set) var requestedDate: String?
@@ -63,6 +73,9 @@ final class DayViewModel: ObservableObject {
 
     private let apiProvider: () -> DayAPI?
     private let timeZoneProvider: () -> TimeZone
+    private let outbox: OutboxQueue?
+    private let cache: ReadThroughCache
+    private var cancellables: Set<AnyCancellable> = []
     private var loadedDate: String?
     private var loadGeneration = 0
     /// Unsaved notebook text of days the person stepped away from, by `yyyy-MM-dd`, with the
@@ -93,10 +106,19 @@ final class DayViewModel: ObservableObject {
         let minutes: Typed?
     }
 
-    init(apiProvider: @escaping () -> DayAPI?, timeZoneProvider: @escaping () -> TimeZone = { .current }) {
+    /// Without an `outbox` an offline write fails as any other error; the screen gets one from `live()`.
+    init(
+        apiProvider: @escaping () -> DayAPI?,
+        timeZoneProvider: @escaping () -> TimeZone = { .current },
+        outbox: OutboxQueue? = nil,
+        cacheStore: CacheStore = InMemoryCacheStore()
+    ) {
         self.apiProvider = apiProvider
         self.timeZoneProvider = timeZoneProvider
         self.timeZone = timeZoneProvider()
+        self.outbox = outbox
+        self.cache = ReadThroughCache(store: cacheStore)
+        bindOutbox()
     }
 
     convenience init(api: DayAPI) {
@@ -104,13 +126,66 @@ final class DayViewModel: ObservableObject {
     }
 
     static func live() -> DayViewModel {
-        DayViewModel(apiProvider: { APIClient.live() })
+        DayViewModel(apiProvider: { APIClient.live() }, outbox: OutboxLive.shared, cacheStore: ReadCacheLive.shared)
+    }
+
+    // MARK: Offline queue
+
+    /// The queued signs follow the queue; a delivered write of the shown day reads the day again.
+    private func bindOutbox() {
+        guard let outbox else { return }
+        outbox.$writes
+            .sink { [weak self] writes in
+                MainActor.assumeIsolated { self?.redrawQueued(writes) }
+            }
+            .store(in: &cancellables)
+        outbox.delivered
+            .sink { [weak self] writes in
+                guard let self, let date = self.shownDate, writes.contains(where: { $0.action.isDayWrite(of: date) }) else {
+                    return
+                }
+                Task { await self.reloadSilently() }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func redrawQueued(_ writes: [OutboxWrite]) {
+        let waiting = writes.filter { $0.status == .pending }.map(\.action)
+        guard let date = shownDate else {
+            queuedItems = []
+            isNotebookQueued = false
+            return
+        }
+        queuedItems = Set(waiting.compactMap { $0.queuedItem(of: date) })
+        isNotebookQueued = waiting.contains { $0.queuedNotebook(of: date) != nil }
+    }
+
+    private var waitingActions: [OutboxAction] {
+        (outbox?.pending ?? []).map(\.action)
+    }
+
+    /// The title of a plan line, for the list of waiting writes.
+    private func itemTitle(_ itemID: UUID) -> String {
+        func find(_ items: [DayPlanItemDTO]) -> DayPlanItemDTO? {
+            for item in items {
+                if item.id == itemID { return item }
+                if let child = find(item.children) { return child }
+            }
+            return nil
+        }
+        return find(detail?.plan?.sections.flatMap(\.items) ?? [])?.textPlain ?? "пункт плана"
+    }
+
+    private static func isOffline(_ error: Error) -> Bool {
+        (error as? APIClientError)?.isConnectivity == true
     }
 
     // MARK: Loading
 
+    /// Waiting writes go first, so a reload is also a retry of the queue.
     func load() async {
         state = .loading
+        await outbox?.flush()
         await fetch(showFailure: true)
     }
 
@@ -129,9 +204,29 @@ final class DayViewModel: ObservableObject {
         let generation = loadGeneration
         let epochAtSend = notebookSaveEpoch
         do {
-            let fetched = try await api.fetchDay(date: requestedDate)
+            let requested = requestedDate
+            let key = "day.\(requested ?? "today")"
+            let outcome: CacheOutcome<DayDetailDTO>
+            if showFailure {
+                outcome = try await cache.load(key: key) { try await api.fetchDay(date: requested) }
+            } else {
+                // A silent re-read that fails leaves the screen as it is: the cached copy is older
+                // than what the screen shows after a write.
+                let day = try await api.fetchDay(date: requested)
+                cache.store.save(day, forKey: key, updatedAt: cache.now())
+                outcome = .fresh(day)
+            }
             // A newer load (stepped to another day) has taken over: drop this answer.
             guard generation == loadGeneration else { return }
+            let fetched: DayDetailDTO
+            switch outcome {
+            case .fresh(let day):
+                offlineAsOf = nil
+                fetched = day
+            case .stale(let day, let updatedAt):
+                offlineAsOf = updatedAt
+                fetched = day
+            }
             // A notebook save that ran or is running since the request left makes this answer's
             // notebook stale for the day on screen; everything else in it is still current.
             let notebookIsStale = isSavingNotebook || notebookSaveEpoch != epochAtSend
@@ -143,9 +238,14 @@ final class DayViewModel: ObservableObject {
         }
     }
 
+    /// Writes still in the queue are not on the server yet: their marks and notebook are laid on top.
     private func apply(_ fetched: DayDetailDTO, keepingNotebook: Bool) {
         detail = fetched
+        let waiting = waitingActions
         marks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
+        for case .setDayMark(let mark) in waiting where mark.date == fetched.day.date {
+            marks[mark.itemID] = DayMarkDTO(itemId: mark.itemID, state: mark.state, note: mark.note)
+        }
         facts = Dictionary(fetched.planFacts.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
         summary = fetched.summary
         counts = fetched.taskCounts
@@ -165,8 +265,10 @@ final class DayViewModel: ObservableObject {
             factKeys = [:]
             closingKeys = [:]
         }
-        if !keepingNotebook { seedNotebook(server: fetched.notebook ?? "", unsaved: notebookEdit) }
+        let queuedNotebook = waiting.compactMap { $0.queuedNotebook(of: date) }.last
+        if !keepingNotebook { seedNotebook(server: queuedNotebook ?? fetched.notebook ?? "", unsaved: notebookEdit) }
         seedClosing(from: fetched.summary, unsent: closingEdit)
+        redrawQueued(outbox?.writes ?? [])
     }
 
     /// A re-read of the same day brings the server's text unless something is typed and
@@ -228,6 +330,7 @@ final class DayViewModel: ObservableObject {
     func rereadInPlace() async {
         timeZone = timeZoneProvider()
         guard state == .loaded else { return }
+        await outbox?.flush()
         await reloadSilently()
     }
 
@@ -266,6 +369,19 @@ final class DayViewModel: ObservableObject {
             marks[itemID] = stored
             await reloadSilently()
         } catch {
+            if let outbox, Self.isOffline(error) {
+                // The tick stays: it is on the phone and reaches the server with the state it was made over.
+                outbox.enqueue(
+                    .setDayMark(
+                        QueuedDayMark(
+                            date: date, itemID: itemID, state: newState, note: previous?.note,
+                            expected: previous?.state ?? ""
+                        )
+                    ),
+                    label: "Отметка «\(itemTitle(itemID))»"
+                )
+                return
+            }
             marks[itemID] = previous
             actionError = Self.message(for: error, fallback: Self.markFailedMessage)
         }
@@ -291,20 +407,32 @@ final class DayViewModel: ObservableObject {
         )
         busyItems.insert(itemID)
         defer { busyItems.remove(itemID) }
+        let key = entryID == nil ? factKey(for: itemID, body: body) : nil
         do {
             let written: PlanFactWriteDTO
             if let entryID {
                 written = try await api.correctFact(date: date, itemID: itemID, entryID: entryID, body)
             } else {
-                written = try await api.recordFact(
-                    date: date, itemID: itemID, body, idempotencyKey: factKey(for: itemID, body: body)
-                )
+                written = try await api.recordFact(date: date, itemID: itemID, body, idempotencyKey: key ?? "")
                 factKeys[itemID] = nil
             }
             applyWrite(written, itemID: itemID)
             await reloadSilently()
             return true
         } catch {
+            if Self.isOffline(error), outbox != nil {
+                guard let key else {
+                    actionError = Self.factNeedsServerMessage
+                    return false
+                }
+                // A new fact waits under the key of this attempt: one that landed and lost its answer is not doubled.
+                outbox?.enqueue(
+                    .recordPlanFact(QueuedPlanFact(date: date, itemID: itemID, body: body)),
+                    key: key, label: "Факт «\(itemTitle(itemID))»"
+                )
+                factKeys[itemID] = nil
+                return true
+            }
             actionError = Self.message(for: error, fallback: Self.factFailedMessage)
             return false
         }
@@ -321,7 +449,8 @@ final class DayViewModel: ObservableObject {
             applyWrite(written, itemID: itemID)
             await reloadSilently()
         } catch {
-            actionError = Self.message(for: error, fallback: Self.factFailedMessage)
+            actionError = Self.isOffline(error) && outbox != nil
+                ? Self.factNeedsServerMessage : Self.message(for: error, fallback: Self.factFailedMessage)
         }
     }
 
@@ -370,8 +499,17 @@ final class DayViewModel: ObservableObject {
             notebookSaveEpoch += 1
         }
         let text = notebook
+        let base = savedNotebook
         do {
-            try await api.saveNotebook(date: date, content: text)
+            do {
+                try await api.saveNotebook(date: date, content: text)
+            } catch let error where Self.isOffline(error) && outbox != nil {
+                // Kept on the phone as saved; the replay checks the server still holds `base`.
+                outbox?.enqueue(
+                    .saveNotebook(QueuedNotebook(date: date, content: text, expected: base)),
+                    label: "Блокнот за \(DayFormat.title(of: date))"
+                )
+            }
             // The person may have stepped to another day while this was in flight.
             if shownDate == date {
                 savedNotebook = text
@@ -455,7 +593,10 @@ final class DayViewModel: ObservableObject {
             closingKeys[touch] = nil
             await reloadSilently()
         } catch {
-            actionError = Self.message(for: error, fallback: Self.closingFailedMessage)
+            // Not queued: the verdict is the server's at the moment of closing, and the fields are
+            // checked against what the server holds. The key stays for the retry.
+            actionError = Self.isOffline(error) && outbox != nil
+                ? Self.closingNeedsServerMessage : Self.message(for: error, fallback: Self.closingFailedMessage)
         }
     }
 
@@ -496,5 +637,25 @@ final class DayViewModel: ObservableObject {
             return apiError.userMessage
         }
         return fallback ?? "Unexpected error"
+    }
+}
+
+private extension OutboxAction {
+    /// A plan line of `date` with a waiting mark or fact.
+    func queuedItem(of date: String) -> UUID? {
+        switch self {
+        case .setDayMark(let mark) where mark.date == date: return mark.itemID
+        case .recordPlanFact(let fact) where fact.date == date: return fact.itemID
+        default: return nil
+        }
+    }
+
+    func queuedNotebook(of date: String) -> String? {
+        if case .saveNotebook(let notebook) = self, notebook.date == date { return notebook.content }
+        return nil
+    }
+
+    func isDayWrite(of date: String) -> Bool {
+        queuedItem(of: date) != nil || queuedNotebook(of: date) != nil
     }
 }

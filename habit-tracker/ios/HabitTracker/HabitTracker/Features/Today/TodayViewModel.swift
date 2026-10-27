@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210
-// summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form, idempotent checklist PUT; a form POST that fails offline is queued to the outbox and shown as a pending entry, with the badge bound reactively to the outbox; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225
+// summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day is read again; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
 import Combine
 import Foundation
 
@@ -36,8 +36,7 @@ final class TodayViewModel: ObservableObject {
     /// When non-nil the screen is showing cached data because the last load fell back
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
-    /// How many form entries are queued in the outbox waiting to reach the server —
-    /// drives the "N записей ждут отправки" badge on Today.
+    /// How many writes of any screen wait in the shared outbox — the one counter of the app.
     @Published private(set) var pendingUploadCount: Int = 0
     @Published var saveErrorMessage: String?
 
@@ -68,14 +67,10 @@ final class TodayViewModel: ObservableObject {
     private let outbox: OutboxQueue?
     private let dateFormatter: DateFormatter
     private let now: () -> Date
-    /// Next synthetic id for an optimistic pending entry. Negative and decreasing so
-    /// queued rows never collide with server ids (or each other) in the list.
-    private var nextPendingEntryID = -1
     /// Idempotency-Key of a relapse tap that has not been answered yet, kept across a failed attempt so
     /// the retry is the same request to the server and not a second relapse.
     private var relapseKeys: [Int: String] = [:]
-    /// Live subscription to the outbox depth so the badge (and the optimistic rows it
-    /// represents) stay in sync with a background flush without a manual refresh.
+    /// Live subscription to the outbox, so the pending rows follow a background flush.
     private var cancellables: Set<AnyCancellable> = []
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
@@ -100,31 +95,45 @@ final class TodayViewModel: ObservableObject {
         bindOutbox()
     }
 
-    /// Subscribes to the outbox's published depth. Every change — an offline enqueue or a
-    /// background flush drained by `NWPathMonitor` — flows here, so the badge is never a
-    /// one-shot snapshot. When the depth drops (a flush succeeded) the optimistic pending
-    /// rows are reconciled away so the list and badge clear together. The outbox publishes
-    /// on the main actor (it is `@MainActor`), so the value is delivered there.
+    /// Every change of the queue — an offline save, a flush, a retry or discard from the list —
+    /// redraws the pending rows; a delivered save of this screen reads the day again, so the
+    /// server's row takes the place of the pending one. The outbox publishes on the main actor.
     private func bindOutbox() {
         guard let outbox else { return }
-        outbox.$pendingCount
-            .sink { [weak self] count in
-                MainActor.assumeIsolated {
-                    self?.reconcilePending(newCount: count)
-                }
+        outbox.$writes
+            .sink { [weak self] writes in
+                MainActor.assumeIsolated { self?.redrawPending(writes) }
+            }
+            .store(in: &cancellables)
+        outbox.delivered
+            .sink { [weak self] writes in
+                guard writes.contains(where: { $0.queuedEntry != nil }) else { return }
+                Task { await self?.load() }
             }
             .store(in: &cancellables)
     }
 
-    /// Applies a new outbox depth to the badge and, when the queue shrank (a flush sent
-    /// queued creates), drops the now-obsolete optimistic rows and reloads so the real
-    /// server entries take their place — the badge and the list clear in the same step.
-    private func reconcilePending(newCount: Int) {
-        let drained = newCount < pendingUploadCount
-        pendingUploadCount = newCount
-        guard drained else { return }
-        todayEntries.removeAll { $0.isPending }
-        Task { await load() }
+    private func redrawPending(_ writes: [OutboxWrite]) {
+        pendingUploadCount = writes.filter { $0.status == .pending }.count
+        todayEntries = withQueuedRows(todayEntries.filter { !$0.isPending }, from: writes)
+    }
+
+    /// Saves still waiting in the queue, laid over the server's rows of today as pending rows
+    /// (negative ids). A waiting checklist save stands in for the server's row of that category.
+    private func withQueuedRows(_ server: [EntryDTO], from writes: [OutboxWrite]? = nil) -> [EntryDTO] {
+        let today = todayString
+        let queued = (writes ?? outbox?.writes ?? [])
+            .filter { $0.status == .pending }
+            .compactMap(\.queuedEntry)
+            .filter { $0.entry.entryDate == today }
+        let replaced = Set(queued.filter(\.replacesDay).map(\.entry.categoryId))
+        let rows = queued.enumerated().map { index, queued in
+            EntryDTO(
+                id: -(index + 1), categoryId: queued.entry.categoryId, entryDate: queued.entry.entryDate,
+                notes: queued.entry.notes, values: queued.entry.values
+            )
+        }
+        return server.filter { !replaced.contains($0.categoryId) } + rows
     }
 
     /// Convenience init with a fixed API (used by unit tests).
@@ -161,12 +170,14 @@ final class TodayViewModel: ObservableObject {
     /// Loads active categories, today's entries, and avoid streaks in one pass, through
     /// the read cache: a successful fetch refreshes the screen and the cache; when the
     /// network is down the last cached snapshot is shown with an offline timestamp.
+    /// Waiting writes go first, so a pull-to-refresh is also a retry of the queue.
     func load() async {
         state = .loading
         guard let api = apiProvider() else {
             state = .failure(Self.notConfiguredMessage)
             return
         }
+        await outbox?.flush()
         let today = todayString
         var streaksFailed = false
         do {
@@ -204,26 +215,19 @@ final class TodayViewModel: ObservableObject {
         }
     }
 
-    /// Publishes a snapshot, recording whether it came from the network or the cache.
+    /// Publishes a snapshot, recording whether it came from the network or the cache. Saves
+    /// still in the queue are not on the server (nor in the cache) yet: they are laid on top.
     private func apply(_ outcome: CacheOutcome<TodaySnapshot>) {
-        // Optimistic rows for still-queued offline creates. They live only in
-        // `todayEntries`, never in the read cache, so a stale snapshot would drop them.
-        let pendingRows = todayEntries.filter(\.isPending)
         switch outcome {
         case .fresh(let value):
             offlineAsOf = nil
             categories = value.categories
-            // Online: the server is the source of truth. Any optimistic rows are
-            // reconciled by `reconcilePending` once the outbox flush deletes them.
-            todayEntries = value.entries
+            todayEntries = withQueuedRows(value.entries)
             streaks = value.streaks
         case .stale(let value, let updatedAt):
             offlineAsOf = updatedAt
             categories = value.categories
-            // Offline: the cached snapshot predates the queued creates, so merge the
-            // optimistic pending rows on top — a queued entry stays visible in the list,
-            // matching the badge, instead of vanishing until the network returns.
-            todayEntries = value.entries + pendingRows
+            todayEntries = withQueuedRows(value.entries)
             streaks = value.streaks
         }
     }
@@ -382,13 +386,13 @@ final class TodayViewModel: ObservableObject {
     // MARK: Day changes made elsewhere
 
     /// A quick-mark tap or undo moved the day of this category: read the day's records again, and the
-    /// streak when the category is an avoid one. Optimistic rows of the offline outbox stay.
+    /// streak when the category is an avoid one. Pending rows of the offline outbox stay.
     func reloadAfterMark(categoryID: Int) async {
         guard let api = apiProvider() else { return }
         let today = todayString
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
-            todayEntries = fetched + todayEntries.filter(\.isPending)
+            todayEntries = withQueuedRows(fetched)
         } catch {
             saveErrorMessage = Self.entriesRefreshFailedMessage
         }
@@ -423,30 +427,36 @@ final class TodayViewModel: ObservableObject {
     }
 
     /// Saves today's values for the category. Form categories create a new entry
-    /// via generic POST; checklist categories go through the idempotent
-    /// `PUT /entries/checklist` upsert (one entry per category+date on the backend).
-    /// Returns true on success.
+    /// via generic POST under a fresh Idempotency-Key; checklist categories go through the
+    /// idempotent `PUT /entries/checklist` upsert (one entry per category+date on the backend).
+    /// Without a network the save goes to the outbox — the form under the key of this attempt,
+    /// both with today's date — and shows as pending. Returns true on success or when queued.
     func saveEntry(categoryID: Int, values: [Int: String]) async -> Bool {
         saveErrorMessage = nil
         guard let api = apiProvider() else {
             saveErrorMessage = Self.notConfiguredMessage
             return false
         }
-        let isChecklist = categories.first { $0.id == categoryID }?.isChecklist ?? false
+        let category = categories.first { $0.id == categoryID }
+        let label = category?.name ?? "Запись"
         do {
             let saved: EntryDTO
-            if isChecklist {
-                saved = try await api.upsertChecklistEntry(
-                    ChecklistUpsertDTO(
-                        categoryId: categoryID,
-                        entryDate: todayString,
-                        values: Dictionary(
-                            uniqueKeysWithValues: values.map {
-                                (String($0.key), $0.value == "true")
-                            }
-                        )
+            if category?.isChecklist ?? false {
+                let payload = ChecklistUpsertDTO(
+                    categoryId: categoryID,
+                    entryDate: todayString,
+                    values: Dictionary(
+                        uniqueKeysWithValues: values.map {
+                            (String($0.key), $0.value == "true")
+                        }
                     )
                 )
+                do {
+                    saved = try await api.upsertChecklistEntry(payload)
+                } catch let error as APIClientError where error.isConnectivity && outbox != nil {
+                    outbox?.enqueue(.upsertChecklist(payload), label: label)
+                    return true
+                }
             } else {
                 let payload = EntryCreateDTO(
                     categoryId: categoryID,
@@ -456,15 +466,14 @@ final class TodayViewModel: ObservableObject {
                         .sorted { $0.key < $1.key }
                         .map { EntryValueDTO(fieldId: $0.key, value: $0.value) }
                 )
+                let key = UUID().uuidString
                 do {
-                    saved = try await api.createEntry(payload)
-                } catch let error as APIClientError where error.isConnectivity {
-                    // Offline: don't lose "42 pushups". Queue it and show it optimistically
-                    // so the user sees their entry and the pending badge, not an error.
-                    if let outbox {
-                        return enqueueOffline(payload, outbox: outbox)
-                    }
-                    throw error
+                    saved = try await api.createEntry(payload, idempotencyKey: key)
+                } catch let error as APIClientError where error.isConnectivity && outbox != nil {
+                    // Offline: don't lose "42 pushups". The replay goes under this attempt's key,
+                    // so an attempt that did land and lost its answer is not recorded twice.
+                    outbox?.enqueue(.createEntry(payload), key: key, label: label)
+                    return true
                 }
             }
             // The checklist upsert can return an entry we already loaded — replace
@@ -483,23 +492,21 @@ final class TodayViewModel: ObservableObject {
             return false
         }
     }
+}
 
-    /// Queues a create that failed offline and mirrors it into the list as a pending
-    /// row (synthetic negative id), so the entry is visible immediately and the badge
-    /// reflects the outbox depth. Returns true — the save is not lost, just deferred.
-    private func enqueueOffline(_ payload: EntryCreateDTO, outbox: OutboxQueue) -> Bool {
-        outbox.enqueue(payload)
-        todayEntries.append(
-            EntryDTO(
-                id: nextPendingEntryID,
-                categoryId: payload.categoryId,
-                entryDate: payload.entryDate,
-                notes: payload.notes,
-                values: payload.values
-            )
-        )
-        nextPendingEntryID -= 1
-        // The badge updates reactively via `bindOutbox` when `enqueue` bumps the depth.
-        return true
+private extension OutboxWrite {
+    /// The entry a queued Today save will write, and whether it stands for the whole day of its category.
+    var queuedEntry: (entry: EntryCreateDTO, replacesDay: Bool)? {
+        switch action {
+        case .createEntry(let entry):
+            return (entry, false)
+        case .upsertChecklist(let list):
+            let values = list.values
+                .sorted { $0.key < $1.key }
+                .map { EntryValueDTO(fieldId: Int($0.key) ?? 0, value: $0.value ? "true" : "false") }
+            return (EntryCreateDTO(categoryId: list.categoryId, entryDate: list.entryDate, notes: nil, values: values), true)
+        case .tapQuickMark, .setDayMark, .recordPlanFact, .saveNotebook:
+            return nil
+        }
     }
 }
