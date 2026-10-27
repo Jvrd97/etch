@@ -85,7 +85,10 @@ struct PanelAPIClient {
     }
 
     /// Decides the mode of one date by hand (both fields go: they are independent) or hands the date back to the schedule.
-    func change(mode: ModeChange, date: String) async throws {
+    /// Answers with the mode the server wrote; nil when the body is not one the window knows
+    /// (an unknown source): the write went through, the next config repaints.
+    @discardableResult
+    func change(mode: ModeChange, date: String) async throws -> PanelDayMode? {
         guard let url = Self.endpoint(for: serverAddress, path: "\(Self.dayModePath)/\(date)") else { throw PanelAPIError.notConfigured }
         var request = authorized(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.requestTimeout))
         switch mode {
@@ -96,8 +99,9 @@ struct PanelAPIClient {
         case .reset:
             request.httpMethod = "DELETE"
         }
-        let (_, response) = try await data(for: request)
+        let (body, response) = try await data(for: request)
         guard (200..<300).contains(response.statusCode) else { throw Self.error(status: response.statusCode) }
+        return try? JSONDecoder().decode(PanelDayMode.self, from: body)
     }
 
     static func error(status: Int) -> PanelAPIError {

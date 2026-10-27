@@ -2437,6 +2437,8 @@ export interface ClaudeUsageDay {
   sessions_past_boundary: number;
 }
 
+// [review:need-review] PHASE-03/228
+// summary: agentAPI.dayMode without a date reads the server's current day (GET /day-mode)
 // [review:need-review] PHASE-03/162
 // summary: day-mode types and agentAPI.dayMode / setDayMode / clearDayMode / modeSchedule / saveModeSchedule — the kind of a day and its no-code flag as two orthogonal fields, who decided (schedule or hand), and the week schedule saved as one piece
 /** The four kinds of day; `nocode` is a separate flag, so a working Tuesday can be no-code. */
@@ -2544,9 +2546,15 @@ export const agentAPI = {
     return fetcher<ClaudeUsageDay>(`/agent/claude-usage/${date}`);
   },
 
-  /** Which kind of day it is, and who said so (#162). */
-  dayMode: async (date: string) => {
-    return fetcher<DayMode>(`/day-mode/${date}`);
+  /**
+   * Which kind of day it is, and who said so (#162).
+   *
+   * Without a date the server answers for the day it is living in right now, and
+   * the answer names that date (#228): a browser computing its own would
+   * disagree with it between midnight and the boundary hour.
+   */
+  dayMode: async (date?: string) => {
+    return fetcher<DayMode>(date === undefined ? '/day-mode' : `/day-mode/${date}`);
   },
 
   /** Decide one date by hand; the schedule is overridden for that date only. */

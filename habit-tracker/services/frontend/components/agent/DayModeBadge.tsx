@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/162
-// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule
+// [review:need-review] PHASE-03/228
+// summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out
 
 import Link from 'next/link';
 import type { DayMode, DayModeKind } from '@/lib/api';
@@ -8,16 +8,43 @@ import { KIND_OPTIONS, NOCODE_LABEL, RESET_LABEL, sourceLabel } from '@/lib/day-
 export const MODE_SCHEDULE_HREF = '/agent/mode-schedule';
 
 export interface DayModeBadgeProps {
-  /** Null until the first answer; nothing is drawn for it. */
+  /** Null while the first answer is awaited, and after a failed read. */
   mode: DayMode | null;
   saving: boolean;
+  /** The last write failed. */
   error: string | null;
+  /** The read failed: the badge says so and offers `onRetry`. */
+  loadFailed: boolean;
   onDecide: (kind: DayModeKind, nocode: boolean) => void;
   onReset: () => void;
+  onRetry: () => void;
 }
 
-export default function DayModeBadge({ mode, saving, error, onDecide, onReset }: DayModeBadgeProps) {
-  if (mode === null) return null;
+const LOAD_FAILED = 'Не удалось прочитать режим дня';
+const RETRY_LABEL = 'Повторить';
+
+export default function DayModeBadge({
+  mode,
+  saving,
+  error,
+  loadFailed,
+  onDecide,
+  onReset,
+  onRetry,
+}: DayModeBadgeProps) {
+  if (mode === null) {
+    if (!loadFailed) return null;
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded-3xl border border-white/5 bg-surface px-4 py-3 text-sm">
+        <p role="alert" className="text-warning">
+          {LOAD_FAILED}
+        </p>
+        <button type="button" onClick={onRetry} className="text-lime hover:underline">
+          {RETRY_LABEL}
+        </button>
+      </div>
+    );
+  }
   return (
     <div
       data-source={mode.source}

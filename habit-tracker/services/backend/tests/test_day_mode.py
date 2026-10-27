@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/162
-# summary: tests of the day mode as data — a Tuesday with no row is work + nocode from the seed, a manual row overrides exactly one date and nothing around it, deleting the row returns the day to the schedule, nocode flips independently of kind, editing the schedule moves the days with no decision and leaves the decided ones alone, a bad kind or a schedule that is not seven distinct weekdays is a 422 that writes nothing, the agent config carries the manual mode (and its ETag moves), and a mode read costs a fixed number of queries
+# [review:need-review] PHASE-03/228
+# summary: tests of the day mode as data — a Tuesday with no row is work + nocode from the seed, a manual row overrides exactly one date, deleting it returns the day to the schedule, nocode flips independently of kind, a schedule edit moves the days with no decision (past ones too) and spares the decided ones, GET /day-mode answers for the server's own day (not the UTC date), a decision with a missing or non-boolean half or a date outside 2000..2100 is a 422 that writes nothing, the kind Literal equals the model list, the agent config carries the manual mode, and a mode read costs a fixed number of queries
 """
 Tests of `GET|PUT|DELETE /day-mode/{date}` and `GET|PUT /mode-schedule`.
 
@@ -11,16 +11,21 @@ schedule edit that rewrites a day somebody decided by hand, `nocode` welded to
 """
 
 from collections.abc import AsyncGenerator
-from datetime import date, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, get_args
+
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import daytime
+from app.core.daytime import DayBoundary
 from app.crud import activity as activity_crud
-from app.models.activity import DayMode, ModeSchedule
+from app.models.activity import DAY_MODE_KINDS, DayMode, ModeSchedule
+from app.schemas.day_mode import DayModeKind
 from tests.conftest import test_engine
 
 DAY_MODE_URL = "/api/v1/day-mode"
@@ -92,6 +97,32 @@ async def test_tuesday_without_a_row_is_work_and_nocode_from_the_schedule(
     body = await read_mode(client, TUESDAY)
 
     assert body == {
+        "date": TUESDAY.isoformat(),
+        "kind": "work",
+        "nocode": True,
+        "source": "schedule",
+    }
+
+
+async def test_current_day_is_the_servers_day_not_the_utc_date(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Между полуночью и часом границы сервер ещё живёт в прошлом дне.
+
+    01:30 по Берлину 28.10.2026 (там уже CET, UTC+1) — это 00:30 UTC 28-го, то есть
+    календарная дата UTC уже 28.10, а при границе 04:00 сервер ещё живёт во
+    вторнике 27.10; бейдж, спросивший «сегодня», получает дату сервера и пишет
+    на неё.
+    """
+    daytime.use_boundary(DayBoundary(timezone="Europe/Berlin", day_start_hour=4))
+    moment = datetime(2026, 10, 28, 1, 30, tzinfo=ZoneInfo("Europe/Berlin"))
+    monkeypatch.setattr(daytime, "now_utc", lambda: moment.astimezone(timezone.utc))
+
+    response = await client.get(DAY_MODE_URL)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
         "date": TUESDAY.isoformat(),
         "kind": "work",
         "nocode": True,
@@ -174,6 +205,59 @@ async def test_nocode_flips_without_touching_kind(client: AsyncClient) -> None:
     assert (body["kind"], body["nocode"]) == ("work", True)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({"nocode": True}, id="no-kind"),
+        pytest.param({"kind": "work"}, id="no-nocode"),
+        pytest.param({}, id="empty"),
+        pytest.param({"kind": "work", "nocode": "yes"}, id="nocode-yes"),
+        pytest.param({"kind": "work", "nocode": "true"}, id="nocode-true-string"),
+        pytest.param({"kind": "work", "nocode": 1}, id="nocode-one"),
+        pytest.param({"kind": "work", "nocode": None}, id="nocode-null"),
+        pytest.param({"kind": None, "nocode": True}, id="kind-null"),
+    ],
+)
+async def test_decision_needs_both_fields_in_their_own_types(
+    client: AsyncClient, db_session: AsyncSession, body: dict[str, Any]
+) -> None:
+    """Обе половины решения обязательны и строго типизированы: ни догадки, ни `"yes"`."""
+    response = await client.put(f"{DAY_MODE_URL}/{TUESDAY.isoformat()}", json=body)
+
+    assert response.status_code == 422
+    count = await db_session.scalar(select(func.count()).select_from(DayMode))
+    assert count == 0
+
+
+async def test_schedule_day_needs_a_real_boolean_too(client: AsyncClient) -> None:
+    payload = schedule_payload()
+    payload["days"][2]["nocode"] = "yes"
+
+    response = await client.put(SCHEDULE_URL, json=payload)
+
+    assert response.status_code == 422
+    assert (await read_mode(client, TUESDAY))["nocode"] is True
+
+
+@pytest.mark.parametrize("far", [date(1999, 12, 31), date(2101, 1, 1)])
+@pytest.mark.parametrize("method", ["get", "put", "delete"])
+async def test_a_date_outside_the_calendar_of_the_app_is_422(
+    client: AsyncClient, db_session: AsyncSession, method: str, far: date
+) -> None:
+    """Опечатка в году не заводит строку на дату, до которой никто не доживёт."""
+    url = f"{DAY_MODE_URL}/{far.isoformat()}"
+    kwargs = {"json": {"kind": "work", "nocode": False}} if method == "put" else {}
+
+    response = await client.request(method.upper(), url, **kwargs)
+
+    assert response.status_code == 422
+    problems = response.json()["detail"]
+    assert isinstance(problems, list)
+    assert problems[0]["loc"] == ["path", "on"]
+    count = await db_session.scalar(select(func.count()).select_from(DayMode))
+    assert count == 0
+
+
 async def test_unknown_kind_is_422_and_writes_nothing(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -211,6 +295,30 @@ async def test_schedule_edit_moves_future_days_and_spares_decided_ones(
         False,
         "schedule",
     )
+
+
+async def test_schedule_edit_also_moves_past_days_without_a_decision(
+    client: AsyncClient,
+) -> None:
+    """
+    Режим дня без строки считается из расписания на лету, поэтому правка двигает
+    и прошлое. Ждёт решения владельца: фиксировать ли прошлое. Пока тест держит
+    фактическое поведение, чтобы его смена была явной, а не случайной.
+    """
+    past_tuesday = TUESDAY - timedelta(days=7)
+
+    await client.put(SCHEDULE_URL, json=schedule_payload(d2=("dayoff", False)))
+
+    moved = await read_mode(client, past_tuesday)
+    assert (moved["kind"], moved["nocode"], moved["source"]) == (
+        "dayoff",
+        False,
+        "schedule",
+    )
+
+
+def test_kind_literal_equals_the_model_list() -> None:
+    assert get_args(DayModeKind) == DAY_MODE_KINDS
 
 
 @pytest.mark.parametrize(

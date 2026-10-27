@@ -2780,3 +2780,30 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Тесты: окно по последнему закрытому дню, неделя через границу года (`2027-W01`, предыдущая `2026-W53`), «5 из 6» → «нет» в промпте. Число запросов на неделю — 12 при любом числе дней и привычек.
 - Нестабильность: `components/day/PlanBuilder.test.tsx` («пока модель думает, ожидание видно») падает по таймауту 5 с в общем прогоне под нагрузкой и проходит отдельно; к #221 не относится.
 - Не проверено: сон (метрики нет в каталоге), настоящая модель, телефон и iPad.
+## 2026-10-27 — PHASE-03/228: хвосты режимов дня (#162) — дата дня, гонка записей, тесты
+
+Тронуто 17 файлов кода (все `mod`), миграций нет.
+
+- `backend/app/api/day_mode.py` — mod: `GET /day-mode` без даты отвечает режимом текущего дня сервера (`today_local()`), ответ несёт `date`; дата в пути `GET|PUT|DELETE /day-mode/{on}` вне 2000-01-01..2100-12-31 — 422; docstring `put_mode_schedule` исправлен на правду: режим без строки считается из расписания на лету, правка меняет и прошлые дни.
+- `backend/app/schemas/day_mode.py` — mod: `kind` — `Literal`, `nocode` — `StrictBool` (`"yes"`, `"true"`, `1` отвергаются), границы календаря именованными константами.
+- `backend/tests/test_day_mode.py` — mod: 422 без `kind` или без `nocode` и на нестрогие значения, день сервера на `GET /day-mode` между полуночью и границей, границы даты, `Literal` совпадает со списком модели, правка расписания двигает и прошлое.
+- `backend/tests/test_quick_mark_day_events.py` — mod: `test_an_old_day_offers_no_undo_for_taps_that_are_no_longer_last` закреплён на 01:30 по Берлину при границе 01:00 и читает день, который назвало правило.
+- `frontend/hooks/useDayMode.ts` (+ тест), `frontend/lib/api.ts`, `frontend/app/today/page.tsx` — mod: бейдж читает день сервера без даты и пишет на `mode.date` ответа; сбой чтения — `loadFailed` и `reload`.
+- `frontend/components/agent/DayModeBadge.tsx` (+ тест) — mod: сообщение «Не удалось прочитать режим дня» и кнопка «Повторить».
+- `frontend/components/agent/ModeScheduleEditor.tsx` (+ тест) — mod: «Сохранено» в `role="status"` с `aria-live="polite"`, область есть в DOM до сохранения.
+- `frontend/lib/day-mode.ts` — mod: убран неиспользуемый `kindLabel`.
+- `mac/HabitAgent/HabitAgent/Panel/PanelModel.swift`, `ModeSwitcher.swift` — mod: `modeSaving` — одна запись режима за раз, контролы заблокированы, второе изменение не отправляется (сценарий «выключил no-code, сразу выбрал отпуск» не откатывает выключение); свежий конфиг сбрасывает «не сохранилось».
+- `mac/HabitAgent/HabitAgent/Panel/PanelConfig.swift` — mod: неизвестный `source` оставляет окно без переключателя, а не роняет декодирование конфига.
+- `mac/HabitAgent/HabitAgentTests/DayModeTests.swift` — mod: тесты неизвестного `source`, второй записи в полёте, сброса заметки свежим конфигом и view `ModeSwitcher` (в `NSHostingView` SwiftUI даёт контролы AppKit, считается число и `isEnabled`).
+
+Проверки: бэкенд — `tests/` 1944 passed, 2 skipped (`habit_test_228`), ruff, формат, `mypy --strict` чисто, одна голова Alembic `d6f8a0b2c4e5`; фронт — `bun test` 1911 pass, `tsc --noEmit` чисто, lint 0 ошибок; мак — `xcodebuild test` 199 тестов, 0 падений со второго прогона (первый: `ConditionalPollerTests.testThereIsExactlyOneBackoffInTheAgent` упал, отдельно и во втором прогоне зелёный; причина не в нагрузке: тест не зависит от времени, он обходит файлы `.swift` по `#filePath` и ищет объявления `Backoff`, то есть читает файловую систему, и сбой, скорее всего, от пути или недописанного файла в момент обхода; не разбирал). Мутации: без `modeSaving` падают тест второй записи и тест блокировки view.
+
+Живая проверка: настоящий бэкенд на `habit_test_228` (`:8872`) и dev-фронт (`:3872`), headless Chrome по CDP с часовым поясом Pacific/Pago_Pago (дата браузера 2026-10-26, день сервера 2026-10-27): бейдж прочитал `GET /api/v1/day-mode`, клик по no-code ушёл в `PUT /api/v1/day-mode/2026-10-27`. Не проверено: настоящий мак-агент и вид окна глазами; состояние «ошибка чтения» и блокировка контролов в вебе только в тестах; ждёт решения владельца пункт «фиксировать ли прошлое при правке расписания».
+
+### Круг 2 (PHASE-03/228)
+
+- `frontend/hooks/useDayMode.ts` (+ тест) — mod: режим перечитывается по `useRefreshOnVisible`, страница, открытая через границу дня, пишет на новую `mode.date`.
+- `mac/.../PanelModel.swift`, `PanelAPIClient.swift`, `ModeSwitcher.swift` — mod: ответ PUT/DELETE остаётся на экране, пока свежий конфиг его не заменит, поэтому упавший опрос после записи не возвращает старый режим; слот записи `modeSaving` занимается синхронно в обработчике (`decideMode`/`resetMode` возвращают `Task?`), отказ второго изменения пишется в журнал `panel-mode`.
+- `backend/app/api/day_mode.py`, `tests/test_day_mode.py` — mod: 422 на дату вне календаря в стандартной списочной форме (`RequestValidationError`, `loc: [path, on]`), исправлена арифметика в docstring теста.
+- `mac/.../DayModeTests.swift` — mod: тесты ответа записи при упавшем опросе и синхронного слота; тест view зависит от того, что SwiftUI macOS 14+ отдаёт контролы как `NSControl`, окно закрывается после теста.
+- Принято: `modeWriteFailed` не стирается фоновым опросом, начатым до сбоя записи, но его успешный ответ сотрёт заметку «не сохранилось» (опрос идёт раз в 30 с).

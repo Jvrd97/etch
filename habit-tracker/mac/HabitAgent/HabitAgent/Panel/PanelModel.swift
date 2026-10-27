@@ -1,12 +1,14 @@
-// [review:need-review] PHASE-03/159
-// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the next config
+// [review:need-review] PHASE-03/228
+// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the server's answer to the write (and then from the next config); since #228 one mode write at a time (`modeSaving` is claimed synchronously in the handler and locks the switcher; a second change is dropped and logged) and a fresh config clears «не сохранилось»
 import Combine
 import Foundation
+import os
 
 @MainActor
 final class PanelModel: ObservableObject {
     /// Writes a change of the day mode for a date; throws when the server refused or was unreachable.
-    typealias ModeWrite = (_ date: String, _ change: ModeChange) async throws -> Void
+    /// Answers with the mode the server wrote, nil when its body is not one the window knows.
+    typealias ModeWrite = (_ date: String, _ change: ModeChange) async throws -> PanelDayMode?
 
     let config: ConditionalPoller<PanelConfig>
     let timer: TaskTimer
@@ -14,12 +16,20 @@ final class PanelModel: ObservableObject {
     @Published private(set) var configIsStale = false
     /// The last write of the day mode did not go through; the mode shown is the old one.
     @Published private(set) var modeWriteFailed = false
+    /// A write of the day mode is in flight. The window repaints only from the next
+    /// config, so a second change built meanwhile would carry the old half of the
+    /// first one and switch it back.
+    @Published private(set) var modeSaving = false
 
     private let outbox: ManualIntervalOutbox?
     private let serverAddress: () -> String?
     private let openURL: (URL) -> Void
     private let now: () -> Date
     private let modeWrite: ModeWrite?
+    /// The server's answer to the last write, shown until a fresh config replaces it: a poll
+    /// right after the write may fail, and the window must not go back to the old mode then.
+    private var answeredMode: (date: String, mode: PanelDayMode)?
+    private static let log = Logger(subsystem: "com.talvior.habitagent", category: "panel-mode")
     private var observers: [AnyCancellable] = []
 
     init(
@@ -42,12 +52,21 @@ final class PanelModel: ObservableObject {
         observers = [
             config.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
             timer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
+            // A poll that went through is a fresh look at the server: the mode on screen
+            // is its answer, so a note about an earlier refused write no longer fits.
+            config.$value.dropFirst().sink { [weak self] _ in self?.answeredMode = nil },
+            config.$lastFailure.dropFirst().sink { [weak self] failure in
+                if failure == nil { self?.modeWriteFailed = false }
+            },
         ]
     }
 
     var currentTask: PanelConfig.Task? { config.value?.currentTask }
 
-    var dayMode: PanelDayMode? { config.value?.dayMode }
+    var dayMode: PanelDayMode? {
+        if let answered = answeredMode, answered.date == config.value?.date { return answered.mode }
+        return config.value?.dayMode
+    }
 
     var dateLabel: String? { config.value?.dateLabel }
 
@@ -73,13 +92,17 @@ final class PanelModel: ObservableObject {
     }
 
     /// Decides the mode of the date the window shows. Both fields go: the kind and no-code are independent.
-    func decideMode(kind: String, nocode: Bool) async {
-        await write(.decide(kind: kind, nocode: nocode))
+    /// The write slot is taken before this returns, so a second change made in the same turn
+    /// finds it busy; nil means nothing was started.
+    @discardableResult
+    func decideMode(kind: String, nocode: Bool) -> Task<Void, Never>? {
+        start(.decide(kind: kind, nocode: nocode))
     }
 
     /// Gives the date the window shows back to the schedule.
-    func resetMode() async {
-        await write(.reset)
+    @discardableResult
+    func resetMode() -> Task<Void, Never>? {
+        start(.reset)
     }
 
     func openDayInBrowser() {
@@ -101,12 +124,24 @@ final class PanelModel: ObservableObject {
         return formatter
     }()
 
+    private func start(_ change: ModeChange) -> Task<Void, Never>? {
+        guard let date = config.value?.date, let modeWrite else { return nil }
+        guard !modeSaving else {
+            // The controls are locked, so this is a second handler in the same turn; say that a change was dropped.
+            Self.log.notice("Day-mode change dropped: a write is already in flight")
+            return nil
+        }
+        modeSaving = true
+        return Task { await write(change, date: date, using: modeWrite) }
+    }
+
     /// The window repaints from the server's own answer, not from what was asked for.
-    private func write(_ change: ModeChange) async {
-        guard let date = config.value?.date, let modeWrite else { return }
+    private func write(_ change: ModeChange, date: String, using modeWrite: ModeWrite) async {
+        defer { modeSaving = false }
         do {
-            try await modeWrite(date, change)
+            let answer = try await modeWrite(date, change)
             modeWriteFailed = false
+            answeredMode = answer.map { (date: date, mode: $0) }
             await config.pollOnce()
         } catch {
             modeWriteFailed = true
