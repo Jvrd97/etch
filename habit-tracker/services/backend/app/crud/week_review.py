@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239
 # summary: the week review in a fixed number of statements — day summaries, role minutes, duration entries, avoid histories and health buckets of both weeks are read as 14-day ranges and folded in python, so the count does not move with days or habits
 """
 Database access for the week review (`#221`).
@@ -26,7 +26,7 @@ Database access for the week review (`#221`).
 не входят, пока день не закрыт, — окно одно на все блоки.
 
 **Доли ролей считает `app.crud.role`.** Минуты по ролям берутся у
-`role_crud.minutes_by_role`, доля — у `_share_pct`: вторая реализация разошлась
+`role_crud.minutes_by_role`, доля — у `share_pct`: вторая реализация разошлась
 бы с недельной сводкой ролей на первом округлении.
 
 **Сутки — логические.** Дни недели — `day_date`, посчитанные границей суток
@@ -54,7 +54,6 @@ from app.day.week import DAYS_IN_WEEK, iso_code, week_bounds
 from app.models import Category, Entry, EntryValue, Field
 from app.models.day import Day
 from app.models.field import FieldType
-from app.models.health import HealthMetric
 from app.models.role import RoleTimeBlock
 from app.models.summary import STAGE_CLOSED, DaySummary
 from app.schemas.week_review import (
@@ -74,19 +73,9 @@ __all__ = ["build_week_review", "week_has_data"]
 # Знаменатель доли в целых процентах.
 FULL_SHARE_PCT = 100
 SECONDS_PER_MINUTE = 60
-# Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
-# сон в часах, переведённый из минут, без округления тащил бы хвост из десятков.
-AVERAGE_DIGITS = 1
-
-# Метрики здоровья недели: ключ в ответе, подпись на случай отсутствия метрики и
-# идентификатор каталога. Имя метрики, которая в каталоге есть, берётся у
-# каталога: «тренировки» было бы подменой названия `Минуты тренировки`. Метрика,
-# которой в каталоге нет, едет с `available=false`, а не нулями.
-HEALTH_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("sleep", "Сон", "HKCategoryTypeIdentifierSleepAnalysis"),
-    ("steps", "Шаги", "HKQuantityTypeIdentifierStepCount"),
-    ("workouts", "Минуты тренировки", "HKQuantityTypeIdentifierAppleExerciseTime"),
-)
+# Метрики здоровья недели: ключи из `app.crud.health.HEALTH_SPECS`. Пульс покоя
+# в обзор не входит — он живёт в совете (#223).
+WEEK_METRICS = ("sleep", "steps", "workouts")
 
 
 @dataclass(frozen=True)
@@ -298,7 +287,7 @@ async def _roles(
             role_code=role.code,
             title=role.title,
             minutes=(own := now.get(role.id, 0)),
-            share_pct=role_crud._share_pct(own, whole),
+            share_pct=role_crud.share_pct(own, whole),
             target_share_pct=role.target_share_pct,
             previous_minutes=(previous := before.get(role.id, 0)),
             delta_minutes=own - previous,
@@ -414,57 +403,35 @@ async def _habit_streaks(db: AsyncSession, now: _Span) -> list[WeekHabitStreak]:
     return sorted(streaks, key=lambda s: (-s.current_streak, s.name))
 
 
-def _average(values: list[float]) -> float | None:
-    return round(sum(values) / len(values), AVERAGE_DIGITS) if values else None
-
-
 async def _health(
     db: AsyncSession, now: _Span, before: _Span, starts_on: date, start: date, end: date
 ) -> list[WeekHealthMetric]:
-    catalog = {
-        metric.identifier: metric for metric in await health_crud.get_catalog(db)
-    }
-    present: list[HealthMetric] = [
-        catalog[identifier]
-        for _, _, identifier in HEALTH_SPECS
-        if identifier in catalog
-    ]
-    daily = await health_crud.daily_values(db, present, start, end)
-
     metrics: list[WeekHealthMetric] = []
-    for key, name, identifier in HEALTH_SPECS:
-        metric = catalog.get(identifier)
-        if metric is None:
+    for item in await health_crud.metric_days(db, WEEK_METRICS, start, end):
+        if not item.available:
             metrics.append(
                 WeekHealthMetric(
-                    key=key,
-                    name=name,
+                    key=item.spec.key,
+                    name=item.name,
                     available=False,
                     daily=[None] * DAYS_IN_WEEK,
                 )
             )
             continue
-        by_day = {point.local_date: point.value for point in daily.get(metric.id, [])}
-        current = [by_day[d] for d in _dates(now) if d in by_day]
-        earlier = [by_day[d] for d in _dates(before) if d in by_day]
-        avg, previous_avg = _average(current), _average(earlier)
+        compared = health_crud.compare_windows(item.by_day, _dates(now), _dates(before))
         metrics.append(
             WeekHealthMetric(
-                key=key,
-                name=metric.display_name,
-                unit=metric.canonical_unit,
+                key=item.spec.key,
+                name=item.name,
+                unit=item.unit,
                 available=True,
-                total=sum(current) if current else None,
-                avg_per_day=avg,
-                days_with_data=len(current),
-                previous_avg_per_day=previous_avg,
-                delta_avg_per_day=(
-                    None
-                    if avg is None or previous_avg is None
-                    else round(avg - previous_avg, AVERAGE_DIGITS)
-                ),
+                total=compared.total,
+                avg_per_day=compared.avg_per_day,
+                days_with_data=compared.days_with_data,
+                previous_avg_per_day=compared.previous_avg_per_day,
+                delta_avg_per_day=compared.delta_avg_per_day,
                 daily=[
-                    by_day.get(starts_on + timedelta(days=i))
+                    item.by_day.get(starts_on + timedelta(days=i))
                     if now.holds(starts_on + timedelta(days=i))
                     else None
                     for i in range(DAYS_IN_WEEK)

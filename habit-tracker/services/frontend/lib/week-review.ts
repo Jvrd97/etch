@@ -1,8 +1,8 @@
-// [review:need-review] PHASE-03/221
-// summary: vocabulary of the week review screen — minutes and deltas as words, the note under an unfinished week, health values by unit, the empty test mirrored from the server, narrative errors by HTTP status, and the links between weeks
+// [review:need-review] PHASE-03/221, PHASE-03/239
+// summary: vocabulary of the week review screen — the verdict line of the week, the note on role shares of a running week, minutes and deltas as words, the note under an unfinished week, health values by unit, the empty test mirrored from the server, narrative errors by HTTP status, and the links between weeks
 
 import { WEEKDAY_SHORT } from '@/lib/life';
-import { MOBILE_PATH_PREFIX } from '@/lib/routes';
+import { toMobilePath } from '@/lib/view-mode';
 import type { WeekReview, WeekReviewHealth, WeekReviewWindow } from '@/lib/api';
 
 const MINUTES_PER_HOUR = 60;
@@ -75,6 +75,31 @@ export function partialNote(window: WeekReviewWindow): string | null {
   return `Неделя не закончилась: учтено ${window.counted_days} из 7 дней — закрытые и прошедшие, сегодняшний день войдёт после закрытия. Сравнение — с первыми ${window.compared_days} днями прошлой недели.`;
 }
 
+/**
+ * Said under the role shares of a week that has not ended.
+ *
+ * The review leaves today out until its day is closed; the retro page of the same
+ * week counts today's minutes at once, so the two shares differ by a day.
+ */
+export const ROLES_RUNNING_WEEK_NOTE =
+  'Доли считаются по учтённым дням: минуты сегодняшнего дня войдут после его закрытия, а на странице «Ретро недели» они уже есть, поэтому доли там могут отличаться.';
+
+export function rolesNote(window: WeekReviewWindow): string | null {
+  return window.is_complete ? null : ROLES_RUNNING_WEEK_NOTE;
+}
+
+/**
+ * The verdict of the week as the server decided it, with the rule and its numbers.
+ *
+ * Mirrors the line the narrative prompt carries, so the text on the screen and the
+ * text the model retells do not disagree. The rule is the server's; this only prints it.
+ */
+export function verdictLine(review: WeekReview): string {
+  if (review.is_won === null) return 'Неделя выиграна: пока не решено, неделя идёт.';
+  const { won_days, days_total } = review.totals;
+  return `Неделя выиграна: ${review.is_won ? 'да' : 'нет'} (правило: выиграны все дни недели и нет долга за переработку; выиграно ${won_days} из ${days_total} дней, долг ${formatMinutes(review.debt_minutes)}).`;
+}
+
 /** `YYYY-MM-DD` as «24.08», parsed by hand so no timezone can move the day. */
 export function shortDate(iso: string): string {
   const [, month, day] = iso.split('-');
@@ -92,12 +117,12 @@ export function weekdayShort(weekday: number): string {
 /**
  * A desktop address in the shell the screen is drawn in.
  *
- * `compact` is the mobile shell's flag, and a link from a `/m` page that led to
- * `/week/...` would drop the reader out of the shell; the pair of routes exists
- * on both sides, so the prefix is all that differs.
+ * `compact` is the mobile shell's flag; the mapping itself is `toMobilePath`'s,
+ * so the link of a `/m` page cannot drop the reader out of the shell and the
+ * pair of routes is described in exactly one place.
  */
-export function inShell(desktopHref: string, compact: boolean): string {
-  return compact ? `${MOBILE_PATH_PREFIX}${desktopHref}` : desktopHref;
+function inShell(desktopHref: string, compact: boolean): string {
+  return compact ? (toMobilePath(desktopHref) ?? desktopHref) : desktopHref;
 }
 
 /** The review of a named week, in the reader's shell. */

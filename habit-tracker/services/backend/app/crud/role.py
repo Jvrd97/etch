@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/134, PHASE-03/137, PHASE-03/138
+# [review:need-review] PHASE-03/134, PHASE-03/137, PHASE-03/138, PHASE-03/239
 # summary: persistence of the roles — the idempotent seed of the four-role directory, CRUD of the directory and the rules, the resolver's database half (rules in, role out, `unassigned` when nothing matched), and the write of minutes and acts that neither doubles a re-imported `(source, external_ref)` nor overwrites what a person confirmed
 """
 Database access for the roles.
@@ -506,7 +506,7 @@ class RoleSummary:
     rules_lag: bool
 
 
-def _share_pct(part: int, whole: int) -> int:
+def share_pct(part: int, whole: int) -> int:
     """Доля в целых процентах; пустой знаменатель — ноль, а не деление на ноль."""
     return round(part * FULL_SHARE_PCT / whole) if whole else 0
 
@@ -564,7 +564,7 @@ async def role_summary(db: AsyncSession, date_from: date, date_to: date) -> Role
     slices: list[RolePeriodSlice] = []
     for role in roles:
         own = minutes.get(role.id, 0)
-        share = _share_pct(own, total)
+        share = share_pct(own, total)
         by_kind = {
             kind: count for (role_id, kind), count in acts.items() if role_id == role.id
         }
@@ -602,11 +602,11 @@ async def role_summary(db: AsyncSession, date_from: date, date_to: date) -> Role
         total_minutes=total,
         roles=slices,
         unassigned_minutes=unassigned,
-        unassigned_share_pct=_share_pct(unassigned, total),
+        unassigned_share_pct=share_pct(unassigned, total),
         window_from=window_from,
         window_minutes=window_total,
         window_unassigned_minutes=window_unassigned,
-        window_unassigned_share_pct=_share_pct(window_unassigned, window_total),
+        window_unassigned_share_pct=share_pct(window_unassigned, window_total),
         # Отношение, а не округлённый процент: доля 30,4% округляется до
         # тридцати и молча не поднимала бы флаг, хотя правила уже отстали.
         rules_lag=window_unassigned * FULL_SHARE_PCT
@@ -679,6 +679,7 @@ __all__ = [
     "list_rules",
     "resolve_role",
     "seed_roles",
+    "share_pct",
     "titles_by_code",
     "write_act",
     "write_time_block",

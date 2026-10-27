@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221
+// [review:need-review] PHASE-03/221, PHASE-03/239
 // summary: the blocks of the week review — totals against the previous week, the seven days with the best and the worst marked in words, role and category time, avoid streaks, and the three health figures; every change is printed with its sign so no colour carries meaning alone
 
 import type { ReactNode } from 'react';
@@ -18,8 +18,10 @@ import {
   formatHealthDelta,
   formatHealthValue,
   formatMinutes,
+  rolesNote,
   shortDate,
   trendOf,
+  verdictLine,
   weekdayShort,
   type Trend,
 } from '@/lib/week-review';
@@ -112,6 +114,7 @@ export function TotalsBlock({ review }: { review: WeekReview }) {
           }
         />
       </dl>
+      <p className="text-sm text-text-secondary">{verdictLine(review)}</p>
     </Section>
   );
 }
@@ -177,6 +180,7 @@ export function DaysBlock({ review }: { review: WeekReview }) {
 
 export function RolesBlock({ review }: { review: WeekReview }) {
   const rows = review.roles.filter((role) => role.minutes > 0 || role.previous_minutes > 0);
+  const note = rolesNote(review.window);
   return (
     <Section label="Время по ролям" title="Время по ролям">
       {rows.length === 0 ? (
@@ -198,6 +202,7 @@ export function RolesBlock({ review }: { review: WeekReview }) {
           ))}
         </ul>
       )}
+      {rows.length > 0 && note !== null && <p className="text-sm text-text-disabled">{note}</p>}
     </Section>
   );
 }

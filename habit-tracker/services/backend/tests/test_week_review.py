@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221
+# [review:need-review] PHASE-03/221, PHASE-03/245
 # summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with an absent sleep metric, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
 """
 Weekly review: one answer for the whole week, cut on the day boundary.
@@ -790,6 +790,8 @@ async def test_the_prompt_names_steps_in_russian_and_workouts_as_the_catalogue_d
     assert "8000 шагов" in prompt
     assert "count" not in prompt
     assert "Минуты тренировки: в среднем 0 ч 45 мин" in prompt
+    # The denominator of the average is named: days with data, not all days.
+    assert "среднее по дням с данными: 1 из" in prompt
 
 
 async def test_a_week_with_only_a_habit_streak_still_has_something_to_say(
