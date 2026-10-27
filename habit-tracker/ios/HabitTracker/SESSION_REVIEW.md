@@ -683,3 +683,13 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **Ниты.** `waitUntil` вынесен в `TestWaiting.swift` и падает через `XCTFail` по таймауту. Новые тесты вписаны в строки summary.
 
 Мутации: откат флага прямой попытки, 502/504, повторной записи кэша в трёх моделях валит 7 тестов. Возврат «Дня» к поведению круга 2 (перечитывание сбрасывает поколение, сбой ставит ошибку) валит тест упавшего перечитывания.
+
+### PHASE-03/254, круг 1 (2026-10-27)
+
+Тронуто 8 файлов iOS: `Features/HealthSync/{HealthKitSampleSource,HealthPump,HealthSyncView}.swift`, тесты `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests` (`mod`), этот файл; плюс ADR-0020 (поправка A2), `services/backend/tests/test_health_catalog_fixture.py` и `tests/fixtures/health/metric_catalog.json` (`new`).
+
+- `HealthHourSum.readingEmptyWhenNoData`: `HKError.errorNoData` на пустом окне даёт `[]`, остальные ошибки идут дальше как `.readFailed`. Настоящий `HKStatisticsCollectionQueryDescriptor` двойником не подменить, поэтому тест гоняет обёртку с брошенной ошибкой.
+- `HealthSampleMapper()` и `HealthPump.deviceCalendar` берут `autoupdatingCurrent`. Тесты различают его с `.current`.
+- `HealthStoreQuerying: Sendable`; `FakeHealthStore` — `@unchecked Sendable` с обоснованием.
+- Текст `.skipped` не обещает, что повторное нажатие поможет: тот же исход получает и iPad.
+- Тест маппера читает `metric_catalog.json` по `#filePath`; бэкенд-тест держит файл равным `SEED_METRICS`. Если iOS-тест запустят вне дерева репозитория, он упадёт на чтении файла, а не пройдёт молча.

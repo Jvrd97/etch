@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet
 import HealthKit
 import XCTest
@@ -213,7 +213,7 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(api.posted[0], api.posted[1])
     }
 
-    func testPhoneAndWatchCountingTheSameStepsSendHealthKitsSumOnce() async {
+    func testStepsGoOnlyThroughHourlySumsAsOneRecordEvenWhenPhoneAndWatchBothCounted() async {
         // Both devices recorded the same 1000 steps; HealthKit's statistics keep one
         // source per moment by priority, as the Health app does. Raw samples are not read.
         store.samples[.stepCount] = [
@@ -284,6 +284,26 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertEqual(outcome, .failed(.healthDataUnavailable))
     }
 
+    func testNoDataErrorOnAnEmptyWindowIsAnEmptyListNotAReadFailure() async throws {
+        let hours = try await HealthHourSum.readingEmptyWhenNoData { throw HKError(.errorNoData) }
+
+        XCTAssertEqual(hours, [])
+    }
+
+    func testOtherReadErrorsStayReadFailures() async {
+        do {
+            _ = try await HealthHourSum.readingEmptyWhenNoData { throw HKError(.errorDatabaseInaccessible) }
+            XCTFail("a locked database is not an empty window")
+        } catch {
+            XCTAssertEqual((error as? HKError)?.code, .errorDatabaseInaccessible)
+        }
+    }
+
+    func testPumpFollowsTheDeviceZoneWithoutARestart() {
+        XCTAssertEqual(HealthPump.deviceCalendar, Calendar.autoupdatingCurrent)
+        XCTAssertNotEqual(HealthPump.deviceCalendar, Calendar.current)
+    }
+
     func testConcurrentCallersShareOneRun() async {
         fillWeek()
         store.suspendReads = true
@@ -301,7 +321,11 @@ final class HealthPumpTests: XCTestCase {
 // MARK: - Fakes
 
 /// Stands in for `HKHealthStore`: scripted availability, request status and samples.
-final class FakeHealthStore: HealthStoreQuerying {
+///
+/// `@unchecked Sendable`: the protocol is `Sendable` because the pump reads off the main
+/// actor. The fake is built and scripted before a run, mutated by one run at a time, and
+/// read by assertions after it ends; no test touches it from two tasks at once.
+final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var available = true
     var requestStatus: HKAuthorizationRequestStatus = .unnecessary
     var samples: [HKQuantityTypeIdentifier: [HKQuantitySample]] = [:]

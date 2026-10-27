@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (catalogue kinds, HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
 import HealthKit
 import XCTest
@@ -68,6 +68,36 @@ final class HealthSampleMappingTests: XCTestCase {
             HealthMetricCatalog.metrics.filter { $0.unit == "%" }.map(\.typeIdentifier),
             [.oxygenSaturation, .bodyFatPercentage]
         )
+    }
+
+    func testMapperFollowsTheDeviceZoneWithoutARestart() {
+        XCTAssertEqual(HealthSampleMapper().timeZone, TimeZone.autoupdatingCurrent)
+        XCTAssertNotEqual(HealthSampleMapper().timeZone, TimeZone.current)
+    }
+
+    /// Kinds and canonical units from `services/backend/tests/fixtures/health/metric_catalog.json`,
+    /// which `test_health_catalog_fixture.py` keeps equal to the server catalogue.
+    func testCatalogKindsAndUnitsMatchTheServerFixture() throws {
+        struct Row: Decodable {
+            let identifier: String
+            let kind: String
+            let canonicalUnit: String
+        }
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("services/backend/tests/fixtures/health/metric_catalog.json")
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let rows = try decoder.decode([Row].self, from: Data(contentsOf: url))
+
+        XCTAssertEqual(Set(rows.map(\.identifier)), Set(HealthMetricCatalog.metrics.map(\.identifier)))
+        for row in rows {
+            let metric = try XCTUnwrap(HealthMetricCatalog.metrics.first { $0.identifier == row.identifier })
+            XCTAssertEqual(metric.kind == .cumulative, row.kind == "cumulative", row.identifier)
+            // A percentage is read as HealthKit's fraction and labelled `fraction`; the server converts it.
+            let expectedWireUnit = row.canonicalUnit == "%" ? "fraction" : row.canonicalUnit
+            XCTAssertEqual(metric.wireUnit, expectedWireUnit, row.identifier)
+        }
     }
 
     func testPercentIsReadAsTheFractionHealthKitHoldsAndSentAsFraction() {

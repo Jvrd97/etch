@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233
+// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254
 // summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
 
 import HealthKit
@@ -74,17 +74,19 @@ final class HealthSyncViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.syncMessage, "Сервер недоступен. Данные остались в «Здоровье», повторите позже")
     }
 
-    func testButtonThatJoinedTheSkippedLaunchRunSaysWhatToDo() async {
+    func testButtonThatJoinedTheSkippedLaunchRunDoesNotPromiseAnotherPressHelps() async throws {
         let syncer = HealthSyncerSpy()
         syncer.outcome = .skipped
         let viewModel = HealthSyncViewModel(reader: HealthDataReaderSpy(), syncer: syncer)
 
         await viewModel.syncNow()
 
+        // The same outcome also reaches an iPad, where a second press changes nothing.
         XCTAssertEqual(
             viewModel.syncMessage,
-            "Отправка при запуске ничего не отправила: доступ к «Здоровью» ещё не запрошен. Нажмите ещё раз"
+            "Отправка при запуске ничего не отправила: на этом устройстве нет данных «Здоровья» или доступ к ним ещё не запрошен"
         )
+        XCTAssertFalse(try XCTUnwrap(viewModel.syncMessage).contains("ещё раз"))
     }
 
     func testFailedPermissionRequestIsNotCalledMissingData() async {

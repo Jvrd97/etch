@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples), packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, and on launch runs only when the permission sheet was already answered
 import Foundation
 import HealthKit
@@ -63,6 +63,8 @@ final class HealthPump: HealthSyncing {
     nonisolated static let maxAttempts = 3
     /// Up to 50 000 samples in one body: longer than the default request budget.
     nonisolated static let uploadTimeout: TimeInterval = 60
+    /// Local midnights follow the device zone live, so a flight across zones needs no restart.
+    nonisolated static let deviceCalendar: Calendar = .autoupdatingCurrent
     /// The n-th retry waits n steps.
     nonisolated static let retryDelayStep: Duration = .seconds(2)
 
@@ -91,8 +93,8 @@ final class HealthPump: HealthSyncing {
         store: HealthStoreQuerying,
         api: @escaping () -> HealthSamplesAPI?,
         metrics: [HealthMetricDefinition] = HealthPump.pumpedMetrics,
-        mapper: HealthSampleMapper = HealthSampleMapper(timeZone: .current),
-        calendar: Calendar = .current,
+        mapper: HealthSampleMapper = HealthSampleMapper(),
+        calendar: Calendar = HealthPump.deviceCalendar,
         now: @escaping () -> Date = Date.init,
         chunkLimit: Int = HealthPump.maxSamplesPerChunk,
         pause: @escaping (Int) async throws -> Void = { attempt in

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
 // summary: the one read-only seam over HKHealthStore (availability, request status, read request, samples of a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO
 import Foundation
 import HealthKit
@@ -10,12 +10,22 @@ struct HealthHourSum: Equatable {
     let start: Date
     let end: Date
     let sum: HKQuantity?
+
+    /// HealthKit answers a window with no data at all by throwing `.errorNoData`. That is
+    /// an empty week, not a failed read: other errors pass through.
+    static func readingEmptyWhenNoData(_ read: () async throws -> [HealthHourSum]) async throws -> [HealthHourSum] {
+        do {
+            return try await read()
+        } catch let error as HKError where error.code == .errorNoData {
+            return []
+        }
+    }
 }
 
 /// Everything the app reads from `HKHealthStore`, for the pump and the Health screen
 /// alike. Read-only by construction: no method takes a share set, so the app cannot
-/// ask to write health data. Tests use a fake.
-protocol HealthStoreQuerying {
+/// ask to write health data. Tests use a fake. `Sendable`: the pump reads it off the main actor.
+protocol HealthStoreQuerying: Sendable {
     var healthDataAvailable: Bool { get }
     /// `.unnecessary` once the person has answered the sheet for these types.
     func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus
@@ -62,14 +72,16 @@ extension HKHealthStore: HealthStoreQuerying {
             anchorDate: from,
             intervalComponents: DateComponents(hour: 1)
         )
-        let collection = try await descriptor.result(for: self)
-        var hours: [HealthHourSum] = []
-        collection.enumerateStatistics(from: from, to: to) { statistics, _ in
-            hours.append(HealthHourSum(
-                start: statistics.startDate, end: statistics.endDate, sum: statistics.sumQuantity()
-            ))
+        return try await HealthHourSum.readingEmptyWhenNoData {
+            let collection = try await descriptor.result(for: self)
+            var hours: [HealthHourSum] = []
+            collection.enumerateStatistics(from: from, to: to) { statistics, _ in
+                hours.append(HealthHourSum(
+                    start: statistics.startDate, end: statistics.endDate, sum: statistics.sumQuantity()
+                ))
+            }
+            return hours
         }
-        return hours
     }
 
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
@@ -88,8 +100,13 @@ extension HKHealthStore: HealthStoreQuerying {
 struct HealthSampleMapper {
     private static let secondsPerMinute = 60
 
-    /// The device zone; a sample that recorded its own zone (`HKMetadataKeyTimeZone`) wins.
+    /// The device zone, read live: a change of zone applies without restarting the app.
+    /// A sample that recorded its own zone (`HKMetadataKeyTimeZone`) wins.
     let timeZone: TimeZone
+
+    init(timeZone: TimeZone = .autoupdatingCurrent) {
+        self.timeZone = timeZone
+    }
 
     func dto(_ sample: HKQuantitySample, metric: HealthMetricDefinition) -> HealthSampleDTO {
         dto(
