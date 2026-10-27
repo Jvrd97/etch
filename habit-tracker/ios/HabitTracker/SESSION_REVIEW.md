@@ -683,3 +683,15 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **Ниты.** `waitUntil` вынесен в `TestWaiting.swift` и падает через `XCTFail` по таймауту. Новые тесты вписаны в строки summary.
 
 Мутации: откат флага прямой попытки, 502/504, повторной записи кэша в трёх моделях валит 7 тестов. Возврат «Дня» к поведению круга 2 (перечитывание сбрасывает поколение, сбой ставит ошибку) валит тест упавшего перечитывания.
+
+## 2026-10-27 — PHASE-03/240
+
+Экран «Добавки» (More → Добавки): список, добавление, «Принял» с работой без сети через общую очередь.
+
+Тронуто 18 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
+
+- **Очередь.** Новый случай `OutboxAction.markSupplementTaken` хранит id добавки и день нажатия, имени в нём нет (имя только в подписи `Принял: <имя>` для полосы «ждёт отправки»). Реплей идёт через `OutboxSupplementsAPI`; поле `OutboxReplay.supplements` необязательное, существующие вызовы не менялись. В `TodayViewModel` и `DayViewModel` добавлено только имя нового случая в два `switch`.
+- **День нажатия.** Прямое нажатие день не шлёт: решает сервер. Нажатие из очереди шлёт `intake_date` по часам телефона со сменой суток в 04:00 (`SupplementsFormat.dayStartHour`). Сервер сверяет его со своим днём и отвечает 409, если день сменился. Запись уходит в «Не отправлено» с кнопкой «Записать в сегодня» (`forcedRetry` убирает дату).
+- **Кэш списка** хранит день чтения: список из кэша за другой день не показывает «принято сегодня».
+- **Логи.** Ни один файл фичи не пишет в лог; тест `testNoSupplementSourceWritesToALog` сканирует исходники.
+- Не сделано: добавление без сети (нужен id с сервера), правка и архив добавок (тикет не просил), вёрстка на телефоне (#215).
