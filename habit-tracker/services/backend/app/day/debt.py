@@ -33,8 +33,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from app.core.humanize import hours_and_minutes
-
 __all__ = ["Debt", "accrue", "repay", "week_is_won", "week_verdict_line"]
 
 
@@ -106,6 +104,25 @@ def week_is_won(won_days: int, total_days: int, open_debt_minutes: int) -> bool:
     return total_days > 0 and won_days == total_days and open_debt_minutes == 0
 
 
+_MINUTES_PER_HOUR = 60
+
+
+def _minutes_for_screen(minutes: int) -> str:
+    """
+    Minutes as the web screen reads them: «0 мин», «30 мин», «1 ч 05 мин», «2 ч».
+
+    The same rules as `formatMinutes` in `frontend/lib/week-review.ts`: no hours
+    when there are none, no minutes when the hour is round, minutes padded to two.
+    """
+    total = max(0, minutes)
+    hours, rest = divmod(total, _MINUTES_PER_HOUR)
+    if hours == 0:
+        return f"{rest} мин"
+    if rest == 0:
+        return f"{hours} ч"
+    return f"{hours} ч {rest:02d} мин"
+
+
 def week_verdict_line(
     is_won: bool | None,
     won_days: int,
@@ -117,14 +134,14 @@ def week_verdict_line(
     """
     The verdict of a week as one sentence, with its rule and its numbers.
 
-    Written once for two readers: the screen (`as_hours=True`, «долг 1 ч 30 мин»)
+    Written once for two readers: the screen (`as_hours=True`, «долг 1 ч 30 мин», «долг 0 мин»)
     and the model prompt (`as_hours=False`, «долг 90 мин»). They differ in the
     debt and nowhere else. `is_won` comes from `week_is_won`; None is a week that
     is still running, whose verdict is not decided yet.
     """
     if is_won is None:
         return "Неделя выиграна: пока не решено, неделя идёт."
-    debt = hours_and_minutes(debt_minutes) if as_hours else f"{debt_minutes} мин"
+    debt = _minutes_for_screen(debt_minutes) if as_hours else f"{debt_minutes} мин"
     return (
         f"Неделя выиграна: {'да' if is_won else 'нет'} "
         f"(правило: выиграны все дни недели и нет долга за переработку; "

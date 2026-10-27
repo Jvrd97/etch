@@ -9,7 +9,7 @@ enum WeekFixtures {
       "window": {
         "iso_code": "2026-W35", "starts_on": "2026-08-24", "ends_on": "2026-08-30",
         "timezone": "Europe/Berlin", "day_start_hour": 4, "is_complete": true,
-        "counted_days": 7, "as_of": "2026-08-30",
+        "counted_days": 7, "today_counted": false, "as_of": "2026-08-30",
         "previous_iso_code": "2026-W34", "next_iso_code": "2026-W36", "compared_days": 7
       },
       "totals": {
@@ -25,6 +25,7 @@ enum WeekFixtures {
       "delta": {"won_days": 1, "tasks_done": 5, "plan_pct": 29, "work_minutes": 800, "role_minutes": 300},
       "debt_minutes": 0,
       "is_won": false,
+      "verdict_line": "Неделя выиграна: нет (правило: выиграны все дни недели и нет долга за переработку; выиграно 2 из 3 дней, долг 0 мин).",
       "days": [
         {"date": "2026-08-24", "weekday": 0, "counted": true, "verdict": "won", "tasks_done": 4, "tasks_total": 4, "plan_pct": 100, "work_minutes": null, "role_minutes": 0, "streak_after": null},
         {"date": "2026-08-25", "weekday": 1, "counted": true, "verdict": "lost", "tasks_done": 1, "tasks_total": 4, "plan_pct": 25, "work_minutes": null, "role_minutes": 0, "streak_after": null},
@@ -47,9 +48,9 @@ enum WeekFixtures {
         {"category_id": 9, "name": "Курение", "current_streak": 4, "relapses": 1}
       ],
       "health": [
-        {"key": "sleep", "name": "Сон", "unit": null, "available": false, "total": null, "avg_per_day": null, "days_with_data": 0, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, null]},
-        {"key": "steps", "name": "Шаги", "unit": "count", "available": true, "total": 12000, "avg_per_day": 6000, "days_with_data": 2, "previous_avg_per_day": 3000, "delta_avg_per_day": 3000, "daily": [8000, 4000, null, null, null, null, null]},
-        {"key": "workouts", "name": "Минуты тренировки", "unit": "min", "available": true, "total": 45, "avg_per_day": 45, "days_with_data": 1, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, 45]}
+        {"key": "sleep", "name": "Сон", "unit": null, "available": false, "total": null, "avg_per_day": null, "days_with_data": 0, "previous_days_with_data": 0, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, null]},
+        {"key": "steps", "name": "Шаги", "unit": "count", "available": true, "total": 12000, "avg_per_day": 6000, "days_with_data": 2, "previous_days_with_data": 1, "previous_avg_per_day": 3000, "delta_avg_per_day": 3000, "daily": [8000, 4000, null, null, null, null, null]},
+        {"key": "workouts", "name": "Минуты тренировки", "unit": "min", "available": true, "total": 45, "avg_per_day": 45, "days_with_data": 1, "previous_days_with_data": 0, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, 45]}
       ]
     }
     """

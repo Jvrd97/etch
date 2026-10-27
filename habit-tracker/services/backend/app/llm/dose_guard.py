@@ -45,7 +45,9 @@ _I_LETTERS = "иИ"
 _FRACTION_SLASH = "⁄"
 # «5000», «10 000», «1,5», «1/2», «1⁄2»; not a tail of a longer number, but a number
 # glued to the comma that follows a word («утром,400 мг») is still a number.
-_NUMBER = rf"(?<!\d)(?<!\d[.,])\d+(?: \d{{3}})*(?:[.,/{_FRACTION_SLASH}]\d+)?"
+# «10 000 000 000 000» is far more than any dose; the cap keeps a run of groups linear.
+_MAX_THOUSAND_GROUPS = 4
+_NUMBER = rf"(?<!\d)(?<!\d[.,])\d+(?: \d{{3}}){{0,{_MAX_THOUSAND_GROUPS}}}(?:[.,/{_FRACTION_SLASH}]\d+)?"
 # «5 тыс. МЕ», «5 тысяч единиц».
 _THOUSANDS = r"(?:\s*(?:тыс(?:\.|(?!\w))|тысяч\w*))?"
 
@@ -96,10 +98,12 @@ _DOSE = re.compile(
 
 
 _POINT_UNIT_TAIL = re.compile(r"ед(?:иниц\w*)?\.?$")
+_ON_BEFORE = re.compile(r"(?<!\w)на\s+$")
+_THOUSAND = re.compile(r"тыс")
 _PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
-# A clause ends at a sentence mark or a comma followed by a space, or at a dash.
-_CLAUSE_END = re.compile(r"[.!?;:]\s|,\s|\s[—–-]\s")
-_CLAUSE_LOOKBACK = 120
+# The sentence of the match: what follows the last sentence mark before it.
+_SENTENCE_END = re.compile(r"[.!?;:]\s")
+_SENTENCE_LOOKBACK = 120
 
 
 def _fold(text: str) -> str:
@@ -123,10 +127,16 @@ def names_a_dose(text: str) -> bool:
 
 
 def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
-    """«Пульс снизился на 4 единицы»: the unit «ед.» after pulse words of the same clause."""
-    if not _POINT_UNIT_TAIL.search(match.group()):
+    """
+    «Пульс снизился на 4 единицы»: «ед.» as a step of the pulse scale, not a dose.
+
+    Only a number that follows «на» directly, in a sentence that names the pulse,
+    and not a thousand («на 5 тыс. ед.» is a dose). Anything else next to a pulse —
+    «пульс в норме, 5000 ед», «при пульсе выше 100 принимай 5000 ед» — is a dose.
+    """
+    if not _POINT_UNIT_TAIL.search(match.group()) or _THOUSAND.search(match.group()):
         return False
-    clause = _CLAUSE_END.split(
-        folded[max(0, match.start() - _CLAUSE_LOOKBACK) : match.start()]
-    )[-1]
-    return _PULSE_WORDS.search(clause) is not None
+    before = folded[max(0, match.start() - _SENTENCE_LOOKBACK) : match.start()]
+    if not _ON_BEFORE.search(before):
+        return False
+    return _PULSE_WORDS.search(_SENTENCE_END.split(before)[-1]) is not None

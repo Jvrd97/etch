@@ -9,11 +9,15 @@ write) and what must pass (a net that trips on «в 3 местах» costs the p
 advice). Every case is a parameter, so a miss names the phrase.
 """
 
+import time
 import unicodedata
 
 import pytest
 
 from app.llm.dose_guard import names_a_dose
+
+# Linear in practice: 30 000 characters of groups took 1.4 s when it was quadratic.
+SLOW_INPUT_SECONDS = 0.5
 
 CAUGHT = [
     # units after a digit
@@ -214,6 +218,8 @@ PASSED = [
     "Пульс покоя ниже на две единицы.",
     "Пульс упал на 3 ед.",
     "Пульс покоя вырос на одну единицу, а шагов стало больше.",
+    "Пульс покоя 58 уд/мин — на 4 единицы ниже, чем неделей раньше.",
+    "Пульс покоя 58 уд/мин, на 4 ед. ниже, чем неделей раньше.",
 ]
 
 # Dose and a pulse in one text: only the unit after the pulse words is not a dose.
@@ -222,6 +228,16 @@ CAUGHT_NEXT_TO_A_PULSE = [
     "Пульс снизился, добавь 5000 единиц витамина D.",
     "Пульс 60, добавь пять тысяч единиц.",
     "Пульс снизился на 4 единицы. Добавь 5000 МЕ.",
+    # the pulse and the dose in one clause, with no «на» before the number
+    "При пульсе выше 100 принимай 5000 ед",
+    "Пульс в норме и 5000 ед витамина D хватит",
+    "Пульс в норме (5000 ед. витамина D хватит)",
+    "Пульс в норме,5000 ед",
+    "Сердцебиение частое 2000 ед",
+    "С пульсом всё в порядке 2000 ед д3 подойдёт",
+    # «на» does not make a thousand of units a point of the pulse
+    "Пульс снизился на 5 тыс. ед.",
+    "Пульс ниже, добавь на 5 тысяч единиц",
 ]
 
 
@@ -243,6 +259,12 @@ def test_a_text_without_digits_or_units_is_quick() -> None:
     """The net runs on every answer: a long text must not make it crawl."""
     assert not names_a_dose("слово " * 20_000)
     assert not names_a_dose("1 " * 20_000)
+
+
+def test_a_run_of_thousands_groups_does_not_make_the_net_quadratic() -> None:
+    started = time.perf_counter()
+    assert not names_a_dose("1" + " 000" * 6_000)
+    assert time.perf_counter() - started < SLOW_INPUT_SECONDS
 
 
 @pytest.mark.parametrize("text", CAUGHT_NEXT_TO_A_PULSE)
@@ -296,6 +318,7 @@ SHAPES = {
     "decomposed": lambda text: unicodedata.normalize("NFD", text),
     "capitalised": lambda text: text.capitalize(),
     "shouted": lambda text: text.upper(),
+    "no-break-space": lambda text: text.replace(" ", "\u00a0"),
 }
 
 

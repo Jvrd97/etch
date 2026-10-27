@@ -25,9 +25,9 @@ from app.core import daytime
 from app.crud import day as day_crud
 from app.crud import health as health_crud
 from app.crud import role as role_crud
+from app.day.debt import week_verdict_line
 from app.health.aggregate import HourBucket
 from app.llm.client import LLMClient, LLMError
-from app.day.debt import week_verdict_line
 from app.main import app
 from app.models import Category, Entry, EntryValue, Field
 from app.models.field import FieldType
@@ -865,10 +865,10 @@ async def test_the_word_average_is_said_once_per_health_line(
     assert line.count("средн") == 1
 
 
-async def test_the_verdict_line_for_the_screen_and_the_prompt_differ_only_in_the_debt(
+async def test_the_verdict_line_of_the_screen_is_the_sentence_the_model_retells(
     client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
 ) -> None:
-    """One sentence, written once: the screen reads the debt as hours, the model as minutes."""
+    """One sentence, written once; with nothing owed the screen and the model read it alike."""
     for offset in range(5):
         await close_day(
             db_session, MONDAY + timedelta(days=offset), "won", done=1, total=1
@@ -880,18 +880,19 @@ async def test_the_verdict_line_for_the_screen_and_the_prompt_differ_only_in_the
 
     assert body["verdict_line"] == (
         "Неделя выиграна: нет (правило: выиграны все дни недели и нет долга за "
-        "переработку; выиграно 5 из 6 дней, долг 0 ч 0 мин)."
+        "переработку; выиграно 5 из 6 дней, долг 0 мин)."
     )
-    prompt_line = body["verdict_line"].replace("долг 0 ч 0 мин", "долг 0 мин")
-    assert prompt_line in llm.prompts[0]
+    assert body["verdict_line"] in llm.prompts[0]
 
 
 @pytest.mark.parametrize(
     ("debt", "screen", "prompt"),
     [
+        (0, "долг 0 мин", "долг 0 мин"),
+        (30, "долг 30 мин", "долг 30 мин"),
+        (65, "долг 1 ч 05 мин", "долг 65 мин"),
         (90, "долг 1 ч 30 мин", "долг 90 мин"),
-        (45, "долг 0 ч 45 мин", "долг 45 мин"),
-        (120, "долг 2 ч 0 мин", "долг 120 мин"),
+        (120, "долг 2 ч", "долг 120 мин"),
     ],
 )
 def test_the_debt_is_hours_on_the_screen_and_minutes_in_the_prompt(
