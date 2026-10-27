@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/243
 // summary: a server-shaped answer of GET /week-review for a finished week (three judged days, two roles, one category, one avoid streak, sleep not connected) as JSON, with helpers to patch it into a running or an empty week
 import Foundation
 @testable import HabitTracker
@@ -62,13 +62,48 @@ enum WeekFixtures {
     }
 
     /// The running week: three of seven days counted, compared with the first three of the last week.
-    static func runningWeek() throws -> WeekReviewDTO {
+    /// `iso` moves the dates too, so a test can say which week "now" falls in.
+    static func runningWeek(iso: String = "2026-W35") throws -> WeekReviewDTO {
         try review { object in
             var window = object["window"] as? [String: Any] ?? [:]
+            window["iso_code"] = iso
+            setDates(of: &window, forIso: iso)
             window["is_complete"] = false
             window["counted_days"] = 3
             window["compared_days"] = 3
             window["as_of"] = "2026-08-26"
+            object["window"] = window
+            object["is_won"] = NSNull()
+        }
+    }
+
+    /// The week of Monday 24 August 2026 (`2026-W35`) shifted by whole weeks: its Monday and Sunday.
+    private static func setDates(of window: inout [String: Any], forIso iso: String) {
+        guard let number = Int(iso.suffix(2)) else { return }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let anchor = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24))!
+        let weeks = number - 35
+        window["starts_on"] = formatter.string(from: calendar.date(byAdding: .day, value: weeks * 7, to: anchor)!)
+        window["ends_on"] = formatter.string(from: calendar.date(byAdding: .day, value: weeks * 7 + 6, to: anchor)!)
+    }
+
+    /// A week with no counted day: the server gives it `counted_days = 0` and no «as of», whether the
+    /// week is still ahead or it is Monday and Monday is not closed yet. Only the calendar tells them apart.
+    static func unclosedWeek(iso: String) throws -> WeekReviewDTO {
+        try review { object in
+            var window = object["window"] as? [String: Any] ?? [:]
+            window["iso_code"] = iso
+            setDates(of: &window, forIso: iso)
+            window["is_complete"] = false
+            window["counted_days"] = 0
+            window["compared_days"] = 0
+            window["as_of"] = NSNull()
             object["window"] = window
             object["is_won"] = NSNull()
         }
@@ -102,6 +137,7 @@ enum WeekFixtures {
             window["iso_code"] = iso
             window["previous_iso_code"] = previous
             window["next_iso_code"] = next
+            setDates(of: &window, forIso: iso)
             object["window"] = window
         }
     }

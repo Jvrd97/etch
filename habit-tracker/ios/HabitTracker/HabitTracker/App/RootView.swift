@@ -1,6 +1,6 @@
-// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
+// [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
 // [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
-// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229)
+// summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229; the More stack hands its pushed screens a hold/release by token, so several instances of one screen cannot lift each other's block, #250)
 import SwiftUI
 
 /// The app's root: one `NavigationStack` per tab, screens never create their own.
@@ -35,7 +35,14 @@ struct RootView: View {
                 MoreList()
                     .navigationDestination(for: MoreDestination.self) { screen(for: $0) }
             }
-            .environment(\.moreLeaveBlocked, $navigation.moreLeaveBlocked)
+            .environment(
+                \.moreLeaveHold,
+                MoreLeaveHold(
+                    // Only a real change touches the state: a write that changes nothing still redraws the root.
+                    hold: { if !navigation.moreLeaveHolders.contains($0) { navigation.holdMoreLeave($0) } },
+                    release: { if navigation.moreLeaveHolders.contains($0) { navigation.releaseMoreLeave($0) } }
+                )
+            )
         }
     }
 

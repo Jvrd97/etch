@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/243
 // summary: Week screen (More → Неделя) — the numbers of a week against the previous one, best and worst day, health, and the AI text on a button; states: loading, error with retry (and a way back to the running week), empty week, unfinished week marked, last cached answer marked "обновлено …" offline; pull to refresh in place; no navigation stack of its own
 import SwiftUI
 
@@ -18,7 +18,7 @@ struct WeekView: View {
         content
             .navigationTitle(MoreDestination.week.title)
             .dsScreenBackground()
-            .task { await viewModel.load() }
+            .task { await viewModel.appear() }
     }
 
     @ViewBuilder

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230
-// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write (only a 400/422 proves nothing was written, a 401 changes nothing either way, a 409 ends the write as already applied); the day moved away from a plan drops the plan; closing the sheet over an unconfirmed write asks first; nothing reaches the server except the draft request until the person confirms; DailySummaryRetainer hands a model with an unconfirmed write to the next visit of the More screen
+// [review:need-review] PHASE-01/213, PHASE-03/227, PHASE-03/230, PHASE-03/250
+// summary: day-summary flow state — dictation into an editable text (stopped by a call, a route change or the background), the day being told (today by default, a new Idempotency-Key per day), a cancellable draft, per-row opt-in (doubtful rows start off), the day's journal text (append/create by default, replace only on request), one idempotent apply per plan whose plan is frozen after an unanswered write (only a 400/422 proves nothing was written, a 401 changes nothing either way, a 409 ends the write as already applied); the day moved away from a plan drops the plan; closing the sheet over an unconfirmed write asks first; nothing reaches the server except the draft request until the person confirms; DailySummaryRetainer hands a model with an unconfirmed write to the next visit of the More screen (it adopts the model the screen shows and lets it go after an ordinary exit); `mayHaveChangedTheDay` remembers that a write left the model, for whoever must read the day again
 import Foundation
 
 @MainActor
@@ -49,6 +49,10 @@ final class DailySummaryViewModel: ObservableObject {
     /// A write got no answer (timeout, dropped connection): it may have landed. The plan stays
     /// exactly as it was sent until a retry under the same key is answered.
     @Published private(set) var applyIsUnconfirmed = false
+
+    /// A write left this model at least once, whatever came back, and a reset does not forget it:
+    /// the day may hold something new. A sheet closed without it changed nothing and owes nobody a re-read.
+    private(set) var mayHaveChangedTheDay = false
 
     private let apiProvider: () -> DailySummaryAPI?
     private let speech: SpeechDictating
@@ -389,6 +393,7 @@ final class DailySummaryViewModel: ObservableObject {
             journal: journalToSend
         )
         applyState = .applying
+        mayHaveChangedTheDay = true
         do {
             _ = try await api.applyDailySummary(request, idempotencyKey: applyKey)
             applyIsUnconfirmed = false
@@ -487,7 +492,8 @@ final class DailySummaryViewModel: ObservableObject {
 
 /// Keeps the model of the More screen alive when the system pops the screen without asking (a second
 /// tap on the selected tab): a model that holds a write nobody answered is handed to the next visit,
-/// so the idempotency key survives. Nothing else is kept; the person's own leave calls `release()`.
+/// so the idempotency key survives. Only the model the screen really shows is kept — the screen adopts
+/// it when it appears — and it is let go after an ordinary exit; the person's own leave calls `release()`.
 @MainActor
 final class DailySummaryRetainer {
     private let make: @MainActor () -> DailySummaryViewModel
@@ -497,11 +503,22 @@ final class DailySummaryRetainer {
         self.make = make
     }
 
+    /// The model for a visit: the one with the unanswered write if there is one, otherwise a new one.
+    /// Nothing is stored here, so a model that is asked for and never shown is not mistaken for the shown one.
     func model() -> DailySummaryViewModel {
         if let held, held.closeNeedsConfirmation { return held }
-        let fresh = make()
-        held = fresh
-        return fresh
+        held = nil
+        return make()
+    }
+
+    /// The screen shows `model`: it is the one to keep if the screen is taken away.
+    func adopt(_ model: DailySummaryViewModel) {
+        held = model
+    }
+
+    /// The screen went away. A model with nothing to lose goes with it; one with an unanswered write waits for the next visit.
+    func screenLeft(_ model: DailySummaryViewModel) {
+        if held === model, !model.closeNeedsConfirmation { held = nil }
     }
 
     func release() {
