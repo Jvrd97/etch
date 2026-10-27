@@ -1,45 +1,220 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208
-// summary: offline outbox for POST /entries — PendingEntry model + OutboxStore (in-memory + SwiftData), OutboxQueue that enqueues on connectivity failure and flushes in order (delete-after-success; replays carry PendingEntry.id as Idempotency-Key so a lost-ack retry returns the original entry, not a duplicate), and an NWPathMonitor-backed auto-flush wiring
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225
+// summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
+import Combine
 import Foundation
 import Network
 import SwiftData
 import os
 
-/// Lifecycle of a queued create. `pending` entries are (re)tried on every flush;
-/// `failed` ones exceeded the retry budget on a non-connectivity error (e.g. a
-/// rejected payload) and are kept for visibility rather than retried forever.
+/// Lifecycle of a queued write: `pending` is sent on every flush, `failed` waits in the
+/// "not sent" list for the person to retry or discard it.
 enum PendingStatus: String, Codable {
     case pending
     case failed
 }
 
-/// One queued `POST /entries` operation. The payload is the exact create request that
-/// failed to reach the server; `createdAt` fixes flush order, `attempts` counts tries.
-struct PendingEntry: Identifiable, Equatable {
+/// One write the queue can replay. Case names and fields are stored on disk: never rename them.
+enum OutboxAction: Codable, Equatable {
+    case createEntry(EntryCreateDTO)
+    case upsertChecklist(ChecklistUpsertDTO)
+    case tapQuickMark(QueuedTap)
+    case setDayMark(QueuedDayMark)
+    case recordPlanFact(QueuedPlanFact)
+    case saveNotebook(QueuedNotebook)
+
+    /// The object written. Writes of one object replay in the order they were made.
+    var target: String {
+        switch self {
+        case .createEntry(let entry): return "entry:\(entry.categoryId):\(entry.entryDate)"
+        case .upsertChecklist(let list): return "checklist:\(list.categoryId):\(list.entryDate)"
+        case .tapQuickMark(let tap): return "quick-mark:\(tap.quickMarkId)"
+        case .setDayMark(let mark): return "mark:\(mark.date):\(mark.itemID.uuidString)"
+        case .recordPlanFact(let fact): return "fact:\(fact.date):\(fact.itemID.uuidString)"
+        case .saveNotebook(let notebook): return "notebook:\(notebook.date)"
+        }
+    }
+
+    /// The day the action belongs to, `yyyy-MM-dd`; nil when the server's today decides.
+    var day: String? {
+        switch self {
+        case .createEntry(let entry): return entry.entryDate
+        case .upsertChecklist(let list): return list.entryDate
+        case .tapQuickMark(let tap): return tap.serverDay
+        case .setDayMark(let mark): return mark.date
+        case .recordPlanFact(let fact): return fact.date
+        case .saveNotebook(let notebook): return notebook.date
+        }
+    }
+
+    /// A write of the whole state of its object: a newer one makes a waiting older one pointless.
+    /// Additions (an entry, a press, a fact) are never merged — two presses are two presses.
+    var replacesOlderOfSameTarget: Bool {
+        switch self {
+        case .upsertChecklist, .setDayMark, .saveNotebook: return true
+        case .createEntry, .tapQuickMark, .recordPlanFact: return false
+        }
+    }
+
+    /// This write taking the place of a waiting `older` one: it keeps the server state the first
+    /// of them was made over, because that is what the server still holds.
+    func replacing(_ older: OutboxAction) -> OutboxAction {
+        switch (self, older) {
+        case (.setDayMark(var mark), .setDayMark(let earlier)):
+            mark.expected = earlier.expected
+            return .setDayMark(mark)
+        case (.saveNotebook(var notebook), .saveNotebook(let earlier)):
+            notebook.expected = earlier.expected
+            return .saveNotebook(notebook)
+        default:
+            return self
+        }
+    }
+
+    /// The write as the person asked to send it again from the "not sent" list: without the check
+    /// that refused it (the day of a press, the server state a mark or notebook was made over).
+    func forcedRetry() -> OutboxAction {
+        switch self {
+        case .tapQuickMark(var tap):
+            tap.serverDay = nil
+            return .tapQuickMark(tap)
+        case .setDayMark(var mark):
+            mark.expected = nil
+            return .setDayMark(mark)
+        case .saveNotebook(var notebook):
+            notebook.expected = nil
+            return .saveNotebook(notebook)
+        case .createEntry, .upsertChecklist, .recordPlanFact:
+            return self
+        }
+    }
+}
+
+/// A quick-mark press. `serverDay` is the server's day as the button list last said; a replay sends
+/// it as `entry_date`, so a press made before midnight is refused (409) instead of written into the
+/// next day. Nil sends the press to the server's current day.
+struct QueuedTap: Codable, Equatable {
+    let quickMarkId: Int
+    let categoryId: Int
+    let utcOffsetMinutes: Int
+    var serverDay: String?
+}
+
+/// A plan mark. `expected` is the state the person changed (`""` — no mark); a server holding
+/// another one by replay time was changed elsewhere. Nil sends without the check.
+struct QueuedDayMark: Codable, Equatable {
+    let date: String
+    let itemID: UUID
+    let state: String?
+    let note: String?
+    var expected: String?
+}
+
+/// A new fact of a plan line, sent under the key of the attempt that failed.
+struct QueuedPlanFact: Codable, Equatable {
+    let date: String
+    let itemID: UUID
+    let values: [Value]
+    let mark: String?
+
+    struct Value: Codable, Equatable {
+        let fieldId: Int
+        let number: Double?
+        let flag: Bool?
+        let unit: String?
+    }
+
+    init(date: String, itemID: UUID, body: PlanFactRequestDTO) {
+        self.date = date
+        self.itemID = itemID
+        self.mark = body.mark
+        self.values = body.values.map { value in
+            switch value.value {
+            case .number(let number): return Value(fieldId: value.fieldId, number: number, flag: nil, unit: value.unit)
+            case .flag(let flag): return Value(fieldId: value.fieldId, number: nil, flag: flag, unit: value.unit)
+            }
+        }
+    }
+
+    var body: PlanFactRequestDTO {
+        PlanFactRequestDTO(
+            values: values.map { value in
+                PlanFactValueRequestDTO(
+                    fieldId: value.fieldId,
+                    value: value.flag.map(PlanFactValue.flag) ?? .number(value.number ?? 0),
+                    unit: value.unit
+                )
+            },
+            mark: mark
+        )
+    }
+}
+
+/// The notebook of a day. `expected` is the server text it was typed over; nil sends without the check.
+struct QueuedNotebook: Codable, Equatable {
+    let date: String
+    let content: String
+    var expected: String?
+}
+
+/// Why a write sits in the "not sent" list; decides what a retry from the list does. Stored on disk.
+enum OutboxFailureKind: String, Codable {
+    /// The server said no for good (4xx); a retry sends the same write again.
+    case refused
+    /// The server failed `OutboxQueue.maxServerErrorAttempts` times in a row (5xx).
+    case serverErrors
+    /// A press carrying its day was refused with 409: the day turned (or the button is off).
+    case dayTurned
+    /// The replay check found the object changed on the server, or could not read it.
+    case changedOnServer
+}
+
+/// One queued write. `key` is the Idempotency-Key of every attempt, the failed direct one included,
+/// so a request that reached the server and lost its answer is not recorded twice.
+struct OutboxWrite: Identifiable, Equatable {
+    static let retryTitle = "Повторить"
+    static let retryTodayTitle = "Записать в сегодня"
+    static let retryOverwriteTitle = "Записать поверх"
+
     let id: UUID
-    let payload: EntryCreateDTO
-    let createdAt: Date
-    var attempts: Int
+    let key: String
+    var action: OutboxAction
+    /// What the person did, in words, for the list of waiting writes.
+    let label: String
+    var createdAt: Date
+    /// 5xx answers in a row; a dead network in between starts the count again.
+    var serverErrors: Int
     var status: PendingStatus
+    /// Why the write is in the "not sent" list, in words, and what kind of reason it is.
+    var failure: String?
+    var failureKind: OutboxFailureKind?
+
+    /// The retry button of the "not sent" list says what a retry will do.
+    var retryTitle: String {
+        switch failureKind {
+        case .dayTurned: return Self.retryTodayTitle
+        case .changedOnServer: return Self.retryOverwriteTitle
+        case .refused, .serverErrors, nil: return Self.retryTitle
+        }
+    }
 }
 
-/// The network operation the queue replays. `APIClient` conforms via its existing
-/// `createEntry`; tests substitute a scriptable poster. The `idempotencyKey` is the
-/// stable `PendingEntry.id`, so a replay of the same queued create always carries the
-/// same key and the server collapses the duplicate instead of inserting a second row.
-protocol OutboxPosting {
-    func createEntry(_ entry: EntryCreateDTO, idempotencyKey: String?) async throws -> EntryDTO
+/// The replay refused a write before sending it: the object moved on the server since it was made,
+/// or the check could not read the server's state.
+struct OutboxConflict: Error, Equatable {
+    let reason: String
 }
 
-extension APIClient: OutboxPosting {}
+/// The network side of the queue. `OutboxReplay` is the production implementation.
+protocol OutboxSending {
+    func send(_ action: OutboxAction, idempotencyKey: String) async throws
+}
 
-/// Durable list of pending creates behind `OutboxQueue`. Kept intentionally small —
-/// append, read-all (oldest first), update one, delete one — so the queue owns all policy.
+/// Durable list behind `OutboxQueue`. Kept small — the queue owns all policy.
 protocol OutboxStore: AnyObject {
-    func append(_ entry: PendingEntry)
-    /// Every stored entry, oldest `createdAt` first (ties broken by insertion order).
-    func fetchAll() -> [PendingEntry]
-    func update(_ entry: PendingEntry)
+    func append(_ write: OutboxWrite)
+    /// Every stored write, oldest `createdAt` first (ties broken by insertion order).
+    func fetchAll() -> [OutboxWrite]
+    func update(_ write: OutboxWrite)
     func delete(id: UUID)
 }
 
@@ -47,27 +222,27 @@ protocol OutboxStore: AnyObject {
 final class InMemoryOutboxStore: OutboxStore {
     private struct Slot {
         let sequence: Int
-        var entry: PendingEntry
+        var write: OutboxWrite
     }
 
     private var slots: [UUID: Slot] = [:]
     private var nextSequence = 0
 
-    func append(_ entry: PendingEntry) {
-        slots[entry.id] = Slot(sequence: nextSequence, entry: entry)
+    func append(_ write: OutboxWrite) {
+        slots[write.id] = Slot(sequence: nextSequence, write: write)
         nextSequence += 1
     }
 
-    func fetchAll() -> [PendingEntry] {
+    func fetchAll() -> [OutboxWrite] {
         slots.values
-            .sorted { ($0.entry.createdAt, $0.sequence) < ($1.entry.createdAt, $1.sequence) }
-            .map(\.entry)
+            .sorted { ($0.write.createdAt, $0.sequence) < ($1.write.createdAt, $1.sequence) }
+            .map(\.write)
     }
 
-    func update(_ entry: PendingEntry) {
-        guard var slot = slots[entry.id] else { return }
-        slot.entry = entry
-        slots[entry.id] = slot
+    func update(_ write: OutboxWrite) {
+        guard var slot = slots[write.id] else { return }
+        slot.write = write
+        slots[write.id] = slot
     }
 
     func delete(id: UUID) {
@@ -75,90 +250,87 @@ final class InMemoryOutboxStore: OutboxStore {
     }
 }
 
-/// One queued create as SwiftData persists it: the create payload is stored encoded
-/// (the DTO's native casing — it never crosses the wire from here) plus the metadata.
+/// One queued write as SwiftData persists it; the action is stored encoded.
 @Model
-final class PendingEntryRecord {
+final class PendingWriteRecord {
     @Attribute(.unique) var id: UUID
-    var payload: Data
+    var key: String
+    var action: Data
+    var label: String
     var createdAt: Date
-    var attempts: Int
+    var serverErrors: Int = 0
     var statusRaw: String
+    var failure: String?
+    var failureKindRaw: String?
 
-    init(id: UUID, payload: Data, createdAt: Date, attempts: Int, statusRaw: String) {
-        self.id = id
-        self.payload = payload
-        self.createdAt = createdAt
-        self.attempts = attempts
-        self.statusRaw = statusRaw
+    init(write: OutboxWrite, action: Data) {
+        self.id = write.id
+        self.key = write.key
+        self.action = action
+        self.label = write.label
+        self.createdAt = write.createdAt
+        self.serverErrors = write.serverErrors
+        self.statusRaw = write.status.rawValue
+        self.failure = write.failure
+        self.failureKindRaw = write.failureKind?.rawValue
     }
 }
 
-/// Durable `OutboxStore` on top of SwiftData. Survives relaunch so a create made in
-/// airplane mode is still queued after the app is killed and reopened.
+/// Durable `OutboxStore` on SwiftData, in a file of its own: a write made in airplane mode is still
+/// queued after the app is killed, and no schema change of the read cache can touch it.
 final class SwiftDataOutboxStore: OutboxStore {
     private let context: ModelContext
 
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "SwiftDataOutboxStore"
-    )
+    private static let logger = Logger(subsystem: "com.habittracker.app", category: "SwiftDataOutboxStore")
 
     init(context: ModelContext) {
         self.context = context
     }
 
-    /// Builds the store over its own container. `inMemory` yields an ephemeral store
-    /// (used by tests); the default is the app's on-disk outbox database.
-    convenience init(inMemory: Bool = false) throws {
-        let configuration = ModelConfiguration(isStoredInMemoryOnly: inMemory)
+    convenience init(url: URL) throws {
         let container = try ModelContainer(
-            for: PendingEntryRecord.self, configurations: configuration
+            for: PendingWriteRecord.self, configurations: ModelConfiguration(url: url)
         )
         self.init(context: ModelContext(container))
     }
 
-    func append(_ entry: PendingEntry) {
-        let payload: Data
+    func append(_ write: OutboxWrite) {
+        let action: Data
         do {
-            payload = try CacheCoding.encoder().encode(entry.payload)
+            action = try CacheCoding.encoder().encode(write.action)
         } catch {
-            // Encoding a create payload must never silently drop it — that breaks the
-            // "never lose 42 pushups" guarantee. Log (no payload/PII) and bail loudly.
-            Self.logger.error("Outbox append: payload encode failed: \(String(describing: error))")
+            // Never silently: a write that cannot be stored is a lost write. No contents in the log.
+            Self.logger.error("Outbox append: action encode failed: \(String(describing: error))")
             return
         }
-        context.insert(
-            PendingEntryRecord(
-                id: entry.id,
-                payload: payload,
-                createdAt: entry.createdAt,
-                attempts: entry.attempts,
-                statusRaw: entry.status.rawValue
-            )
-        )
+        context.insert(PendingWriteRecord(write: write, action: action))
         persist()
     }
 
-    func fetchAll() -> [PendingEntry] {
-        let descriptor = FetchDescriptor<PendingEntryRecord>(
-            sortBy: [SortDescriptor(\.createdAt, order: .forward)]
-        )
-        let records: [PendingEntryRecord]
+    func fetchAll() -> [OutboxWrite] {
+        let descriptor = FetchDescriptor<PendingWriteRecord>(sortBy: [SortDescriptor(\.createdAt, order: .forward)])
         do {
-            records = try context.fetch(descriptor)
+            return try context.fetch(descriptor).compactMap(Self.toDomain)
         } catch {
-            // A failed fetch would silently hide queued creates from every flush —
-            // log it (no payload/PII) rather than pretending the queue is empty.
+            // A failed fetch would hide every queued write from the flush — say so.
             Self.logger.error("Outbox fetchAll failed: \(String(describing: error))")
             return []
         }
-        return records.compactMap(Self.toDomain)
     }
 
-    func update(_ entry: PendingEntry) {
-        guard let record = fetchRecord(id: entry.id) else { return }
-        record.attempts = entry.attempts
-        record.statusRaw = entry.status.rawValue
+    func update(_ write: OutboxWrite) {
+        guard let record = fetchRecord(id: write.id) else { return }
+        do {
+            record.action = try CacheCoding.encoder().encode(write.action)
+        } catch {
+            Self.logger.error("Outbox update: action encode failed: \(String(describing: error))")
+            return
+        }
+        record.createdAt = write.createdAt
+        record.serverErrors = write.serverErrors
+        record.statusRaw = write.status.rawValue
+        record.failure = write.failure
+        record.failureKindRaw = write.failureKind?.rawValue
         persist()
     }
 
@@ -168,41 +340,38 @@ final class SwiftDataOutboxStore: OutboxStore {
         persist()
     }
 
-    private func fetchRecord(id: UUID) -> PendingEntryRecord? {
-        let descriptor = FetchDescriptor<PendingEntryRecord>(
-            predicate: #Predicate { $0.id == id }
-        )
-        return try? context.fetch(descriptor).first
+    private func fetchRecord(id: UUID) -> PendingWriteRecord? {
+        let descriptor = FetchDescriptor<PendingWriteRecord>(predicate: #Predicate { $0.id == id })
+        do {
+            return try context.fetch(descriptor).first
+        } catch {
+            Self.logger.error("Outbox fetchRecord failed: \(String(describing: error))")
+            return nil
+        }
     }
 
     private func persist() {
         do {
             try context.save()
         } catch {
-            // A queue write failure must not crash a background flush or a user's save;
-            // log (no payload contents) and move on.
+            // A queue write failure must not crash a background flush or a save; logged without contents.
             Self.logger.error("Outbox persist failed: \(String(describing: error))")
         }
     }
 
-    private static func toDomain(_ record: PendingEntryRecord) -> PendingEntry? {
-        let payload: EntryCreateDTO
+    private static func toDomain(_ record: PendingWriteRecord) -> OutboxWrite? {
+        let action: OutboxAction
         do {
-            payload = try CacheCoding.decoder().decode(
-                EntryCreateDTO.self, from: record.payload
-            )
+            action = try CacheCoding.decoder().decode(OutboxAction.self, from: record.action)
         } catch {
-            // A record whose payload no longer decodes is a lost create — surface it in
-            // the log (no payload/PII) instead of quietly skipping it during a flush.
-            logger.error("Outbox toDomain: payload decode failed: \(String(describing: error))")
+            // A record that no longer decodes is a lost write: say so in the log (no contents).
+            logger.error("Outbox toDomain: action decode failed: \(String(describing: error))")
             return nil
         }
-        return PendingEntry(
-            id: record.id,
-            payload: payload,
-            createdAt: record.createdAt,
-            attempts: record.attempts,
-            status: PendingStatus(rawValue: record.statusRaw) ?? .pending
+        return OutboxWrite(
+            id: record.id, key: record.key, action: action, label: record.label, createdAt: record.createdAt,
+            serverErrors: record.serverErrors, status: PendingStatus(rawValue: record.statusRaw) ?? .pending,
+            failure: record.failure, failureKind: record.failureKindRaw.flatMap(OutboxFailureKind.init(rawValue:))
         )
     }
 }
@@ -216,122 +385,229 @@ protocol NetworkPathMonitoring: AnyObject {
     func start()
 }
 
-/// The offline outbox for `POST /entries`. A create that fails on a connectivity error
-/// is enqueued instead of lost; `flush` replays queued creates in order, deleting each
-/// only after the server accepts it — so a create is never dropped, and never sent twice.
-/// For creates that originate in the outbox, the lost-ack window (server accepted the
-/// create but the ack was lost, or the app crashed before the delete) does not produce a
-/// duplicate: every replay carries the same stable `PendingEntry.id` as the
-/// `Idempotency-Key`, so the server returns the original entry instead of inserting a
-/// second row. This guarantee is scoped to the replay path only. A direct online create
-/// (`TodayViewModel`/`CategoryDetailViewModel`) sends no key; if its ack is lost and the
-/// payload is then enqueued, the new `PendingEntry.id` is a fresh key the server has not
-/// seen, so that replay can still insert a duplicate of the online create.
+/// The offline write queue. A write that cannot reach the server is kept here instead of lost;
+/// `flush` replays the queue oldest first and deletes a write only once the server took it.
+///
+/// - A dead network, a wrong API key (401), 408/429 and a 5xx stop the flush: nothing overtakes the
+///   write that failed, so the writes of one object reach the server in the order they were made.
+///   A 5xx that repeats `maxServerErrorAttempts` times in a row moves the write to "not sent" —
+///   never deleted. A 2xx whose body this app cannot read counts as delivered.
+/// - Any other 4xx and a replay check that refuses (`OutboxConflict`) move the write to "not sent"
+///   with the reason; the writes behind it go on.
+/// - Every attempt carries the write's `key`, so a send cut mid-way is the same write on the server.
 @MainActor
 final class OutboxQueue: ObservableObject {
-    /// After this many non-connectivity failures a create is parked as `.failed` rather
-    /// than retried forever (a rejected payload will never succeed on replay).
-    static let maxAttempts = 5
+    static let maxServerErrorAttempts = 5
+    nonisolated static let dayTurnedReason =
+        "Сервер не принял отметку (409): день уже сменился, а задним числом отметки не пишутся, или кнопка выключена."
+    nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
+    nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
+    nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
+    nonisolated static let checkFailedReason =
+        "Не удалось сверить с сервером, что там сейчас: ответ на проверку не прочитан. Запись не отправлена."
+
+    /// Every write, oldest first: waiting ones and the "not sent" list.
+    @Published private(set) var writes: [OutboxWrite] = []
+    /// The last flush stopped on a refused API key (401): the queue waits for Settings, not for the network.
+    @Published private(set) var waitsForKey = false
+    /// The writes a flush delivered; announced only when there is at least one.
+    let delivered = PassthroughSubject<[OutboxWrite], Never>()
 
     private let store: OutboxStore
     private let now: () -> Date
+    private let senderProvider: () -> OutboxSending?
     private var isFlushing = false
+    private var inFlightID: UUID?
     private var monitor: NetworkPathMonitoring?
-    private var posterProvider: (() -> OutboxPosting?)?
 
-    /// Number of creates still waiting to be sent — drives the "N ждут отправки" badge.
-    @Published private(set) var pendingCount: Int = 0
-
-    init(store: OutboxStore, now: @escaping () -> Date = Date.init) {
+    /// `sender` is resolved per flush, so a new server address or key applies without a restart.
+    init(store: OutboxStore, now: @escaping () -> Date = Date.init, sender: @escaping () -> OutboxSending? = { nil }) {
         self.store = store
         self.now = now
-        refreshCount()
+        self.senderProvider = sender
+        reload()
     }
 
-    /// Every queued create, oldest first.
-    var pending: [PendingEntry] {
-        store.fetchAll()
+    var pending: [OutboxWrite] { writes.filter { $0.status == .pending } }
+    var failed: [OutboxWrite] { writes.filter { $0.status == .failed } }
+    var pendingCount: Int { pending.count }
+    var failedCount: Int { failed.count }
+
+    /// Whether a write of `action`'s object still waits. A direct write of that object would overtake
+    /// it, and the older one would then land over the newer: such a write goes through the queue.
+    func hasPending(sameTargetAs action: OutboxAction) -> Bool {
+        pending.contains { $0.action.target == action.target }
     }
 
-    /// Queues a create that could not be sent now. Called by the Today screen when a
-    /// POST fails with a connectivity error, so "42 pushups" survives airplane mode.
-    func enqueue(_ payload: EntryCreateDTO) {
-        store.append(
-            PendingEntry(
-                id: UUID(),
-                payload: payload,
-                createdAt: now(),
-                attempts: 0,
-                status: .pending
-            )
-        )
-        refreshCount()
-    }
-
-    /// Replays every pending create in order. Stops at the first connectivity error
-    /// (the network is down — the rest wait for the next trigger, preserving order);
-    /// a non-connectivity error increments attempts and, past `maxAttempts`, parks the
-    /// create as `.failed` so a bad payload never blocks good ones behind it. Each
-    /// accepted create is deleted immediately; a replay after a lost ack or a
-    /// crash-before-delete reuses the same stable `PendingEntry.id` as the
-    /// `Idempotency-Key`, so re-sending a queued create returns the original entry instead
-    /// of creating a duplicate. (This covers only creates that were queued; a lost-ack on a
-    /// direct online create that is later enqueued gets a fresh key — see the type doc
-    /// above.) Concurrent flushes are coalesced via `isFlushing`.
-    @discardableResult
-    func flush(using poster: OutboxPosting) async -> [EntryDTO] {
-        guard !isFlushing else { return [] }
-        isFlushing = true
-        defer { isFlushing = false }
-
-        var saved: [EntryDTO] = []
-        for entry in store.fetchAll() where entry.status == .pending {
-            do {
-                let result = try await poster.createEntry(
-                    entry.payload, idempotencyKey: entry.id.uuidString
-                )
-                store.delete(id: entry.id)
-                saved.append(result)
-            } catch let error as APIClientError where error.isConnectivity {
-                var retried = entry
-                retried.attempts += 1
-                store.update(retried)
-                break
-            } catch {
-                var retried = entry
-                retried.attempts += 1
-                if retried.attempts >= Self.maxAttempts {
-                    retried.status = .failed
-                }
-                store.update(retried)
+    /// Queues a write that could not be sent now. `key` is the key of the attempt that failed.
+    /// A whole-state write replaces a waiting one of the same object (unless that one is in flight).
+    func enqueue(_ action: OutboxAction, key: String = UUID().uuidString, label: String) {
+        var action = action
+        if action.replacesOlderOfSameTarget {
+            for older in pending where older.action.target == action.target && older.id != inFlightID {
+                action = action.replacing(older.action)
+                store.delete(id: older.id)
             }
         }
-        refreshCount()
-        return saved
+        append(action, key: key, label: label, createdAt: now())
     }
 
-    /// Begins auto-flushing: subscribes to the monitor so every reconnect (and the
-    /// monitor's initial satisfied report at launch) drains the queue against a freshly
-    /// resolved API. The provider is re-evaluated per flush so a Settings change to the
-    /// server address or key takes effect without an app restart.
-    func startAutoFlush(
-        monitor: NetworkPathMonitoring, posterProvider: @escaping () -> OutboxPosting?
-    ) {
+    /// Puts back a write carried over from an older queue, with its own key and time.
+    func restore(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
+        append(action, key: key, label: label, createdAt: createdAt)
+    }
+
+    private func append(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
+        store.append(
+            OutboxWrite(
+                id: UUID(), key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
+                status: .pending, failure: nil, failureKind: nil
+            )
+        )
+        reload()
+    }
+
+    /// Sends a "not sent" write again at once, as the newest action and without the check that refused
+    /// it. The key stays: the server has not recorded it, or a repeat of it is the same write.
+    func retry(id: UUID) async {
+        guard var write = writes.first(where: { $0.id == id && $0.status == .failed }) else { return }
+        write.action = write.action.forcedRetry()
+        write.status = .pending
+        write.failure = nil
+        write.failureKind = nil
+        write.serverErrors = 0
+        write.createdAt = now()
+        store.update(write)
+        reload()
+        await flush()
+    }
+
+    func discard(id: UUID) {
+        store.delete(id: id)
+        reload()
+    }
+
+    /// Flushes with the sender of the current settings; nothing to do without one.
+    func flush() async {
+        guard !pending.isEmpty, let sender = senderProvider() else { return }
+        await flush(using: sender)
+    }
+
+    /// Replays the waiting writes oldest first. A write queued during the flush is picked up by it;
+    /// one replaced while waiting is not sent. Concurrent flushes are coalesced.
+    func flush(using sender: OutboxSending) async {
+        guard !isFlushing else { return }
+        isFlushing = true
+        defer {
+            isFlushing = false
+            inFlightID = nil
+        }
+        var tried: Set<UUID> = []
+        var sent: [OutboxWrite] = []
+        while let write = store.fetchAll().first(where: { $0.status == .pending && !tried.contains($0.id) }) {
+            tried.insert(write.id)
+            inFlightID = write.id
+            do {
+                try await sender.send(write.action, idempotencyKey: write.key)
+                store.delete(id: write.id)
+                sent.append(write)
+                waitsForKey = false
+            } catch {
+                if !settle(write, after: error) { break }
+            }
+        }
+        reload()
+        if !sent.isEmpty { delivered.send(sent) }
+    }
+
+    /// Starts flushing on every reconnect (and on the monitor's first report at launch).
+    func startAutoFlush(monitor: NetworkPathMonitoring) {
         self.monitor = monitor
-        self.posterProvider = posterProvider
         monitor.onBecameOnline { [weak self] in
-            await self?.flushWithResolvedPoster()
+            await self?.flush()
         }
         monitor.start()
     }
 
-    private func flushWithResolvedPoster() async {
-        guard let poster = posterProvider?() else { return }
-        await flush(using: poster)
+    /// Records the failure of `write`. Returns true when the flush may go on to the next write.
+    private func settle(_ write: OutboxWrite, after error: Error) -> Bool {
+        var settled = write
+        switch Self.outcome(of: error, for: write.action) {
+        case .waitForNetwork:
+            settled.serverErrors = 0
+            store.update(settled)
+            return false
+        case .waitForKey:
+            waitsForKey = true
+            settled.serverErrors = 0
+            store.update(settled)
+            return false
+        case .serverError(let status):
+            settled.serverErrors += 1
+            if settled.serverErrors >= Self.maxServerErrorAttempts {
+                settled.status = .failed
+                settled.failure = "Сервер \(settled.serverErrors) раз подряд ответил ошибкой \(status)."
+                settled.failureKind = .serverErrors
+                store.update(settled)
+                return true
+            }
+            store.update(settled)
+            return false
+        case .refused(let reason, let kind):
+            settled.status = .failed
+            settled.failure = reason
+            settled.failureKind = kind
+            store.update(settled)
+            return true
+        case .delivered:
+            store.delete(id: write.id)
+            return true
+        }
     }
 
-    private func refreshCount() {
-        pendingCount = store.fetchAll().filter { $0.status == .pending }.count
+    private enum Outcome {
+        case waitForNetwork
+        case waitForKey
+        case serverError(Int)
+        case refused(String, OutboxFailureKind)
+        case delivered
+    }
+
+    private static func outcome(of error: Error, for action: OutboxAction) -> Outcome {
+        if let conflict = error as? OutboxConflict { return .refused(conflict.reason, .changedOnServer) }
+        guard let apiError = error as? APIClientError else { return .waitForNetwork }
+        switch apiError {
+        case .timeout, .transport, .invalidBaseURL:
+            return .waitForNetwork
+        case .unauthorized:
+            return .waitForKey
+        case .invalidResponse:
+            // The write request answered 2xx with a body this app could not read: the write is there.
+            // (A replay check that cannot read the server's state throws `OutboxConflict` instead.)
+            return .delivered
+        case .unexpectedStatus(let status):
+            switch status {
+            case 408, 429: return .waitForNetwork
+            case 500...: return .serverError(status)
+            case 409: return conflict(for: action)
+            case 404: return .refused("Сервер не нашёл, куда записать (404): объект удалён.", .refused)
+            case 400, 422: return .refused("Сервер не принял данные (\(status)).", .refused)
+            default: return .refused("Сервер отказал (\(status)).", .refused)
+            }
+        }
+    }
+
+    /// A 409 is a server-side rule saying no. A press that carried its day: the day turned or the button
+    /// is off (the status alone does not tell). A press without a day: the button is off.
+    private static func conflict(for action: OutboxAction) -> Outcome {
+        guard case .tapQuickMark(let tap) = action else {
+            return .refused("Сервер отказал (409): запись противоречит тому, что уже есть на сервере.", .refused)
+        }
+        return tap.serverDay == nil ? .refused(tapRefusedReason, .refused) : .refused(dayTurnedReason, .dayTurned)
+    }
+
+    private func reload() {
+        writes = store.fetchAll()
     }
 }
 
@@ -355,28 +631,30 @@ final class NWPathNetworkMonitor: NetworkPathMonitoring {
     }
 }
 
-/// The production outbox. Built once, on-disk; if SwiftData cannot open its store the
-/// app degrades to an in-memory queue (offline saves still survive within a run) rather
-/// than crashing at launch. `startAutoFlush` is wired once, on first access.
+/// The production queue: one SwiftData file under Application Support, the old queues carried over
+/// once, flushed off `NWPathMonitor`. Degrades to memory rather than failing at launch.
 @MainActor
 enum OutboxLive {
-    private static let logger = Logger(
-        subsystem: "com.habittracker.app", category: "OutboxLive"
-    )
+    private static let logger = Logger(subsystem: "com.habittracker.app", category: "OutboxLive")
+    private static let fileName = "outbox.store"
 
     static let shared: OutboxQueue = {
         let store: OutboxStore
+        // Set only once the on-disk store opened: importing the old queues into memory would lose them.
+        var directory: URL?
         do {
-            store = try SwiftDataOutboxStore()
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            )
+            store = try SwiftDataOutboxStore(url: support.appendingPathComponent(fileName))
+            directory = support
         } catch {
-            logger.error("On-disk outbox unavailable, using in-memory: \(String(describing: error))")
+            logger.error("On-disk outbox unavailable, using memory: \(String(describing: error))")
             store = InMemoryOutboxStore()
         }
-        let queue = OutboxQueue(store: store)
-        queue.startAutoFlush(
-            monitor: NWPathNetworkMonitor(),
-            posterProvider: { APIClient.live() }
-        )
+        let queue = OutboxQueue(store: store, sender: { APIClient.liveOutboxSender() })
+        if let directory { OutboxLegacyImport.runOnce(directory: directory, into: queue) }
+        queue.startAutoFlush(monitor: NWPathNetworkMonitor())
         return queue
     }()
 }

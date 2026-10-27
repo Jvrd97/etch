@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/210
-// summary: the quick-mark buttons of Today — a card per button (name and counter open the day's sets, the trailing plus or tick adds one), planned badge, lime when done, the undo chip of the last tap, the offline and queued-taps banners
+// [review:need-review] PHASE-01/210, PHASE-03/225
+// summary: the quick-mark buttons of Today — a card per button (name and counter open the day's sets, the trailing plus or tick adds one), planned badge, lime when done, the undo chip of the last tap, the offline banner (queued presses are counted by the shared outbox strip of the screen)
 import SwiftUI
 
 /// The buttons as the server ordered them. A card splits into two targets: the name and counter open
@@ -15,9 +15,6 @@ struct QuickMarksSection: View {
         VStack(alignment: .leading, spacing: DS.Spacing.md) {
             if let offlineAsOf = viewModel.offlineAsOf {
                 OfflineBanner(updatedAt: offlineAsOf)
-            }
-            if viewModel.pendingTapCount > 0 {
-                QueuedTapsBadge(count: viewModel.pendingTapCount)
             }
             if let message = viewModel.errorMessage {
                 Text(message)
@@ -117,26 +114,5 @@ private struct QuickMarkCard: View {
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                 .stroke(mark.done ? DS.Palette.lime : DS.Palette.cardStroke, lineWidth: 1)
         )
-    }
-}
-
-/// Slim badge shown when taps made without a network wait in the queue.
-struct QueuedTapsBadge: View {
-    let count: Int
-
-    /// "1 отметка ждёт отправки" / "3 отметки ждут отправки".
-    static func caption(for count: Int) -> String {
-        let noun = RelapseAnalysis.plural(count, one: "отметка ждёт", few: "отметки ждут", many: "отметок ждут")
-        return "\(count) \(noun) отправки"
-    }
-
-    var body: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            Image(systemName: "arrow.up.circle")
-            Text(Self.caption(for: count))
-                .font(DS.Typography.caption)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(DS.Palette.lime)
     }
 }

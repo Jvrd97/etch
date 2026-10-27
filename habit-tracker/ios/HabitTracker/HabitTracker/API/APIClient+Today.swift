@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/210
-// summary: Today endpoints beyond TodayAPI — the quick-mark directory, one tap under an Idempotency-Key, undo, the sets of a day; the avoid streaks of all categories in one request, a one-tap relapse, the relapse history; entry patch/delete for the day list
+// [review:need-review] PHASE-01/210, PHASE-03/225
+// summary: Today endpoints beyond TodayAPI — the quick-mark directory, one tap under an Idempotency-Key, undo, the sets of a day; the avoid streaks of all categories in one request, a one-tap relapse, the relapse history; entry patch/delete for the day list; an entry create under a key, so a save that goes offline replays as the same request
 import Foundation
 
 /// The quick-mark endpoints (`/api/v1/quick-marks`). A tap sends an id, the server decides the rest.
@@ -17,6 +17,8 @@ protocol QuickMarksAPI {
 /// What the Today screen needs on top of `TodayAPI`: one bulk streak read, the one-tap
 /// relapse, and the entry mutations of the day list. `APIClient` is the production implementation.
 protocol TodayScreenAPI: TodayAPI {
+    /// The key is the key of the queued replay too: a save whose answer was lost is not recorded twice.
+    func createEntry(_ entry: EntryCreateDTO, idempotencyKey: String?) async throws -> EntryDTO
     func fetchAvoidStreaks() async throws -> [CategoryStreakDTO]
     func recordRelapse(categoryId: Int, idempotencyKey: String) async throws -> RelapseRecordedDTO
     func updateEntry(id: Int, _ payload: EntryUpdateDTO) async throws -> EntryDTO

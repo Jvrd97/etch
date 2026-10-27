@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226
-// summary: Day screen (replaces the #208 placeholder) — day stepper, plan sections with tap-to-cycle marks (VoiceOver names the line) and plan windows on the device's clock, category-linked fact cards (target, fact, unit; record/correct/remove), the two closing touches with the verdict, the notebook with a per-day draft and a conflict card when the server text moved, a hint that anchors are marked on the web (only when the day has anchors), re-read on return from the background, at midnight and on a time zone change; the app's own calendar is not used, days are stepped with arrows
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225
+// summary: Day screen (replaces the #208 placeholder) — the shared offline-queue strip and the offline banner atop (with a word when the cached day is not today), a "written on the phone, waiting to send" sign on a line or notebook still in the queue, day stepper, plan sections with tap-to-cycle marks (VoiceOver names the line) and plan windows on the device's clock, category-linked fact cards (target, fact, unit; record/correct/remove), the two closing touches with the verdict, the notebook with a per-day draft and a conflict card when the server text moved, a hint that anchors are marked on the web (only when the day has anchors), re-read on return from the background, at midnight and on a time zone change; the app's own calendar is not used, days are stepped with arrows
 import SwiftUI
 import UIKit
 
@@ -23,30 +23,45 @@ struct DayView: View {
     }
 
     var body: some View {
-        content
-            .navigationTitle(AppTab.day.title)
-            .dsScreenBackground()
-            .task { await viewModel.load() }
-            .onChange(of: scenePhase) { old, new in
-                if Self.shouldReread(from: old, to: new) { Task { await viewModel.rereadInPlace() } }
+        VStack(spacing: 0) {
+            OutboxQueueBar(queue: OutboxLive.shared)
+            if let offlineAsOf = viewModel.offlineAsOf {
+                OfflineBanner(updatedAt: offlineAsOf)
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
-                Task { await viewModel.rereadInPlace() }
+            if let notice = viewModel.cachedDayNotice {
+                Text(notice)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.warning)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.bottom, DS.Spacing.sm)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(DS.Palette.card)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
-                Task { await viewModel.systemTimeZoneDidChange() }
-            }
-            .alert(
-                "Ошибка",
-                isPresented: Binding(
-                    get: { viewModel.actionError != nil },
-                    set: { if !$0 { viewModel.actionError = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) { viewModel.actionError = nil }
-            } message: {
-                Text(viewModel.actionError ?? "")
-            }
+            content
+        }
+        .navigationTitle(AppTab.day.title)
+        .dsScreenBackground()
+        .task { await viewModel.load() }
+        .onChange(of: scenePhase) { old, new in
+            if Self.shouldReread(from: old, to: new) { Task { await viewModel.rereadInPlace() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            Task { await viewModel.rereadInPlace() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+            Task { await viewModel.systemTimeZoneDidChange() }
+        }
+        .alert(
+            "Ошибка",
+            isPresented: Binding(
+                get: { viewModel.actionError != nil },
+                set: { if !$0 { viewModel.actionError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { viewModel.actionError = nil }
+        } message: {
+            Text(viewModel.actionError ?? "")
+        }
     }
 
     @ViewBuilder
@@ -206,6 +221,9 @@ private struct PlanItemRow: View {
                         .font(DS.Typography.body)
                         .foregroundStyle(markState == "skipped" ? DS.Palette.textDisabled : DS.Palette.textPrimary)
                         .strikethrough(markState == "skipped")
+                    if viewModel.queuedItems.contains(item.id) {
+                        QueuedOnPhoneLabel()
+                    }
                 }
             }
 
@@ -488,6 +506,9 @@ private struct DayNotebookCard: View {
                     .padding(DS.Spacing.sm)
                     .background(DS.Palette.surface)
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+                if viewModel.isNotebookQueued && !viewModel.isNotebookDirty {
+                    QueuedOnPhoneLabel()
+                }
                 Button("Сохранить") { Task { await viewModel.saveNotebook() } }
                     .buttonStyle(LimeButtonStyle())
                     .disabled(!viewModel.isNotebookDirty || viewModel.isSavingNotebook || viewModel.isNotebookSaveBlocked)
@@ -523,5 +544,14 @@ private struct DayNotebookCard: View {
         .padding(DS.Spacing.md)
         .background(DS.Palette.surface)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+    }
+}
+
+/// A write of this line or notebook is on the phone and not on the server yet.
+private struct QueuedOnPhoneLabel: View {
+    var body: some View {
+        Label("Записано на телефоне, ждёт отправки", systemImage: "icloud.and.arrow.up")
+            .font(DS.Typography.caption)
+            .foregroundStyle(DS.Palette.lime)
     }
 }
