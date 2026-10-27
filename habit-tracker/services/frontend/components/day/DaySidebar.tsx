@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, PHASE-03/252
 // summary: the day navigation shared by /day/{date} and /life — days grouped year → month with the current month open, each day a square in its three states and a link to that day; one component so the two screens cannot drift apart
+// summary: #252 — without a pinned `today` the squares, the open month and the history range stand on the server's day (GET /day-mode), read when the page opens and when the tab comes back
 
 import { useState } from 'react';
 import Link from 'next/link';

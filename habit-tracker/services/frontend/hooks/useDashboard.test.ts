@@ -228,7 +228,7 @@ mock.module('@/lib/api', () => ({
   },
 }));
 
-const { useDashboard } = await import('./useDashboard');
+const { useDashboard, DAY_WINDOW_LIMIT } = await import('./useDashboard');
 
 function emptyTable(): TableResponse {
   return { categories: [], days: [] };
@@ -369,6 +369,23 @@ describe('useDashboard hero', () => {
     const dayCalls = entriesCalls.filter((call) => call.startDate !== undefined && call.sort === undefined);
     expect(dayCalls.at(-1)).toMatchObject({ startDate: previousDay(farDay), endDate: farDay });
     expect(result.current.hero.entriesToday).toBe(1);
+  });
+
+  it('reads the two days exactly when the window came back full', async () => {
+    const full = Array.from({ length: DAY_WINDOW_LIMIT }, (_, index) => entry(500 + index, TODAY, '1'));
+    dayWindow = full;
+    entriesCalls = [];
+    let reads = 0;
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    reads = entriesCalls.filter((call) => call.startDate !== undefined && call.sort === undefined).length;
+
+    // The full window is not trusted: the exact two days are read once more.
+    expect(reads).toBe(2);
+    expect(entriesCalls.filter((call) => call.startDate !== undefined).at(-1)).toMatchObject({
+      startDate: previousDay(TODAY),
+      endDate: TODAY,
+    });
   });
 
   it('keeps the browser day when the server cannot name its own', async () => {

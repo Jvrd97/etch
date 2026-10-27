@@ -1,7 +1,8 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221
+// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221, PHASE-03/252
 // summary: a link from the retro page to the week's review screen (#221)
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
+// summary: #252 — without a pinned `today` the ringed square and the unlived days after it follow the server's day
 
 import Link from 'next/link';
 import OvertimeDebtBlock from '@/components/week/OvertimeDebt';

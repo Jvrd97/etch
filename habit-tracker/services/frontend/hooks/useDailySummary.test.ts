@@ -239,7 +239,9 @@ mock.module('@/lib/api', () => ({
   journalAPI: { getAll: () => Promise.resolve({ total: 0, items: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
+// Copied before mocking: the rest of `@/lib/date` must stay for every file that links after this one.
+const realDate = { ...(await import('@/lib/date')) };
+mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => BROWSER_DAY }));
 
 const { useDailySummary } = await import('./useDailySummary');
 

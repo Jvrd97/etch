@@ -30,12 +30,14 @@ import { useToday } from '@/hooks/useToday';
 import { useTodayList } from '@/hooks/useTodayList';
 import { useQuickMarkHotkeys } from '@/hooks/useQuickMarkHotkeys';
 import { useDayMode } from '@/hooks/useDayMode';
+import { useTodayDayModeSync } from '@/hooks/useTodayDayModeSync';
 import { Check, Keyboard, Sun } from 'lucide-react';
 
 export default function TodayPage() {
   const {
     date,
     dayModeClient,
+    dayStale,
     entries,
     categories,
     groups,
@@ -66,6 +68,8 @@ export default function TodayPage() {
   const [legendOpen, setLegendOpen] = useState(false);
   // Режим дня (#162): бейдж с переключателем. День — тот, что назвал сервер, одним чтением с шапкой (#247); не вышло прочитать — бейдж говорит об этом и повторяет, день цел.
   const dayMode = useDayMode(dayModeClient);
+  // Шапка ушла на новый день или сервер день не подтверждает — бейдж читает заново, а не пишет во вчера.
+  useTodayDayModeSync({ date, dayStale }, dayMode);
 
   const markByKey = useCallback((id: number) => void quickMarks.tap(id), [quickMarks]);
   const openLegend = useCallback(() => setLegendOpen(true), []);

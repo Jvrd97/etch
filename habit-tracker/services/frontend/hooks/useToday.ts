@@ -63,8 +63,12 @@ export const DAY_UNCONFIRMED = 'День не подтверждён серве�
 /** The records window around the day the screen expects, in days on each side. */
 const ENTRIES_WINDOW_SPREAD_DAYS = 1;
 
-/** The backend's default page of `GET /entries`: a full page may have lost its tail. */
-const ENTRIES_DEFAULT_LIMIT = 100;
+/**
+ * The explicit page size of the records window, as the dashboard asks its own.
+ * The server's default (100) fills up at about 35 records a day over three days,
+ * and a full page may have lost its tail: it is then read again for the day alone.
+ */
+const ENTRIES_WINDOW_LIMIT = 1000;
 
 /**
  * What the streak section says when its own round failed.
@@ -338,11 +342,11 @@ export function useToday(): UseTodayResult {
       const [categoriesData, date, windowEntries, quickMarksData] = await Promise.all([
         categoriesAPI.getAll(),
         dayRead,
-        entriesAPI.getAll({ startDate: windowStart, endDate: windowEnd }),
+        entriesAPI.getAll({ startDate: windowStart, endDate: windowEnd, limit: ENTRIES_WINDOW_LIMIT }),
         quickMarksAPI.list(),
       ]);
       const windowFits =
-        date >= windowStart && date <= windowEnd && windowEntries.length < ENTRIES_DEFAULT_LIMIT;
+        date >= windowStart && date <= windowEnd && windowEntries.length < ENTRIES_WINDOW_LIMIT;
       const entriesData = windowFits
         ? windowEntries.filter((entry) => entry.entry_date === date)
         : await entriesAPI.getAll({ startDate: date, endDate: date });
@@ -465,10 +469,20 @@ export function useToday(): UseTodayResult {
   // rendering the snapshot fetched when the app was launched.
   useRefreshOnVisible(refresh);
 
+  // False once the screen is gone: a read answered after that must not start a snapshot.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   // A tab that stays in front across the day boundary: see DAY_RECHECK_MS.
   useEffect(() => {
-    // A read answered after the screen is gone must not start a snapshot.
-    let alive = true;
+    // The newest minute read, and whether it is still unanswered.
+    let pollSeq = 0;
+    let pollPending = false;
     const timer = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
       // No day yet: the first snapshot failed, and this tick is its retry.
@@ -476,25 +490,36 @@ export function useToday(): UseTodayResult {
         void loadData({ quiet: true });
         return;
       }
-      readDay(false).then(
+      // A read still unanswered a minute later is a lost read, and the next one asks anew:
+      // joining a request that hangs would leave the screen writing to a day nobody confirms.
+      const hung = pollPending;
+      if (hung) countPollFailure();
+      pollSeq += 1;
+      const mine = pollSeq;
+      pollPending = true;
+      readDay(hung).then(
         ({ date }) => {
-          if (!alive) return;
+          if (mine === pollSeq) pollPending = false;
+          if (!mounted.current) return;
           pollFailures.current = 0;
           setStale(false);
-          if (date !== dayRef.current) void loadData();
+          // A snapshot on its way is already moving the screen to this day.
+          if (date !== dayRef.current && loadsInFlight.current === 0) void loadData();
         },
         () => {
-          if (!alive) return;
-          // One lost read is not news about the day; several in a row are.
-          pollFailures.current += 1;
-          if (pollFailures.current >= DAY_POLL_FAILURES_LIMIT) setStale(true);
+          if (mine !== pollSeq) return;
+          pollPending = false;
+          if (mounted.current) countPollFailure();
         }
       );
     }, DAY_RECHECK_MS);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
+
+    function countPollFailure() {
+      // One lost read is not news about the day; several in a row are.
+      pollFailures.current += 1;
+      if (pollFailures.current >= DAY_POLL_FAILURES_LIMIT) setStale(true);
+    }
+    return () => clearInterval(timer);
   }, [loadData, readDay, setStale]);
 
   // The badge reads the day through the same promise; if its answer is a day this
@@ -504,6 +529,7 @@ export function useToday(): UseTodayResult {
       read: async () => {
         const mode = await readDay(false);
         if (
+          mounted.current &&
           loadsInFlight.current === 0 &&
           dayRef.current !== '' &&
           mode.date !== dayRef.current

@@ -1,6 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/252
-// summary: the day the server is running (GET /day-mode, boundary at 04:00) for every screen outside Today that used to ask the browser's clock: `readServerDay` joins a read started in the same render pass, `useServerDay` reads it on mount and when the tab comes back and returns '' while the day is unknown (a silent writer refuses to guess; `settled` says the wait is over), `useDisplayDay` falls back to the browser's day for screens that only show it
+// summary: the day the server is running (GET /day-mode, boundary at 04:00) for every screen outside Today that used to ask the browser's clock: `readServerDay` joins a read started in the same render pass, `useServerDay` reads it on mount and when the tab comes back and returns '' while the day is unknown (a silent writer refuses to guess; `settled` says the wait is over), `useDisplayDay` falls back to the browser's day for screens that only show it; these screens do not follow the 04:00 boundary while they stay open (no timer, only the tab coming back)
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';

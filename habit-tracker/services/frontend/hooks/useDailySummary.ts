@@ -247,7 +247,7 @@ export function useDailySummary({
   // The day the plan is filed under: the reader's pick, else the injected day, else
   // the server's (the boundary is 04:00, not midnight, and not the browser's zone).
   // '' until the server has named it.
-  const { date: serverDay } = useServerDay();
+  const { date: serverDay } = useServerDay(today === undefined);
   const [pickedDate, setPickedDate] = useState<string | null>(null);
   const entryDate = pickedDate ?? today ?? serverDay;
   const [draft, setDraft] = useState<DraftState>({ status: 'idle' });

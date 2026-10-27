@@ -22,6 +22,8 @@ const TODAY = '2026-07-24';
 // any read of the browser clock shows up as a different date in a request.
 const BROWSER_DAY = '2026-07-23';
 const DAY_BEFORE_BROWSER = '2026-07-22';
+// The explicit page size of the records window: a full page may have lost its tail.
+const WINDOW_LIMIT = 1000;
 
 const GLASSES_FIELD: Field = {
   id: 7,
@@ -111,6 +113,7 @@ function deferred<T>(): {
 let getAllCategories: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
 let readDayMode: ReturnType<typeof mock>;
+let writeDayMode: ReturnType<typeof mock>;
 let createEntry: ReturnType<typeof mock>;
 let deleteEntry: ReturnType<typeof mock>;
 let upsertChecklist: ReturnType<typeof mock>;
@@ -194,6 +197,7 @@ mock.module('@/lib/api', () => ({
     settings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     saveSettings: () => Promise.resolve({ titles_enabled: true, sampling_seconds: 5 }),
     dayMode: () => readDayMode(),
+    setDayMode: (date: string, draft: unknown) => writeDayMode(date, draft),
   },
   // Справочник ролей (#140): экран дня читает его ради двух необязательных
   // полей у пункта плана. Заглушка стоит в каждом моке api по той же причине,
@@ -294,17 +298,22 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => BROWSER_DAY }));
+// Copied before mocking: bun rewrites a mocked module's namespace in place, and the rest of
+// `@/lib/date` must stay for every file that links after this one.
+const realDate = { ...(await import('@/lib/date')) };
+mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => BROWSER_DAY }));
 
 const { useToday, STREAKS_FAILED, DAY_RECHECK_MS, DAY_POLL_FAILURES_LIMIT, DAY_UNCONFIRMED } =
   await import('./useToday');
 const { useDayMode } = await import('./useDayMode');
+const { useTodayDayModeSync } = await import('./useTodayDayModeSync');
 const { entriesAPI } = await import('@/lib/api');
 
 beforeEach(() => {
   getAllCategories = mock(() => Promise.resolve([CATEGORY]));
   getAllEntries = mock(() => Promise.resolve([ENTRY]));
   readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+  writeDayMode = mock((date: string) => Promise.resolve(dayModeOf(date)));
   createEntry = mock(() => Promise.resolve(savedEntry(11, 1)));
   deleteEntry = mock(() => Promise.resolve(undefined));
   upsertChecklist = mock(() => Promise.resolve(ENTRY));
@@ -463,7 +472,7 @@ describe('useToday takes the day from the server', () => {
     // A window around the browser's day (a hint, one day behind here) that holds the
     // server's day: the records of the day are cut from it, no second read.
     expect(getAllEntries).toHaveBeenCalledTimes(1);
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: DAY_BEFORE_BROWSER, endDate: TODAY });
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: DAY_BEFORE_BROWSER, endDate: TODAY, limit: WINDOW_LIMIT });
   });
 
   it('asks for the records while the day is still unanswered, not after it', async () => {
@@ -547,7 +556,7 @@ describe('useToday takes the day from the server', () => {
     });
     await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
 
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY });
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY, limit: WINDOW_LIMIT });
     // The increment belonged to yesterday and must not be counted into the new day.
     expect(result.current.entries).toEqual([]);
 
@@ -591,7 +600,7 @@ describe('useToday keeps up with the server day', () => {
     });
     await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
 
-    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY });
+    expect(getAllEntries).toHaveBeenCalledWith({ startDate: BROWSER_DAY, endDate: NEXT_DAY, limit: WINDOW_LIMIT });
     await act(async () => {
       await result.current.addNumber(CATEGORY.id, GLASSES_FIELD.id, 100);
     });
@@ -1251,6 +1260,7 @@ describe('the screen and its day-mode badge share one day (#247)', () => {
     return renderHook(() => {
       const today = useToday();
       const badge = useDayMode(today.dayModeClient);
+      useTodayDayModeSync(today, badge);
       return { today, badge };
     });
   }
@@ -1476,5 +1486,157 @@ describe('a day the server does not confirm (#253)', () => {
     });
 
     expect(isFieldChecked(result.current.checked, CHECKLIST.id, 8)).toBe(true);
+  });
+});
+
+describe('round 2: the badge follows the day the screen moved to (#247)', () => {
+  const NEXT_DAY = '2026-07-25';
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function tick(times: number) {
+    for (let i = 0; i < times; i += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(DAY_RECHECK_MS);
+      });
+    }
+  }
+
+  function renderBoth() {
+    return renderHook(() => {
+      const today = useToday();
+      const badge = useDayMode(today.dayModeClient);
+      useTodayDayModeSync(today, badge);
+      return { today, badge };
+    });
+  }
+
+  it('moves the badge to the day the minute timer found, and a decision goes to that day', async () => {
+    jest.useFakeTimers();
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await tick(1);
+    await waitFor(() => expect(result.current.today.date).toBe(NEXT_DAY));
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(NEXT_DAY));
+
+    await act(async () => {
+      await result.current.badge.decide('dayoff', false);
+    });
+    expect(writeDayMode).toHaveBeenCalledTimes(1);
+    expect(writeDayMode.mock.calls[0][0]).toBe(NEXT_DAY);
+  });
+
+  it('moves the badge to the day an explicit reload found', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.today.reload();
+    });
+
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(NEXT_DAY));
+  });
+
+  it('locks the badge when the day is not confirmed, so it cannot write to the old day', async () => {
+    jest.useFakeTimers();
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await tick(DAY_POLL_FAILURES_LIMIT);
+    await waitFor(() => expect(result.current.today.dayStale).toBe(true));
+    await waitFor(() => expect(result.current.badge.loadFailed).toBe(true));
+
+    await act(async () => {
+      await result.current.badge.decide('dayoff', false);
+    });
+    expect(writeDayMode).not.toHaveBeenCalled();
+  });
+
+  it('counts a read of the day that never answers as a failed minute read', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    readDayMode = mock(() => new Promise(() => {}));
+    // The first tick starts the read that hangs, each later one finds it unanswered.
+    await tick(DAY_POLL_FAILURES_LIMIT);
+    expect(result.current.dayStale).toBe(false);
+    await tick(1);
+
+    expect(result.current.dayStale).toBe(true);
+    expect(readDayMode.mock.calls.length).toBeGreaterThanOrEqual(DAY_POLL_FAILURES_LIMIT);
+  });
+
+  it('starts one snapshot, not two, when a tick joins the read of a snapshot on its way', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllCategories.mockClear();
+
+    const pendingDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => pendingDay.promise);
+    getAllEntries = mock(() => Promise.resolve([]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await tick(1);
+    await act(async () => {
+      pendingDay.resolve(dayModeOf(NEXT_DAY));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllCategories).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts no snapshot from a badge read answered after the screen is gone', async () => {
+    const { result, unmount } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllCategories.mockClear();
+
+    const slowDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => slowDay.promise);
+    const badgeRead = result.current.dayModeClient.read();
+    unmount();
+    await act(async () => {
+      slowDay.resolve(dayModeOf(NEXT_DAY));
+      await badgeRead;
+    });
+
+    expect(getAllCategories).not.toHaveBeenCalled();
+  });
+});
+
+describe('round 2: a full page of the records window is read exactly (#247)', () => {
+  it('asks the window with an explicit page size', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getAllEntries.mock.calls[0][0]).toMatchObject({ limit: WINDOW_LIMIT });
+  });
+
+  it('reads the day exactly when the window came back full, and shows only that read', async () => {
+    const full = Array.from({ length: WINDOW_LIMIT }, (_, index) => ({
+      ...ENTRY,
+      id: 1000 + index,
+      entry_date: TODAY,
+    }));
+    getAllEntries = mock((params: { limit?: number }) =>
+      Promise.resolve(params.limit === WINDOW_LIMIT ? full : [ENTRY])
+    );
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(getAllEntries).toHaveBeenCalledTimes(2);
+    expect(getAllEntries).toHaveBeenLastCalledWith({ startDate: TODAY, endDate: TODAY });
+    expect(result.current.entries).toEqual([ENTRY]);
   });
 });

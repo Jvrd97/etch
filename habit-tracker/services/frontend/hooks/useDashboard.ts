@@ -69,7 +69,7 @@ export interface AvoidStreak {
  * count every entry of the day instead of silently inheriting whatever page
  * size the server defaults to.
  */
-const DAY_WINDOW_LIMIT = 1000;
+export const DAY_WINDOW_LIMIT = 1000;
 
 /** Days on each side of the browser's day the window is read for; the server's day is within a day of it. */
 const DAY_WINDOW_SPREAD_DAYS = 1;

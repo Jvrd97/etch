@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/144
+// [review:need-review] PHASE-03/94, PHASE-03/144, PHASE-03/252
 // summary: the /life timeline — five views (жизнь → год → месяц → неделя → день) over one range of days, the weeks-lived/weeks-left counter life.html showed, squares in three readable states that link to /day/{date}, the note saying whether the day's verdict was computed or carried over from a record, and a way through to the week page
+// summary: #252 — without a pinned `today` the counter, the squares and the view's starting point stand on the server's day; the view stays where the reader moved it
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
