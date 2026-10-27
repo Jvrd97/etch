@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/159
-// summary: one poller for every part of the floating panel that is read from the server — keeps the last good answer through outages, asks with the last ETag, retries on the shared Backoff and says when it has been silent longer than its threshold
+// [review:need-review] PHASE-03/241
+// summary: one poller for every part of the floating panel that is read from the server — keeps the last good answer through outages, asks with the last ETag, retries on the shared Backoff and says when it has been silent longer than its threshold; since #241 every poll has a number in the order it was started, so a caller can tell whether a poll began after some moment, and an answer that lands after a later poll's answer is not painted over it
 import Foundation
 
 enum PollResponse<Value: Equatable>: Equatable {
@@ -25,6 +25,10 @@ final class ConditionalPoller<Value: Equatable>: ObservableObject {
     /// The error of the last poll, nil after a success.
     @Published private(set) var lastFailure: Error?
     private(set) var lastSuccessAt: Date?
+    /// Polls started so far. A poll numbered above the value read at some moment began after that moment.
+    private(set) var pollsStarted = 0
+    /// The number of the newest poll that succeeded (a 304 counts), 0 before the first.
+    @Published private(set) var lastSuccessfulPoll = 0
     /// How long `run()` waits before the next poll.
     private(set) var nextDelay: TimeInterval
 
@@ -64,14 +68,20 @@ final class ConditionalPoller<Value: Equatable>: ObservableObject {
     }
 
     func pollOnce() async {
+        pollsStarted += 1
+        let number = pollsStarted
         do {
             switch try await fetch(etag) {
             case let .modified(newValue, newEtag):
-                value = newValue
-                etag = newEtag
+                // Polls can overlap (the loop and a poll after a write): the older answer must not repaint the newer one.
+                if number > lastSuccessfulPoll {
+                    value = newValue
+                    etag = newEtag
+                }
             case .notModified:
                 break
             }
+            lastSuccessfulPoll = max(lastSuccessfulPoll, number)
             lastSuccessAt = now()
             lastFailure = nil
             backoff.reset()

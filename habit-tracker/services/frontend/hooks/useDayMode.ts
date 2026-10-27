@@ -1,8 +1,8 @@
 'use client';
-// [review:need-review] PHASE-03/228
-// summary: the day mode of the server's current day for the Today screen — read on mount without a date (the answer names the day), every decision or reset goes to the date of that answer and is replaced by the server's reply, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) is reported as `loadFailed` and can be retried, and it is read again whenever the tab becomes visible so a page left open across the day boundary follows the server's day
+// [review:need-review] PHASE-03/241
+// summary: the day mode of the server's current day for the Today screen — read on mount without a date (the answer names the day), every decision or reset goes to the date of that answer and is replaced by the server's reply, the last mode kept when a write fails; a read that fails (or a client that throws before returning a promise) is reported as `loadFailed` and can be retried, and it is read again whenever the tab becomes visible so a page left open across the day boundary follows the server's day; since #241 a re-read that failed blocks decide/reset (the mode on screen may be yesterday's), and a read that started before the end of a write, or during it, is dropped so it cannot paint the old mode over the write's answer
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 // A namespace import read at call time, not a named import: suites that mock
 // `@/lib/api` with a fixed list of names would fail to link every screen that
@@ -32,7 +32,7 @@ export interface UseDayModeResult {
   saving: boolean;
   /** The last write did not go through. */
   error: string | null;
-  /** The read of the mode did not go through; `reload` asks again. */
+  /** The read of the mode did not go through (a mode already on screen may be yesterday's); `reload` asks again. */
   loadFailed: boolean;
   reload: () => Promise<void>;
   /** Decide the date by hand; both fields go, because they are independent. */
@@ -47,18 +47,24 @@ export function useDayMode(client: DayModeClient = API_CLIENT): UseDayModeResult
   const [error, setError] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   // The date every write goes to: the one the server named in its answer.
-  const date = mode?.date ?? null;
+  // After a failed re-read the mode on screen may be yesterday's: no write until a read goes through.
+  const date = loadFailed ? null : (mode?.date ?? null);
+  // Counts the starts and the ends of writes. A read whose answer finds the number changed overlapped a write:
+  // it was asked before the write ended, and its answer may be older than the write's.
+  const writeGeneration = useRef(0);
 
   const load = useCallback(
     async (isCurrent: () => boolean) => {
+      const startedAt = writeGeneration.current;
+      const isFresh = () => isCurrent() && writeGeneration.current === startedAt;
       try {
         // `await` inside `try` also turns a synchronous throw of the client into a failed read.
         const body = await client.read();
-        if (!isCurrent()) return;
+        if (!isFresh()) return;
         setMode(body);
         setLoadFailed(false);
       } catch {
-        if (isCurrent()) setLoadFailed(true);
+        if (isFresh()) setLoadFailed(true);
       }
     },
     [client]
@@ -78,6 +84,7 @@ export function useDayMode(client: DayModeClient = API_CLIENT): UseDayModeResult
   useRefreshOnVisible(refreshQuietly);
 
   const write = useCallback(async (call: () => Promise<DayMode>) => {
+    writeGeneration.current += 1;
     setSaving(true);
     setError(null);
     try {
@@ -85,6 +92,7 @@ export function useDayMode(client: DayModeClient = API_CLIENT): UseDayModeResult
     } catch {
       setError(WRITE_FAILED);
     } finally {
+      writeGeneration.current += 1;
       setSaving(false);
     }
   }, []);

@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-03/159
-// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client; only 422 and 409 are final, every other 4xx (401/403/404 included) goes back to the outbox's Backoff; since #162 also PUT/DELETE /day-mode/{date}, the switch of the day mode
+// [review:need-review] PHASE-03/241
+// summary: the two calls the floating panel makes — GET /agent/config with the last ETag, and POST /agent/activity/manual under an Idempotency-Key — over an ephemeral session, with the same address rules as the activity client; only 422 and 409 are final, every other 4xx (401/403/404 included) goes back to the outbox's Backoff; since #162 also PUT/DELETE /day-mode/{date}, the switch of the day mode (an answer it cannot read is logged to `panel-mode` instead of vanishing)
 import Foundation
+import os
 
 enum PanelAPIError: Error, Equatable {
     /// No server address or no key yet: nothing to retry until a person sets them.
@@ -30,6 +31,8 @@ struct PanelAPIClient {
     /// Ephemeral: the agent writes nothing outside its own folder, and the shared
     /// session keeps a response cache on disk.
     var session = URLSession(configuration: .ephemeral)
+
+    private static let log = Logger(subsystem: "com.talvior.habitagent", category: "panel-mode")
 
     static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -101,7 +104,13 @@ struct PanelAPIClient {
         }
         let (body, response) = try await data(for: request)
         guard (200..<300).contains(response.statusCode) else { throw Self.error(status: response.statusCode) }
-        return try? JSONDecoder().decode(PanelDayMode.self, from: body)
+        do {
+            return try JSONDecoder().decode(PanelDayMode.self, from: body)
+        } catch {
+            // The write went through; only its answer is unreadable. Say why instead of dropping it silently.
+            Self.log.error("Day-mode answer not decoded: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     static func error(status: Int) -> PanelAPIError {

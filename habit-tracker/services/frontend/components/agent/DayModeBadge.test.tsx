@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/228
-// summary: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry
+// [review:need-review] PHASE-03/241
+// summary: component tests of the day-mode badge — since #241 a failed re-read with a mode already on screen says so, offers a retry and locks the controls; before that: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -98,5 +98,16 @@ describe('DayModeBadge', () => {
     expect((screen.getByLabelText('Вид дня') as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByLabelText('no-code') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByText('Вернуть к расписанию') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('says the re-read failed over the old mode, locks the controls and offers a retry', () => {
+    const { onRetry } = show({ ...TUESDAY, source: 'manual' }, null, true);
+
+    expect(screen.getByRole('alert').textContent).toContain('Не удалось прочитать режим дня');
+    expect((screen.getByLabelText('Вид дня') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText('no-code') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByText('Вернуть к расписанию') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
