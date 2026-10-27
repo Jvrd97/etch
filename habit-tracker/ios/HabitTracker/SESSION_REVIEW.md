@@ -697,3 +697,19 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **Мелочи.** Карточка «сохранение заменило текст» не возвращается поверх того же серверного текста; `savedNotebooks` не пишется при офлайн-постановке; `.secureConnectionFailed` в «не дошло» (тело при сбое TLS не уходит); метка кэша Today после перечитывания записей остаётся возрастом категорий и стриков; хуки `MockDayAPI` бросают ошибки вместо `try!`, а `tearDown` обоих тестовых классов падает, если выставленный хук не сработал (`hooksNeverRun`).
 
 Проверки: `xcodebuild test` на av04-iPhone17Pro с подписью симулятора — 682 из 682. Мутации: старый код при новых тестах валит 13 проверок в 8 тестах; снятие `guard generation == loadGeneration` валит `testARereadAnsweredWhileAnotherDayLoadsIsNotShown`, снятие `!Task.isCancelled` — `testACancelledPullToRefreshSaysNothing`; возврат безусловного `.loading` в Today — два теста второй загрузки. Не проверено: экран глазами, телефон; отдельного теста на «`savedNotebooks` не пишется при офлайн-постановке» нет (в наблюдаемом поведении очередь перекрывает этот текст сама).
+
+## 2026-10-27 — PHASE-03/240
+
+Экран «Добавки» (More → Добавки): список, добавление, «Принял» с работой без сети через общую очередь.
+
+Тронуто 18 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
+
+- **Очередь.** Новый случай `OutboxAction.markSupplementTaken` хранит id добавки и день нажатия, имени в нём нет (имя только в подписи `Принял: <имя>` для полосы «ждёт отправки»). Реплей идёт через `OutboxSupplementsAPI`; поле `OutboxReplay.supplements` необязательное, существующие вызовы не менялись. В `TodayViewModel` и `DayViewModel` добавлено только имя нового случая в два `switch`.
+- **День нажатия.** Прямое нажатие день не шлёт: решает сервер. Нажатие из очереди шлёт `intake_date` по часам телефона со сменой суток в 04:00 (`SupplementsFormat.dayStartHour`). Сервер сверяет его со своим днём и отвечает 409, если день сменился. Запись уходит в «Не отправлено» с кнопкой «Записать в сегодня» (`forcedRetry` убирает дату).
+- **Кэш списка** хранит день чтения: список из кэша за другой день не показывает «принято сегодня».
+- **Логи.** Ни один файл фичи не пишет в лог; тест `testNoSupplementSourceWritesToALog` сканирует исходники.
+- Не сделано: добавление без сети (нужен id с сервера), правка и архив добавок (тикет не просил), вёрстка на телефоне (#215).
+
+### Слияние main (629b573: #235, #249, #240) в swarm/248
+
+Конфликты были в четырёх местах: шапки `OutboxQueue.swift`, `DayViewModel.swift`, `TodayViewModel.swift` и этот файл. Код сошёлся без правок: случай `markSupplementTaken` из #240 стоит в `writesADay` («День») и в переключателе `TodayViewModel` как был; ветки #248 и #256 (черновик блокнота, `savedNotebooks`, кэш по ключу) его не затрагивают, потому что работают только с `saveNotebook`, `setDayMark` и чтениями дня. Отметка приёма добавки не заменяет старую того же target, не пишет `savedNotebooks`, не считается записью дня.

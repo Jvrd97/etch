@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
+// [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229); a More screen that holds an unconfirmed write blocks the system's pop to the root (a second tap on the selected tab), #230
 import Foundation
 
@@ -39,6 +40,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
     case quickMarks
     case dailySummary
     case week
+    case supplements
     case categories
     case table
     case entries
@@ -54,6 +56,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .quickMarks: return "Быстрые отметки"
         case .dailySummary: return "Day summary"
         case .week: return "Неделя"
+        case .supplements: return "Добавки"
         case .categories: return "Categories"
         case .table: return "Table"
         case .entries: return "History"
@@ -69,6 +72,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .quickMarks: return "bolt"
         case .dailySummary: return "square.and.pencil"
         case .week: return "calendar"
+        case .supplements: return "pills"
         case .categories: return "folder"
         case .table: return "tablecells"
         case .entries: return "clock.arrow.circlepath"

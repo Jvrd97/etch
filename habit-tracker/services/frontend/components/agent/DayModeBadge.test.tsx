@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/241
-// summary: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry, also over a mode already on screen (locked, since it may be yesterday's)
+// [review:need-review] PHASE-03/249
+// summary: component tests of the day-mode badge — kind and no-code drawn as two separate facts with who decided, a kind change keeps the no-code flag and the flag keeps the kind, the reset button exists only for a manual day, nothing is drawn while the mode is being read, a failed read says so and offers a retry, also over a mode already on screen (locked, since it may be yesterday's), the controls are locked while a re-read is on its way
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -20,6 +20,7 @@ function show(mode: DayMode | null, error: string | null = null, loadFailed = fa
     <DayModeBadge
       mode={mode}
       saving={false}
+      reading={false}
       error={error}
       loadFailed={loadFailed}
       onDecide={onDecide}
@@ -87,6 +88,26 @@ describe('DayModeBadge', () => {
       <DayModeBadge
         mode={{ ...TUESDAY, source: 'manual' }}
         saving
+        reading={false}
+        error={null}
+        loadFailed={false}
+        onDecide={() => {}}
+        onReset={() => {}}
+        onRetry={() => {}}
+      />
+    );
+
+    expect((screen.getByLabelText('Вид дня') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText('no-code') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByText('Вернуть к расписанию') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('locks the controls while a read is on its way', () => {
+    render(
+      <DayModeBadge
+        mode={{ ...TUESDAY, source: 'manual' }}
+        saving={false}
+        reading
         error={null}
         loadFailed={false}
         onDecide={() => {}}

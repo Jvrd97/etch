@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256
 // summary: PHASE-03/248, 256 — a save that ended on another day rebases the draft typed over its base (no false conflict on coming back); an older answer is swapped for the saved text only when it holds the base or that text, a third text is a conflict beside the saved one; the cache keeps the newest read of each key; a direct mark refused with 502/504 reads the day before it apologises
+// [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
 import Combine
@@ -793,7 +794,7 @@ private extension OutboxAction {
     var writesADay: Bool {
         switch self {
         case .setDayMark, .recordPlanFact, .saveNotebook: return true
-        case .createEntry, .upsertChecklist, .tapQuickMark: return false
+        case .createEntry, .upsertChecklist, .tapQuickMark, .markSupplementTaken: return false
         }
     }
 }

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/163, PHASE-03/217
+// [review:need-review] PHASE-03/163, PHASE-03/217, PHASE-03/235
 // summary: the disk queue and its flusher — survives a kill, cuts batches at 500, keeps intervals through network errors and resends the same batch, backs off up to a ceiling, drops by retention with a code, writes only under its own directory, keeps a tally per error code, loses at most a checkpoint to a kill and flushes when a new interface joins
 import XCTest
 @testable import HabitAgent
@@ -58,16 +58,20 @@ private final class StubServer: URLProtocol {
 @MainActor
 final class QueueTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_800_000_000)
+    /// Private to one test: nothing else ever writes here, so the tests may list it and run in parallel.
+    private var root: URL!
     private var directory: URL!
 
     override func setUpWithError() throws {
-        directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("habit-agent-queue-\(UUID().uuidString)", isDirectory: true)
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("habit-agent-queue-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        directory = root.appendingPathComponent("queue", isDirectory: true)
     }
 
     override func tearDownWithError() throws {
         StubServer.handler = nil
-        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: root)
     }
 
     private func intervals(_ count: Int, bundleID: String = "com.example.editor", from offset: Int = 0) -> [ActivityInterval] {
@@ -129,9 +133,7 @@ final class QueueTests: XCTestCase {
 
         // A kill leaves the files as they are at that moment: copy them while the
         // store is still open and never closed, then start a new process on the copy.
-        let afterKill = directory.deletingLastPathComponent()
-            .appendingPathComponent("habit-agent-queue-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: afterKill) }
+        let afterKill = root.appendingPathComponent("after-kill", isDirectory: true)
         try FileManager.default.copyItem(at: directory, to: afterKill)
 
         let restarted = try OutboxStore(directory: afterKill)
@@ -221,13 +223,12 @@ final class QueueTests: XCTestCase {
     }
 
     func testTheStoreWritesNothingOutsideTheDirectoryItWasGiven() throws {
-        let sibling = directory.deletingLastPathComponent()
-        let before = try Set(FileManager.default.contentsOfDirectory(atPath: sibling.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
         let store = try makeStore()
         store.enqueue(intervals(3))
         _ = store.nextBatch()
-        let after = try Set(FileManager.default.contentsOfDirectory(atPath: sibling.path))
-        XCTAssertEqual(after.subtracting(before), [directory.lastPathComponent])
+        // The root belongs to this test alone, so anything next to the given directory came from the store.
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [directory.lastPathComponent])
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
         XCTAssertTrue(store.isOnDisk)
         let permissions = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int

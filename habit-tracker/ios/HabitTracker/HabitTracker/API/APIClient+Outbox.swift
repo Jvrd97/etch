@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-03/225
+// [review:need-review] PHASE-03/240 — the replay sender also carries the supplements API
 // summary: APIClient as the network side of the offline queue — entry and day writes it already has, plus GET /day/{on} without opened=true for the replay checks; the replay sender of the current settings
 import Foundation
 
@@ -10,6 +11,6 @@ extension APIClient: OutboxEntriesAPI, OutboxDayAPI {
     /// The queue's sender over the current settings; nil while no server address is stored.
     static func liveOutboxSender() -> OutboxSending? {
         guard let client = APIClient.live() else { return nil }
-        return OutboxReplay(entries: client, quickMarks: client, day: client)
+        return OutboxReplay(entries: client, quickMarks: client, day: client, supplements: client)
     }
 }

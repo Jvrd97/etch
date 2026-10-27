@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230
+// [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229)
 import SwiftUI
 
@@ -49,6 +50,8 @@ struct RootView: View {
             DailySummaryView(retainer: summaryRetainer)
         case .week:
             WeekView()
+        case .supplements:
+            SupplementsView()
         case .categories:
             CategoriesView(viewModel: .live())
         case .table:

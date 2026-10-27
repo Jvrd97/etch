@@ -117,6 +117,7 @@ export default function TodayPage() {
         <DayModeBadge
           mode={dayMode.mode}
           saving={dayMode.saving}
+          reading={dayMode.reading}
           error={dayMode.error}
           loadFailed={dayMode.loadFailed}
           onDecide={(kind, nocode) => void dayMode.decide(kind, nocode)}
