@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
 // summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week (which week runs now, decided by the calendar and not by the server's «as of», and whether a cached answer's week has since ended), the outcome of a day by the server's flags, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status (a slow model is not a missing network)
 import Foundation
 
@@ -146,9 +146,16 @@ enum WeekFormat {
     static func partialNote(_ window: WeekWindowDTO) -> String? {
         if window.isComplete { return nil }
         if window.countedDays == 0 { return noCountedDaysText }
+        let todayPromise = window.todayCounted == true ? "" : "сегодняшний день войдёт после закрытия. "
         return "Неделя не закончилась: учтено \(window.countedDays) из \(daysInWeek) дней — закрытые и прошедшие, "
-            + "сегодняшний день войдёт после закрытия. "
+            + todayPromise
             + "Сравнение — с первыми \(window.comparedDays) днями прошлой недели."
+    }
+
+    /// The line under a week that has ended but whose answer was kept before it did: the figures cover
+    /// only the days that were counted then.
+    static func incompleteDataNote(countedDays: Int) -> String {
+        "Неполные данные: \(countedDays) из \(daysInWeek) дней."
     }
 
     /// The week is the one running at `date`: not complete, begun, and its last day not behind us. Decided by
@@ -159,16 +166,19 @@ enum WeekFormat {
         return !window.isComplete && window.startsOn <= today && window.endsOn >= today
     }
 
-    /// The server's day for `date`: the clock of the week's own time zone, cut at the day-start hour.
-    /// The cut subtracts whole hours of absolute time, so in the hour after a clock change it can differ
-    /// from the server's own cut; that hour moves neither the end of a week nor the start of one by a day
-    /// in a way a reader of this screen can see.
+    /// The server's day for `date`: the wall clock of the week's own time zone, minus the day-start hours.
+    /// The server subtracts on the wall clock (a local time minus N hours), so the subtraction here is done
+    /// on the local date parts too; subtracting absolute seconds would be a day off in the hour after a clock change.
     static func serverDay(_ date: Date, in window: WeekWindowDTO) -> String {
         let zone = TimeZone(identifier: window.timezone) ?? .current
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = zone
-        let shifted = date.addingTimeInterval(-TimeInterval(window.dayStartHour * secondsPerHour))
-        let parts = calendar.dateComponents([.year, .month, .day], from: shifted)
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = zone
+        let wall = local.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        var plain = Calendar(identifier: .gregorian)
+        plain.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        guard let wallDate = plain.date(from: wall) else { return "" }
+        let shifted = wallDate.addingTimeInterval(-TimeInterval(window.dayStartHour * secondsPerHour))
+        let parts = plain.dateComponents([.year, .month, .day], from: shifted)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
@@ -251,6 +261,9 @@ enum WeekFormat {
 
     /// The week's verdict; nil while the week runs and nothing is decided.
     static func weekVerdict(_ review: WeekReviewDTO) -> String? {
+        if let line = review.verdictLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+            return line
+        }
         guard let isWon = review.isWon else { return nil }
         return isWon ? "Неделя выиграна" : "Неделя не выиграна"
     }

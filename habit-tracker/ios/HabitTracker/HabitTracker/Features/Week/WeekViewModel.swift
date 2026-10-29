@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
 // summary: Week screen state — the running or a named week through the read cache (each week under its own key, the week running by the calendar also under `current` whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
 import Foundation
 
@@ -96,10 +96,14 @@ final class WeekViewModel: ObservableObject {
     }
 
     /// The note under an unfinished week. A cached answer of a week that has ended since is not
-    /// «unfinished» any more, whatever the cache remembers.
+    /// «unfinished» any more, whatever the cache remembers; if its figures still cover fewer than seven days,
+    /// the note says the data is incomplete.
     var partialNote: String? {
         guard let window = review?.window else { return nil }
-        if offlineAsOf != nil, WeekFormat.hasEnded(window, at: now()) { return nil }
+        if offlineAsOf != nil, WeekFormat.hasEnded(window, at: now()) {
+            return window.countedDays < WeekFormat.daysInWeek
+                ? WeekFormat.incompleteDataNote(countedDays: window.countedDays) : nil
+        }
         return WeekFormat.partialNote(window)
     }
 

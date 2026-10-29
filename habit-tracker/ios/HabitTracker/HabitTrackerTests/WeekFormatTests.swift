@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
 // summary: tests of the Week vocabulary (a day's outcome from the server's flags, the server's day cut at the day-start hour, a week that has ended since it was cached, a timeout that is a slow model and not a missing network) — minutes as hours, signed changes with the real minus, counts with Russian plurals, dates by hand, the note under an unfinished week, health values by unit, the emptiness test mirrored from the server, error and narrative texts by status
 import XCTest
 @testable import HabitTracker
@@ -85,6 +85,48 @@ final class WeekFormatTests: XCTestCase {
         }.window
 
         XCTAssertEqual(WeekFormat.partialNote(window), WeekFormat.noCountedDaysText)
+    }
+
+    func testAnOpenTodayIsPromisedAfterClosing() throws {
+        let note = try XCTUnwrap(WeekFormat.partialNote(try WeekFixtures.runningWeek().window))
+        XCTAssertTrue(note.contains("сегодняшний день войдёт после закрытия"))
+    }
+
+    func testAClosedTodayIsNotPromisedAgain() throws {
+        let week = try WeekFixtures.runningWeek()
+        let window = try WeekFixtures.review { object in
+            var window = object["window"] as? [String: Any] ?? [:]
+            window["is_complete"] = false
+            window["counted_days"] = 3
+            window["compared_days"] = 3
+            window["today_counted"] = true
+            object["window"] = window
+        }.window
+        XCTAssertEqual(week.window.todayCounted, nil)
+        XCTAssertEqual(window.todayCounted, true)
+        let note = try XCTUnwrap(WeekFormat.partialNote(window))
+        XCTAssertTrue(note.contains("учтено 3 из 7 дней"))
+        XCTAssertFalse(note.contains("войдёт после закрытия"))
+    }
+
+    func testAnOldAnswerWithoutTheNewFieldsDecodesAsBefore() throws {
+        let review = try WeekFixtures.review()
+        XCTAssertNil(review.window.todayCounted)
+        XCTAssertNil(review.verdictLine)
+        XCTAssertTrue(review.health.allSatisfy { $0.previousDaysWithData == nil })
+    }
+
+    func testTheServersVerdictLineWinsAndTheOwnTextIsTheFallback() throws {
+        let said = try WeekFixtures.review { $0["verdict_line"] = "Неделя выиграна: нет (правило)." }
+        XCTAssertEqual(WeekFormat.weekVerdict(said), "Неделя выиграна: нет (правило).")
+        let blank = try WeekFixtures.review { $0["verdict_line"] = "  " }
+        XCTAssertEqual(WeekFormat.weekVerdict(blank), "Неделя не выиграна")
+        let running = try WeekFixtures.runningWeek()
+        XCTAssertNil(WeekFormat.weekVerdict(running))
+    }
+
+    func testIncompleteDataCaptionNamesTheDays() {
+        XCTAssertEqual(WeekFormat.incompleteDataNote(countedDays: 5), "Неполные данные: 5 из 7 дней.")
     }
 
     func testHealthValuesFollowTheirUnit() {
@@ -269,5 +311,25 @@ final class WeekFormatTests: XCTestCase {
         XCTAssertEqual(future.endsOn, "2026-09-06")
         XCTAssertFalse(WeekFormat.isRunning(future, at: try moment("2026-08-26T10:00:00Z")))
         XCTAssertTrue(WeekFormat.isRunning(future, at: try moment("2026-09-02T10:00:00Z")))
+    }
+
+    /// Berlin sprang forward at 01:00Z on 2026-03-29. The server cuts the day on the wall clock
+    /// (`local - 4 h`), so 04:30 local that Sunday is 00:30 of the 29th, not 23:30 of the 28th.
+    func testTheDayCutFollowsTheWallClockAcrossTheSpringChange() throws {
+        let window = try WeekFixtures.review().window
+
+        XCTAssertEqual(WeekFormat.serverDay(try moment("2026-03-29T02:30:00Z"), in: window), "2026-03-29")
+        XCTAssertEqual(WeekFormat.serverDay(try moment("2026-03-29T01:30:00Z"), in: window), "2026-03-28", "03:30 local is still the night")
+        XCTAssertEqual(WeekFormat.serverDay(try moment("2026-10-25T03:30:00Z"), in: window), "2026-10-25")
+    }
+
+    func testWeekFixtureDatesFollowTheIsoYear() throws {
+        let newYear = try WeekFixtures.unclosedWeek(iso: "2027-W01").window
+        XCTAssertEqual(newYear.startsOn, "2027-01-04")
+        XCTAssertEqual(newYear.endsOn, "2027-01-10")
+        let w53 = try WeekFixtures.unclosedWeek(iso: "2026-W53").window
+        XCTAssertEqual(w53.startsOn, "2026-12-28")
+        let previous = try WeekFixtures.unclosedWeek(iso: "2026-W34").window
+        XCTAssertEqual(previous.startsOn, "2026-08-17")
     }
 }

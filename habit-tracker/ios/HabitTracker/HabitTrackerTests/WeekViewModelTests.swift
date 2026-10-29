@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
 // summary: Week screen state tests (return to the screen reads in place, pull to refresh offline and overtaken by a step, the running week opened by its code kept as «current», a cached week that ended loses its note, no «Текущая» on the running week, one narrative request per week, 422 and a slow model in words) — load of the running week through the read cache (fresh, offline with "обновлено", nothing to show), not-configured and server errors in words, stepping between weeks with a late answer dropped, in-place refresh that keeps the screen, and the narrative on request (statuses, no network, empty week, a week change drops it)
 import XCTest
 @testable import HabitTracker
@@ -402,8 +402,29 @@ final class WeekViewModelTests: XCTestCase {
         let weeksLater = makeViewModel(offline, store: store)
         await weeksLater.load()
         XCTAssertEqual(weeksLater.offlineAsOf, midWeek)
-        XCTAssertNil(weeksLater.partialNote, "the cache says the week runs; the calendar says it ended")
+        XCTAssertEqual(
+            weeksLater.partialNote, WeekFormat.incompleteDataNote(countedDays: 3),
+            "the cache says the week runs; the calendar says it ended, and only 3 of 7 days are in the figures"
+        )
         XCTAssertFalse(weeksLater.isShowingRunningWeek)
+    }
+
+    func testACachedEndedWeekWithAllSevenDaysNeedsNoCaption() async throws {
+        let store = InMemoryCacheStore()
+        let full = try WeekFixtures.review { object in
+            var window = object["window"] as? [String: Any] ?? [:]
+            window["is_complete"] = false
+            window["counted_days"] = 7
+            object["window"] = window
+        }
+        store.save(full, forKey: WeekViewModel.cacheKey(for: nil), updatedAt: midWeek)
+        let offline = MockWeekAPI()
+        offline.fetchHandler = { _ in throw APIClientError.timeout }
+
+        let viewModel = makeViewModel(offline, store: store)
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.partialNote)
     }
 
     func testTheButtonBackToTheCurrentWeekIsNotShownOnTheCurrentWeek() async throws {

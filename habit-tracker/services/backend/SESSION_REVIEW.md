@@ -2891,3 +2891,12 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_quick_mark_occurred_at.py` — mod: проигранная гонка не меняет итог дня спрашивающей кнопки (обе ветки, `same-button` и `other-button`); новый тест удаляет кнопку B между вставкой и чтением и ждёт 404.
 
 Проверки: `pytest tests/` на `habit_test_248` — 2124 passed, 2 skipped (12 мин); `ruff check`, `ruff format --check`, `mypy --strict app` — чисто; `alembic heads` — одна строка.
+
+
+## 2026-10-29 — PHASE-03/261, PHASE-03/262: iOS Неделя, хвосты и «сегодня войдёт»
+
+Тронут 1 файл бэкенда (`mod`), плюс iOS: `DTOs+Week.swift`, `WeekFormat.swift`, `WeekViewModel.swift`, `WeekFixtures.swift`, `WeekFormatTests.swift`, `WeekViewModelTests.swift` (все `mod`).
+
+- `tests/test_ios_week_fixture.py` — mod: проверка ключей Swift DTO против схемы недели (неверный ключ необязательного поля краснит тест); пропуск без исходников iOS только внутри docker.
+
+Проверки: `pytest tests/test_ios_week_fixture.py` — 4 passed; xcodebuild Week*/DailySummary* — зелёно.
