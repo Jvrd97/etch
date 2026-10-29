@@ -419,12 +419,14 @@ struct RoleField: View {
     let placeholder: String
     @Binding var text: String
     var numeric = false
+    /// A number that may be negative needs the punctuation keyboard: the number pad has no minus.
+    var signed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             RolesSecondaryText(title)
             TextField(placeholder, text: $text)
-                .keyboardType(numeric ? .numberPad : .default)
+                .keyboardType(signed ? .numbersAndPunctuation : (numeric ? .numberPad : .default))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(DS.Typography.body)

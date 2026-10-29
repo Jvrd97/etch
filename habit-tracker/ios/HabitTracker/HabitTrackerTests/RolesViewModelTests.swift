@@ -228,16 +228,73 @@ final class RolesViewModelTests: XCTestCase {
         XCTAssertEqual(api.toggled.map { $0.1 }, [false])
     }
 
-    func testReclassifyAsksTheChosenPeriodEndingOnTheServerDay() async {
+    func testReclassifyDefaultsToAMonthAndTheSegmentSetsBothDates() async {
         let api = MockRolesAPI()
         let viewModel = makeRules(api)
         await viewModel.load()
-        viewModel.reclassifyPeriod = .week
 
         await viewModel.reclassify()
+        viewModel.selectReclassify(period: .week)
+        await viewModel.reclassify()
 
-        XCTAssertEqual(api.reclassifyRequests.first?.0, "2026-08-21")
-        XCTAssertEqual(api.reclassifyRequests.first?.1, "2026-08-27")
+        XCTAssertEqual(api.reclassifyRequests.map { $0.0 }, ["2026-07-29", "2026-08-21"])
+        XCTAssertEqual(api.reclassifyRequests.map { $0.1 }, ["2026-08-27", "2026-08-27"])
         XCTAssertEqual(viewModel.reclassified?.protected, 2)
+    }
+
+    func testReclassifySendsAnyChosenDatesAndRefusesAReversedRange() async throws {
+        let api = MockRolesAPI()
+        let viewModel = makeRules(api)
+        await viewModel.load()
+
+        viewModel.reclassifyFrom = RolesFormat.date(fromDay: "2026-05-03")
+        viewModel.reclassifyTo = RolesFormat.date(fromDay: "2026-06-11")
+        await viewModel.reclassify()
+        viewModel.reclassifyFrom = RolesFormat.date(fromDay: "2026-07-01")
+        await viewModel.reclassify()
+
+        XCTAssertEqual(api.reclassifyRequests.count, 1)
+        XCTAssertEqual(api.reclassifyRequests[0].0, "2026-05-03")
+        XCTAssertEqual(api.reclassifyRequests[0].1, "2026-06-11")
+        XCTAssertFalse(viewModel.canReclassify)
+    }
+
+    func testPriorityMayBeAnyIntegerIncludingNegative() async {
+        let api = MockRolesAPI()
+        let viewModel = makeRules(api)
+        await viewModel.load()
+        viewModel.draft.pattern = "x"
+        viewModel.draft.priority = -5
+
+        await viewModel.saveRule()
+
+        XCTAssertEqual(api.ruleDrafts.first?.priority, -5)
+    }
+
+    func testTwoParallelSavesOfARuleSendOnePost() async {
+        let api = MockRolesAPI()
+        api.write = { try await Task.sleep(nanoseconds: 100_000_000) }
+        let viewModel = makeRules(api)
+        await viewModel.load()
+        viewModel.draft.pattern = "feat("
+
+        async let first: Void = viewModel.saveRule()
+        async let second: Void = viewModel.saveRule()
+        _ = await (first, second)
+
+        XCTAssertEqual(api.ruleDrafts.count, 1)
+    }
+
+    func testTwoParallelMinuteWritesSendOnePost() async {
+        let api = MockRolesAPI()
+        api.write = { try await Task.sleep(nanoseconds: 100_000_000) }
+        let viewModel = makeDay(api)
+        await viewModel.load()
+
+        async let first = viewModel.addMinutes(roleCode: "cto", minutes: 30, note: "")
+        async let second = viewModel.addMinutes(roleCode: "cto", minutes: 30, note: "")
+        _ = await (first, second)
+
+        XCTAssertEqual(api.timeBlockDrafts.count, 1)
     }
 }

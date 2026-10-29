@@ -95,6 +95,7 @@ private struct RuleListCard: View {
 
 private struct RuleFormCard: View {
     @ObservedObject var viewModel: RoleRulesViewModel
+    @State private var priorityText = String(RolesFormat.defaultPriority)
 
     var body: some View {
         Card {
@@ -103,12 +104,13 @@ private struct RuleFormCard: View {
                 RolePicker(title: "Роль", roles: viewModel.roles, selection: $viewModel.draft.roleCode)
                 choice("Источник", RolesFormat.sources, $viewModel.draft.source)
                 choice("По чему сверять", RolesFormat.matchers, $viewModel.draft.matcherKind)
-                Stepper(
-                    "Вес (меньше — сильнее): \(viewModel.draft.priority)",
-                    value: $viewModel.draft.priority, in: 0...1000, step: 10
+                RoleField(
+                    title: "Вес (меньше — сильнее)", placeholder: "100", text: $priorityText, numeric: true, signed: true
                 )
-                .font(DS.Typography.caption)
-                .foregroundStyle(DS.Palette.textSecondary)
+                .accessibilityIdentifier("rules.priority")
+                .onChange(of: priorityText) { _, text in
+                    if let value = Int(text.trimmingCharacters(in: .whitespaces)) { viewModel.draft.priority = value }
+                }
                 RoleField(
                     title: "Образец", placeholder: "feat(", text: $viewModel.draft.pattern
                 )
@@ -161,17 +163,20 @@ private struct ReclassifyCard: View {
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 RolesCardTitle(text: "Переразметить период")
-                Picker("Период", selection: $viewModel.reclassifyPeriod) {
-                    ForEach(RolesFormat.Period.allCases) { Text($0.label).tag($0) }
+                HStack(spacing: DS.Spacing.sm) {
+                    ForEach(RolesFormat.Period.allCases) { period in
+                        Button(period.label) { viewModel.selectReclassify(period: period) }
+                            .buttonStyle(LimeButtonStyle(prominent: false))
+                    }
                 }
-                .pickerStyle(.segmented)
-                if let today = viewModel.today,
-                   let bounds = RolesFormat.range(endingOn: today, period: viewModel.reclassifyPeriod) {
-                    RolesSecondaryText("\(bounds.from) — \(bounds.to)")
+                .disabled(viewModel.today == nil)
+                if viewModel.reclassifyFrom != nil, viewModel.reclassifyTo != nil {
+                    dayPicker("С", selection: $viewModel.reclassifyFrom)
+                    dayPicker("По", selection: $viewModel.reclassifyTo)
                 }
                 Button("Переразметить") { Task { await viewModel.reclassify() } }
                     .buttonStyle(LimeButtonStyle(prominent: false))
-                    .disabled(viewModel.isBusy || viewModel.today == nil)
+                    .disabled(!viewModel.canReclassify)
                     .accessibilityIdentifier("rules.reclassify")
                 if let result = viewModel.reclassified {
                     VStack(alignment: .leading, spacing: 4) {
@@ -186,5 +191,19 @@ private struct ReclassifyCard: View {
                 }
             }
         }
+    }
+
+    /// The days are server days: the picker runs in UTC so the chosen day is the one that is sent.
+    private func dayPicker(_ title: String, selection: Binding<Date?>) -> some View {
+        DatePicker(
+            title,
+            selection: Binding(get: { selection.wrappedValue ?? Date() }, set: { selection.wrappedValue = $0 }),
+            displayedComponents: .date
+        )
+        .environment(\.timeZone, RolesFormat.utcTimeZone)
+        .tint(DS.Palette.lime)
+        .font(DS.Typography.caption)
+        .foregroundStyle(DS.Palette.textSecondary)
+        .accessibilityIdentifier("rules.reclassify.\(title)")
     }
 }

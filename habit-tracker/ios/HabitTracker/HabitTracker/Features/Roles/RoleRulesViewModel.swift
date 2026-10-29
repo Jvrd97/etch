@@ -34,7 +34,9 @@ final class RoleRulesViewModel: ObservableObject {
     @Published var draft = Draft()
     @Published private(set) var dryRun: RoleRuleDryRunDTO?
     @Published private(set) var reclassified: RoleReclassifiedDTO?
-    @Published var reclassifyPeriod: RolesFormat.Period = .month
+    /// The bounds of the re-markup, any two days; `nil` until the server's day is known.
+    @Published var reclassifyFrom: Date?
+    @Published var reclassifyTo: Date?
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
 
@@ -113,6 +115,7 @@ final class RoleRulesViewModel: ObservableObject {
         rules = snapshot.rules
         roles = snapshot.roles
         today = snapshot.today
+        if reclassifyFrom == nil || reclassifyTo == nil { selectReclassify(period: .month) }
         if draft.roleCode.isEmpty || !snapshot.roles.contains(where: { $0.code == draft.roleCode }) {
             draft.roleCode = snapshot.roles.first?.code ?? ""
         }
@@ -163,12 +166,24 @@ final class RoleRulesViewModel: ObservableObject {
         if saved { await read(silent: true) }
     }
 
+    /// A ready-made span ending on the server's day: sets both dates, which stay editable.
+    func selectReclassify(period: RolesFormat.Period) {
+        guard let today, let bounds = RolesFormat.range(endingOn: today, period: period) else { return }
+        reclassifyFrom = RolesFormat.date(fromDay: bounds.from)
+        reclassifyTo = RolesFormat.date(fromDay: bounds.to)
+    }
+
+    var canReclassify: Bool {
+        guard let from = reclassifyFrom, let to = reclassifyTo else { return false }
+        return from <= to && !isBusy
+    }
+
     func reclassify() async {
-        guard let today, let bounds = RolesFormat.range(endingOn: today, period: reclassifyPeriod),
-              let api = prepared()
-        else { return }
+        guard canReclassify, let from = reclassifyFrom, let to = reclassifyTo, let api = prepared() else { return }
+        let dateFrom = RolesFormat.dayString(from)
+        let dateTo = RolesFormat.dayString(to)
         await perform {
-            self.reclassified = try await api.reclassifyRoles(dateFrom: bounds.from, dateTo: bounds.to)
+            self.reclassified = try await api.reclassifyRoles(dateFrom: dateFrom, dateTo: dateTo)
         }
     }
 

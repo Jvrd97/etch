@@ -176,6 +176,11 @@ enum RolesFormat {
         range(endingOn: lastDay, days: period.days)
     }
 
+    /// The server day as a `Date` at UTC midnight, and back: the pickers run in UTC so the day never shifts.
+    static func date(fromDay day: String) -> Date? { dayFormatter.date(from: day) }
+    static func dayString(_ date: Date) -> String { dayFormatter.string(from: date) }
+    static let utcTimeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+
     private static let utcCalendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
