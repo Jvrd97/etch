@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
-// summary: Week screen (More → Неделя) — the numbers of a week against the previous one, best and worst day, health, and the AI text on a button; states: loading, error with retry (and a way back to the running week), empty week, unfinished week marked, last cached answer marked "обновлено …" offline; pull to refresh in place; no navigation stack of its own
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/222
+// summary: Week screen (More → Неделя) — the numbers of a week against the previous one, best and worst day, health, and the AI text on a button; states: loading, error with retry (and a way back to the running week), empty week, unfinished week marked, last cached answer marked "обновлено …" offline; pull to refresh in place; no navigation stack of its own; a button opens the animated overview sheet (#222)
 import SwiftUI
 
 struct WeekView: View {
     @StateObject private var viewModel: WeekViewModel
+    @State private var showsOverview = false
 
     /// No-argument init keeps `RootView` to one line: the model builds its client with `.live()`.
     init() {
@@ -19,6 +20,7 @@ struct WeekView: View {
             .navigationTitle(MoreDestination.week.title)
             .dsScreenBackground()
             .task { await viewModel.appear() }
+            .sheet(isPresented: $showsOverview) { WeekOverviewView(viewModel: viewModel) }
     }
 
     @ViewBuilder
@@ -52,6 +54,8 @@ struct WeekView: View {
                         .font(DS.Typography.body)
                         .foregroundStyle(DS.Palette.textSecondary)
                 } else {
+                    Button("Итоги недели") { showsOverview = true }
+                        .buttonStyle(LimeButtonStyle(prominent: true))
                     WeekTotalsView(review: review)
                     WeekDaysView(review: review)
                     WeekRolesView(review: review)
