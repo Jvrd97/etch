@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one screen line)
+// [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one screen line) and the first-launch gate (one modifier line)
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
 // [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229; the More stack hands its pushed screens a hold/release by token, so several instances of one screen cannot lift each other's block, #250)
@@ -18,6 +19,7 @@ struct RootView: View {
             }
         }
         .tint(DS.Palette.lime)
+        .onboardingGate { navigation.open(.more(.categories)) }
     }
 
     @ViewBuilder
@@ -72,6 +74,8 @@ struct RootView: View {
             InsightsView(viewModel: .live())
         case .life:
             LifeView()
+        case .onboarding:
+            OnboardingView { navigation.open(.more(.categories)) }
         case .settings:
             SettingsView()
         }

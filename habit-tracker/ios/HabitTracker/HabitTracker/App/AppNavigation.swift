@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one case, one title, one icon)
+// [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one case, one title, one icon)
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
 // [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // summary: root navigation model — five tabs in mobile-web order, the screens behind More, and the routing of in-app jumps (+ the Неделя row under More, #229); More screens that hold an unconfirmed write block the system's pop to the root (a second tap on the selected tab), #230; the block is a set of holders, one token per screen instance, so an old screen going away cannot lift the block of the new one (#250)
@@ -48,6 +49,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
     case journal
     case insights
     case life
+    case onboarding
     case settings
 
     var id: String { rawValue }
@@ -65,6 +67,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .journal: return "Journal"
         case .insights: return "Insights"
         case .life: return "Жизнь"
+        case .onboarding: return "Онбординг"
         case .settings: return "Settings"
         }
     }
@@ -82,6 +85,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .journal: return "book"
         case .insights: return "sparkles"
         case .life: return "square.grid.3x3"
+        case .onboarding: return "wand.and.stars"
         case .settings: return "gear"
         }
     }
