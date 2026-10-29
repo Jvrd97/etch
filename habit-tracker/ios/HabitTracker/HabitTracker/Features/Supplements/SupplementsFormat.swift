@@ -19,7 +19,10 @@ struct SupplementDraft: Equatable {
 /// the default (phone zone, 04:00) stands in.
 struct ServerDayRule: Codable, Equatable {
     static let defaultDayStartHour = 4
-    static let phone = ServerDayRule(timeZoneID: TimeZone.current.identifier, dayStartHour: defaultDayStartHour)
+    /// Computed, so the stand-in follows the phone's zone when it changes.
+    static var phone: ServerDayRule {
+        ServerDayRule(timeZoneID: TimeZone.current.identifier, dayStartHour: defaultDayStartHour)
+    }
 
     var timeZoneID: String
     var dayStartHour: Int

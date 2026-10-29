@@ -67,9 +67,10 @@ final class SupplementsFormatTests: XCTestCase {
 
     func testTheDayOfTheClockChangeIsCutByWallClockNotByAbsoluteHours() {
         // Berlin ends summer time at 2026-10-25 03:00 CEST -> 02:00 CET. 03:30 CET (02:30 UTC) is wall 03:30 < 4: the 24th.
-        let afterTheChange = Date(timeIntervalSince1970: 1_792_895_400) // 2026-10-25 02:30 UTC = 03:30 CET
+        let afterTheChange = Date(timeIntervalSince1970: 1_792_895_400) // 2026-10-25 02:30 UTC = 03:30 CET; four absolute hours back is 00:30 CEST on the 25th, the old cut's wrong answer
         XCTAssertEqual(SupplementsFormat.logicalDay(of: afterTheChange, rule: rule("Europe/Berlin")), "2026-10-24")
-        // 04:00 CET (03:00 UTC) is the 25th; subtracting four absolute hours would have said the 24th.
+        // 04:00 CET (03:00 UTC) is the 25th. The case above is the one the old cut got wrong
+        // (it said the 25th at 03:30 CET); this one only pins the boundary itself.
         let fourCET = Date(timeIntervalSince1970: 1_792_897_200)
         XCTAssertEqual(SupplementsFormat.logicalDay(of: fourCET, rule: rule("Europe/Berlin")), "2026-10-25")
     }
