@@ -773,3 +773,13 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **`DailySummaryView.init(onApplied:)`** удалён вместе с фразами о нём в шапке: вызывающего не было, `retainer` теперь не опциональный.
 - Граница понедельника 03:59 / 04:00 проверена в `WeekFormatTests`. `VoiceDaySession` оставлен `internal`: на него ссылаются тесты.
 - Глазами в симуляторе лист не проверялся.
+
+## 2026-10-29 — #265 iOS Life (More → Жизнь)
+
+Файлы (new): `API/DTOs+Life.swift`, `API/APIClient+Life.swift`, `Features/Life/{LifeCalendar,LifeViewModel,LifeSquare,LifeView}.swift`, `HabitTrackerTests/Life{Calendar,ViewModel,APIClient}Tests.swift`. Файлы (mod): `App/AppNavigation.swift`, `App/RootView.swift` (добавлением), `README.md`.
+
+Расхождения с `/m/life`:
+- Квадрат дня и строка недели в вебе — ссылки на `/day/{date}` и `/week/{iso}`; в iOS экраны Day и Week не принимают дату снаружи (чужие файлы), поэтому квадрат открывает вид «день» внутри Life, ссылки «Открыть день/неделю» нет.
+- Дата рождения — текстовое поле `ГГГГ-ММ-ДД` с проверкой (системный DatePicker не берём, своего календаря в iOS нет).
+- Вид «жизнь» рисуется на Canvas; подсказок-tooltip нет, у квадратов есть подписи для VoiceOver.
+- Рамка (дата рождения, лет) хранится в UserDefaults под тем же ключом, что у веба.

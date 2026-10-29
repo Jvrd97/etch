@@ -32,6 +32,7 @@ xcodebuild test -project HabitTracker.xcodeproj -scheme HabitTracker \
 | `Features/DailySummary/DailySummaryView.swift` | #213 |
 | экран блокировки: модификатор `.appLock()` в `HabitTrackerApp` | #214 |
 | `Features/HealthSync/`, вкладка Health | #131 |
+| `Features/Life/LifeView.swift`, More → Жизнь | #265 |
 
 ## Решение: цифры здоровья лежат в общем кэше чтения (#243, 2026-10-27)
 
