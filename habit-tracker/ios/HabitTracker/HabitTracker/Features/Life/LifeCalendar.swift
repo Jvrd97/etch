@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — wholeYears, gridCell, weekMonday
 // [review:need-review] PHASE-01/265
 // summary: pure timeline rules ported from lib/life.ts — dates as `yyyy-MM-dd` on a fixed UTC ISO calendar (no device time zone in the arithmetic), the five square states, the weeks-lived counter with the same 52.1775 arithmetic as life.html, ISO week codes, month grids, and the aggregate state of a week square
 import Foundation
@@ -167,12 +168,41 @@ enum LifeCalendar {
         let livedDays = Int((today.timeIntervalSince(born) / 86_400).rounded(.down))
         let weeksLived = Int((Double(livedDays) / Double(daysInWeek)).rounded(.down))
         let weeksTotal = Int((Double(frame.targetYears) * weeksPerYear).rounded())
-        let years = calendar.dateComponents([.year], from: born, to: today).year ?? 0
+        let years = wholeYears(from: born, to: today)
         let percent = weeksTotal > 0 ? min(100, Double(weeksLived) / Double(weeksTotal) * 100) : 0
         return LifeCounter(
             years: years, weeksLived: weeksLived, weeksTotal: weeksTotal,
             weeksLeft: max(0, weeksTotal - weeksLived), percent: percent
         )
+    }
+
+    /// Whole years like the web: the anniversary is the birthday set in the year, and 29 February in a
+    /// year without one rolls to 1 March (JS `setFullYear`), so a leap-day child turns a year older on 1 March.
+    static func wholeYears(from born: Date, to today: Date) -> Int {
+        let years = year(today) - year(born)
+        let anniversaryYear = year(born) + years
+        var anniversary = date(year: anniversaryYear, month: month(born), day: dayOfMonth(born))
+        if month(born) == 2, dayOfMonth(born) == 29, month(anniversary) != 2 {
+            anniversary = date(year: anniversaryYear, month: 3, day: 1)
+        }
+        return anniversary > today ? years - 1 : years
+    }
+
+    // MARK: Week grid
+
+    /// The cell of the life canvas under a point: `labelCells` columns of row numbers come first, one cell is
+    /// `stride` points wide. `nil` outside the grid.
+    static func gridCell(x: Double, y: Double, stride: Double, labelCells: Double, rows: Int) -> (row: Int, column: Int)? {
+        guard stride > 0 else { return nil }
+        let column = Int((x / stride - labelCells).rounded(.down))
+        let row = Int((y / stride).rounded(.down))
+        guard row >= 0, row < rows, column >= 0, column < weeksPerRow else { return nil }
+        return (row, column)
+    }
+
+    /// The Monday a canvas cell stands for, counted from the Monday of the birth week.
+    static func weekMonday(birth: Date, index: Int) -> Date {
+        addDays(startOfWeek(birth), index * daysInWeek)
     }
 
     // MARK: Ranges

@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256, PHASE-03/263
 // summary: PHASE-03/263 — third-text conflict settled by both choices
 // summary: PHASE-03/248 — false conflict after A→B→A, a third text in a stale answer, cancelled pull-to-refresh, a re-read answered while another day loads is not shown, the replaced-text card is not restored over the same server text; every hook a test sets must run
@@ -1043,5 +1044,12 @@ final class DayViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.timeZone.identifier, "America/New_York")
         XCTAssertEqual(api.fetchedDates.count, 2)
+    }
+
+    func testShowDateOpensThatDayAndStaysOnItAfterAReload() async throws {
+        await viewModel.show(date: "2026-10-20")
+        XCTAssertEqual(api.fetchedDates.last, "2026-10-20")
+        await viewModel.show(date: "2026-02-30")
+        XCTAssertEqual(api.fetchedDates.count, 1, "a bad date is ignored")
     }
 }

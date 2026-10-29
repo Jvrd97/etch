@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — days dictionary, weekStatuses once per pair, weekSpeech, future birth refused
 // [review:need-review] PHASE-01/265
 // summary: Life screen state — the server's day plus the days of the last three years and this one through the read cache (one key; offline shows the last snapshot with its moment), five views (жизнь, год, месяц, неделя, день) over one cursor that stays on the server's day until the reader moves it, stepping per view, the birth date and frame kept on the device, a late answer of a superseded read dropped
 import Foundation
@@ -59,7 +60,16 @@ final class LifeViewModel: ObservableObject {
     static let cacheKey = "life.days"
 
     @Published private(set) var state: LoadState = .idle
-    @Published private(set) var snapshot: LifeSnapshotDTO?
+    @Published private(set) var snapshot: LifeSnapshotDTO? {
+        didSet {
+            days = Dictionary((snapshot?.days ?? []).map { ($0.date, $0) }, uniquingKeysWith: { _, last in last })
+            snapshotVersion += 1
+        }
+    }
+    /// The snapshot's days by `yyyy-MM-dd`, rebuilt when the snapshot changes.
+    private(set) var days: [String: LifeDayDTO] = [:]
+    private var snapshotVersion = 0
+    private var weekStatusCache: (version: Int, frame: LifeFrame, statuses: [LifeStatus])?
     /// Set while the screen shows a cached answer: when it was fetched.
     @Published private(set) var offlineAsOf: Date?
     /// Why the last in-place refresh failed; the screen keeps what it had.
@@ -71,6 +81,7 @@ final class LifeViewModel: ObservableObject {
     private let apiProvider: () -> LifeAPI?
     private let cache: ReadThroughCache
     private let frameStore: LifeFrameStore
+    private let now: () -> Date
     private var generation = 0
 
     init(
@@ -82,6 +93,7 @@ final class LifeViewModel: ObservableObject {
         self.apiProvider = apiProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.frameStore = frameStore
+        self.now = now
         let stored = frameStore.load()
         // A stored value that no longer parses must not break the counter.
         if let stored, LifeCalendar.parse(stored.birth) != nil, LifeFrame.yearsRange.contains(stored.targetYears) {
@@ -108,12 +120,47 @@ final class LifeViewModel: ObservableObject {
     /// The server's day; until the first answer the screen has no squares to paint.
     var today: Date? { snapshot.flatMap { LifeCalendar.parse($0.today) } }
     var todayISO: String? { snapshot?.today }
-    var days: [String: LifeDayDTO] {
-        Dictionary((snapshot?.days ?? []).map { ($0.date, $0) }, uniquingKeysWith: { _, last in last })
-    }
     /// Until the reader moves it, the view stays on today.
     var cursor: Date? { movedCursor ?? today }
     var counter: LifeCounter? { today.map { LifeCalendar.counter(frame: frame, today: $0) } }
+
+    /// The status of every week cell of the life canvas (row × 53 + column), computed once per pair
+    /// (snapshot, frame): drawing and VoiceOver read the same array.
+    var weekStatuses: [LifeStatus] {
+        if let cache = weekStatusCache, cache.version == snapshotVersion, cache.frame == frame { return cache.statuses }
+        var statuses: [LifeStatus] = []
+        if let birth = LifeCalendar.parse(frame.birth), let todayISO {
+            statuses = (0..<(frame.targetYears * LifeCalendar.weeksPerRow)).map {
+                LifeCalendar.weekStatus(monday: LifeCalendar.weekMonday(birth: birth, index: $0), days: days, today: todayISO)
+            }
+        }
+        weekStatusCache = (snapshotVersion, frame, statuses)
+        return statuses
+    }
+
+    /// The Monday of a canvas cell; `nil` outside the grid.
+    func weekMonday(row: Int, column: Int) -> Date? {
+        guard row >= 0, row < frame.targetYears, column >= 0, column < LifeCalendar.weeksPerRow,
+              let birth = LifeCalendar.parse(frame.birth) else { return nil }
+        return LifeCalendar.weekMonday(birth: birth, index: row * LifeCalendar.weeksPerRow + column)
+    }
+
+    /// The cell holding the running week, where VoiceOver starts.
+    var currentWeekIndex: Int? {
+        guard let birth = LifeCalendar.parse(frame.birth), let today else { return nil }
+        let seconds = LifeCalendar.startOfWeek(today).timeIntervalSince(LifeCalendar.startOfWeek(birth))
+        let weeks = Int((seconds / (86_400 * Double(LifeCalendar.daysInWeek))).rounded())
+        return min(max(weeks, 0), frame.targetYears * LifeCalendar.weeksPerRow - 1)
+    }
+
+    /// What VoiceOver says for a canvas cell: the year of life, the ISO week, the state and the tally.
+    func weekSpeech(index: Int) -> String? {
+        guard let birth = LifeCalendar.parse(frame.birth), index >= 0, index < weekStatuses.count else { return nil }
+        let monday = LifeCalendar.weekMonday(birth: birth, index: index)
+        let tally = LifeCalendar.weekTally(monday: monday, days: days)
+        return "Год \(index / LifeCalendar.weeksPerRow), неделя \(LifeCalendar.isoWeekCode(monday)), "
+            + "\(weekStatuses[index].label), выиграно \(tally.won), проиграно \(tally.lost)"
+    }
 
     func status(of date: Date) -> LifeStatus {
         let iso = LifeCalendar.iso(date)
@@ -217,10 +264,10 @@ final class LifeViewModel: ObservableObject {
 
     // MARK: Frame
 
-    /// `false` leaves the frame as it was: the text is not a real `yyyy-MM-dd` date.
+    /// `false` leaves the frame as it was: the text is not a real `yyyy-MM-dd` date, or the date is ahead of today.
     @discardableResult
     func setBirth(_ iso: String) -> Bool {
-        guard LifeCalendar.parse(iso) != nil else { return false }
+        guard LifeCalendar.parse(iso) != nil, iso <= (todayISO ?? LifeCalendar.iso(now())) else { return false }
         frame.birth = iso
         frameStore.save(frame)
         return true

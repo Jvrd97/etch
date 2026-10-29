@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — day jump to the Day model, week start, Life open closure
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one screen line)
 // [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one screen line) and the first-launch gate (one modifier line)
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
@@ -10,6 +11,8 @@ import SwiftUI
 struct RootView: View {
     @State private var navigation = AppNavigation()
     @State private var summaryRetainer = DailySummaryRetainer()
+    /// Owned here so a jump from Life can send the Day tab to a date.
+    @StateObject private var dayModel = DayViewModel.live()
 
     var body: some View {
         TabView(selection: $navigation.selectedTab) {
@@ -20,6 +23,9 @@ struct RootView: View {
             }
         }
         .tint(DS.Palette.lime)
+        .onChange(of: navigation.dayJump) { _, jump in
+            if let jump { Task { await dayModel.show(date: jump.value) } }
+        }
         .onboardingGate { navigation.open(.more(.categories)) }
     }
 
@@ -29,7 +35,7 @@ struct RootView: View {
         case .today:
             NavigationStack { TodayView(viewModel: .live()) }
         case .day:
-            NavigationStack { DayView() }
+            NavigationStack { DayView(viewModel: dayModel) }
         case .chat:
             NavigationStack { ChatView() }
         case .health:
@@ -60,7 +66,7 @@ struct RootView: View {
         case .dailySummary:
             DailySummaryView(retainer: summaryRetainer)
         case .week:
-            WeekView()
+            WeekView(startIso: navigation.weekStart)
         case .supplements:
             SupplementsView()
         case .goals:
@@ -78,7 +84,7 @@ struct RootView: View {
         case .insights:
             InsightsView(viewModel: .live())
         case .life:
-            LifeView()
+            LifeView { navigation.open($0) }
         case .onboarding:
             OnboardingView { navigation.open(.more(.categories)) }
         case .settings:

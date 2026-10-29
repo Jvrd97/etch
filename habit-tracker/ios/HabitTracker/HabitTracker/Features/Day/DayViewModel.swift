@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — show(date:)
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
 // summary: PHASE-03/263 — a queued notebook save counts as delivered by its own write id (a refused older write of the same day does not hide it); `newestCached` never evicts the key just written
 // summary: PHASE-03/248, 256 — a save that ended on another day rebases the draft typed over its base (no false conflict on coming back); an older answer is swapped for the saved text only when it holds the base or that text, a third text is a conflict beside the saved one; the cache keeps the newest read of each key; a direct mark refused with 502/504 is queued as one that may have landed (no read, no apology)
@@ -423,6 +424,13 @@ final class DayViewModel: ObservableObject {
 
     func showPreviousDay() async { await step(by: -1) }
     func showNextDay() async { await step(by: 1) }
+
+    /// A jump from another screen: the day asked for, `yyyy-MM-dd`. Anything else is ignored.
+    func show(date: String) async {
+        guard LifeCalendar.parse(date) != nil else { return }
+        requestedDate = date
+        await load()
+    }
 
     func showToday() async {
         requestedDate = nil

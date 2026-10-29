@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — links to Day and Week, VoiceOver week picking, canvas on cached statuses
 // [review:need-review] PHASE-01/265
 // summary: Life screen (More → Жизнь) — the weeks-lived counter with the birth date and frame, five views of one timeline (жизнь as a canvas of weeks, год, месяц, неделя, день), the legend; states: loading, error with retry, offline note with the cached moment, pull to refresh in place; no navigation stack of its own
 import SwiftUI
@@ -5,13 +6,18 @@ import SwiftUI
 struct LifeView: View {
     @StateObject private var viewModel: LifeViewModel
 
-    /// No-argument init keeps `RootView` to one line: the model builds its client with `.live()`.
-    init() {
+    /// Where a link to a day or a week goes: the Day tab and the Неделя screen.
+    private let open: (AppDestination) -> Void
+
+    /// The model builds its client with `.live()`.
+    init(open: @escaping (AppDestination) -> Void = { _ in }) {
         _viewModel = StateObject(wrappedValue: .live())
+        self.open = open
     }
 
-    init(viewModel: LifeViewModel) {
+    init(viewModel: LifeViewModel, open: @escaping (AppDestination) -> Void = { _ in }) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.open = open
     }
 
     var body: some View {
@@ -49,7 +55,7 @@ struct LifeView: View {
                     .foregroundStyle(DS.Palette.textSecondary)
                 LifeCounterCard(viewModel: viewModel)
                 LifeViewPicker(viewModel: viewModel)
-                LifeBody(viewModel: viewModel)
+                LifeBody(viewModel: viewModel, open: open)
                 LifeLegend()
             }
             .padding(DS.Spacing.lg)
@@ -161,6 +167,7 @@ private struct LifeViewPicker: View {
 
 private struct LifeBody: View {
     @ObservedObject var viewModel: LifeViewModel
+    let open: (AppDestination) -> Void
 
     var body: some View {
         if let cursor = viewModel.cursor, let today = viewModel.todayISO {
@@ -168,8 +175,8 @@ private struct LifeBody: View {
             case .life: LifeWeeksCanvas(viewModel: viewModel)
             case .year: LifeYearView(viewModel: viewModel, cursor: cursor)
             case .month: LifeMonthView(viewModel: viewModel, cursor: cursor, today: today)
-            case .week: LifeWeekView(viewModel: viewModel, cursor: cursor)
-            case .day: LifeDayView(viewModel: viewModel, cursor: cursor)
+            case .week: LifeWeekView(viewModel: viewModel, cursor: cursor, open: open)
+            case .day: LifeDayView(viewModel: viewModel, cursor: cursor, open: open)
             }
         }
     }
@@ -192,47 +199,58 @@ private struct LifeStepper: View {
     }
 }
 
-/// One row per year of life, one cell per week; a tap on a cell opens that week.
+/// One row per year of life, one cell per week; a tap on a cell opens that week. VoiceOver walks the weeks
+/// with the adjustable swipe (from the running week) and opens the one it stands on.
 private struct LifeWeeksCanvas: View {
     @ObservedObject var viewModel: LifeViewModel
+    @State private var spokenIndex: Int?
     /// Width of the row-number column, in cells.
     private let labelCells = 3.0
 
     var body: some View {
         let rows = viewModel.frame.targetYears
         let columns = Double(LifeCalendar.weeksPerRow) + labelCells
+        let statuses = viewModel.weekStatuses
         Color.clear
             .aspectRatio(columns / Double(rows), contentMode: .fit)
             .overlay(
                 GeometryReader { geometry in
                     let stride = geometry.size.width / columns
-                    Canvas { context, _ in draw(context, stride: stride, rows: rows) }
+                    Canvas { context, _ in draw(context, stride: stride, rows: rows, statuses: statuses) }
                         .contentShape(Rectangle())
                         .gesture(SpatialTapGesture().onEnded { tap in
-                            let column = Int((tap.location.x / stride - labelCells).rounded(.down))
-                            let row = Int((tap.location.y / stride).rounded(.down))
-                            if let monday = monday(row: row, column: column, rows: rows) { viewModel.pickWeek(monday) }
+                            if let cell = LifeCalendar.gridCell(x: tap.location.x, y: tap.location.y, stride: stride, labelCells: labelCells, rows: rows),
+                               let monday = viewModel.weekMonday(row: cell.row, column: cell.column) {
+                                viewModel.pickWeek(monday)
+                            }
                         })
                 }
             )
             .accessibilityElement()
             .accessibilityLabel("Сетка жизни по неделям, \(rows) лет")
+            .accessibilityValue(viewModel.weekSpeech(index: spokenIndex ?? viewModel.currentWeekIndex ?? 0) ?? "")
+            .accessibilityHint("Листайте вверх и вниз, чтобы выбрать неделю, двойное касание открывает её")
+            .accessibilityAdjustableAction { direction in
+                let last = statuses.count - 1
+                let current = spokenIndex ?? viewModel.currentWeekIndex ?? 0
+                switch direction {
+                case .increment: spokenIndex = min(current + 1, last)
+                case .decrement: spokenIndex = max(current - 1, 0)
+                @unknown default: break
+                }
+            }
+            .accessibilityAction {
+                let index = spokenIndex ?? viewModel.currentWeekIndex ?? 0
+                if let birth = LifeCalendar.parse(viewModel.frame.birth) {
+                    viewModel.pickWeek(LifeCalendar.weekMonday(birth: birth, index: index))
+                }
+            }
     }
 
-    private func firstWeek() -> Date? {
-        LifeCalendar.parse(viewModel.frame.birth).map(LifeCalendar.startOfWeek)
-    }
-
-    private func monday(row: Int, column: Int, rows: Int) -> Date? {
-        guard row >= 0, row < rows, column >= 0, column < LifeCalendar.weeksPerRow, let first = firstWeek() else { return nil }
-        return LifeCalendar.addDays(first, (row * LifeCalendar.weeksPerRow + column) * LifeCalendar.daysInWeek)
-    }
-
-    private func draw(_ context: GraphicsContext, stride: CGFloat, rows: Int) {
-        guard let today = viewModel.todayISO, let todayDate = viewModel.today else { return }
-        let days = viewModel.days
-        let currentWeek = LifeCalendar.iso(LifeCalendar.startOfWeek(todayDate))
+    private func draw(_ context: GraphicsContext, stride: CGFloat, rows: Int, statuses: [LifeStatus]) {
+        guard viewModel.todayISO != nil else { return }
         let gap = max(0.5, stride * 0.18)
+        let current = viewModel.currentWeekIndex
         for row in 0..<rows {
             if row % 5 == 0 {
                 context.draw(
@@ -241,8 +259,9 @@ private struct LifeWeeksCanvas: View {
                 )
             }
             for column in 0..<LifeCalendar.weeksPerRow {
-                guard let monday = monday(row: row, column: column, rows: rows) else { continue }
-                let status = LifeCalendar.weekStatus(monday: monday, days: days, today: today)
+                let index = row * LifeCalendar.weeksPerRow + column
+                guard index < statuses.count else { continue }
+                let status = statuses[index]
                 let rect = CGRect(
                     x: (labelCells + CGFloat(column)) * stride + gap / 2, y: CGFloat(row) * stride + gap / 2,
                     width: stride - gap, height: stride - gap
@@ -250,7 +269,7 @@ private struct LifeWeeksCanvas: View {
                 let path = Path(roundedRect: rect, cornerRadius: stride * 0.15)
                 context.fill(path, with: .color(status.fill))
                 context.stroke(path, with: .color(status.stroke), style: StrokeStyle(lineWidth: 0.6, dash: status.dash.map { $0 / 3 }))
-                if LifeCalendar.iso(monday) == currentWeek {
+                if index == current {
                     context.stroke(Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: stride * 0.2), with: .color(.white.opacity(0.8)), lineWidth: 1)
                 }
             }
@@ -316,11 +335,16 @@ private struct LifeMonthView: View {
 private struct LifeWeekView: View {
     @ObservedObject var viewModel: LifeViewModel
     let cursor: Date
+    let open: (AppDestination) -> Void
 
     var body: some View {
         let monday = LifeCalendar.startOfWeek(cursor)
         VStack(alignment: .leading, spacing: DS.Spacing.lg) {
             LifeStepper(title: LifeCalendar.isoWeekCode(monday)) { viewModel.step($0) }
+            Button("Открыть неделю \(LifeCalendar.isoWeekCode(monday)) с ретро") {
+                open(.week(LifeCalendar.isoWeekCode(monday)))
+            }
+            .buttonStyle(LimeButtonStyle(prominent: false))
             VStack(spacing: DS.Spacing.sm) {
                 ForEach(0..<LifeCalendar.daysInWeek, id: \.self) { offset in
                     let date = LifeCalendar.addDays(monday, offset)
@@ -349,6 +373,7 @@ private struct LifeWeekView: View {
 private struct LifeDayView: View {
     @ObservedObject var viewModel: LifeViewModel
     let cursor: Date
+    let open: (AppDestination) -> Void
 
     var body: some View {
         let iso = LifeCalendar.iso(cursor)
@@ -369,6 +394,8 @@ private struct LifeDayView: View {
                     Text(summary(day))
                         .font(DS.Typography.body)
                         .foregroundStyle(DS.Palette.textSecondary)
+                    Button("Открыть день \(iso)") { open(.day(iso)) }
+                        .buttonStyle(LimeButtonStyle(prominent: false))
                 }
             }
         }
