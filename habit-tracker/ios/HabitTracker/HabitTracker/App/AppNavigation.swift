@@ -45,6 +45,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
     case week
     case supplements
     case goals
+    case roles
     case categories
     case table
     case entries
@@ -64,6 +65,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .week: return "Неделя"
         case .supplements: return "Добавки"
         case .goals: return "Цели"
+        case .roles: return "Роли"
         case .categories: return "Categories"
         case .table: return "Table"
         case .entries: return "History"
@@ -83,6 +85,7 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
         case .week: return "calendar"
         case .supplements: return "pills"
         case .goals: return "flag.checkered"
+        case .roles: return "person.2"
         case .categories: return "folder"
         case .table: return "tablecells"
         case .entries: return "clock.arrow.circlepath"

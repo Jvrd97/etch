@@ -65,6 +65,8 @@ struct RootView: View {
             SupplementsView()
         case .goals:
             GoalsView()
+        case .roles:
+            RolesView()
         case .categories:
             CategoriesView(viewModel: .live())
         case .table:

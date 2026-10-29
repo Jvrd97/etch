@@ -35,6 +35,7 @@ xcodebuild test -project HabitTracker.xcodeproj -scheme HabitTracker \
 | `Features/Life/LifeView.swift`, More → Жизнь | #265 |
 | `Features/Goals/`, строка «Цели» в More | #216 |
 | `Features/Onboarding/OnboardingView.swift`, More → Онбординг и лист первого запуска (`.onboardingGate` в `RootView`) | #267 |
+| `Features/Roles/`, More → Роли (и правила разметки внутри) | #266 |
 
 ## Решение: цифры здоровья лежат в общем кэше чтения (#243, 2026-10-27)
 
