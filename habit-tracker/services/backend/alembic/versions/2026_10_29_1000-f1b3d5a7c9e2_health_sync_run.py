@@ -48,6 +48,12 @@ def upgrade() -> None:
         sa.Column("chunks_done", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("chunks_total", sa.Integer(), nullable=True),
         sa.Column(
+            "chunks_seen",
+            sa.ARRAY(sa.Integer()),
+            nullable=False,
+            server_default="{}",
+        ),
+        sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
             nullable=False,

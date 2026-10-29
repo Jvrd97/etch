@@ -90,17 +90,22 @@ async def ingest_samples(
             ) from error
         buckets_written += await health_crud.upsert_buckets(db, metric.id, buckets)
 
-    await health_crud.record_chunk(
-        db,
-        client_run_id=payload.sync_run_id,
-        kind=payload.kind,
-        device_id=payload.device_id,
-        chunks_total=payload.chunks_total,
-        range_from=payload.range_from,
-        range_to=payload.range_to,
-        samples_received=len(payload.samples),
-        buckets_written=buckets_written,
-    )
+    try:
+        await health_crud.record_chunk(
+            db,
+            client_run_id=payload.sync_run_id,
+            kind=payload.kind,
+            device_id=payload.device_id,
+            chunk_index=payload.chunk_index,
+            chunks_total=payload.chunks_total,
+            range_from=payload.range_from,
+            range_to=payload.range_to,
+            samples_received=len(payload.samples),
+            buckets_written=buckets_written,
+        )
+    except health_crud.DeviceMismatchError as error:
+        await db.rollback()
+        raise _device_mismatch() from error
 
     # One commit for the chunk: it lands whole or not at all, and an earlier
     # chunk of the same backfill stays valid regardless.
@@ -111,6 +116,13 @@ async def ingest_samples(
     )
 
 
+def _device_mismatch() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="sync run belongs to another device",
+    )
+
+
 async def _fail_run(
     db: AsyncSession, payload: HealthSamplesRequest, failure_kind: SyncFailureKind
 ) -> None:
@@ -118,14 +130,19 @@ async def _fail_run(
     await db.rollback()
     if payload.sync_run_id is None:
         return
-    await health_crud.record_failure(
-        db,
-        client_run_id=payload.sync_run_id,
-        failure_kind=failure_kind,
-        kind=payload.kind,
-        device_id=payload.device_id,
-        chunks_total=payload.chunks_total,
-    )
+    try:
+        await health_crud.record_failure(
+            db,
+            client_run_id=payload.sync_run_id,
+            failure_kind=failure_kind,
+            kind=payload.kind,
+            device_id=payload.device_id,
+            chunks_total=payload.chunks_total,
+        )
+    except health_crud.DeviceMismatchError:
+        # The 422 the caller is about to get already says the chunk was refused.
+        await db.rollback()
+        return
     await db.commit()
 
 
@@ -142,14 +159,18 @@ async def report_sync_failure(
     телефон докладывает о нём при следующей связи. Поля с текстом ошибки нет
     намеренно. Прогон, который успел завершиться `ok`, остаётся `ok`.
     """
-    run = await health_crud.record_failure(
-        db,
-        client_run_id=sync_run_id,
-        failure_kind=payload.failure_kind,
-        kind=payload.kind,
-        device_id=payload.device_id,
-        chunks_total=payload.chunks_total,
-    )
+    try:
+        run = await health_crud.record_failure(
+            db,
+            client_run_id=sync_run_id,
+            failure_kind=payload.failure_kind,
+            kind=payload.kind,
+            device_id=payload.device_id,
+            chunks_total=payload.chunks_total,
+        )
+    except health_crud.DeviceMismatchError as error:
+        await db.rollback()
+        raise _device_mismatch() from error
     await db.commit()
     return _run_out(run, datetime.now(timezone.utc))
 

@@ -10,6 +10,7 @@ final class HealthPumpTests: XCTestCase {
     private var store: FakeHealthStore!
     private var api: FakeHealthAPI!
     private var pauses: [Int] = []
+    private var pending: InMemoryPendingFailures!
 
     /// Tuesday 2026-10-20, 14:00 in Berlin (UTC+2).
     private static let now = instant("2026-10-20T12:00:00Z")
@@ -22,6 +23,7 @@ final class HealthPumpTests: XCTestCase {
     override func setUp() async throws {
         store = FakeHealthStore()
         api = FakeHealthAPI()
+        pending = InMemoryPendingFailures()
         pauses = []
     }
 
@@ -41,6 +43,7 @@ final class HealthPumpTests: XCTestCase {
             now: { Self.now },
             deviceId: { Self.deviceId },
             makeRunId: { Self.runId },
+            pendingFailures: pending,
             chunkLimit: chunkLimit,
             pause: { [weak self] attempt in self?.pauses.append(attempt) }
         )
@@ -199,6 +202,33 @@ final class HealthPumpTests: XCTestCase {
 
         XCTAssertEqual(outcome, .failed(.network))
         XCTAssertEqual(api.failureReports.count, 1)
+    }
+
+    func testUndeliveredFailureReportIsKeptAndSentByTheNextRun() async {
+        fillWeek()
+        api.script = Array(repeating: .failure(APIClientError.timeout), count: HealthPump.maxAttempts)
+        api.failureReportError = APIClientError.timeout
+        _ = await makePump().sync()
+        XCTAssertEqual(pending.load().map(\.runId), [Self.runId.uuidString])
+
+        api.failureReportError = nil
+        api.script = [.success(Self.accepted)]
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .sent([Self.accepted]))
+        XCTAssertEqual(api.failureReports.count, 2)
+        XCTAssertEqual(api.failureReports.last?.report.failureKind, .network)
+        XCTAssertEqual(api.failureReports.last?.runId, Self.runId.uuidString)
+        XCTAssertTrue(pending.load().isEmpty)
+    }
+
+    func testDeliveredFailureReportLeavesNothingPending() async {
+        fillWeek()
+        api.script = Array(repeating: .failure(APIClientError.timeout), count: HealthPump.maxAttempts)
+
+        _ = await makePump().sync()
+
+        XCTAssertTrue(pending.load().isEmpty)
     }
 
     func testSuccessAndServerSideRefusalsSendNoFailureReport() async {
@@ -514,4 +544,11 @@ final class FakeHealthAPI: HealthSamplesAPI {
         }
         return HealthSyncRunAckDTO(status: "failed")
     }
+}
+
+final class InMemoryPendingFailures: HealthPendingFailureStoring {
+    private var stored: [HealthPendingFailure] = []
+
+    func load() -> [HealthPendingFailure] { stored }
+    func save(_ failures: [HealthPendingFailure]) { stored = failures }
 }

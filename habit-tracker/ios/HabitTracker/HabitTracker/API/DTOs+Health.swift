@@ -21,7 +21,7 @@ struct HealthSampleDTO: Encodable, Hashable {
 
 /// The three kinds of run the server journal tells apart (`SyncRunKind`). A new kind is
 /// a case here and a value in the server schema, not a migration.
-enum HealthSyncRunKind: String, Encodable, Hashable {
+enum HealthSyncRunKind: String, Codable, Hashable {
     case backfill
     case rolling
     /// A button press.
@@ -30,7 +30,7 @@ enum HealthSyncRunKind: String, Encodable, Hashable {
 
 /// A class of failure, never a message: the server stores and returns only this word
 /// (`SyncFailureKind`).
-enum HealthSyncFailureKindDTO: String, Encodable, Hashable {
+enum HealthSyncFailureKindDTO: String, Codable, Hashable {
     case network
     case unit
     case unknownMetric = "unknown_metric"
@@ -54,7 +54,7 @@ struct HealthSamplesRequestDTO: Encodable, Hashable {
 }
 
 /// `POST /health/sync-runs/{id}/fail`: the phone says its run died. No message field exists.
-struct HealthSyncFailureDTO: Encodable, Hashable {
+struct HealthSyncFailureDTO: Codable, Hashable {
     let failureKind: HealthSyncFailureKindDTO
     let kind: HealthSyncRunKind
     let deviceId: String?

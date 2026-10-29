@@ -280,11 +280,54 @@ SECONDS_PER_HOUR = 3600
 LAG_DIGITS = 2
 
 
-async def _get_run(db: AsyncSession, client_run_id: uuid.UUID) -> HealthSyncRun | None:
-    result = await db.execute(
-        select(HealthSyncRun).where(HealthSyncRun.client_run_id == client_run_id)
+class DeviceMismatchError(Exception):
+    """A delivery names another device than the one that opened the run."""
+
+
+async def _open_run(
+    db: AsyncSession,
+    *,
+    client_run_id: uuid.UUID,
+    kind: str | None,
+    device_id: str | None,
+    chunks_total: int | None,
+    now: datetime,
+) -> HealthSyncRun:
+    """
+    The run row, created if missing, locked until the transaction ends.
+
+    `INSERT ... ON CONFLICT DO NOTHING` then `SELECT ... FOR UPDATE`: two
+    deliveries of the same run (a retry that overlaps its own first attempt)
+    meet on the unique key without an `IntegrityError`, and the second one
+    reads the counters the first one wrote.
+    """
+    await db.execute(
+        pg_insert(HealthSyncRun)
+        .values(
+            client_run_id=client_run_id,
+            kind=kind or "rolling",
+            status="running",
+            device_id=device_id,
+            started_at=now,
+            updated_at=now,
+            samples_received=0,
+            buckets_written=0,
+            chunks_done=0,
+            chunks_seen=[],
+            chunks_total=chunks_total,
+        )
+        .on_conflict_do_nothing(index_elements=[HealthSyncRun.client_run_id])
     )
-    return result.scalar_one_or_none()
+    result = await db.execute(
+        select(HealthSyncRun)
+        .where(HealthSyncRun.client_run_id == client_run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    run = result.scalar_one()
+    if run.device_id and device_id and run.device_id != device_id:
+        raise DeviceMismatchError
+    return run
 
 
 async def record_chunk(
@@ -293,6 +336,7 @@ async def record_chunk(
     client_run_id: uuid.UUID | None,
     kind: str | None,
     device_id: str | None,
+    chunk_index: int | None,
     chunks_total: int | None,
     range_from: date | None,
     range_to: date | None,
@@ -302,35 +346,32 @@ async def record_chunk(
     """
     Add a landed chunk to its run, opening the run on the first one.
 
-    The run closes `ok` when the last announced chunk lands. A chunk without a
-    run id is a whole run by itself. A run that already finished is left alone
-    (a re-sent chunk changes no bucket and no counter).
+    Chunks are counted by `chunk_index`: a chunk the phone re-sends after a
+    timeout the server had already committed changes no counter, and the run
+    closes `ok` only when as many distinct chunks as announced have landed. A
+    delivery without a run id is a whole one-chunk run by itself. A run that
+    already finished is left alone.
     """
     now = datetime.now(timezone.utc)
-    run = await _get_run(db, client_run_id) if client_run_id else None
-    if run is None:
-        single = client_run_id is None
-        run = HealthSyncRun(
-            client_run_id=client_run_id or uuid.uuid4(),
-            kind=kind or "rolling",
-            status="running",
-            device_id=device_id,
-            started_at=now,
-            updated_at=now,
-            range_from=range_from,
-            range_to=range_to,
-            samples_received=0,
-            buckets_written=0,
-            chunks_done=0,
-            chunks_total=1 if single else chunks_total,
-        )
-        db.add(run)
-    elif run.status != "running":
+    single = client_run_id is None
+    run = await _open_run(
+        db,
+        client_run_id=client_run_id or uuid.uuid4(),
+        kind=kind,
+        device_id=device_id,
+        chunks_total=1 if single else chunks_total,
+        now=now,
+    )
+    if run.status != "running":
+        return run
+    index = 0 if chunk_index is None else chunk_index
+    if index in run.chunks_seen:
         return run
 
+    run.chunks_seen = [*run.chunks_seen, index]
     run.samples_received += samples_received
     run.buckets_written += buckets_written
-    run.chunks_done += 1
+    run.chunks_done = len(run.chunks_seen)
     run.updated_at = now
     if chunks_total is not None:
         run.chunks_total = chunks_total
@@ -361,21 +402,14 @@ async def record_failure(
     erase data that arrived.
     """
     now = datetime.now(timezone.utc)
-    run = await _get_run(db, client_run_id)
-    if run is None:
-        run = HealthSyncRun(
-            client_run_id=client_run_id,
-            kind=kind or "rolling",
-            status="running",
-            device_id=device_id,
-            started_at=now,
-            updated_at=now,
-            samples_received=0,
-            buckets_written=0,
-            chunks_done=0,
-            chunks_total=chunks_total,
-        )
-        db.add(run)
+    run = await _open_run(
+        db,
+        client_run_id=client_run_id,
+        kind=kind,
+        device_id=device_id,
+        chunks_total=chunks_total,
+        now=now,
+    )
     if run.status == "ok":
         return run
     run.status = "failed"
@@ -423,5 +457,11 @@ async def sync_status(db: AsyncSession, now: datetime | None = None) -> SyncStat
         last_runs=runs,
         last_success_at=last_success,
         lag_hours=None if lag is None else max(lag, 0.0),
-        interrupted=any(is_interrupted(run, now) for run in runs),
+        # Only a run newer than the last success counts: a run abandoned a week
+        # ago and followed by a good sync is history, not a live problem.
+        interrupted=any(
+            is_interrupted(run, now)
+            and (last_success is None or run.updated_at > last_success)
+            for run in runs
+        ),
     )

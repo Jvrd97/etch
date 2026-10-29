@@ -7,18 +7,26 @@ The journal answers one question the buckets cannot: "did the pump run, or did
 the person just not move". Every test here drives the real endpoints.
 """
 
+import asyncio
 import uuid
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import health as health_crud
 from app.models.health import HealthHourBucket, HealthSyncRun
+from tests.conftest import TestSessionLocal
 
+SYNC_RUN_REVISION = "f1b3d5a7c9e2"
+SYNC_RUN_PREVIOUS_REVISION = "e7a9c1b3d5f7"
 STEPS = "HKQuantityTypeIdentifierStepCount"
 SAMPLES_URL = "/api/v1/health/samples"
 STATUS_URL = "/api/v1/health/sync-status"
@@ -319,3 +327,137 @@ async def test_status_query_count_does_not_grow_with_the_journal(
     many = await count_selects()
 
     assert many == few
+
+
+async def test_a_resent_chunk_does_not_double_the_counters_or_close_the_run(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    run_id = uuid.uuid4()
+    await client.post(SAMPLES_URL, json=_chunk(run_id, 0, 3, hour=6))
+    await client.post(SAMPLES_URL, json=_chunk(run_id, 1, 3, hour=7))
+    # The phone retried chunk 1 after a timeout the server had already committed.
+    await client.post(SAMPLES_URL, json=_chunk(run_id, 1, 3, hour=7))
+
+    db_session.expire_all()
+    (run,) = await _rows(db_session)
+    assert (run.samples_received, run.buckets_written) == (2, 2)
+    assert run.chunks_done == 2
+    assert (run.status, run.finished_at) == ("running", None)
+
+    await client.post(SAMPLES_URL, json=_chunk(run_id, 2, 3, hour=8))
+    db_session.expire_all()
+    (run,) = await _rows(db_session)
+    assert (run.chunks_done, run.status) == (3, "ok")
+
+
+async def test_sync_run_id_requires_the_chunk_position(client: AsyncClient) -> None:
+    body = _chunk(uuid.uuid4(), 0, 3)
+    del body["chunks_total"]
+    assert (await client.post(SAMPLES_URL, json=body)).status_code == 422
+
+    body = _chunk(uuid.uuid4(), 0, 3)
+    del body["chunk_index"]
+    assert (await client.post(SAMPLES_URL, json=body)).status_code == 422
+
+
+async def test_chunk_index_must_fit_the_announced_total(client: AsyncClient) -> None:
+    response = await client.post(SAMPLES_URL, json=_chunk(uuid.uuid4(), 3, 3))
+    assert response.status_code == 422
+
+
+async def test_another_device_cannot_feed_an_existing_run(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    run_id = uuid.uuid4()
+    await client.post(SAMPLES_URL, json=_chunk(run_id, 0, 3))
+    other = _chunk(run_id, 1, 3, hour=7)
+    other["device_id"] = "device-2"
+
+    assert (await client.post(SAMPLES_URL, json=other)).status_code == 409
+
+    db_session.expire_all()
+    (run,) = await _rows(db_session)
+    assert run.chunks_done == 1
+
+
+async def test_old_interrupted_run_of_another_kind_does_not_stick(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    now = datetime.now(timezone.utc)
+    stale = now - timedelta(hours=5)
+    db_session.add(
+        HealthSyncRun(
+            client_run_id=uuid.uuid4(),
+            kind="manual",
+            status="running",
+            started_at=stale,
+            updated_at=stale,
+            samples_received=1,
+            buckets_written=1,
+            chunks_done=1,
+            chunks_total=3,
+        )
+    )
+    await db_session.commit()
+    assert (await client.get(STATUS_URL)).json()["interrupted"] is True
+
+    _finished_run(db_session, now - timedelta(minutes=5))
+    await db_session.commit()
+
+    assert (await client.get(STATUS_URL)).json()["interrupted"] is False
+
+
+async def test_two_deliveries_of_the_first_chunk_make_one_run(
+    db_session: AsyncSession,
+) -> None:
+    run_id = uuid.uuid4()
+
+    async def deliver() -> None:
+        async with TestSessionLocal() as session:
+            await health_crud.record_chunk(
+                session,
+                client_run_id=run_id,
+                kind="backfill",
+                device_id="device-1",
+                chunk_index=0,
+                chunks_total=3,
+                range_from=None,
+                range_to=None,
+                samples_received=1,
+                buckets_written=1,
+            )
+            await session.commit()
+
+    await asyncio.gather(deliver(), deliver())
+
+    db_session.expire_all()
+    (run,) = await _rows(db_session)
+    assert (run.samples_received, run.chunks_done) == (1, 1)
+
+
+def _migration_sql(revision_range: str, *, downgrade: bool) -> str:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    buffer = StringIO()
+    config.output_buffer = buffer
+    runner = command.downgrade if downgrade else command.upgrade
+    runner(config, revision_range, sql=True)
+    return buffer.getvalue().lower()
+
+
+def test_sync_run_migration_is_reversible_and_keeps_one_head() -> None:
+    config = Config()
+    config.set_main_option("script_location", "alembic")
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
+
+    upgrade_sql = _migration_sql(
+        f"{SYNC_RUN_PREVIOUS_REVISION}:{SYNC_RUN_REVISION}", downgrade=False
+    )
+    assert "create table health_sync_run" in upgrade_sql
+    assert "ix_health_sync_run_started_at" in upgrade_sql
+
+    downgrade_sql = _migration_sql(
+        f"{SYNC_RUN_REVISION}:{SYNC_RUN_PREVIOUS_REVISION}", downgrade=True
+    )
+    assert "drop table health_sync_run" in downgrade_sql
+    assert "health_hour_buckets" not in downgrade_sql

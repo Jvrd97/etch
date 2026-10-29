@@ -14,7 +14,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # A chunk is one week of one device. The bound is a DoS guard: every sample in a
 # request is materialised before anything is written.
@@ -74,6 +74,18 @@ class HealthSamplesRequest(BaseModel):
     chunks_total: int | None = Field(None, ge=1)
     range_from: date | None = None
     range_to: date | None = None
+
+    @model_validator(mode="after")
+    def _run_needs_its_position(self) -> HealthSamplesRequest:
+        # A run without a position cannot be counted: the server closes it by
+        # the number of distinct chunks it has seen.
+        if self.sync_run_id is None:
+            return self
+        if self.chunk_index is None or self.chunks_total is None:
+            raise ValueError("sync_run_id requires chunk_index and chunks_total")
+        if self.chunk_index >= self.chunks_total:
+            raise ValueError("chunk_index must be below chunks_total")
+        return self
 
 
 class HealthSamplesResponse(BaseModel):

@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    ARRAY,
     Date,
     DateTime,
     Float,
@@ -170,6 +171,12 @@ class HealthSyncRun(Base):
     samples_received: Mapped[int] = mapped_column(Integer, default=0)
     buckets_written: Mapped[int] = mapped_column(Integer, default=0)
     chunks_done: Mapped[int] = mapped_column(Integer, default=0)
+    # The distinct `chunk_index` values that landed. A chunk the phone re-sends
+    # after a timeout the server had already committed is counted once, so a
+    # run never closes `ok` on a duplicate.
+    chunks_seen: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), default=list, server_default="{}"
+    )
     chunks_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
