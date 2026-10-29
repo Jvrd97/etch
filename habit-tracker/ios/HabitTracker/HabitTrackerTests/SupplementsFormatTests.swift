@@ -39,14 +39,67 @@ final class SupplementsFormatTests: XCTestCase {
         XCTAssertEqual(try SupplementsFormat.payload(from: draft).get().intakeTime, "07:05:00")
     }
 
-    func testTheDayTurnsAtFourInTheMorningInThePhonesZone() {
-        let utc = TimeZone(identifier: "UTC")!
-        let moscow = TimeZone(identifier: "Europe/Moscow")!
+    private func rule(_ zone: String, hour: Int = 4) -> ServerDayRule {
+        ServerDayRule(timeZoneID: zone, dayStartHour: hour)
+    }
+
+    func testTheDayTurnsAtTheDayStartHourOnTheServersWallClock() {
         let threeFiftyNine = Date(timeIntervalSince1970: 1_793_069_999) // 2026-10-27 02:59:59 UTC
         let fourSharp = Date(timeIntervalSince1970: 1_793_073_600) // 2026-10-27 04:00:00 UTC
-        XCTAssertEqual(SupplementsFormat.logicalDay(of: threeFiftyNine, timeZone: utc), "2026-10-26")
-        XCTAssertEqual(SupplementsFormat.logicalDay(of: fourSharp, timeZone: utc), "2026-10-27")
-        XCTAssertEqual(SupplementsFormat.logicalDay(of: threeFiftyNine, timeZone: moscow), "2026-10-27")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: threeFiftyNine, rule: rule("UTC")), "2026-10-26")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: fourSharp, rule: rule("UTC")), "2026-10-27")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: threeFiftyNine, rule: rule("Europe/Moscow")), "2026-10-27")
+    }
+
+    func testTheServersZoneDecidesNotThePhonesWhetherThePhoneIsBehindOrAhead() {
+        // 2026-10-27 01:00 UTC: Berlin (CET, UTC+1) shows 02:00 -> still the 26th; Tokyo shows 10:00 -> the 27th.
+        let moment = Date(timeIntervalSince1970: 1_793_062_800)
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("Europe/Berlin")), "2026-10-26")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("Asia/Tokyo")), "2026-10-27")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("America/Los_Angeles")), "2026-10-26")
+    }
+
+    func testTheCutFollowsTheServersDayStartHour() {
+        let moment = Date(timeIntervalSince1970: 1_793_091_600) // 2026-10-27 09:00 UTC
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("UTC", hour: 10)), "2026-10-26")
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("UTC", hour: 9)), "2026-10-27")
+    }
+
+    func testTheDayOfTheClockChangeIsCutByWallClockNotByAbsoluteHours() {
+        // Berlin ends summer time at 2026-10-25 03:00 CEST -> 02:00 CET. 03:30 CET (02:30 UTC) is wall 03:30 < 4: the 24th.
+        let afterTheChange = Date(timeIntervalSince1970: 1_792_895_400) // 2026-10-25 02:30 UTC = 03:30 CET; four absolute hours back is 00:30 CEST on the 25th, the old cut's wrong answer
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: afterTheChange, rule: rule("Europe/Berlin")), "2026-10-24")
+        // 04:00 CET (03:00 UTC) is the 25th. The case above is the one the old cut got wrong
+        // (it said the 25th at 03:30 CET); this one only pins the boundary itself.
+        let fourCET = Date(timeIntervalSince1970: 1_792_897_200)
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: fourCET, rule: rule("Europe/Berlin")), "2026-10-25")
+    }
+
+    func testTheSpringClockChangeBetweenFourAndFive() {
+        // US spring forward 2026-03-08 02:00 -> 03:00 in New York; 04:30 EDT (08:30 UTC) is the 8th.
+        let moment = Date(timeIntervalSince1970: 1_772_958_600)
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment, rule: rule("America/New_York")), "2026-03-08")
+        // 03:30 EDT (07:30 UTC) is still the 7th.
+        XCTAssertEqual(SupplementsFormat.logicalDay(of: moment.addingTimeInterval(-3600), rule: rule("America/New_York")), "2026-03-07")
+    }
+
+    func testTheNextTurnIsTheNextDayStartHourOnTheServersClock() throws {
+        let moment = Date(timeIntervalSince1970: 1_793_091_600) // 2026-10-27 09:00 UTC
+        let turn = try XCTUnwrap(SupplementsFormat.nextDayTurn(after: moment, rule: rule("UTC")))
+        XCTAssertEqual(turn, Date(timeIntervalSince1970: 1_793_073_600 + 86_400)) // 2026-10-28 04:00 UTC
+    }
+
+    func testTheDraftLimitsFollowTheServers() {
+        var draft = SupplementDraft()
+        draft.name = String(repeating: "а", count: SupplementsFormat.maxNameLength + 1)
+        draft.doseText = "5"
+        XCTAssertEqual(SupplementsFormat.payload(from: draft), .failure(.init(message: SupplementsFormat.nameTooLongMessage)))
+        draft.name = "Магний"
+        draft.doseText = "1000001"
+        XCTAssertEqual(SupplementsFormat.payload(from: draft), .failure(.init(message: SupplementsFormat.doseInvalidMessage)))
+        draft.doseText = "1000000"
+        draft.unit = String(repeating: "м", count: SupplementsFormat.maxUnitLength + 1)
+        XCTAssertEqual(SupplementsFormat.payload(from: draft), .failure(.init(message: SupplementsFormat.unitTooLongMessage)))
     }
 
     // MARK: The queued write

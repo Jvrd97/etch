@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/240
+// [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: SupplementsAPI — GET /supplements, POST /supplements, POST /supplements/{id}/intakes under an Idempotency-Key; APIClient implements it on the shared request helpers, and the queue's replay takes the intake write through OutboxSupplementsAPI
 import Foundation
 
@@ -15,11 +15,19 @@ protocol SupplementsAPI: OutboxSupplementsAPI {
     /// Active supplements in the order they were added, with `taken_today`.
     func fetchSupplements() async throws -> [SupplementDTO]
     func createSupplement(_ payload: SupplementCreateDTO) async throws -> SupplementDTO
+    /// The zone and day-start hour the server cuts its day by.
+    func fetchDayRule() async throws -> ServerDayRule
 }
 
 extension APIClient: SupplementsAPI {
     func fetchSupplements() async throws -> [SupplementDTO] {
         try await getJSON(path: "/supplements", query: [])
+    }
+
+    /// Read from the window of the running week: the one place the app gets the rule from.
+    func fetchDayRule() async throws -> ServerDayRule {
+        let window = try await fetchWeekReview(iso: nil).window
+        return ServerDayRule(timeZoneID: window.timezone, dayStartHour: window.dayStartHour)
     }
 
     func createSupplement(_ payload: SupplementCreateDTO) async throws -> SupplementDTO {

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/240
-// summary: state of the Supplements screen — the list through the read cache (a cached list from another day does not claim «принял сегодня»; reads are numbered and an answer older than the one on screen is dropped), «принял» as one POST under an Idempotency-Key that an offline press queues in the shared outbox under the same key with the day of the press and shows at once, rows redrawn whenever the queue changes, a delivered press re-reads the list, and adding a supplement (needs the network); no name or dose is ever logged
+// [review:need-review] PHASE-03/240, PHASE-03/258
+// summary: the server's day rule (zone + day-start hour, read with the list and kept in the cache; the day is cut by wall clock), a waiting press of another day does not count as taken today, a press in flight disables its button, a dropped old answer does not stay in the cache, the moment the day turns; state of the Supplements screen — the list through the read cache (a cached list from another day does not claim «принял сегодня»; reads are numbered and an answer older than the one on screen is dropped), «принял» as one POST under an Idempotency-Key that an offline press queues in the shared outbox under the same key with the day of the press and shows at once, rows redrawn whenever the queue changes, a delivered press re-reads the list, and adding a supplement (needs the network); no name or dose is ever logged
 import Combine
 import Foundation
 
@@ -17,7 +17,12 @@ final class SupplementsViewModel: ObservableObject {
     struct Row: Identifiable, Equatable {
         let supplement: SupplementDTO
         let isTaken: Bool
-        let isWaiting: Bool
+        /// When the press that still waits in the queue was made; nil when nothing waits.
+        let waitingSince: Date?
+        /// Its POST is on the way: the button stays off until the answer.
+        let isSending: Bool
+
+        var isWaiting: Bool { waitingSince != nil }
 
         var id: Int { supplement.id }
     }
@@ -26,6 +31,8 @@ final class SupplementsViewModel: ObservableObject {
     struct Snapshot: Codable, Equatable {
         let day: String
         let items: [SupplementDTO]
+        /// The rule the day was cut by; absent in a snapshot written before the rule was kept.
+        var rule: ServerDayRule?
     }
 
     static let cacheKey = "supplements.list"
@@ -37,11 +44,12 @@ final class SupplementsViewModel: ObservableObject {
     /// Why the last press or add was refused, in words; the screen shows it above the list.
     @Published var errorMessage: String?
     @Published private(set) var isSaving = false
+    /// The server's day rule: from its answer, else from the cache, else the phone's zone with the 04:00 default.
+    @Published private(set) var rule: ServerDayRule
 
     private let apiProvider: () -> SupplementsAPI?
     private let cache: ReadThroughCache
     private let outbox: OutboxQueue
-    private let timeZone: TimeZone
     private let now: () -> Date
     private var cancellables: Set<AnyCancellable> = []
     /// The list as the server (or the cache) gave it; `rows` is it with the waiting presses on top.
@@ -50,18 +58,20 @@ final class SupplementsViewModel: ObservableObject {
     /// send, so its answer may come after the re-read a delivery started.
     private var readsSent = 0
     private var readShown = 0
+    /// Supplements whose «принял» POST has not answered yet.
+    private var sending: Set<Int> = []
 
     init(
         apiProvider: @escaping () -> SupplementsAPI?,
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
-        timeZone: TimeZone = .current,
+        rule: ServerDayRule = .phone,
         now: @escaping () -> Date = Date.init
     ) {
         self.apiProvider = apiProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.outbox = outbox ?? OutboxQueue(store: InMemoryOutboxStore())
-        self.timeZone = timeZone
+        self.rule = rule
         self.now = now
         bindOutbox()
     }
@@ -70,10 +80,10 @@ final class SupplementsViewModel: ObservableObject {
         api: SupplementsAPI,
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
-        timeZone: TimeZone = .current,
+        rule: ServerDayRule = .phone,
         now: @escaping () -> Date = Date.init
     ) {
-        self.init(apiProvider: { api }, cacheStore: cacheStore, outbox: outbox, timeZone: timeZone, now: now)
+        self.init(apiProvider: { api }, cacheStore: cacheStore, outbox: outbox, rule: rule, now: now)
     }
 
     static func live() -> SupplementsViewModel {
@@ -97,20 +107,32 @@ final class SupplementsViewModel: ObservableObject {
         // the list back. A delivery reads the list again.
         let flushing = Task { await outbox.flush() }
         let read = nextRead()
-        let today = today()
+        let known = rule
+        let clock = now
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
-                Snapshot(day: today, items: try await api.fetchSupplements())
+                // The rule rides along with the list; a rule that cannot be read leaves the known one.
+                async let fetched = try? api.fetchDayRule()
+                let items = try await api.fetchSupplements()
+                let ruleNow = await fetched ?? known
+                return Snapshot(
+                    day: SupplementsFormat.logicalDay(of: clock(), rule: ruleNow), items: items, rule: ruleNow
+                )
             }
             if isNewest(read) {
                 switch outcome {
                 case .fresh(let snapshot):
                     offlineAsOf = nil
+                    adopt(snapshot.rule)
                     show(snapshot.items)
                 case .stale(let snapshot, let updatedAt):
                     offlineAsOf = updatedAt
-                    show(snapshot.day == today ? snapshot.items : snapshot.items.map { $0.taken(false) })
+                    adopt(snapshot.rule)
+                    show(snapshot.day == today() ? snapshot.items : snapshot.items.map { $0.taken(false) })
                 }
+            } else if case .fresh = outcome {
+                // The cache took an answer older than the one on screen: put the shown list back.
+                saveShown()
             }
             state = .loaded
         } catch let error as APIClientError {
@@ -125,11 +147,10 @@ final class SupplementsViewModel: ObservableObject {
     private func reconcileAfterFlush() async {
         guard let api = apiProvider() else { return }
         let read = nextRead()
-        let today = today()
         if let items = try? await api.fetchSupplements(), isNewest(read) {
             offlineAsOf = nil
             show(items)
-            cache.store.save(Snapshot(day: today, items: items), forKey: Self.cacheKey, updatedAt: now())
+            saveShown()
         }
     }
 
@@ -159,7 +180,28 @@ final class SupplementsViewModel: ObservableObject {
     }
 
     private func today() -> String {
-        SupplementsFormat.logicalDay(of: now(), timeZone: timeZone)
+        SupplementsFormat.logicalDay(of: now(), rule: rule)
+    }
+
+    private func adopt(_ learned: ServerDayRule?) {
+        if let learned, learned != rule { rule = learned }
+    }
+
+    private func saveShown() {
+        cache.store.save(
+            Snapshot(day: today(), items: serverItems, rule: rule), forKey: Self.cacheKey, updatedAt: now()
+        )
+    }
+
+    /// Seconds until the server's day turns, for the timer that re-reads the screen; nil if it cannot be told.
+    func secondsUntilDayTurn() -> TimeInterval? {
+        let moment = now()
+        return SupplementsFormat.nextDayTurn(after: moment, rule: rule).map { $0.timeIntervalSince(moment) }
+    }
+
+    /// The form closed or the screen moved on: an old refusal must not greet the next visit.
+    func clearError() {
+        errorMessage = nil
     }
 
     private func show(_ items: [SupplementDTO]) {
@@ -167,12 +209,23 @@ final class SupplementsViewModel: ObservableObject {
         redraw(outbox.writes)
     }
 
-    /// A press still waiting counts as taken. One in the "not sent" list does not: it has not landed.
+    /// A press still waiting counts as taken today when it is for today (or for no day: the server decides).
+    /// A press of another day does not, and neither does one in the "not sent" list: it has not landed.
     private func redraw(_ writes: [OutboxWrite]) {
-        let waiting = Set(writes.filter { $0.status == .pending }.compactMap(\.supplementID))
+        let today = today()
+        var waiting: [Int: Date] = [:]
+        for write in writes where write.status == .pending {
+            guard case .markSupplementTaken(let intake) = write.action,
+                  intake.intakeDate == nil || intake.intakeDate == today
+            else { continue }
+            waiting[intake.supplementId] = min(waiting[intake.supplementId] ?? intake.pressedAt, intake.pressedAt)
+        }
         rows = serverItems.map { item in
-            let isWaiting = waiting.contains(item.id) && !item.takenToday
-            return Row(supplement: item, isTaken: item.takenToday || isWaiting, isWaiting: isWaiting)
+            let since = item.takenToday ? nil : waiting[item.id]
+            return Row(
+                supplement: item, isTaken: item.takenToday || since != nil,
+                waitingSince: since, isSending: sending.contains(item.id)
+            )
         }
     }
 
@@ -182,17 +235,25 @@ final class SupplementsViewModel: ObservableObject {
     /// under the key of this attempt with the day of the press, and shown at once.
     func markTaken(_ supplement: SupplementDTO) async {
         errorMessage = nil
-        guard rows.first(where: { $0.id == supplement.id })?.isTaken != true else { return }
+        guard let current = rows.first(where: { $0.id == supplement.id }),
+              !current.isTaken, !current.isSending
+        else { return }
         guard let api = apiProvider() else {
             errorMessage = SupplementsFormat.notConfiguredMessage
             return
+        }
+        sending.insert(supplement.id)
+        redraw(outbox.writes)
+        defer {
+            sending.remove(supplement.id)
+            redraw(outbox.writes)
         }
         let key = UUID().uuidString
         let pressed = now()
         do {
             _ = try await api.markIntake(supplementID: supplement.id, intakeDate: nil, idempotencyKey: key)
             replace(supplement.id) { $0.taken(true) }
-            cache.store.save(Snapshot(day: today(), items: serverItems), forKey: Self.cacheKey, updatedAt: now())
+            saveShown()
         } catch let error as APIClientError where error.isConnectivity {
             queue(supplement, key: key, pressed: pressed, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
         } catch let error as APIClientError {
@@ -207,7 +268,7 @@ final class SupplementsViewModel: ObservableObject {
             .markSupplementTaken(
                 QueuedSupplementIntake(
                     supplementId: supplement.id,
-                    intakeDate: SupplementsFormat.logicalDay(of: pressed, timeZone: timeZone),
+                    intakeDate: SupplementsFormat.logicalDay(of: pressed, rule: rule),
                     pressedAt: pressed
                 )
             ),
@@ -244,7 +305,7 @@ final class SupplementsViewModel: ObservableObject {
             let created = try await api.createSupplement(payload)
             serverItems.append(created)
             redraw(outbox.writes)
-            cache.store.save(Snapshot(day: today(), items: serverItems), forKey: Self.cacheKey, updatedAt: now())
+            saveShown()
             return true
         } catch let error as APIClientError where error.isConnectivity {
             errorMessage = SupplementsFormat.addNeedsNetworkMessage

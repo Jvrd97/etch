@@ -720,7 +720,7 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 Экран «Добавки» (More → Добавки): список, добавление, «Принял» с работой без сети через общую очередь.
 
-Тронуто 18 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
+Тронуто 16 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
 
 - **Очередь.** Новый случай `OutboxAction.markSupplementTaken` хранит id добавки и день нажатия, имени в нём нет (имя только в подписи `Принял: <имя>` для полосы «ждёт отправки»). Реплей идёт через `OutboxSupplementsAPI`; поле `OutboxReplay.supplements` необязательное, существующие вызовы не менялись. В `TodayViewModel` и `DayViewModel` добавлено только имя нового случая в два `switch`.
 - **День нажатия.** Прямое нажатие день не шлёт: решает сервер. Нажатие из очереди шлёт `intake_date` по часам телефона со сменой суток в 04:00 (`SupplementsFormat.dayStartHour`). Сервер сверяет его со своим днём и отвечает 409, если день сменился. Запись уходит в «Не отправлено» с кнопкой «Записать в сегодня» (`forcedRetry` убирает дату).
@@ -783,3 +783,15 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - Дата рождения — текстовое поле `ГГГГ-ММ-ДД` с проверкой (системный DatePicker не берём, своего календаря в iOS нет).
 - Вид «жизнь» рисуется на Canvas; подсказок-tooltip нет, у квадратов есть подписи для VoiceOver.
 - Рамка (дата рождения, лет) хранится в UserDefaults под тем же ключом, что у веба.
+
+### PHASE-03/258: Добавки — правило дня сервера и хвосты #240
+
+Тронуто 8 файлов (7 кода и этот файл): `API/APIClient+Supplements.swift`, `Cache/OutboxReplay.swift`, `Features/Supplements/{SupplementsFormat,SupplementsView,SupplementsViewModel}.swift` (mod), тесты `SupplementsFormatTests`, `SupplementsViewModelTests` (mod).
+
+- **Правило дня.** `ServerDayRule` (пояс и час начала) приходит с сервера из окна `GET /week-review` (`fetchDayRule`), лежит в снимке кэша; день режется по настенным часам пояса сервера, а не вычитанием 4 часов абсолютного времени. Таймер на границу дня, смена часов и пояса перечитывают экран.
+- **Ожидающее нажатие** другого дня не блокирует кнопку; `pressedAt` показан в строке «ждёт отправки · нажато ЧЧ:ММ».
+- **Двойное нажатие.** Пока POST в пути, кнопка выключена (`isSending`).
+- **Кэш.** Отброшенный старый ответ загрузки заменяется показанным списком.
+- **`OutboxReplay.supplements`** не nil: по умолчанию `NoSupplementsAPI` (как мёртвая сеть), чужие вызывающие не менялись.
+- **Заменяет записи #240.** `OutboxReplay.supplements` больше не необязательное (по умолчанию `NoSupplementsAPI`), а `SupplementsFormat.dayStartHour` удалён: день режет `ServerDayRule` по правилу сервера.
+- Проверка вёрстки при крупном шрифте и VoiceOver на устройстве не делалась (#215).
