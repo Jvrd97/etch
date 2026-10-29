@@ -243,10 +243,10 @@ final class TodayViewModel: ObservableObject {
     /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
     private var refreshFailureLine: String?
 
-    /// A refresh that failed late says nothing when a newer load already reached the screen. A first load
-    /// that failed always says so: there is nothing else on screen.
+    /// A load that failed late says nothing when a newer load already reached the screen. A load with no
+    /// newer one shown always says so, so a first load never stays on the spinner.
     private func failLoad(_ reason: String, showsData: Bool, load: Int) {
-        if showsData, load < loadShown { return }
+        if load < loadShown { return }
         if showsData {
             let line = "\(Self.refreshFailedMessage): \(reason)"
             saveErrorMessage = line

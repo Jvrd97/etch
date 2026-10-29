@@ -31,8 +31,16 @@ final class MockTodayAPI: TodayScreenAPI {
     private(set) var upsertedChecklists: [ChecklistUpsertDTO] = []
     private(set) var fetchedStreakIDs: [Int] = []
 
+    /// Runs once inside the next categories read, before its answer: the load's own parent waits on the
+    /// categories first, so holding them here never cancels the entries read beside it.
+    var duringFetchCategories: (@MainActor () async -> Void)?
+
     func fetchCategories() async throws -> [CategoryDTO] {
-        try categoriesResult.get()
+        if let hook = duringFetchCategories {
+            duringFetchCategories = nil
+            await hook()
+        }
+        return try categoriesResult.get()
     }
 
     /// Runs once inside the next entries read, after its answer is fixed and before it returns: the
@@ -927,14 +935,38 @@ final class TodayViewModelTests: XCTestCase {
             await waitUntil { api.fetchedEntryRanges.count > readsBefore }
             api.entriesResult = .success([delivered])
         }
-        api.duringFetchEntries = {
-            await waitUntil { api.entriesAnswered > 0 && viewModel.entries(forCategory: 1) == [delivered] }
+        // The categories answer only after the re-read reached the screen (yielding, never sleeping).
+        api.duringFetchCategories = {
+            for _ in 0..<5000 where viewModel.entries(forCategory: 1) != [delivered] { await Task.yield() }
         }
 
         await viewModel.load()
 
         XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the re-read did reach the screen first")
         XCTAssertEqual(viewModel.state, .failure(APIClientError.unauthorized.userMessage))
+    }
+
+    func testALateFailureOfAnOldFirstLoadDoesNotReplaceTheScreenANewerOneShowed() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        var inFlight = false
+        var gate: CheckedContinuation<Void, Never>?
+        api.duringFetchCategories = {
+            inFlight = true
+            await withCheckedContinuation { gate = $0 }
+        }
+        let first = Task { await viewModel.load() }
+        while !inFlight { await Task.yield() }
+        api.categoriesResult = .success([pushups])
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .loaded)
+
+        gate?.resume()
+        await first.value
+
+        XCTAssertEqual(viewModel.state, .loaded, "the older first load failed after a newer one showed the screen")
+        XCTAssertEqual(viewModel.categories.map(\.id), [1])
     }
 
     func testAFailedSecondLoadOfAnEmptyScreenStillSaysSo() async {
