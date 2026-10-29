@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — a late failure of an older load says nothing when a newer read is on screen
 // summary: PHASE-03/248 — a second load keeps the loaded screen and reports its failure as a line; PHASE-03/256 — the cache stamp after a re-read of the records stays the age of the categories and streaks it keeps
 // summary: PHASE-03/248 round 2 — the line a failed refresh wrote is taken back by the next refresh that works, and only that line
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
@@ -185,12 +186,12 @@ final class TodayViewModel: ObservableObject {
     func load() async {
         let showsData = state == .loaded
         if !showsData { state = .loading }
+        let read = nextEntriesRead()
         guard let api = apiProvider() else {
-            failLoad(Self.notConfiguredMessage, showsData: showsData)
+            failLoad(Self.notConfiguredMessage, showsData: showsData, read: read)
             return
         }
         let flushing = Task { await outbox?.flush() }
-        let read = nextEntriesRead()
         let today = todayString
         var streaksFailed = false
         do {
@@ -226,9 +227,9 @@ final class TodayViewModel: ObservableObject {
             state = .loaded
             clearRefreshFailure()
         } catch let error as APIClientError {
-            failLoad(error.userMessage, showsData: showsData)
+            failLoad(error.userMessage, showsData: showsData, read: read)
         } catch {
-            failLoad("Unexpected error", showsData: showsData)
+            failLoad("Unexpected error", showsData: showsData, read: read)
         }
         await flushing.value
     }
@@ -236,7 +237,9 @@ final class TodayViewModel: ObservableObject {
     /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
     private var refreshFailureLine: String?
 
-    private func failLoad(_ reason: String, showsData: Bool) {
+    /// A failure of an old read says nothing when the answer of a newer read is already on screen.
+    private func failLoad(_ reason: String, showsData: Bool, read: Int) {
+        guard read > entriesReadShown else { return }
         if showsData {
             let line = "\(Self.refreshFailedMessage): \(reason)"
             saveErrorMessage = line

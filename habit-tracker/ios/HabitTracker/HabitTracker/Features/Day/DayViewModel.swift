@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256
-// summary: PHASE-03/248, 256 — a save that ended on another day rebases the draft typed over its base (no false conflict on coming back); an older answer is swapped for the saved text only when it holds the base or that text, a third text is a conflict beside the saved one; the cache keeps the newest read of each key; a direct mark refused with 502/504 reads the day before it apologises
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — a queued notebook save counts as delivered by its own write id (a refused older write of the same day does not hide it); `newestCached` never evicts the key just written
+// summary: PHASE-03/248, 256 — a save that ended on another day rebases the draft typed over its base (no false conflict on coming back); an older answer is swapped for the saved text only when it holds the base or that text, a third text is a conflict beside the saved one; the cache keeps the newest read of each key; a direct mark refused with 502/504 is queued as one that may have landed (no read, no apology)
 // summary: PHASE-03/248, 256 round 2 — a third text stays a conflict until the person picks a side (typed over the base, not over itself); a queued save the server did not take is not remembered as written; a direct mark refused with 502/504 is queued as one that may have landed; the cache copy put back keeps the stamp of its read, and `newestCached` holds at most 8 days
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
@@ -309,8 +310,9 @@ final class DayViewModel: ObservableObject {
         }
         let at = cache.now()
         newestCached[key] = (read, day, at)
+        // The key just written is never the one evicted: it is the answer the cache holds right now.
         if newestCached.count > Self.newestCachedLimit,
-           let oldest = newestCached.min(by: { $0.value.read < $1.value.read })?.key {
+           let oldest = newestCached.filter({ $0.key != key }).min(by: { $0.value.read < $1.value.read })?.key {
             newestCached[oldest] = nil
         }
         if !loadWroteIt { cache.store.save(day, forKey: key, updatedAt: at) }
@@ -622,10 +624,11 @@ final class DayViewModel: ObservableObject {
             var reachedServer = true
             if let outbox, outbox.hasPending(sameTargetAs: queued) {
                 // An older save of this day still waits: the new one replaces it and goes out now if it can.
-                outbox.enqueue(queued, label: label)
+                let queuedID = outbox.enqueue(queued, label: label)
                 await outbox.flush()
-                // Still waiting, or refused and listed as not sent: the server did not take this text.
-                reachedServer = !outbox.writes.contains { $0.action.target == queued.target }
+                // This very write still waits, or was refused and listed as not sent: the server did not take
+                // this text. Another refused write of the same notebook says nothing about it.
+                reachedServer = !outbox.writes.contains { $0.id == queuedID }
             } else {
                 do {
                     try await api.saveNotebook(date: date, content: text)

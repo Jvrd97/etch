@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
-// summary: PHASE-03/256 — a load answered after a step does not roll back the day cache; a direct mark refused with 502/504 reads the day (landed: no error, not landed: rolled back)
+// [review:need-review] PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — a refused older save of the same day does not hide the delivered one; expected texts instead of NotEqual
+// summary: PHASE-03/256 — a load answered after a step does not roll back the day cache; a direct mark refused with 502/504 is queued with `mayHaveLanded: true` (no error, no rollback)
 // summary: PHASE-03/248, 256 round 2 — a direct mark refused with 502/504 is queued (landed or not); a notebook save left in the queue or refused by it is not remembered as written, on both branches; the cache copy put back keeps its read's stamp
 // summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00); a load's read answered after a delivery's re-read replaces neither the day nor the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is no conflict for the next one
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
@@ -448,7 +449,52 @@ final class DayOfflineTests: XCTestCase {
         await returned?.value
 
         XCTAssertEqual(viewModel.shownDate, DayFixtures.date)
-        XCTAssertNotEqual(viewModel.notebook, "T2", "the server never took T2; an old answer must not say it did")
+        XCTAssertEqual(viewModel.notebook, "Заметка дня", "the server never took T2; the screen shows the text the server holds")
+    }
+
+    /// A refused save of the same day stays in the "not sent" list; it says nothing about the new save, which
+    /// the server took. The late answer that still holds the old text must not roll the new one back.
+    func testARefusedOlderSaveOfTheSameDayDoesNotKeepTheDeliveredOneFromBeingRemembered() async throws {
+        outbox.enqueue(
+            .saveNotebook(QueuedNotebook(date: DayFixtures.date, content: "T0", expected: "Чужой текст")), label: "Блокнот"
+        )
+        api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Веб")))]
+        await outbox.flush()
+        XCTAssertEqual(outbox.failedCount, 1, "the first save was refused: the web changed the text")
+        api.fetchResults = [.success(try DayFixtures.day())]
+        await viewModel.load()
+        outbox.enqueue(
+            .saveNotebook(QueuedNotebook(date: DayFixtures.date, content: "T1", expected: "Заметка дня")), label: "Блокнот"
+        )
+        viewModel.notebook = "T2"
+        var returnIsInFlight = false
+        var returnGate: CheckedContinuation<Void, Never>?
+        var returned: Task<Void, Never>?
+        api.fetchResults = [
+            .success(try DayFixtures.day(date: "2026-10-24")),
+            .success(try DayFixtures.day()),
+            // The read the delivery asks for fails, so the late one below is the newest answer there is.
+            .failure(APIClientError.invalidResponse),
+            .success(try DayFixtures.day()),
+        ]
+        api.duringFetch = { [viewModel, api] in
+            await viewModel!.showPreviousDay()
+            api!.duringFetch = {
+                returnIsInFlight = true
+                await withCheckedContinuation { returnGate = $0 }
+            }
+            returned = Task { await viewModel!.showNextDay() }
+            while !returnIsInFlight { await Task.yield() }
+        }
+
+        await viewModel.saveNotebook()
+        XCTAssertEqual(outbox.pendingCount, 0, "the new save was delivered")
+        XCTAssertEqual(outbox.failedCount, 1, "only the old refusal is left")
+        returnGate?.resume()
+        await returned?.value
+
+        XCTAssertEqual(viewModel.shownDate, DayFixtures.date)
+        XCTAssertEqual(viewModel.notebook, "T2", "the late answer holds the text before the save; the server took T2")
     }
 
     func testADirectNotebookSaveThatWaitsInTheQueueIsNotRememberedAsWritten() async throws {
@@ -480,6 +526,6 @@ final class DayOfflineTests: XCTestCase {
         await returned?.value
 
         XCTAssertEqual(viewModel.shownDate, DayFixtures.date)
-        XCTAssertNotEqual(viewModel.notebook, "T", "the server never took T; an old answer must not say it did")
+        XCTAssertEqual(viewModel.notebook, "Заметка дня", "the server never took T; the screen shows the text the server holds")
     }
 }

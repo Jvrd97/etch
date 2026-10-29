@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — two parallel loads (L2 answered, L1 failed late), empty screen refresh failure, real failing save for another action's error
 // summary: PHASE-03/256 — a re-read of the records leaves the cache stamp at the age of the categories; a second load keeps the loaded screen (no loader, a failure is a line of text)
 // summary: PHASE-03/248 round 2 — a refresh that works takes back the failure line of an earlier refresh and leaves the error of another action
 // summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
@@ -864,13 +865,58 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
         api.categoriesResult = .failure(APIClientError.unauthorized)
         await viewModel.load()
-        // A save failed in between; its message replaced the refresh line.
-        viewModel.saveErrorMessage = "Не удалось сохранить запись"
+        // A save that really fails in between: its message replaced the refresh line.
+        api.createEntryResult = .failure(APIClientError.unauthorized)
+        let saved = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        XCTAssertFalse(saved)
+        let saveMessage = viewModel.saveErrorMessage
+        XCTAssertNotNil(saveMessage)
+        XCTAssertFalse(saveMessage?.hasPrefix(TodayViewModel.refreshFailedMessage) ?? true)
 
         api.categoriesResult = .success([pushups])
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.saveErrorMessage, "Не удалось сохранить запись")
+        XCTAssertEqual(viewModel.saveErrorMessage, saveMessage, "a refresh that works takes back its own line only")
+    }
+
+    func testALateFailureOfAnOldLoadSaysNothingWhenANewerLoadIsOnScreen() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        var inFlight = false
+        var gate: CheckedContinuation<Void, Never>?
+        // L1 reads while the server is down and waits there; L2 reads after it and works.
+        api.entriesResult = .failure(APIClientError.timeout)
+        api.duringFetchEntries = {
+            inFlight = true
+            await withCheckedContinuation { gate = $0 }
+        }
+        let first = Task { await viewModel.load() }
+        while !inFlight { await Task.yield() }
+        api.entriesResult = .success([])
+        await viewModel.load()
+        XCTAssertNil(viewModel.saveErrorMessage)
+
+        gate?.resume()
+        await first.value
+
+        XCTAssertNil(viewModel.saveErrorMessage, "the older read failed, but the screen already shows a newer answer")
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testAFailedSecondLoadOfAnEmptyScreenStillSaysSo() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([])
+        let viewModel = TodayViewModel(api: api, cacheStore: InMemoryCacheStore())
+        await viewModel.load()
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertTrue(viewModel.categories.isEmpty)
+        XCTAssertEqual(viewModel.saveErrorMessage, "\(TodayViewModel.refreshFailedMessage): \(APIClientError.unauthorized.userMessage)")
     }
 
     func testAFailedFirstLoadStillTurnsTheScreenIntoTheErrorState() async {

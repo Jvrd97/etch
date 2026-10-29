@@ -1,7 +1,8 @@
-// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242, PHASE-03/256
+// [review:need-review] PHASE-01/12-ios-offline-queue, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225, PHASE-03/236, PHASE-03/242, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — `enqueue` returns the id of the queued write, so a caller can tell whether that very write was delivered
 // summary: PHASE-03/256 — a failed TLS handshake is "never left", not "may have landed"
 // summary: the one offline write queue of the app — every write that can wait for the network (entry create, checklist, quick-mark press, plan mark, plan fact, day notebook) is kept on disk under its own Idempotency-Key with the day it was made and replayed in order when the network returns; a dead network or a wrong key keep it waiting (the key problem is published), a 5xx keeps it waiting until it repeats five times in a row, a refusal moves it to a visible "not sent" list with the reason and its kind; a newer "set" of one object replaces the waiting one; retry (which sends at once) and discard from the list
-// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, a proxy's 502/504 sets it in the replay, and a direct Day mark that gets a 502/504 reads the day instead of rolling back blindly; a failed TLS handshake never carried the body; a retry that would write over a newer write of the same object says so
+// summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, a proxy's 502/504 sets it in the replay, and a direct Day mark that gets a 502/504 is queued with `mayHaveLanded: true` instead of rolling back blindly; a failed TLS handshake never carried the body; a retry that would write over a newer write of the same object says so
 // [review:need-review] PHASE-03/240
 // summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
 import Combine
@@ -502,9 +503,11 @@ final class OutboxQueue: ObservableObject {
     /// A whole-state write replaces a waiting one of the same object (unless that one is in flight).
     /// `mayHaveLanded` says the failed direct attempt went out and lost its answer
     /// (`mayHaveLanded(after:)` of its error): a later write replacing this one accepts its state.
+    /// Returns the id of the queued write, so a caller can tell later whether that very write was delivered.
+    @discardableResult
     func enqueue(
         _ action: OutboxAction, key: String = UUID().uuidString, label: String, mayHaveLanded: Bool = false
-    ) {
+    ) -> UUID {
         var action = action
         if action.replacesOlderOfSameTarget {
             for older in pending where older.action.target == action.target && older.id != inFlightID {
@@ -512,7 +515,7 @@ final class OutboxQueue: ObservableObject {
                 store.delete(id: older.id)
             }
         }
-        append(action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded)
+        return append(action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded)
     }
 
     /// Puts back a write carried over from an older queue, with its own key and time.
@@ -520,16 +523,19 @@ final class OutboxQueue: ObservableObject {
         append(action, key: key, label: label, createdAt: createdAt)
     }
 
+    @discardableResult
     private func append(
         _ action: OutboxAction, key: String, label: String, createdAt: Date, mayHaveLanded: Bool = false
-    ) {
+    ) -> UUID {
+        let id = UUID()
         store.append(
             OutboxWrite(
-                id: UUID(), key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
+                id: id, key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
                 status: .pending, failure: nil, failureKind: nil, mayHaveLanded: mayHaveLanded
             )
         )
         reload()
+        return id
     }
 
     /// Sends a "not sent" write again at once, as the newest action and without the check that refused
