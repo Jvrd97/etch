@@ -773,3 +773,14 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **`DailySummaryView.init(onApplied:)`** удалён вместе с фразами о нём в шапке: вызывающего не было, `retainer` теперь не опциональный.
 - Граница понедельника 03:59 / 04:00 проверена в `WeekFormatTests`. `VoiceDaySession` оставлен `internal`: на него ссылаются тесты.
 - Глазами в симуляторе лист не проверялся.
+
+### PHASE-01/216: ADR-0024 и экран «Цели» (2026-10-29)
+
+Вариант A владельца: всё нативно. ADR-0024 в `docs/PHASE-01/ADRs/in-review/` заменяет пункты A1 и A5 ADR-0020. Экран Goals повторяет `components/goals/GoalsBoard.tsx`: уровни с «⚠ подтверди», милстоны со статусом, датой закрытия, кнопкой «Закрыть/Открыть» и чипами «Открывается чем», цели текущего квартала. Создания и правки целей в вебе нет (только `PATCH` статуса милстона), поэтому нет и в приложении. 8 файлов:
+
+- new `API/DTOs+Goals.swift`, `API/APIClient+Goals.swift`
+- new `Features/Goals/GoalsViewModel.swift`, `Features/Goals/GoalsView.swift`
+- new `HabitTrackerTests/GoalsAPIClientTests.swift`, `HabitTrackerTests/GoalsViewModelTests.swift`
+- mod `App/AppNavigation.swift` (case `.goals`), `App/RootView.swift` (строка `GoalsView()`)
+
+Скриншот снят с экрана, встроенного в окно тестового хоста на симуляторе, с данными фикстуры; путь More → Цели касанием и живой бэкенд не проверялись.
