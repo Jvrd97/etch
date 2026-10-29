@@ -59,6 +59,8 @@ struct RootView: View {
             WeekView()
         case .supplements:
             SupplementsView()
+        case .roles:
+            RolesView()
         case .categories:
             CategoriesView(viewModel: .live())
         case .table:
