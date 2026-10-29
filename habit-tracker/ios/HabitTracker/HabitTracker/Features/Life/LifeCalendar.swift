@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — wholeYears, gridCell, weekMonday
 // [review:need-review] PHASE-01/265
 // summary: pure timeline rules ported from lib/life.ts — dates as `yyyy-MM-dd` on a fixed UTC ISO calendar (no device time zone in the arithmetic), the five square states, the weeks-lived counter with the same 52.1775 arithmetic as life.html, ISO week codes, month grids, and the aggregate state of a week square
@@ -42,6 +43,7 @@ struct LifeFrame: Codable, Equatable {
 enum LifeCalendar {
     static let weeksPerRow = 53
     static let daysInWeek = 7
+    static let secondsPerDay: Double = 86_400
     /// Mean year in weeks: turns a frame in years into weeks, exactly as life.html did.
     static let weeksPerYear = 52.1775
     /// How far back the timeline asks for days; older squares are drawn from the calendar alone.
@@ -99,6 +101,11 @@ enum LifeCalendar {
     }
 
     /// `2026-W35`, the key the API uses. The year is the one owning the week's Thursday.
+    /// 52 or 53: 28 December always falls in the last ISO week of its year.
+    static func isoWeeksInYear(_ year: Int) -> Int {
+        calendar.component(.weekOfYear, from: date(year: year, month: 12, day: 28))
+    }
+
     static func isoWeekCode(_ date: Date) -> String {
         let c = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
         return String(format: "%04d-W%02d", c.yearForWeekOfYear ?? 0, c.weekOfYear ?? 0)
@@ -165,7 +172,7 @@ enum LifeCalendar {
     /// The arithmetic of life.html: whole weeks since birth against `targetYears × 52.1775` rounded.
     static func counter(frame: LifeFrame, today: Date) -> LifeCounter {
         let born = parse(frame.birth) ?? parse(LifeFrame.defaultBirth) ?? today
-        let livedDays = Int((today.timeIntervalSince(born) / 86_400).rounded(.down))
+        let livedDays = Int((today.timeIntervalSince(born) / secondsPerDay).rounded(.down))
         let weeksLived = Int((Double(livedDays) / Double(daysInWeek)).rounded(.down))
         let weeksTotal = Int((Double(frame.targetYears) * weeksPerYear).rounded())
         let years = wholeYears(from: born, to: today)

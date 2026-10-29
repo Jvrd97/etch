@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — show(date:)
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
 // summary: PHASE-03/263 — a queued notebook save counts as delivered by its own write id (a refused older write of the same day does not hide it); `newestCached` never evicts the key just written
@@ -105,6 +106,8 @@ final class DayViewModel: ObservableObject {
     /// Bumped by every load (`showFailure`): an answer of a read sent before it is for what the screen
     /// asked earlier (another day) and is dropped.
     private var loadGeneration = 0
+    /// The load in flight and the day it reads, so a second ask for the same day does not read again.
+    private var runningLoad: (date: String?, task: Task<Void, Never>)?
     /// Reads of the day, numbered as they are sent, and the newest one shown. A load reads alongside
     /// the queue's send, so its answer may come back after the re-read a delivery started: an answer
     /// older than the one on screen is dropped, and a failed re-read leaves the load's answer in place.
@@ -233,10 +236,21 @@ final class DayViewModel: ObservableObject {
     /// Waiting writes go out alongside the read, so a reload is also a retry of the queue; a slow send
     /// does not hold the day back (waiting writes are laid over it, a delivery reads it again).
     func load() async {
+        // The same day already being read: join that read, one GET and one spinner.
+        if let running = runningLoad, running.date == requestedDate {
+            await running.task.value
+            return
+        }
         state = .loading
-        let flushing = Task { await outbox?.flush() }
-        await fetch(showFailure: true)
-        await flushing.value
+        let task = Task { [self] in
+            let flushing = Task { await outbox?.flush() }
+            await fetch(showFailure: true)
+            await flushing.value
+        }
+        let mine = (date: requestedDate, task: task)
+        runningLoad = mine
+        await task.value
+        if runningLoad?.task == mine.task { runningLoad = nil }
     }
 
     /// Re-read after a write: counts and the verdict are the server's to recount.
@@ -427,9 +441,17 @@ final class DayViewModel: ObservableObject {
 
     /// A jump from another screen: the day asked for, `yyyy-MM-dd`. Anything else is ignored.
     func show(date: String) async {
-        guard LifeCalendar.parse(date) != nil else { return }
-        requestedDate = date
+        guard select(date: date) else { return }
         await load()
+    }
+
+    /// Points the screen at a day without reading it: the jump sets the date at once, so the read the
+    /// tab's own appearance starts and the one `show(date:)` starts are the same read.
+    @discardableResult
+    func select(date: String) -> Bool {
+        guard DayFormat.isDay(date) else { return false }
+        requestedDate = date
+        return true
     }
 
     func showToday() async {

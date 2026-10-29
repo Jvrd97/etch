@@ -848,3 +848,7 @@ Avoid-стрик карточка «N дней чистый» на экране 
 Файлы (13, все mod): `App/AppNavigation.swift`, `App/RootView.swift`, `Features/Day/DayViewModel.swift`, `Features/Week/WeekView.swift`, `Features/Week/WeekViewModel.swift`, `Features/Life/LifeCalendar.swift`, `Features/Life/LifeViewModel.swift`, `Features/Life/LifeView.swift`, тесты `AppNavigationTests`, `DayViewModelTests`, `LifeCalendarTests`, `LifeViewModelTests`, `WeekViewModelTests`.
 
 Проверки: сборка `build-for-testing` зелёная; тесты не запускались (симулятор не использовался). Не проверено: переходы глазами.
+
+## 2026-10-30 — #274 остатки ревью #270
+
+Файлы (11, все mod): `App/AppNavigation.swift`, `App/RootView.swift`, `Features/Day/DayFormat.swift`, `Features/Day/DayView.swift`, `Features/Day/DayViewModel.swift`, `Features/Life/LifeCalendar.swift`, `Features/Life/LifeView.swift`, `Features/Life/LifeViewModel.swift`, тесты `AppNavigationTests`, `DayViewModelTests`, `LifeViewModelTests`. Одна загрузка при переходе в Day (общая задача на день), будущая дата рождения из хранилища отвергается, `isWeekCode` знает недели года. Тесты не запускались; переходы глазами не проверены.
