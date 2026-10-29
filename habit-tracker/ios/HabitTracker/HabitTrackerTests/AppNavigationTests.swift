@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/208, PHASE-03/230, PHASE-03/250
 // summary: tests for the root navigation — five tabs in mobile-web order, opening on Today, every former screen behind More; a More screen holding an unconfirmed write cannot be popped by the system (a second tap on the selected tab), every other pop and every push goes through; the block is a set of holders, so an old screen going away does not lift the hold of the new one
@@ -144,6 +145,15 @@ final class AppNavigationTests: XCTestCase {
         XCTAssertEqual(navigation, before)
     }
 
+    func testWeek53OnlyInYearsThatHaveIt() {
+        XCTAssertTrue(AppNavigation.isWeekCode("2026-W53"), "2026 has 53 ISO weeks")
+        XCTAssertFalse(AppNavigation.isWeekCode("2025-W53"))
+        XCTAssertTrue(AppNavigation.isWeekCode("2025-W52"))
+        XCTAssertFalse(AppNavigation.isWeekCode("2026-W00"))
+        XCTAssertFalse(AppNavigation.isWeekCode("2026-W5"))
+        XCTAssertFalse(AppNavigation.isWeekCode("2026-W٠٥"))
+    }
+
     func testAWeekJumpPushesTheWeekScreenOnMoreAndForgetsTheWeekWhenLeft() {
         var navigation = AppNavigation()
         navigation.open(.more(.life))
@@ -153,6 +163,8 @@ final class AppNavigationTests: XCTestCase {
         XCTAssertEqual(navigation.weekStart, "2026-W44")
         navigation.setMorePath([.life])
         XCTAssertNil(navigation.weekStart)
+        navigation.open(.week("2026-W44"))
+        XCTAssertEqual(navigation.weekStart, "2026-W44")
         navigation.open(.more(.week))
         XCTAssertNil(navigation.weekStart, "opened from the list, the screen starts on the running week")
     }

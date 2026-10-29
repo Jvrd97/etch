@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — AppDestination.day/.week, Jump and weekStart
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one case, one title, one icon)
 // [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one case, one title, one icon)
@@ -157,12 +158,13 @@ struct AppNavigation: Equatable {
         }
     }
 
-    /// `2026-W44`: four digits, `-W`, two digits from 01 to 53.
+    /// `2026-W44`: `\d{4}-W\d{2}`, the week from 01 to the last of that year (53 only in years that have it).
     static func isWeekCode(_ text: String) -> Bool {
         let parts = text.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts[0].count == 4, parts[0].allSatisfy(\.isASCII), Int(parts[0]) != nil,
-              parts[1].count == 3, parts[1].first == "W", let week = Int(parts[1].dropFirst()) else { return false }
-        return (1...53).contains(week)
+        guard parts.count == 2, parts[0].count == 4, parts[0].allSatisfy(\.isASCII), let year = Int(parts[0]),
+              parts[1].count == 3, parts[1].first == "W", parts[1].dropFirst().allSatisfy(\.isASCII),
+              let week = Int(parts[1].dropFirst()) else { return false }
+        return (1...LifeCalendar.isoWeeksInYear(year)).contains(week)
     }
 
     mutating func holdMoreLeave(_ token: UUID) {

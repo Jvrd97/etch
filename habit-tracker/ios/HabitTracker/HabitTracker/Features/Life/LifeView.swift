@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — links to Day and Week, VoiceOver week picking, canvas on cached statuses
 // [review:need-review] PHASE-01/265
 // summary: Life screen (More → Жизнь) — the weeks-lived counter with the birth date and frame, five views of one timeline (жизнь as a canvas of weeks, год, месяц, неделя, день), the legend; states: loading, error with retry, offline note with the cached moment, pull to refresh in place; no navigation stack of its own
@@ -228,11 +229,11 @@ private struct LifeWeeksCanvas: View {
             )
             .accessibilityElement()
             .accessibilityLabel("Сетка жизни по неделям, \(rows) лет")
-            .accessibilityValue(viewModel.weekSpeech(index: spokenIndex ?? viewModel.currentWeekIndex ?? 0) ?? "")
+            .accessibilityValue(viewModel.weekSpeech(index: min(spokenIndex ?? viewModel.currentWeekIndex ?? 0, statuses.count - 1)) ?? "")
             .accessibilityHint("Листайте вверх и вниз, чтобы выбрать неделю, двойное касание открывает её")
             .accessibilityAdjustableAction { direction in
                 let last = statuses.count - 1
-                let current = spokenIndex ?? viewModel.currentWeekIndex ?? 0
+                let current = min(spokenIndex ?? viewModel.currentWeekIndex ?? 0, last)
                 switch direction {
                 case .increment: spokenIndex = min(current + 1, last)
                 case .decrement: spokenIndex = max(current - 1, 0)
@@ -240,7 +241,7 @@ private struct LifeWeeksCanvas: View {
                 }
             }
             .accessibilityAction {
-                let index = spokenIndex ?? viewModel.currentWeekIndex ?? 0
+                let index = min(spokenIndex ?? viewModel.currentWeekIndex ?? 0, statuses.count - 1)
                 if let birth = LifeCalendar.parse(viewModel.frame.birth) {
                     viewModel.pickWeek(LifeCalendar.weekMonday(birth: birth, index: index))
                 }

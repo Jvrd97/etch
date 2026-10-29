@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/211, PHASE-03/226
 // summary: pure helpers of the Day screen — day-string arithmetic (yyyy-MM-dd), plan window text read in the device's timezone (formatters are cached, not rebuilt per call), the mark cycle (none -> done -> failed -> none), Russian labels of marks, task counts, closing stage/verdict and verdict reason
 import Foundation
@@ -58,6 +59,12 @@ enum DayFormat {
     }
 
     private static let clockFormatters = ClockFormatters()
+
+    /// A strict `yyyy-MM-dd` that is a real day (not 2026-02-30, not 2026-2-3).
+    static func isDay(_ text: String) -> Bool {
+        guard let date = dayStringFormatter.date(from: text) else { return false }
+        return dayStringFormatter.string(from: date) == text
+    }
 
     /// `2026-10-25` moved by `days`; nil when the string is not a date.
     static func shift(_ day: String, by days: Int) -> String? {

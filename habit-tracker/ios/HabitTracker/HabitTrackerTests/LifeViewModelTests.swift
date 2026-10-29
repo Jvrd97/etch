@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/265
 // summary: Life screen state tests — load through the read cache (fresh, offline with the cached moment, nothing to show, not configured, server error in words), a retry after failure, the cursor staying on the server's day until moved, stepping and picking per view, a late answer of a superseded read dropped, the frame kept on the device and a bad date refused
@@ -173,6 +174,14 @@ final class LifeViewModelTests: XCTestCase {
         model.setTargetYears(0)
         XCTAssertEqual(model.frame.targetYears, 1)
         XCTAssertEqual(make(MockLifeAPI(), frames: frames).frame.birth, "1990-03-04")
+    }
+
+    func testAStoredBirthDateAheadOfTodayFallsBackToTheDefaults() {
+        let frames = MemoryFrameStore()
+        frames.frame = LifeFrame(birth: "2027-01-16", targetYears: 80)
+        XCTAssertEqual(make(MockLifeAPI(), frames: frames).frame, .standard, "now is 2027-01-15")
+        frames.frame = LifeFrame(birth: "2027-01-15", targetYears: 80)
+        XCTAssertEqual(make(MockLifeAPI(), frames: frames).frame.birth, "2027-01-15")
     }
 
     func testACorruptStoredFrameFallsBackToTheDefaults() {

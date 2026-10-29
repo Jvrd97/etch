@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — day jump to the Day model, week start, Life open closure
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one screen line)
 // [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one screen line) and the first-launch gate (one modifier line)
@@ -24,7 +25,7 @@ struct RootView: View {
         }
         .tint(DS.Palette.lime)
         .onChange(of: navigation.dayJump) { _, jump in
-            if let jump { Task { await dayModel.show(date: jump.value) } }
+            if let jump, dayModel.select(date: jump.value) { Task { await dayModel.show(date: jump.value) } }
         }
         .onboardingGate { navigation.open(.more(.categories)) }
     }

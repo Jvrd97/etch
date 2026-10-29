@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270 — days dictionary, weekStatuses once per pair, weekSpeech, future birth refused
 // [review:need-review] PHASE-01/265
 // summary: Life screen state — the server's day plus the days of the last three years and this one through the read cache (one key; offline shows the last snapshot with its moment), five views (жизнь, год, месяц, неделя, день) over one cursor that stays on the server's day until the reader moves it, stepping per view, the birth date and frame kept on the device, a late answer of a superseded read dropped
@@ -95,8 +96,8 @@ final class LifeViewModel: ObservableObject {
         self.frameStore = frameStore
         self.now = now
         let stored = frameStore.load()
-        // A stored value that no longer parses must not break the counter.
-        if let stored, LifeCalendar.parse(stored.birth) != nil, LifeFrame.yearsRange.contains(stored.targetYears) {
+        // A stored value that no longer parses, or a birth date ahead of today, must not break the counter.
+        if let stored, LifeCalendar.parse(stored.birth) != nil, stored.birth <= LifeCalendar.iso(now()), LifeFrame.yearsRange.contains(stored.targetYears) {
             self.frame = stored
         } else {
             self.frame = .standard
@@ -149,7 +150,7 @@ final class LifeViewModel: ObservableObject {
     var currentWeekIndex: Int? {
         guard let birth = LifeCalendar.parse(frame.birth), let today else { return nil }
         let seconds = LifeCalendar.startOfWeek(today).timeIntervalSince(LifeCalendar.startOfWeek(birth))
-        let weeks = Int((seconds / (86_400 * Double(LifeCalendar.daysInWeek))).rounded())
+        let weeks = Int((seconds / (LifeCalendar.secondsPerDay * Double(LifeCalendar.daysInWeek))).rounded())
         return min(max(weeks, 0), frame.targetYears * LifeCalendar.weeksPerRow - 1)
     }
 

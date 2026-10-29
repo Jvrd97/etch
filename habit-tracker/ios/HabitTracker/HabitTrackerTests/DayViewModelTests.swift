@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256, PHASE-03/263
 // summary: PHASE-03/263 — third-text conflict settled by both choices
@@ -1048,8 +1049,38 @@ final class DayViewModelTests: XCTestCase {
 
     func testShowDateOpensThatDayAndStaysOnItAfterAReload() async throws {
         await viewModel.show(date: "2026-10-20")
-        XCTAssertEqual(api.fetchedDates.last, "2026-10-20")
+        XCTAssertEqual(api.fetchedDates, ["2026-10-20"])
+        await viewModel.rereadInPlace()
+        XCTAssertEqual(api.fetchedDates, ["2026-10-20", "2026-10-20"], "the reload reads the chosen day, not today")
+        await viewModel.load()
+        XCTAssertEqual(api.fetchedDates.last, "2026-10-20", "a retry stays on the chosen day too")
+    }
+
+    func testABadOrLooseDateIsIgnored() async {
         await viewModel.show(date: "2026-02-30")
-        XCTAssertEqual(api.fetchedDates.count, 1, "a bad date is ignored")
+        await viewModel.show(date: "2026-2-3")
+        await viewModel.show(date: "tomorrow")
+        XCTAssertEqual(api.fetchedDates.count, 0)
+    }
+
+    func testAJumpAndTheTabsOwnLoadMakeOneRead() async throws {
+        XCTAssertTrue(viewModel.select(date: "2026-10-20"))
+        var jump: Task<Void, Never>?
+        api.duringFetch = { [viewModel] in
+            // The jump arrives while the tab's own load is on the wire.
+            jump = Task { await viewModel?.show(date: "2026-10-20") }
+            await Task.yield()
+            await Task.yield()
+        }
+        await viewModel.load()
+        await jump?.value
+        XCTAssertEqual(api.fetchedDates, ["2026-10-20"], "one transition, one GET")
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testALoadOfAnotherDayIsNotJoined() async throws {
+        await viewModel.load()
+        await viewModel.show(date: "2026-10-20")
+        XCTAssertEqual(api.fetchedDates, [nil, "2026-10-20"])
     }
 }
