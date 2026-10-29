@@ -259,11 +259,19 @@ enum WeekFormat {
         return line
     }
 
-    /// The week's verdict; nil while the week runs and nothing is decided.
-    static func weekVerdict(_ review: WeekReviewDTO) -> String? {
-        if let line = review.verdictLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
-            return line
+    /// The verdict line as the server wrote it (rule, numbers and debt included, the same text as the web);
+    /// nil for an older server's answer.
+    static func serverVerdictLine(_ review: WeekReviewDTO) -> String? {
+        guard let line = review.verdictLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
+            return nil
         }
+        return line
+    }
+
+    /// The week's verdict: the server's line when there is one (for a running week it says the verdict is
+    /// not decided yet); otherwise our own words, and nil while the week runs and nothing is decided.
+    static func weekVerdict(_ review: WeekReviewDTO) -> String? {
+        if let line = serverVerdictLine(review) { return line }
         guard let isWon = review.isWon else { return nil }
         return isWon ? "Неделя выиграна" : "Неделя не выиграна"
     }

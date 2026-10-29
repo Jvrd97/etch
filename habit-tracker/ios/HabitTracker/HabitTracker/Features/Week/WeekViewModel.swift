@@ -101,6 +101,7 @@ final class WeekViewModel: ObservableObject {
     var partialNote: String? {
         guard let window = review?.window else { return nil }
         if offlineAsOf != nil, WeekFormat.hasEnded(window, at: now()) {
+            if window.countedDays == 0 { return WeekFormat.noCountedDaysText }
             return window.countedDays < WeekFormat.daysInWeek
                 ? WeekFormat.incompleteDataNote(countedDays: window.countedDays) : nil
         }

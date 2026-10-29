@@ -87,13 +87,33 @@ final class WeekFormatTests: XCTestCase {
         XCTAssertEqual(WeekFormat.partialNote(window), WeekFormat.noCountedDaysText)
     }
 
+    /// The answer of a server that does not send the new fields, whatever the base fixture carries.
+    private func legacy(_ object: inout [String: Any]) {
+        object["verdict_line"] = nil
+        var window = object["window"] as? [String: Any] ?? [:]
+        window["today_counted"] = nil
+        object["window"] = window
+        object["health"] = (object["health"] as? [[String: Any]] ?? []).map { metric -> [String: Any] in
+            var metric = metric
+            metric["previous_days_with_data"] = nil
+            return metric
+        }
+    }
+
     func testAnOpenTodayIsPromisedAfterClosing() throws {
-        let note = try XCTUnwrap(WeekFormat.partialNote(try WeekFixtures.runningWeek().window))
+        let window = try WeekFixtures.review { object in
+            var window = object["window"] as? [String: Any] ?? [:]
+            window["is_complete"] = false
+            window["counted_days"] = 3
+            window["compared_days"] = 3
+            window["today_counted"] = false
+            object["window"] = window
+        }.window
+        let note = try XCTUnwrap(WeekFormat.partialNote(window))
         XCTAssertTrue(note.contains("сегодняшний день войдёт после закрытия"))
     }
 
     func testAClosedTodayIsNotPromisedAgain() throws {
-        let week = try WeekFixtures.runningWeek()
         let window = try WeekFixtures.review { object in
             var window = object["window"] as? [String: Any] ?? [:]
             window["is_complete"] = false
@@ -102,7 +122,6 @@ final class WeekFormatTests: XCTestCase {
             window["today_counted"] = true
             object["window"] = window
         }.window
-        XCTAssertEqual(week.window.todayCounted, nil)
         XCTAssertEqual(window.todayCounted, true)
         let note = try XCTUnwrap(WeekFormat.partialNote(window))
         XCTAssertTrue(note.contains("учтено 3 из 7 дней"))
@@ -110,7 +129,7 @@ final class WeekFormatTests: XCTestCase {
     }
 
     func testAnOldAnswerWithoutTheNewFieldsDecodesAsBefore() throws {
-        let review = try WeekFixtures.review()
+        let review = try WeekFixtures.review(patch: legacy)
         XCTAssertNil(review.window.todayCounted)
         XCTAssertNil(review.verdictLine)
         XCTAssertTrue(review.health.allSatisfy { $0.previousDaysWithData == nil })
@@ -119,10 +138,25 @@ final class WeekFormatTests: XCTestCase {
     func testTheServersVerdictLineWinsAndTheOwnTextIsTheFallback() throws {
         let said = try WeekFixtures.review { $0["verdict_line"] = "Неделя выиграна: нет (правило)." }
         XCTAssertEqual(WeekFormat.weekVerdict(said), "Неделя выиграна: нет (правило).")
+        XCTAssertEqual(WeekFormat.serverVerdictLine(said), "Неделя выиграна: нет (правило).")
         let blank = try WeekFixtures.review { $0["verdict_line"] = "  " }
         XCTAssertEqual(WeekFormat.weekVerdict(blank), "Неделя не выиграна")
-        let running = try WeekFixtures.runningWeek()
-        XCTAssertNil(WeekFormat.weekVerdict(running))
+        XCTAssertNil(WeekFormat.serverVerdictLine(blank))
+        let old = try WeekFixtures.review(patch: legacy)
+        XCTAssertEqual(WeekFormat.weekVerdict(old), "Неделя не выиграна")
+    }
+
+    func testARunningWeekShowsTheServersUndecidedLineOrNothingAtAll() throws {
+        let line = "Неделя выиграна: пока не решено, неделя идёт."
+        let withLine = try WeekFixtures.review { object in
+            object["is_won"] = NSNull()
+            object["verdict_line"] = line
+        }
+        XCTAssertEqual(WeekFormat.weekVerdict(withLine), line)
+        XCTAssertNil(WeekFormat.weekVerdict(try WeekFixtures.review { object in
+            legacy(&object)
+            object["is_won"] = NSNull()
+        }))
     }
 
     func testIncompleteDataCaptionNamesTheDays() {
@@ -185,9 +219,12 @@ final class WeekFormatTests: XCTestCase {
     }
 
     func testTheWeekVerdictIsSaidOnlyWhenDecided() throws {
-        XCTAssertEqual(WeekFormat.weekVerdict(try WeekFixtures.review()), "Неделя не выиграна")
-        XCTAssertNil(WeekFormat.weekVerdict(try WeekFixtures.runningWeek()))
-        let won = try WeekFixtures.review { $0["is_won"] = true }
+        let lost = try WeekFixtures.review(patch: legacy)
+        XCTAssertEqual(WeekFormat.weekVerdict(lost), "Неделя не выиграна")
+        let won = try WeekFixtures.review { object in
+            legacy(&object)
+            object["is_won"] = true
+        }
         XCTAssertEqual(WeekFormat.weekVerdict(won), "Неделя выиграна")
     }
 
