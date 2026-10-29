@@ -37,7 +37,7 @@ from app.models.field import Field, FieldType
 from app.models.entry import Entry
 from app.models.entry_value import EntryValue
 from app.models.goal import GoalLevel, Milestone, MilestoneDep, QuarterGoal
-from app.models.health import HealthHourBucket, HealthMetric
+from app.models.health import HealthHourBucket, HealthMetric, HealthSyncRun
 from app.models.import_source import ImportSource
 from app.models.inbox import (
     Commitment,
@@ -110,6 +110,7 @@ __all__ = [
     "GoalLevel",
     "HealthHourBucket",
     "HealthMetric",
+    "HealthSyncRun",
     "ImportSource",
     "JournalEntry",
     "Milestone",

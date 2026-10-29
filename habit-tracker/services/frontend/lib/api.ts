@@ -3921,11 +3921,44 @@ export interface HealthMetricsResponse {
   metrics: HealthMetric[];
 }
 
+/** `#132`: the three kinds of pump run the journal tells apart. */
+export type HealthSyncRunKind = 'backfill' | 'rolling' | 'manual';
+export type HealthSyncRunStatus = 'running' | 'ok' | 'failed';
+/** A class of failure, never the exception text. */
+export type HealthSyncFailureKind = 'network' | 'unit' | 'unknown_metric' | 'auth' | 'unknown';
+
+export interface HealthSyncRun {
+  sync_run_id: string;
+  kind: HealthSyncRunKind;
+  status: HealthSyncRunStatus;
+  /** A `running` run with no chunk for an hour: the phone left the network mid-run. */
+  interrupted: boolean;
+  failure_kind: HealthSyncFailureKind | null;
+  device_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  range_from: string | null;
+  range_to: string | null;
+  samples_received: number;
+  buckets_written: number;
+  chunks_done: number;
+  chunks_total: number | null;
+}
+
+export interface HealthSyncStatus {
+  last_runs: HealthSyncRun[];
+  last_success_at: string | null;
+  /** Hours since the last successful run; null when none ever finished. */
+  lag_hours: number | null;
+  interrupted: boolean;
+}
+
 export const healthAPI = {
   getMetrics: async (dateFrom: string, dateTo: string) => {
     const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
     return fetcher<HealthMetricsResponse>(`/health/metrics?${query.toString()}`);
   },
+  getSyncStatus: async () => fetcher<HealthSyncStatus>('/health/sync-status'),
 };
 
 // [review:need-review] PHASE-01/207

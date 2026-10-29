@@ -2891,3 +2891,16 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_quick_mark_occurred_at.py` — mod: проигранная гонка не меняет итог дня спрашивающей кнопки (обе ветки, `same-button` и `other-button`); новый тест удаляет кнопку B между вставкой и чтением и ждёт 404.
 
 Проверки: `pytest tests/` на `habit_test_248` — 2124 passed, 2 skipped (12 мин); `ruff check`, `ruff format --check`, `mypy --strict app` — чисто; `alembic heads` — одна строка.
+
+
+## 2026-10-29 — PHASE-03/132: журнал синков здоровья
+
+Тронуто 7 файлов бэкенда (3 `new`, 4 `mod`), миграция `f1b3d5a7c9e2` от головы `e7a9c1b3d5f7`.
+
+- `alembic/versions/2026_10_29_1000-f1b3d5a7c9e2_health_sync_run.py` — new: таблица `health_sync_run`, два индекса `started_at DESC`; downgrade снимает таблицу, корзины целы.
+- `app/models/health.py` — mod: `HealthSyncRun` (строки вместо enum для `kind`/`status`/`failure_kind`; `client_run_id`, `updated_at`).
+- `app/models/__init__.py` — mod: реэкспорт.
+- `app/schemas/health.py` — mod: необязательные поля прогона в запросе, `HealthSyncFailureIn` (класс отказа, поля с текстом нет), `HealthSyncStatusResponse`.
+- `app/crud/health.py` — mod: `record_chunk`, `record_failure`, `sync_status` (два запроса независимо от числа прогонов).
+- `app/api/health.py` — mod: ведение прогона в `POST /samples`, `POST /sync-runs/{id}/fail`, `GET /sync-status`.
+- `tests/test_health_sync_run.py` — new: 16 тестов.

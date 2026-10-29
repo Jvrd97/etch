@@ -1,6 +1,7 @@
 # [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: POST /health/samples (raw intake, server-side aggregation, one transaction per chunk) and GET /health/metrics (daily values)
-from datetime import date
+# summary: POST /health/samples (raw intake, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status and GET /health/metrics (daily values)
+import uuid
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,12 +14,17 @@ from app.health.aggregate import (
     UnitError,
     aggregate_samples,
 )
+from app.models.health import HealthSyncRun
 from app.schemas.health import (
     HealthDayValue,
     HealthMetricSeries,
     HealthMetricsResponse,
     HealthSamplesRequest,
     HealthSamplesResponse,
+    HealthSyncFailureIn,
+    HealthSyncRunOut,
+    HealthSyncStatusResponse,
+    SyncFailureKind,
 )
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -51,6 +57,7 @@ async def ingest_samples(
 
     unknown = sorted({s.identifier for s in payload.samples} - catalog.keys())
     if unknown:
+        await _fail_run(db, payload, "unknown_metric")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"unknown health metric identifiers: {', '.join(unknown)}",
@@ -76,11 +83,24 @@ async def ingest_samples(
                 raw, MetricKind(metric.kind), metric.canonical_unit
             )
         except UnitError as error:
+            await _fail_run(db, payload, "unit")
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"{identifier}: {error}",
             ) from error
         buckets_written += await health_crud.upsert_buckets(db, metric.id, buckets)
+
+    await health_crud.record_chunk(
+        db,
+        client_run_id=payload.sync_run_id,
+        kind=payload.kind,
+        device_id=payload.device_id,
+        chunks_total=payload.chunks_total,
+        range_from=payload.range_from,
+        range_to=payload.range_to,
+        samples_received=len(payload.samples),
+        buckets_written=buckets_written,
+    )
 
     # One commit for the chunk: it lands whole or not at all, and an earlier
     # chunk of the same backfill stays valid regardless.
@@ -88,6 +108,91 @@ async def ingest_samples(
 
     return HealthSamplesResponse(
         samples_received=len(payload.samples), buckets_written=buckets_written
+    )
+
+
+async def _fail_run(
+    db: AsyncSession, payload: HealthSamplesRequest, failure_kind: SyncFailureKind
+) -> None:
+    """Drop the half-written chunk and journal the rejection by class."""
+    await db.rollback()
+    if payload.sync_run_id is None:
+        return
+    await health_crud.record_failure(
+        db,
+        client_run_id=payload.sync_run_id,
+        failure_kind=failure_kind,
+        kind=payload.kind,
+        device_id=payload.device_id,
+        chunks_total=payload.chunks_total,
+    )
+    await db.commit()
+
+
+@router.post("/sync-runs/{sync_run_id}/fail", response_model=HealthSyncRunOut)
+async def report_sync_failure(
+    sync_run_id: uuid.UUID,
+    payload: HealthSyncFailureIn,
+    db: AsyncSession = Depends(get_db),
+) -> HealthSyncRunOut:
+    """
+    Устройство сообщает, что прогон умер, классом отказа.
+
+    Сеть, из-за которой чанк не дошёл, не даёт серверу увидеть отказ сама, поэтому
+    телефон докладывает о нём при следующей связи. Поля с текстом ошибки нет
+    намеренно. Прогон, который успел завершиться `ok`, остаётся `ok`.
+    """
+    run = await health_crud.record_failure(
+        db,
+        client_run_id=sync_run_id,
+        failure_kind=payload.failure_kind,
+        kind=payload.kind,
+        device_id=payload.device_id,
+        chunks_total=payload.chunks_total,
+    )
+    await db.commit()
+    return _run_out(run, datetime.now(timezone.utc))
+
+
+def _run_out(run: HealthSyncRun, now: datetime) -> HealthSyncRunOut:
+    return HealthSyncRunOut.model_validate(
+        {
+            "sync_run_id": run.client_run_id,
+            "kind": run.kind,
+            "status": run.status,
+            "interrupted": health_crud.is_interrupted(run, now),
+            "failure_kind": run.failure_kind,
+            "device_id": run.device_id,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "range_from": run.range_from,
+            "range_to": run.range_to,
+            "samples_received": run.samples_received,
+            "buckets_written": run.buckets_written,
+            "chunks_done": run.chunks_done,
+            "chunks_total": run.chunks_total,
+        }
+    )
+
+
+@router.get("/sync-status", response_model=HealthSyncStatusResponse)
+async def get_sync_status(
+    db: AsyncSession = Depends(get_db),
+) -> HealthSyncStatusResponse:
+    """
+    Жив ли насос: последний прогон каждого вида и отставание в часах.
+
+    Отставание считается по журналу прогонов, а не по корзинам: пустой вчерашний
+    день значит либо «синк не прошёл», либо «человек не двигался». Оборванным
+    называется прогон в `running` без новых чанков больше часа.
+    """
+    now = datetime.now(timezone.utc)
+    status_ = await health_crud.sync_status(db, now)
+    return HealthSyncStatusResponse(
+        last_runs=[_run_out(run, now) for run in status_.last_runs],
+        last_success_at=status_.last_success_at,
+        lag_hours=status_.lag_hours,
+        interrupted=status_.interrupted,
     )
 
 

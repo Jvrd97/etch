@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
-// summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132
+// summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -15,6 +15,8 @@ final class HealthPumpTests: XCTestCase {
     private static let now = instant("2026-10-20T12:00:00Z")
     /// Midnight in Berlin six days earlier: the window holds seven calendar days.
     private static let windowStart = instant("2026-10-13T22:00:00Z")
+    private static let deviceId = "device-under-test"
+    private static let runId = UUID(uuidString: "3F6C1C52-0000-4000-8000-000000000001")!
     private static let accepted = HealthSamplesResponseDTO(samplesReceived: 3, bucketsWritten: 3)
 
     override func setUp() async throws {
@@ -37,6 +39,8 @@ final class HealthPumpTests: XCTestCase {
             mapper: HealthSampleMapper(timeZone: berlin),
             calendar: calendar,
             now: { Self.now },
+            deviceId: { Self.deviceId },
+            makeRunId: { Self.runId },
             chunkLimit: chunkLimit,
             pause: { [weak self] attempt in self?.pauses.append(attempt) }
         )
@@ -151,6 +155,61 @@ final class HealthPumpTests: XCTestCase {
             [HKQuantityTypeIdentifier.stepCount.rawValue, HKQuantityTypeIdentifier.stepCount.rawValue],
             [HKQuantityTypeIdentifier.restingHeartRate.rawValue],
         ])
+    }
+
+    func testEveryChunkCarriesTheRunItBelongsTo() async {
+        fillWeek()
+
+        _ = await makePump(chunkLimit: 2).sync()
+
+        XCTAssertEqual(api.posted.map(\.syncRunId), Array(repeating: Self.runId.uuidString, count: 2))
+        XCTAssertEqual(api.posted.map(\.chunkIndex), [0, 1])
+        XCTAssertEqual(api.posted.map(\.chunksTotal), [2, 2])
+        XCTAssertEqual(api.posted.map(\.deviceId), Array(repeating: Self.deviceId, count: 2))
+        XCTAssertEqual(api.posted.map(\.kind), Array(repeating: .manual, count: 2))
+    }
+
+    func testLaunchRunIsRolling() async {
+        fillWeek()
+        store.requestStatus = .unnecessary
+
+        _ = await makePump().syncIfAuthorized()
+
+        XCTAssertEqual(api.posted.map(\.kind), [.rolling])
+    }
+
+    func testDeadNetworkRunIsReportedByClassAndStaysFailed() async {
+        fillWeek()
+        api.script = Array(repeating: .failure(APIClientError.timeout), count: HealthPump.maxAttempts)
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.network))
+        XCTAssertEqual(api.failureReports.map(\.runId), [Self.runId.uuidString])
+        XCTAssertEqual(api.failureReports.map(\.report.failureKind), [.network])
+        XCTAssertEqual(api.failureReports.map(\.report.kind), [.manual])
+    }
+
+    func testFailedReportOfADeadRunChangesNothing() async {
+        fillWeek()
+        api.script = Array(repeating: .failure(APIClientError.timeout), count: HealthPump.maxAttempts)
+        api.failureReportError = APIClientError.timeout
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .failed(.network))
+        XCTAssertEqual(api.failureReports.count, 1)
+    }
+
+    func testSuccessAndServerSideRefusalsSendNoFailureReport() async {
+        fillWeek()
+        api.script = [.success(Self.accepted)]
+        _ = await makePump().sync()
+
+        api.script = [.failure(APIClientError.unexpectedStatus(422))]
+        _ = await makePump().sync()
+
+        XCTAssertTrue(api.failureReports.isEmpty)
     }
 
     func testMetricLargerThanAChunkFailsWithoutSendingAPart() async {
@@ -437,6 +496,8 @@ final class FakeHealthAPI: HealthSamplesAPI {
 
     var script: [Result<HealthSamplesResponseDTO, Error>] = []
     private(set) var posted: [HealthSamplesRequestDTO] = []
+    private(set) var failureReports: [(runId: String, report: HealthSyncFailureDTO)] = []
+    var failureReportError: Error?
 
     func postHealthSamples(_ request: HealthSamplesRequestDTO) async throws -> HealthSamplesResponseDTO {
         posted.append(request)
@@ -444,5 +505,13 @@ final class FakeHealthAPI: HealthSamplesAPI {
             return Self.defaultReply
         }
         return try script.removeFirst().get()
+    }
+
+    func postHealthSyncFailure(runId: String, _ report: HealthSyncFailureDTO) async throws -> HealthSyncRunAckDTO {
+        failureReports.append((runId, report))
+        if let failureReportError {
+            throw failureReportError
+        }
+        return HealthSyncRunAckDTO(status: "failed")
     }
 }

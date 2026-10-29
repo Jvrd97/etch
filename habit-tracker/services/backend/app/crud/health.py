@@ -1,5 +1,5 @@
 # [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245
-# summary: Health persistence — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date, and the one comparison of a metric against the window before it that the week review and the advice share
+# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind) — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date, and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
 
@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
 from sqlalchemy import func, select
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.health.aggregate import HourBucket, MetricKind, fold_daily
 from app.health.catalog import SEED_METRICS
-from app.models.health import HealthHourBucket, HealthMetric
+from app.models.health import HealthHourBucket, HealthMetric, HealthSyncRun
 
 
 # Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
@@ -270,4 +271,157 @@ def compare_windows(
             if avg is None or previous_avg is None
             else round(avg - previous_avg, AVERAGE_DIGITS)
         ),
+    )
+
+
+# A `running` run with no chunk for this long is read as abandoned.
+INTERRUPTED_AFTER = timedelta(hours=1)
+SECONDS_PER_HOUR = 3600
+LAG_DIGITS = 2
+
+
+async def _get_run(db: AsyncSession, client_run_id: uuid.UUID) -> HealthSyncRun | None:
+    result = await db.execute(
+        select(HealthSyncRun).where(HealthSyncRun.client_run_id == client_run_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def record_chunk(
+    db: AsyncSession,
+    *,
+    client_run_id: uuid.UUID | None,
+    kind: str | None,
+    device_id: str | None,
+    chunks_total: int | None,
+    range_from: date | None,
+    range_to: date | None,
+    samples_received: int,
+    buckets_written: int,
+) -> HealthSyncRun:
+    """
+    Add a landed chunk to its run, opening the run on the first one.
+
+    The run closes `ok` when the last announced chunk lands. A chunk without a
+    run id is a whole run by itself. A run that already finished is left alone
+    (a re-sent chunk changes no bucket and no counter).
+    """
+    now = datetime.now(timezone.utc)
+    run = await _get_run(db, client_run_id) if client_run_id else None
+    if run is None:
+        single = client_run_id is None
+        run = HealthSyncRun(
+            client_run_id=client_run_id or uuid.uuid4(),
+            kind=kind or "rolling",
+            status="running",
+            device_id=device_id,
+            started_at=now,
+            updated_at=now,
+            range_from=range_from,
+            range_to=range_to,
+            samples_received=0,
+            buckets_written=0,
+            chunks_done=0,
+            chunks_total=1 if single else chunks_total,
+        )
+        db.add(run)
+    elif run.status != "running":
+        return run
+
+    run.samples_received += samples_received
+    run.buckets_written += buckets_written
+    run.chunks_done += 1
+    run.updated_at = now
+    if chunks_total is not None:
+        run.chunks_total = chunks_total
+    if range_from is not None:
+        run.range_from = min(run.range_from or range_from, range_from)
+    if range_to is not None:
+        run.range_to = max(run.range_to or range_to, range_to)
+    if run.chunks_total is not None and run.chunks_done >= run.chunks_total:
+        run.status = "ok"
+        run.finished_at = now
+    await db.flush()
+    return run
+
+
+async def record_failure(
+    db: AsyncSession,
+    *,
+    client_run_id: uuid.UUID,
+    failure_kind: str,
+    kind: str | None,
+    device_id: str | None,
+    chunks_total: int | None = None,
+) -> HealthSyncRun:
+    """
+    Close a run as failed with a class, opening it first if no chunk ever landed.
+
+    A run that already finished `ok` stays `ok`: a late failure report must not
+    erase data that arrived.
+    """
+    now = datetime.now(timezone.utc)
+    run = await _get_run(db, client_run_id)
+    if run is None:
+        run = HealthSyncRun(
+            client_run_id=client_run_id,
+            kind=kind or "rolling",
+            status="running",
+            device_id=device_id,
+            started_at=now,
+            updated_at=now,
+            samples_received=0,
+            buckets_written=0,
+            chunks_done=0,
+            chunks_total=chunks_total,
+        )
+        db.add(run)
+    if run.status == "ok":
+        return run
+    run.status = "failed"
+    run.failure_kind = failure_kind
+    run.finished_at = now
+    run.updated_at = now
+    await db.flush()
+    return run
+
+
+def is_interrupted(run: HealthSyncRun, now: datetime) -> bool:
+    """A run still `running` after an hour of silence."""
+    return run.status == "running" and now - run.updated_at > INTERRUPTED_AFTER
+
+
+class SyncStatus(NamedTuple):
+    last_runs: list[HealthSyncRun]
+    last_success_at: datetime | None
+    lag_hours: float | None
+    interrupted: bool
+
+
+async def sync_status(db: AsyncSession, now: datetime | None = None) -> SyncStatus:
+    """The latest run of each kind and the lag since the last successful one. Two queries."""
+    now = now or datetime.now(timezone.utc)
+    latest = await db.execute(
+        select(HealthSyncRun)
+        .distinct(HealthSyncRun.kind)
+        .order_by(HealthSyncRun.kind, HealthSyncRun.started_at.desc())
+    )
+    runs = sorted(latest.scalars().all(), key=lambda r: r.started_at, reverse=True)
+    last_success = (
+        await db.execute(
+            select(func.max(HealthSyncRun.finished_at)).where(
+                HealthSyncRun.status == "ok"
+            )
+        )
+    ).scalar_one()
+    lag = (
+        None
+        if last_success is None
+        else round((now - last_success).total_seconds() / SECONDS_PER_HOUR, LAG_DIGITS)
+    )
+    return SyncStatus(
+        last_runs=runs,
+        last_success_at=last_success,
+        lag_hours=None if lag is None else max(lag, 0.0),
+        interrupted=any(is_interrupted(run, now) for run in runs),
     )

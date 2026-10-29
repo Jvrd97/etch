@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
-// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples), packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, and on launch runs only when the permission sheet was already answered
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132
+// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples), packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class and never shown as a success
 import Foundation
 import HealthKit
 import os
@@ -83,6 +83,8 @@ final class HealthPump: HealthSyncing {
     let mapper: HealthSampleMapper
     let calendar: Calendar
     private let now: () -> Date
+    private let deviceId: () -> String
+    private let makeRunId: () -> UUID
     private let chunkLimit: Int
     private let pause: (Int) async throws -> Void
     private var inFlight: Task<HealthSyncOutcome, Never>?
@@ -94,6 +96,8 @@ final class HealthPump: HealthSyncing {
         mapper: HealthSampleMapper = HealthSampleMapper(),
         calendar: Calendar = .autoupdatingCurrent,
         now: @escaping () -> Date = Date.init,
+        deviceId: @escaping () -> String = HealthDeviceID.current,
+        makeRunId: @escaping () -> UUID = UUID.init,
         chunkLimit: Int = HealthPump.maxSamplesPerChunk,
         pause: @escaping (Int) async throws -> Void = { attempt in
             try await Task.sleep(for: HealthPump.retryDelayStep * attempt)
@@ -105,6 +109,8 @@ final class HealthPump: HealthSyncing {
         self.mapper = mapper
         self.calendar = calendar
         self.now = now
+        self.deviceId = deviceId
+        self.makeRunId = makeRunId
         self.chunkLimit = chunkLimit
         self.pause = pause
     }
@@ -168,12 +174,20 @@ final class HealthPump: HealthSyncing {
             return .failed(.chunkTooLarge)
         }
 
+        let runId = makeRunId().uuidString
+        let kind: HealthSyncRunKind = asking ? .manual : .rolling
+        let device = deviceId()
         var answers: [HealthSamplesResponseDTO] = []
-        for chunk in chunks {
-            switch await send(HealthSamplesRequestDTO(samples: chunk), to: api) {
+        for (index, chunk) in chunks.enumerated() {
+            let request = HealthSamplesRequestDTO(
+                samples: chunk, syncRunId: runId, kind: kind, deviceId: device,
+                chunkIndex: index, chunksTotal: chunks.count
+            )
+            switch await send(request, to: api) {
             case .success(let answer):
                 answers.append(answer)
             case .failure(let failure):
+                await report(failure, runId: runId, kind: kind, device: device, chunksTotal: chunks.count, to: api)
                 return .failed(failure)
             }
         }
@@ -243,6 +257,33 @@ final class HealthPump: HealthSyncing {
             chunks.append(current)
         }
         return chunks
+    }
+
+    /// Tells the server its run died, by class. Best effort: when the cause is the network
+    /// the report cannot arrive either, and the server then names the run abandoned after
+    /// an hour of silence. A 4xx refusal is already journaled by the server itself, and a
+    /// 401 cannot be reported to the server that just refused the key.
+    private func report(
+        _ failure: HealthSyncFailure, runId: String, kind: HealthSyncRunKind, device: String,
+        chunksTotal: Int, to api: HealthSamplesAPI
+    ) async {
+        let failureKind: HealthSyncFailureKindDTO
+        switch failure {
+        case .network:
+            failureKind = .network
+        case .server, .encodingFailed:
+            failureKind = .unknown
+        default:
+            return
+        }
+        let report = HealthSyncFailureDTO(
+            failureKind: failureKind, kind: kind, deviceId: device, chunksTotal: chunksTotal
+        )
+        do {
+            _ = try await api.postHealthSyncFailure(runId: runId, report)
+        } catch {
+            Self.logger.info("health sync failure report not delivered")
+        }
     }
 
     private func send(
