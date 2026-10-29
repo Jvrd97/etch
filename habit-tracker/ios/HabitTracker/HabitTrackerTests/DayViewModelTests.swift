@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256
+// [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/231, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — third-text conflict settled by both choices
 // summary: PHASE-03/248 — false conflict after A→B→A, a third text in a stale answer, cancelled pull-to-refresh, a re-read answered while another day loads is not shown, the replaced-text card is not restored over the same server text; every hook a test sets must run
 // summary: PHASE-03/248 round 2 — a third text survives a quiet re-read as a conflict; tearDown calls super
 // summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking and per-day drafts and conflicts with a changed server text, closing fields across days, re-read on foreground and time zone change (a failed pull-to-refresh says so, the others stay quiet), saved notebook text remembered per day against late answers,  two-touch closing with keys and validation
@@ -556,6 +557,24 @@ final class DayViewModelTests: XCTestCase {
     }
 
     func testAStaleAnswerWithAThirdTextKeepsTheSavedTextAndRaisesAConflictThatBlocksSaving() async throws {
+        try await raiseAThirdTextConflict()
+        viewModel.useServerNotebook()
+        XCTAssertEqual(viewModel.notebook, "Веб-правка")
+        XCTAssertNil(viewModel.notebookConflict)
+    }
+
+    func testKeepingMineSettlesAThirdTextConflict() async throws {
+        try await raiseAThirdTextConflict()
+        viewModel.keepMyNotebook()
+        XCTAssertEqual(viewModel.notebook, "T", "the person's text stays")
+        XCTAssertNil(viewModel.notebookConflict)
+        XCTAssertFalse(viewModel.isNotebookSaveBlocked)
+        XCTAssertTrue(viewModel.isNotebookDirty, "mine differs from the server text it now stands over, and can be saved")
+    }
+
+    /// Saves T on day A, steps away and back while the saved text is being written, and lets a stale answer
+    /// with a third text land: the saved text stays, the third one waits beside it, saving is closed.
+    private func raiseAThirdTextConflict() async throws {
         await viewModel.load()
         viewModel.notebook = "T"
         api.fetchResults = [
@@ -593,9 +612,6 @@ final class DayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.notebook, "T")
         XCTAssertEqual(viewModel.notebookConflict, "Веб-правка", "a re-read does not choose for the person")
         XCTAssertTrue(viewModel.isNotebookSaveBlocked)
-        viewModel.useServerNotebook()
-        XCTAssertEqual(viewModel.notebook, "Веб-правка")
-        XCTAssertNil(viewModel.notebookConflict)
     }
 
     func testAnAnswerSentAfterTheSaveBringsTheServersTextAgain() async throws {

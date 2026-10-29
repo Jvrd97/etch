@@ -2900,3 +2900,6 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_ios_week_fixture.py` — mod: проверка ключей Swift DTO против схемы недели (неверный ключ необязательного поля краснит тест); пропуск без исходников iOS только внутри docker.
 
 Проверки: `pytest tests/test_ios_week_fixture.py` — 4 passed; xcodebuild Week*/DailySummary* — зелёно.
+### PHASE-03/263: запись о правке теста #248/#256
+
+В круге 2 #248/#256 правился только тест `tests/test_quick_mark_occurred_at.py` (ветки `same-button` и `other-button`: итог дня и журнал после проигранной вставки, 404 для удалённой кнопки); код бэкенда не менялся.

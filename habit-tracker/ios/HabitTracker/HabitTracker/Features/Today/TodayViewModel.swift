@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// summary: PHASE-03/263 — a late failure of an older load says nothing when a newer read is on screen
 // summary: PHASE-03/248 — a second load keeps the loaded screen and reports its failure as a line; PHASE-03/256 — the cache stamp after a re-read of the records stays the age of the categories and streaks it keeps
 // summary: PHASE-03/248 round 2 — the line a failed refresh wrote is taken back by the next refresh that works, and only that line
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
@@ -80,6 +81,9 @@ final class TodayViewModel: ObservableObject {
     /// an answer older than the one on screen is dropped.
     private var entriesReadsSent = 0
     private var entriesReadShown = 0
+    /// Whole loads (categories, records, streaks) are numbered apart from the record re-reads above.
+    private var loadsSent = 0
+    private var loadShown = 0
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
@@ -185,12 +189,14 @@ final class TodayViewModel: ObservableObject {
     func load() async {
         let showsData = state == .loaded
         if !showsData { state = .loading }
+        loadsSent += 1
+        let load = loadsSent
+        let read = nextEntriesRead()
         guard let api = apiProvider() else {
-            failLoad(Self.notConfiguredMessage, showsData: showsData)
+            failLoad(Self.notConfiguredMessage, showsData: showsData, load: load)
             return
         }
         let flushing = Task { await outbox?.flush() }
-        let read = nextEntriesRead()
         let today = todayString
         var streaksFailed = false
         do {
@@ -224,11 +230,12 @@ final class TodayViewModel: ObservableObject {
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
             state = .loaded
+            loadShown = max(loadShown, load)
             clearRefreshFailure()
         } catch let error as APIClientError {
-            failLoad(error.userMessage, showsData: showsData)
+            failLoad(error.userMessage, showsData: showsData, load: load)
         } catch {
-            failLoad("Unexpected error", showsData: showsData)
+            failLoad("Unexpected error", showsData: showsData, load: load)
         }
         await flushing.value
     }
@@ -236,7 +243,10 @@ final class TodayViewModel: ObservableObject {
     /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
     private var refreshFailureLine: String?
 
-    private func failLoad(_ reason: String, showsData: Bool) {
+    /// A load that failed late says nothing when a newer load already reached the screen. A load with no
+    /// newer one shown always says so, so a first load never stays on the spinner.
+    private func failLoad(_ reason: String, showsData: Bool, load: Int) {
+        if load < loadShown { return }
         if showsData {
             let line = "\(Self.refreshFailedMessage): \(reason)"
             saveErrorMessage = line

@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263
+// summary: PHASE-03/263 — the empty screen shows the refresh failure line
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
 import SwiftUI
 
@@ -95,6 +96,14 @@ struct TodayView: View {
                 VoiceDayButton { Task { await reload() } }
                     .padding(.horizontal, DS.Spacing.lg)
                     .padding(.top, DS.Spacing.lg)
+                if let message = viewModel.saveErrorMessage {
+                    Text(message)
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.danger)
+                        .padding(.horizontal, DS.Spacing.lg)
+                        .padding(.top, DS.Spacing.md)
+                        .accessibilityIdentifier("today.error")
+                }
                 DSEmptyState(
                     title: "No habits yet",
                     systemImage: "checkmark.circle",
