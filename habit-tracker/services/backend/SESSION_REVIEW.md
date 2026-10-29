@@ -2939,3 +2939,10 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Влит main; конфликт в `SESSION_REVIEW.md` склеен обеими сторонами.
 
 Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_251` — 3414 passed, 2 skipped; bun test 2032/0, tsc, lint 0 ошибок.
+
+### PHASE-03/271
+
+- `app/llm/dose_guard.py` — mod: перевод строки — граница предложения; исключение для пульса — только если «на» стоит сразу после слова изменения пульса (или после единицы идёт «ниже/больше») и дальше нет названия вещества.
+- `tests/test_dose_guard.py` — mod: 10 фраз в `CAUGHT_NEXT_TO_A_PULSE`, 5 в `PASSED`; 10 красных на 342b7aa, зелёные после правки.
+
+Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_271`.

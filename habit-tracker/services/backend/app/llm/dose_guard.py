@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/251
+# [review:need-review] PHASE-03/271
 # summary: the dose net under the health advice — folds the answer (compatibility decomposition, no invisible characters, no accents), then looks for a number or a number word glued to a dose unit or a pharmacy abbreviation, and for fractions of a tablet
 """
 The net under «не называй дозу» (`#223`, `#246`, `#251`).
@@ -25,8 +25,9 @@ are written for the folded text: no «ё» in them, «й» as it is.
 
 **Что не считается.** Одинокая буква «г» — год, если перед ней год или дата
 («в 2026 г.», «12.2026 г.»); шаги, проценты, пульс и минуты не единицы дозы.
-«Единица» после слов о пульсе в той же фразе и «на» («пульс снизился на 4 единицы») —
-пункт шкалы, а не доза, если число — до двух знаков или числительное до тридцати.
+«Единица» после глагола изменения пульса и «на» («пульс снизился на 4 единицы») —
+пункт шкалы, а не доза, если число — до двух знаков или числительное до тридцати и после
+единицы не стоит название вещества. Перевод строки — граница предложения.
 Известная щель: «2000 г» читается как год, а не как два килограмма.
 """
 
@@ -107,10 +108,36 @@ _SCALE_NUMBER = (
     r"семнадцат|восемнадцат|девятнадцат|двадцат|тридцат)(?:ь|и|ью))"
 )
 _POINT_OF_SCALE = re.compile(rf"{_SCALE_NUMBER}\s*ед(?:иниц\w*)?\.?$")
-_ON_BEFORE = re.compile(r"(?<!\w)на\s+$")
+# «на» that follows a verb or a word of change of the pulse, with nothing between them.
+_CHANGE_BEFORE_ON = re.compile(
+    r"(?<!\w)(?:сниз\w*|пониз\w*|повыс\w*|выр[оа]с\w*|возрос\w*|упал\w*|"
+    r"уменьш\w*|увелич\w*|подскочил\w*|подрос\w*|сократил\w*|поднял\w*|"
+    r"опустил\w*|ускорил\w*|замедл\w*|ниже|выше)\s+на\s+$"
+)
+# «58 уд/мин, на 4 единицы ниже»: the change word follows the unit instead.
+_BARE_ON_BEFORE = re.compile(r"(?:[,—–-]|мин)\s*на\s+$")
+_COMPARATIVE_AFTER = re.compile(r"\.?\s*(?:ниже|выше|меньше|больше|чаще|реже)(?!\w)")
+# What may follow the unit in the same clause; anything else («инсулина», «магния») is a dose.
+_AFTER_POINT_WORDS = frozenset(
+    {
+        "ниже",
+        "выше",
+        "меньше",
+        "больше",
+        "чаще",
+        "реже",
+        "чем",
+        "а",
+        "но",
+        "за",
+        "к",
+        "против",
+    }
+)
+_CLAUSE_END = re.compile(r"[.!?;:,\n—–]")
 _PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
-# The sentence of the match: what follows the last sentence mark before it.
-_SENTENCE_END = re.compile(r"[.!?;:]\s")
+# The sentence of the match: what follows the last sentence mark or line break before it.
+_SENTENCE_END = re.compile(r"[.!?;:]\s|\n")
 _SENTENCE_LOOKBACK = 120
 
 
@@ -138,14 +165,23 @@ def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
     """
     «Пульс снизился на 4 единицы»: «ед.» as a step of the pulse scale, not a dose.
 
-    Only a number that follows «на» directly, in a sentence that names the pulse,
-    and only a number of the scale: up to two digits or a numeral up to thirty.
-    Anything else next to a pulse — «пульс в норме, 5000 ед», «пульс в норме,
-    рассчитывай на 5000 ед», «на 5 тыс. ед.» — is a dose.
+    All of it must hold: the number is of the scale (up to two digits or a numeral up to
+    thirty); in the same sentence (a line break ends it) a pulse word stands; «на» follows
+    a word of change of the pulse («снизился», «вырос», «ниже») or the unit is followed by
+    «ниже»/«больше»; and no name of a substance follows the unit. «Пульс в норме,
+    добавь на 10 ед», «на 99 ед» and «- добавь на 10 ед инсулина» are doses.
     """
     if not _POINT_OF_SCALE.fullmatch(match.group()):
         return False
     before = folded[max(0, match.start() - _SENTENCE_LOOKBACK) : match.start()]
-    if not _ON_BEFORE.search(before):
+    after = folded[match.end() :]
+    named_after = _COMPARATIVE_AFTER.match(after) is not None
+    changed = _CHANGE_BEFORE_ON.search(before) or (
+        named_after and _BARE_ON_BEFORE.search(before)
+    )
+    if not changed:
         return False
-    return _PULSE_WORDS.search(_SENTENCE_END.split(before)[-1]) is not None
+    if _PULSE_WORDS.search(_SENTENCE_END.split(before)[-1]) is None:
+        return False
+    words = _CLAUSE_END.split(after, maxsplit=1)[0].split()
+    return not words or words[0] in _AFTER_POINT_WORDS

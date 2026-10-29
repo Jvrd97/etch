@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/251
+# [review:need-review] PHASE-03/271
 # summary: the phrase sets of the dose net — pharmacy abbreviations, case forms of number words, fractions, Latin units, invisible characters, a number glued to a comma — and the phrases that must pass (dates, steps, percents, pulse)
 """
 The dose net of the health advice (`#251`).
@@ -220,6 +220,11 @@ PASSED = [
     "Пульс покоя вырос на одну единицу, а шагов стало больше.",
     "Пульс покоя 58 уд/мин — на 4 единицы ниже, чем неделей раньше.",
     "Пульс покоя 58 уд/мин, на 4 ед. ниже, чем неделей раньше.",
+    "Пульс 62.",
+    "Пульс снизился на 5 ударов.",
+    "Пульс вырос на 12 ед.",
+    "Пульс вырос на 12 ед. Добавь воды.",
+    "- пульс упал на 3 ед.\n- шагов стало больше.",
 ]
 
 # Dose and a pulse in one text: only the unit after the pulse words is not a dose.
@@ -245,6 +250,18 @@ CAUGHT_NEXT_TO_A_PULSE = [
     "Сердцебиение частое, ориентируйся на сорок единиц",
     "Пульс снизился, рассчитывай на 250 ед",
     "Пульс в норме, добавь на сто единиц витамина D",
+    # #271: two-digit units are the range of insulin doses
+    "Пульс в норме, добавь на 10 ед",
+    "Пульс ниже, добавь на 99 ед",
+    "Пульс в норме, добавь на тридцать единиц инсулина",
+    "Пульс в норме, уколи на 4 единицы инсулина больше",
+    "Пульс снизился на 10 ед инсулина",
+    "Пульс снизился, добавь на 10 ед",
+    "Пульс снизился добавь на 10 ед",
+    # a line break ends the sentence: the pulse of the neighbouring line opens nothing
+    "Пульс в норме\nДобавь на 10 ед",
+    "Пульс в норме\n- добавь на 10 ед инсулина",
+    "- пульс снизился\n- добавь на 10 ед инсулина",
 ]
 
 
