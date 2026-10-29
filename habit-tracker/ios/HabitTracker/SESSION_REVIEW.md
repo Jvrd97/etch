@@ -805,3 +805,14 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - mod `App/AppNavigation.swift` (case `.goals`), `App/RootView.swift` (строка `GoalsView()`)
 
 Скриншот снят с экрана, встроенного в окно тестового хоста на симуляторе, с данными фикстуры; путь More → Цели касанием и живой бэкенд не проверялись.
+
+## 2026-10-29 — #267 iOS Onboarding (More → Онбординг, лист первого запуска)
+
+Файлы (new): `API/DTOs+Onboarding.swift`, `API/APIClient+Onboarding.swift`, `Features/Onboarding/{OnboardingMessages,OnboardingTemplatesModel,OnboardingPlanModel,OnboardingGate,OnboardingView}.swift`, тесты `HabitTrackerTests/Onboarding{Fixtures,APIClientTests,TemplatesModelTests,PlanModelTests,GateTests}.swift`. Файлы (mod): `App/AppNavigation.swift`, `App/RootView.swift` (добавлением: case, строка switch, один модификатор `.onboardingGate`), `README.md`.
+
+Расхождения с `/m/onboarding`:
+- В вебе автоматического перехода при первом запуске нет: онбординг предлагает пустое состояние Categories («Describe them instead»). В iOS добавлен лист первого запуска (один раз, когда сервер вернул ноль категорий; сбой чтения ничего не открывает и не помечает) и строка в «Ещё». Ссылка в пустом состоянии Categories не добавлена: `Features/Categories/**` не моё.
+- После создания плана экран открывает Categories через `AppNavigation` (в вебе — `router.push`).
+- Тексты ошибок 503/502/400/422 переведены в понятные фразы: клиент iOS не несёт тело ответа сервера, `detail` не показывается.
+- Диктовки в вебе тоже нет, поле текстовое.
+- Глазами проверен только лист с шаблонами на мок-сервере; план модели, применение и офлайн — тестами, не вручную. Настоящий ИИ не вызывался.

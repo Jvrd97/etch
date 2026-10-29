@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one screen line)
+// [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one screen line) and the first-launch gate (one modifier line)
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
 // [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // [review:need-review] PHASE-01/216 — the Goals screen line under More
@@ -19,6 +20,7 @@ struct RootView: View {
             }
         }
         .tint(DS.Palette.lime)
+        .onboardingGate { navigation.open(.more(.categories)) }
     }
 
     @ViewBuilder
@@ -75,6 +77,8 @@ struct RootView: View {
             InsightsView(viewModel: .live())
         case .life:
             LifeView()
+        case .onboarding:
+            OnboardingView { navigation.open(.more(.categories)) }
         case .settings:
             SettingsView()
         }
