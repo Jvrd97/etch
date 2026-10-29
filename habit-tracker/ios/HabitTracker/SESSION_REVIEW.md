@@ -842,3 +842,9 @@ Avoid-стрик карточка «N дней чистый» на экране 
 ## 2026-10-30 — #222 анимированный обзор недели
 
 Файлы: `Features/Week/WeekOverviewModel.swift` (new), `Features/Week/WeekOverviewView.swift` (new), `Features/Week/WeekView.swift` (mod, кнопка «Итоги недели» и sheet), `HabitTrackerTests/WeekOverviewTests.swift` (new). Данные только из `GET /week-review`; при «Уменьшить движение» числа и столбцы сразу стоят в конечном виде. Не проверено: вживую в приложении (вход через Ещё → Неделя, свайп слайдов, сама анимация); снимки — отрисовка `ImageRenderer` в симуляторе.
+
+## 2026-10-30 — #270 вход в Day и Week по дате, ссылки из Life, остатки #265
+
+Файлы (13, все mod): `App/AppNavigation.swift`, `App/RootView.swift`, `Features/Day/DayViewModel.swift`, `Features/Week/WeekView.swift`, `Features/Week/WeekViewModel.swift`, `Features/Life/LifeCalendar.swift`, `Features/Life/LifeViewModel.swift`, `Features/Life/LifeView.swift`, тесты `AppNavigationTests`, `DayViewModelTests`, `LifeCalendarTests`, `LifeViewModelTests`, `WeekViewModelTests`.
+
+Проверки: сборка `build-for-testing` зелёная; тесты не запускались (симулятор не использовался). Не проверено: переходы глазами.

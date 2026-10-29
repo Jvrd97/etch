@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/208, PHASE-03/230, PHASE-03/250
 // summary: tests for the root navigation — five tabs in mobile-web order, opening on Today, every former screen behind More; a More screen holding an unconfirmed write cannot be popped by the system (a second tap on the selected tab), every other pop and every push goes through; the block is a set of holders, so an old screen going away does not lift the hold of the new one
 import XCTest
@@ -120,5 +121,39 @@ final class AppNavigationTests: XCTestCase {
         navigation.releaseMoreLeave(UUID())
 
         XCTAssertEqual(navigation, before)
+    }
+
+    // MARK: Jumps by date (#270)
+
+    func testADayJumpSelectsTheDayTabAndCarriesTheDate() {
+        var navigation = AppNavigation()
+        navigation.open(.day("2026-10-20"))
+        XCTAssertEqual(navigation.selectedTab, .day)
+        XCTAssertEqual(navigation.dayJump?.value, "2026-10-20")
+        let first = navigation.dayJump
+        navigation.open(.day("2026-10-20"))
+        XCTAssertNotEqual(navigation.dayJump, first, "the same date twice must still fire")
+    }
+
+    func testABadDateOrWeekCodeIsIgnored() {
+        var navigation = AppNavigation()
+        let before = navigation
+        navigation.open(.day("2026-02-30"))
+        navigation.open(.week("2026-W99"))
+        navigation.open(.week("week 44"))
+        XCTAssertEqual(navigation, before)
+    }
+
+    func testAWeekJumpPushesTheWeekScreenOnMoreAndForgetsTheWeekWhenLeft() {
+        var navigation = AppNavigation()
+        navigation.open(.more(.life))
+        navigation.open(.week("2026-W44"))
+        XCTAssertEqual(navigation.selectedTab, .more)
+        XCTAssertEqual(navigation.morePath, [.life, .week])
+        XCTAssertEqual(navigation.weekStart, "2026-W44")
+        navigation.setMorePath([.life])
+        XCTAssertNil(navigation.weekStart)
+        navigation.open(.more(.week))
+        XCTAssertNil(navigation.weekStart, "opened from the list, the screen starts on the running week")
     }
 }

@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/265
 // summary: pure timeline rules — strict date parsing, ISO week codes at the year edges, the five square states and the week aggregate, the counter arithmetic of life.html, the history window
 import XCTest
@@ -79,5 +80,32 @@ final class LifeCalendarTests: XCTestCase {
         let range = LifeCalendar.historyRange(today: LifeCalendar.parse("2026-10-29")!)
         XCTAssertEqual(range.from, "2023-01-01")
         XCTAssertEqual(range.to, "2026-12-31")
+    }
+
+    // MARK: #270
+
+    private func years(_ born: String, _ today: String) -> Int {
+        LifeCalendar.wholeYears(from: LifeCalendar.parse(born)!, to: LifeCalendar.parse(today)!)
+    }
+
+    func testALeapDayChildTurnsAYearOlderOnMarchFirstLikeTheWeb() {
+        XCTAssertEqual(years("2000-02-29", "2001-02-28"), 0)
+        XCTAssertEqual(years("2000-02-29", "2001-03-01"), 1)
+        XCTAssertEqual(years("2000-02-29", "2004-02-28"), 3)
+        XCTAssertEqual(years("2000-02-29", "2004-02-29"), 4)
+        XCTAssertEqual(years("2000-05-11", "2026-05-10"), 25)
+        XCTAssertEqual(years("2000-05-11", "2026-05-11"), 26)
+    }
+
+    func testATapOnTheCanvasLandsInTheWeekCell() {
+        let cell = LifeCalendar.gridCell(x: (3.0 + 2.5) * 10, y: 4.5 * 10, stride: 10, labelCells: 3, rows: 97)
+        XCTAssertEqual(cell?.column, 2)
+        XCTAssertEqual(cell?.row, 4)
+        XCTAssertNil(LifeCalendar.gridCell(x: 20, y: 10, stride: 10, labelCells: 3, rows: 97), "the number column")
+        XCTAssertNil(LifeCalendar.gridCell(x: 600, y: 10, stride: 10, labelCells: 3, rows: 97), "past the 53rd week")
+        XCTAssertNil(LifeCalendar.gridCell(x: 40, y: 970, stride: 10, labelCells: 3, rows: 97), "below the last year")
+        let birth = LifeCalendar.parse("2000-05-11")!
+        XCTAssertEqual(LifeCalendar.iso(LifeCalendar.weekMonday(birth: birth, index: 0)), "2000-05-08")
+        XCTAssertEqual(LifeCalendar.iso(LifeCalendar.weekMonday(birth: birth, index: 53)), "2001-05-14")
     }
 }

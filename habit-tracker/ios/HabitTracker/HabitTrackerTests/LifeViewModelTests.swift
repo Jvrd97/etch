@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-01/265
 // summary: Life screen state tests — load through the read cache (fresh, offline with the cached moment, nothing to show, not configured, server error in words), a retry after failure, the cursor staying on the server's day until moved, stepping and picking per view, a late answer of a superseded read dropped, the frame kept on the device and a bad date refused
 import XCTest
@@ -178,5 +179,46 @@ final class LifeViewModelTests: XCTestCase {
         let frames = MemoryFrameStore()
         frames.frame = LifeFrame(birth: "garbage", targetYears: 97)
         XCTAssertEqual(make(MockLifeAPI(), frames: frames).frame, .standard)
+    }
+
+    // MARK: #270
+
+    func testABirthDateAheadOfTodayIsRefused() async {
+        let model = make(MockLifeAPI())
+        await model.load()
+        XCTAssertFalse(model.setBirth("2026-10-30"))
+        XCTAssertTrue(model.setBirth("2026-10-29"))
+        XCTAssertEqual(model.frame.birth, "2026-10-29")
+    }
+
+    func testDaysFollowTheSnapshotAndWeekStatusesAreComputedOncePerPair() async {
+        let api = MockLifeAPI()
+        api.daysHandler = { _, _ in [self.row("2026-10-28", "won")] }
+        let model = make(api, frames: MemoryFrameStore())
+        await model.load()
+        XCTAssertEqual(model.days["2026-10-28"]?.verdict, "won")
+        let first = model.weekStatuses
+        XCTAssertEqual(first.count, 97 * LifeCalendar.weeksPerRow)
+        let index = model.currentWeekIndex!
+        XCTAssertEqual(first[index], .won)
+
+        api.daysHandler = { _, _ in [self.row("2026-10-28", "lost")] }
+        await model.refresh()
+        XCTAssertEqual(model.days["2026-10-28"]?.verdict, "lost")
+        XCTAssertEqual(model.weekStatuses[index], .lost, "a new snapshot recounts")
+
+        model.setTargetYears(50)
+        XCTAssertEqual(model.weekStatuses.count, 50 * LifeCalendar.weeksPerRow, "a new frame recounts")
+    }
+
+    func testVoiceOverSpeaksTheWeekWithItsTally() async {
+        let api = MockLifeAPI()
+        api.daysHandler = { _, _ in [self.row("2026-10-27", "won"), self.row("2026-10-28", "lost"), self.row("2026-10-26", "won")] }
+        let model = make(api)
+        await model.load()
+        let speech = model.weekSpeech(index: model.currentWeekIndex!)
+        XCTAssertEqual(speech?.contains("2026-W44"), true)
+        XCTAssertEqual(speech?.contains("выиграно 2, проиграно 1"), true)
+        XCTAssertNil(model.weekSpeech(index: -1))
     }
 }

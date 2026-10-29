@@ -1,3 +1,4 @@
+// [review:need-review] PHASE-01/270 — AppDestination.day/.week, Jump and weekStart
 // [review:need-review] PHASE-01/265 — the «Жизнь» row under More (one case, one title, one icon)
 // [review:need-review] PHASE-01/267 — the «Онбординг» row under More (one case, one title, one icon)
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
@@ -102,12 +103,26 @@ enum MoreDestination: String, CaseIterable, Identifiable, Hashable {
 enum AppDestination: Hashable {
     case tab(AppTab)
     case more(MoreDestination)
+    /// The Day tab on a date, `yyyy-MM-dd`.
+    case day(String)
+    /// The Неделя screen on an ISO week, `2026-W44`.
+    case week(String)
 }
 
 /// Root navigation state: the selected tab and the More stack. A value type, so the
 /// routing rules are testable without a view.
 struct AppNavigation: Equatable {
     var selectedTab: AppTab = .today
+    /// The date the Day tab was sent to; `serial` changes on every jump, so the same date twice still fires.
+    private(set) var dayJump: Jump?
+    /// The week the Неделя screen opens on; cleared when that screen is left or opened from the list.
+    private(set) var weekStart: String?
+    private var jumps = 0
+
+    struct Jump: Equatable {
+        let value: String
+        let serial: Int
+    }
     private(set) var morePath: [MoreDestination] = []
     /// Pushed More screens that ask not to be left: each holds a write whose answer never came, and
     /// leaving drops the key that keeps a retry from writing the day twice. The screen has its own
@@ -127,8 +142,27 @@ struct AppNavigation: Equatable {
             selectedTab = tab
         case .more(let screen):
             selectedTab = .more
+            if screen == .week { weekStart = nil }
             morePath.append(screen)
+        case .day(let date):
+            guard LifeCalendar.parse(date) != nil else { return }
+            jumps += 1
+            dayJump = Jump(value: date, serial: jumps)
+            selectedTab = .day
+        case .week(let iso):
+            guard Self.isWeekCode(iso) else { return }
+            selectedTab = .more
+            weekStart = iso
+            morePath.append(.week)
         }
+    }
+
+    /// `2026-W44`: four digits, `-W`, two digits from 01 to 53.
+    static func isWeekCode(_ text: String) -> Bool {
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].count == 4, parts[0].allSatisfy(\.isASCII), Int(parts[0]) != nil,
+              parts[1].count == 3, parts[1].first == "W", let week = Int(parts[1].dropFirst()) else { return false }
+        return (1...53).contains(week)
     }
 
     mutating func holdMoreLeave(_ token: UUID) {
@@ -148,5 +182,6 @@ struct AppNavigation: Equatable {
             return
         }
         morePath = path
+        if !path.contains(.week) { weekStart = nil }
     }
 }
