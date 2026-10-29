@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261
 // summary: a server-shaped answer of GET /week-review for a finished week (three judged days, two roles, one category, one avoid streak, sleep not connected) as JSON, with helpers to patch it into a running or an empty week
 import Foundation
 @testable import HabitTracker
@@ -77,20 +77,22 @@ enum WeekFixtures {
         }
     }
 
-    /// The week of Monday 24 August 2026 (`2026-W35`) shifted by whole weeks: its Monday and Sunday.
+    /// The Monday and Sunday of an ISO week (`2026-W35`, year included). A code it cannot read stops the test.
     private static func setDates(of window: inout [String: Any], forIso iso: String) {
-        guard let number = Int(iso.suffix(2)) else { return }
-        var calendar = Calendar(identifier: .gregorian)
+        let parts = iso.split(separator: "-W")
+        guard parts.count == 2, let year = Int(parts[0]), let week = Int(parts[1]), (1...53).contains(week) else {
+            preconditionFailure("WeekFixtures cannot place the week \(iso)")
+        }
+        var calendar = Calendar(identifier: .iso8601)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        let anchor = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24))!
-        let weeks = number - 35
-        window["starts_on"] = formatter.string(from: calendar.date(byAdding: .day, value: weeks * 7, to: anchor)!)
-        window["ends_on"] = formatter.string(from: calendar.date(byAdding: .day, value: weeks * 7 + 6, to: anchor)!)
+        let monday = calendar.date(from: DateComponents(weekday: 2, weekOfYear: week, yearForWeekOfYear: year))!
+        window["starts_on"] = formatter.string(from: monday)
+        window["ends_on"] = formatter.string(from: calendar.date(byAdding: .day, value: 6, to: monday)!)
     }
 
     /// A week with no counted day: the server gives it `counted_days = 0` and no «as of», whether the

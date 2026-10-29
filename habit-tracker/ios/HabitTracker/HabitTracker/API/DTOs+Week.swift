@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/261, PHASE-03/262
 // summary: wire types of GET /week-review[/{iso}] and POST /week-review/{iso}/narrative — the week in one answer (window, totals against the previous week, days, roles, categories, avoid streaks, health) and the AI text; Codable so the read cache can keep the last answer
 import Foundation
 
@@ -19,6 +19,8 @@ struct WeekWindowDTO: Codable, Equatable {
     let nextIsoCode: String
     /// How many first days of the previous week the comparison covers.
     let comparedDays: Int
+    /// Today is already in the figures (its day is closed). Absent in an older server's answer: false.
+    let todayCounted: Bool?
 }
 
 /// What a stretch of days added up to. `nil` is "nothing to measure", never zero.
@@ -114,6 +116,8 @@ struct WeekHealthMetricDTO: Codable, Equatable, Identifiable {
     let deltaAvgPerDay: Double?
     /// Monday to Sunday; `nil` is "no data that day".
     let daily: [Double?]
+    /// Days of the previous week that had data; absent in an older server's answer.
+    let previousDaysWithData: Int?
 
     var id: String { key }
 }
@@ -134,6 +138,8 @@ struct WeekReviewDTO: Codable, Equatable {
     let categories: [WeekCategorySliceDTO]
     let habitStreaks: [WeekHabitStreakDTO]
     let health: [WeekHealthMetricDTO]
+    /// The verdict in the server's own words, the same on the web; absent in an older server's answer.
+    let verdictLine: String?
 }
 
 /// The AI text of a week. The server does not store it.
