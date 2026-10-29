@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255
 # summary: the week review in a fixed number of statements — day summaries, role minutes, duration entries, avoid histories and health buckets of both weeks are read as 14-day ranges and folded in python, so the count does not move with days or habits
 """
 Database access for the week review (`#221`).
@@ -48,7 +48,7 @@ from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.crud import streak as streak_crud
 from app.crud.values import parse_number
-from app.day.debt import week_is_won
+from app.day.debt import week_is_won, week_verdict_line
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
 from app.day.week import DAYS_IN_WEEK, iso_code, week_bounds
 from app.models import Category, Entry, EntryValue, Field
@@ -428,6 +428,7 @@ async def _health(
                 total=compared.total,
                 avg_per_day=compared.avg_per_day,
                 days_with_data=compared.days_with_data,
+                previous_days_with_data=compared.previous_days_with_data,
                 previous_avg_per_day=compared.previous_avg_per_day,
                 delta_avg_per_day=compared.delta_avg_per_day,
                 daily=[
@@ -474,6 +475,7 @@ async def build_week_review(
     # законченной недели; идущая ещё не выиграна и не проиграна.
     debt = await profile_crud.open_debt_minutes(db, starts_on, ends_on)
     complete = today > ends_on
+    is_won = week_is_won(totals.won_days, totals.days_total, debt) if complete else None
     days = _days(facts, starts_on, now)
     best, worst = _best_and_worst(days)
     boundary = current_boundary()
@@ -487,6 +489,7 @@ async def build_week_review(
             day_start_hour=boundary.day_start_hour,
             is_complete=complete,
             counted_days=now.days,
+            today_counted=now.holds(today),
             as_of=now.end if now.days else None,
             previous_iso_code=iso_code(before.start),
             next_iso_code=iso_code(ends_on + timedelta(days=1)),
@@ -496,8 +499,9 @@ async def build_week_review(
         previous_totals=previous_totals,
         delta=_delta(totals, previous_totals),
         debt_minutes=debt,
-        is_won=(
-            week_is_won(totals.won_days, totals.days_total, debt) if complete else None
+        is_won=is_won,
+        verdict_line=week_verdict_line(
+            is_won, totals.won_days, totals.days_total, debt, as_hours=True
         ),
         days=days,
         best_day=best,

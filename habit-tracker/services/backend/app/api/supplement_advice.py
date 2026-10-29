@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/223
-# summary: GET /health-advice/summary (sleep, sport, supplements over 7-14 closed days, read-only) and POST /health-advice (the advice from the same summary through the orchestration layer; not stored; 422 too little data, 503 no backend, 502 model failure; no name or value in a log)
+# [review:need-review] PHASE-03/223, PHASE-03/251
+# summary: GET /health-advice/summary (sleep, sport, supplements over 7-14 closed days, read-only) and POST /health-advice (the advice from the same summary through the orchestration layer; not stored; 422 too little data, 503 no backend, 502 model failure or an answer the dose guard dropped; no name or value in a log)
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,7 +10,7 @@ from app.core.daytime import today_local
 from app.core.database import get_db
 from app.crud import supplement_advice as advice_crud
 from app.llm.client import LLMClient, LLMError
-from app.llm.health_advice import write_health_advice
+from app.llm.health_advice import DoseGuardTripped, write_health_advice
 from app.schemas.supplement_advice import (
     MAX_WINDOW_DAYS,
     MIN_WINDOW_DAYS,
@@ -20,6 +20,8 @@ from app.schemas.supplement_advice import (
 )
 
 logger = logging.getLogger(__name__)
+
+DOSE_GUARD_DETAIL = "Совет отклонён защитой."
 
 router = APIRouter(prefix="/health-advice", tags=["health-advice"])
 
@@ -52,8 +54,9 @@ async def write_advice(
     Запускается по запросу и не сохраняется. Текст не ставит диагнозов, не
     назначает доз и заканчивается оговоркой «не медицинская рекомендация».
     Данных мало — 422, и модель не вызывается. Бэкенд LLM недоступен — 503,
-    сбой модели — 502. Ни названия добавок, ни значения здоровья, ни текст
-    совета в лог не пишутся.
+    сбой модели — 502 «Модель не ответила.», ответ с дозой — 502 «Совет
+    отклонён защитой.» (отдельная строка лога без текста). Ни названия добавок,
+    ни значения здоровья, ни текст совета в лог не пишутся.
     """
     summary = await advice_crud.build_health_summary(db, payload.days, today_local())
     if not summary.enough_data:
@@ -74,6 +77,14 @@ async def write_advice(
         )
     try:
         text = await write_health_advice(llm, summary)
+    except DoseGuardTripped as error:
+        # Its own WARNING line, apart from a failed backend; no text of the answer.
+        # The rate of the net is this line against the access log of `POST
+        # /api/v1/health-advice` with 200: the API configures no INFO logging.
+        logger.warning("dose guard tripped")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=DOSE_GUARD_DETAIL
+        ) from error
     except LLMError as error:
         logger.warning("health advice LLM backend failed")
         raise HTTPException(

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221, PHASE-03/239
+// [review:need-review] PHASE-03/221, PHASE-03/239, PHASE-03/255
 // summary: the blocks of the week review — totals against the previous week, the seven days with the best and the worst marked in words, role and category time, avoid streaks, and the three health figures; every change is printed with its sign so no colour carries meaning alone
 
 import type { ReactNode } from 'react';
@@ -21,7 +21,6 @@ import {
   rolesNote,
   shortDate,
   trendOf,
-  verdictLine,
   weekdayShort,
   type Trend,
 } from '@/lib/week-review';
@@ -114,7 +113,7 @@ export function TotalsBlock({ review }: { review: WeekReview }) {
           }
         />
       </dl>
-      <p className="text-sm text-text-secondary">{verdictLine(review)}</p>
+      <p className="text-sm text-text-secondary">{review.verdict_line}</p>
     </Section>
   );
 }

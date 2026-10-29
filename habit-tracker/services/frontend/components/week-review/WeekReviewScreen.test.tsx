@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221, PHASE-03/239
+// [review:need-review] PHASE-03/221, PHASE-03/239, PHASE-03/255
 // summary: component tests for the week review screen — totals with their signed changes, the best and worst day named in words, an unfinished week announced and compared by days, a missing sleep metric said as missing, an empty week without the narrative button, and the narrative written on request and refused with its own message
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
@@ -115,12 +115,13 @@ describe('WeekReviewScreen', () => {
     );
   });
 
-  it('prints the verdict of the week with its rule on the web screen', async () => {
-    await ready(weekReviewFixture());
+  it('prints the verdict line exactly as the server wrote it, with no second copy', async () => {
+    const review = weekReviewFixture();
+    review.verdict_line = 'Неделя выиграна: да (строка сервера, не копия экрана).';
+    await ready(review);
 
-    expect(screen.getByText('Неделя выиграна: нет', { exact: false }).textContent).toContain(
-      'выиграно 2 из 3 дней'
-    );
+    expect(screen.getByText('Неделя выиграна: да (строка сервера, не копия экрана).')).toBeDefined();
+    expect(screen.queryByText('выиграно 2 из 3 дней', { exact: false })).toBeNull();
   });
 
   it('explains on a running week why the role shares may differ from the retro', async () => {
@@ -130,6 +131,21 @@ describe('WeekReviewScreen', () => {
     await ready(review);
 
     expect(screen.getByText(ROLES_RUNNING_WEEK_NOTE)).toBeDefined();
+  });
+
+  it('drops the role note on a running week once today is counted', async () => {
+    const review = weekReviewFixture();
+    review.window = {
+      ...review.window,
+      is_complete: false,
+      counted_days: 3,
+      compared_days: 3,
+      today_counted: true,
+    };
+    review.is_won = null;
+    await ready(review);
+
+    expect(screen.queryByText(ROLES_RUNNING_WEEK_NOTE)).toBeNull();
   });
 
   it('adds no role note on a finished week', async () => {

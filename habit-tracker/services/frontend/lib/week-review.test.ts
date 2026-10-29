@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/221, PHASE-03/239
+// [review:need-review] PHASE-03/221, PHASE-03/239, PHASE-03/255
 // summary: tests for the week review vocabulary — minutes as words, signed deltas, the note under an unfinished week, health values by unit, the empty-week test, and the narrative error picked by HTTP status
 
 import { describe, expect, it } from 'bun:test';
@@ -21,7 +21,6 @@ import {
   retroHref,
   shortDate,
   trendOf,
-  verdictLine,
   weekHref,
   rolesNote,
 } from '@/lib/week-review';
@@ -71,6 +70,13 @@ describe('the note under an unfinished week', () => {
     expect(note).toContain('не закончилась');
     expect(note).toContain('3 из 7');
     expect(note).toContain('первыми 3 днями прошлой недели');
+  });
+
+  it('promises today only while today is not counted', () => {
+    const open = partialNote(windowOf({ is_complete: false, counted_days: 2, today_counted: false }));
+    const counted = partialNote(windowOf({ is_complete: false, counted_days: 3, today_counted: true }));
+    expect(open).toContain('сегодняшний день войдёт после закрытия');
+    expect(counted).not.toContain('сегодняшний день войдёт');
   });
 
   it('says nothing is counted yet when only the open day has come', () => {
@@ -180,30 +186,6 @@ describe('narrative errors', () => {
   });
 });
 
-describe('the verdict line of the week', () => {
-  const review = (patch: Partial<WeekReview>): WeekReview => ({ ...weekReviewFixture(), ...patch });
-
-  it('says the week is lost, with the rule and the numbers behind it', () => {
-    const line = verdictLine(
-      review({ is_won: false, debt_minutes: 90, totals: { ...weekReviewFixture().totals, won_days: 5, days_total: 6 } })
-    );
-    expect(line).toContain('Неделя выиграна: нет');
-    expect(line).toContain('выиграны все дни недели и нет долга за переработку');
-    expect(line).toContain('выиграно 5 из 6 дней');
-    expect(line).toContain('долг 1 ч 30 мин');
-  });
-
-  it('says the week is won', () => {
-    expect(verdictLine(review({ is_won: true }))).toContain('Неделя выиграна: да');
-  });
-
-  it('says it is not decided while the week runs', () => {
-    expect(verdictLine(review({ is_won: null }))).toBe(
-      'Неделя выиграна: пока не решено, неделя идёт.'
-    );
-  });
-});
-
 describe('the note under the role shares', () => {
   it('explains the gap with the retro on a running week', () => {
     expect(rolesNote(windowOf({ is_complete: false, counted_days: 3 }))).toBe(
@@ -214,5 +196,11 @@ describe('the note under the role shares', () => {
 
   it('is absent on a finished week, where both screens count the same days', () => {
     expect(rolesNote(windowOf({ is_complete: true }))).toBeNull();
+  });
+
+  it('is absent once the server counts today, because both screens then cover the same days', () => {
+    expect(
+      rolesNote(windowOf({ is_complete: false, counted_days: 3, today_counted: true }))
+    ).toBeNull();
   });
 });

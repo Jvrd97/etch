@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255
 # summary: orchestration of the week narrative — the prompt is built from the already computed review (no recomputation, no database), and the model is reached only through LLMClient.generate
 """
 The words of the week review (`#221`).
@@ -18,8 +18,9 @@ from __future__ import annotations
 from datetime import date
 
 from app.core.humanize import hours_and_minutes
+from app.day.debt import week_verdict_line
 from app.llm.client import LLMClient
-from app.llm.health_format import average_basis, health_value, signed_health_delta
+from app.llm.health_format import average_basis, comparison_text, health_value
 from app.schemas.week_review import WeekReviewResponse
 
 WEEK_REVIEW_SYSTEM_PROMPT = """\
@@ -55,24 +56,6 @@ def _weekday(review: WeekReviewResponse, day: date) -> str:
     return _WEEKDAYS[next(d.weekday for d in review.days if d.date == day)]
 
 
-def _outcome_line(review: WeekReviewResponse) -> str:
-    """
-    Вердикт недели готовой строкой: модель его не судит, а пересказывает.
-
-    Правило одно — `week_is_won`, и считается оно на сервере: все дни выиграны,
-    дни есть и долга за переработку нет. «5 из 6» — это «нет», а не «почти».
-    """
-    if review.is_won is None:
-        return "Неделя выиграна: пока не решено, неделя идёт."
-    totals = review.totals
-    return (
-        f"Неделя выиграна: {'да' if review.is_won else 'нет'} "
-        f"(правило: выиграны все дни недели и нет долга за переработку; "
-        f"выиграно {totals.won_days} из {totals.days_total} дней, "
-        f"долг {review.debt_minutes} мин)."
-    )
-
-
 def _signed(value: int | float | None, suffix: str = "") -> str:
     if value is None:
         return "нет данных для сравнения"
@@ -93,7 +76,13 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"прошлая неделя взята за те же {window.compared_days}."
         )
     lines += [
-        _outcome_line(review),
+        week_verdict_line(
+            review.is_won,
+            totals.won_days,
+            totals.days_total,
+            review.debt_minutes,
+            as_hours=False,
+        ),
         f"Выиграно дней: {totals.won_days} из {totals.closed_days} закрытых "
         f"(прошлая неделя: {review.previous_totals.won_days} из "
         f"{review.previous_totals.closed_days}).",
@@ -130,12 +119,19 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"{streak.relapses}."
         )
     for metric in (m for m in review.health if m.days_with_data):
-        change = signed_health_delta(metric.key, metric.unit, metric.delta_avg_per_day)
+        change = comparison_text(
+            metric.key,
+            metric.unit,
+            metric.delta_avg_per_day,
+            metric.previous_days_with_data,
+            window.compared_days,
+            "к прошлой неделе",
+        )
         lines.append(
             f"{metric.name}: в среднем "
             f"{health_value(metric.key, metric.unit, metric.avg_per_day or 0)} в день, "
             f"{average_basis(metric.days_with_data, window.counted_days)} "
-            f"({change} к прошлой неделе)."
+            f"({change})."
         )
     return WEEK_REVIEW_SYSTEM_PROMPT + "\n\nДанные:\n" + "\n".join(lines)
 

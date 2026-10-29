@@ -12,8 +12,7 @@ schema names, and the whole answer validates.
 
 The Swift DTOs are held to the same schema (`#261`): an optional property whose
 key the server does not send would silently decode as `nil`, so every property
-of a Week DTO must be a field of its schema model, except the few fields the
-app reads ahead of the server (`AHEAD_OF_SERVER`).
+of a Week DTO must be a field of its schema model.
 
 Run inside a docker image of the backend, without the iOS sources, the tests
 are skipped: there is nothing to compare. Anywhere else a missing source fails.
@@ -60,12 +59,6 @@ DTO_MODELS = {
     "WeekHealthMetricDTO": "WeekHealthMetric",
     "WeekReviewDTO": "WeekReviewResponse",
     "WeekNarrativeDTO": "WeekNarrativeResponse",
-}
-# Optional in Swift, not yet sent by the server (#262): an absent key reads as nil.
-AHEAD_OF_SERVER = {
-    "WeekWindowDTO": {"today_counted"},
-    "WeekHealthMetricDTO": {"previous_days_with_data"},
-    "WeekReviewDTO": {"verdict_line"},
 }
 STRUCT_PATTERN = re.compile(
     r"^struct (?P<name>\w+): [^{]*\{(?P<body>.*?)^\}", re.DOTALL | re.MULTILINE
@@ -156,7 +149,7 @@ def test_every_swift_dto_property_is_a_field_the_server_sends() -> None:
     for struct, model_name in DTO_MODELS.items():
         assert struct in swift, f"{struct} was not found in DTOs+Week.swift"
         model: type[BaseModel] = getattr(week_review, model_name)
-        allowed = set(model.model_fields) | AHEAD_OF_SERVER.get(struct, set())
+        allowed = set(model.model_fields)
         problems += [
             f"{struct}.{name}: the server has no such field"
             for name in sorted(swift[struct] - allowed)
