@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131
-// summary: wire tests for POST /api/v1/health/samples — path, key header, snake_case body without an Idempotency-Key, decoded counts, a refused chunk as a typed error
+// [review:need-review] PHASE-03/131, PHASE-03/132
+// summary: wire tests for POST /api/v1/health/samples — path, key header, snake_case body without an Idempotency-Key, decoded counts, a refused chunk as a typed error, the sync-run keys of a chunk and the failure report by class
 import XCTest
 @testable import HabitTracker
 
@@ -69,5 +69,64 @@ final class HealthAPIClientTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? APIClientError, .unexpectedStatus(422))
         }
+    }
+
+    func testChunkEncodesTheRunKeysTheServerJournalReads() async throws {
+        var captured: URLRequest?
+        MockURLProtocol.requestHandler = { request in
+            captured = request
+            return Self.reply(request, status: 200, body: #"{"samples_received": 1, "buckets_written": 1}"#)
+        }
+        var chunk = Self.chunk
+        chunk.syncRunId = "3F6C1C52-0000-4000-8000-000000000001"
+        chunk.kind = .backfill
+        chunk.deviceId = "device-1"
+        chunk.chunkIndex = 1
+        chunk.chunksTotal = 3
+
+        _ = try await client.postHealthSamples(chunk)
+
+        let data = try XCTUnwrap(TodayScreenAPITests.bodyData(of: try XCTUnwrap(captured)))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(body["sync_run_id"] as? String, "3F6C1C52-0000-4000-8000-000000000001")
+        XCTAssertEqual(body["kind"] as? String, "backfill")
+        XCTAssertEqual(body["device_id"] as? String, "device-1")
+        XCTAssertEqual(body["chunk_index"] as? Int, 1)
+        XCTAssertEqual(body["chunks_total"] as? Int, 3)
+    }
+
+    func testChunkWithoutRunKeysSendsOnlySamples() async throws {
+        var captured: URLRequest?
+        MockURLProtocol.requestHandler = { request in
+            captured = request
+            return Self.reply(request, status: 200, body: #"{"samples_received": 1, "buckets_written": 1}"#)
+        }
+
+        _ = try await client.postHealthSamples(Self.chunk)
+
+        let data = try XCTUnwrap(TodayScreenAPITests.bodyData(of: try XCTUnwrap(captured)))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(body.keys), ["samples"])
+    }
+
+    func testFailureReportGoesToTheRunWithAClassAndNoMessage() async throws {
+        var captured: URLRequest?
+        MockURLProtocol.requestHandler = { request in
+            captured = request
+            return Self.reply(request, status: 200, body: #"{"status": "failed"}"#)
+        }
+
+        let ack = try await client.postHealthSyncFailure(
+            runId: "RUN-1",
+            HealthSyncFailureDTO(failureKind: .unknownMetric, kind: .manual, deviceId: "device-1", chunksTotal: 2)
+        )
+
+        XCTAssertEqual(ack, HealthSyncRunAckDTO(status: "failed"))
+        let request = try XCTUnwrap(captured)
+        XCTAssertEqual(request.url?.path, "/api/v1/health/sync-runs/RUN-1/fail")
+        let data = try XCTUnwrap(TodayScreenAPITests.bodyData(of: request))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(body["failure_kind"] as? String, "unknown_metric")
+        XCTAssertEqual(Set(body.keys), ["failure_kind", "kind", "device_id", "chunks_total"])
     }
 }

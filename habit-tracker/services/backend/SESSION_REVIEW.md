@@ -2939,3 +2939,22 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Влит main; конфликт в `SESSION_REVIEW.md` склеен обеими сторонами.
 
 Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_251` — 3414 passed, 2 skipped; bun test 2032/0, tsc, lint 0 ошибок.
+
+## 2026-10-29 — PHASE-03/132: журнал синков здоровья
+
+Тронуто 7 файлов бэкенда (3 `new`, 4 `mod`), миграция `f1b3d5a7c9e2` от головы `e7a9c1b3d5f7`.
+
+- `alembic/versions/2026_10_29_1000-f1b3d5a7c9e2_health_sync_run.py` — new: таблица `health_sync_run`, два индекса `started_at DESC`; downgrade снимает таблицу, корзины целы.
+- `app/models/health.py` — mod: `HealthSyncRun` (строки вместо enum для `kind`/`status`/`failure_kind`; `client_run_id`, `updated_at`).
+- `app/models/__init__.py` — mod: реэкспорт.
+- `app/schemas/health.py` — mod: необязательные поля прогона в запросе, `HealthSyncFailureIn` (класс отказа, поля с текстом нет), `HealthSyncStatusResponse`.
+- `app/crud/health.py` — mod: `record_chunk`, `record_failure`, `sync_status` (два запроса независимо от числа прогонов).
+- `app/api/health.py` — mod: ведение прогона в `POST /samples`, `POST /sync-runs/{id}/fail`, `GET /sync-status`.
+- `tests/test_health_sync_run.py` — new: 16 тестов.
+
+### Круг 2 (PHASE-03/132)
+
+- `app/crud/health.py` — mod: чанки считаются по различным `chunk_index` (`chunks_seen`), повтор ничего не меняет и не закрывает прогон; прогон открывается `INSERT … ON CONFLICT DO NOTHING` и читается `FOR UPDATE`; чужой `device_id` — `DeviceMismatchError`; `interrupted` считается только для прогона новее последнего успеха.
+- `app/api/health.py`, `app/schemas/health.py`, `app/models/health.py` — mod: 409 на чужое устройство, `sync_run_id` требует `chunk_index` и `chunks_total`, колонка `chunks_seen`.
+- `alembic/versions/2026_10_29_1000-f1b3d5a7c9e2_health_sync_run.py` — mod: колонка `chunks_seen` (ревизия ещё не в main).
+- `tests/test_health_sync_run.py` — mod: повтор чанка, гонка двух доставок, чужое устройство, залипший `interrupted`, обратимость миграции.
