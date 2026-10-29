@@ -231,15 +231,22 @@ struct WeekTotalsView: View {
 
     var body: some View {
         WeekSection(title: "Итог недели") {
-            if let verdict = WeekFormat.weekVerdict(review) {
-                Text(verdict)
-                    .font(DS.Typography.card)
-                    .foregroundStyle(review.isWon == true ? DS.Palette.lime : DS.Palette.textPrimary)
-            }
-            if let debt = WeekFormat.debtLine(review) {
-                Text(debt)
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Palette.warning)
+            if let line = WeekFormat.serverVerdictLine(review) {
+                // The server's line already carries the rule, the numbers and the debt.
+                Text(line)
+                    .font(DS.Typography.body)
+                    .foregroundStyle(DS.Palette.textSecondary)
+            } else {
+                if let verdict = WeekFormat.weekVerdict(review) {
+                    Text(verdict)
+                        .font(DS.Typography.card)
+                        .foregroundStyle(review.isWon == true ? DS.Palette.lime : DS.Palette.textPrimary)
+                }
+                if let debt = WeekFormat.debtLine(review) {
+                    Text(debt)
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.warning)
+                }
             }
             LazyVGrid(
                 columns: [GridItem(.flexible(), spacing: DS.Spacing.md), GridItem(.flexible())],

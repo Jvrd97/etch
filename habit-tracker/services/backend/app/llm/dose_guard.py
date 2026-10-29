@@ -25,8 +25,8 @@ are written for the folded text: no «ё» in them, «й» as it is.
 
 **Что не считается.** Одинокая буква «г» — год, если перед ней год или дата
 («в 2026 г.», «12.2026 г.»); шаги, проценты, пульс и минуты не единицы дозы.
-«Единица» после слов о пульсе в той же фразе («пульс снизился на 4 единицы») —
-пункт шкалы, а не доза.
+«Единица» после слов о пульсе в той же фразе и «на» («пульс снизился на 4 единицы») —
+пункт шкалы, а не доза, если число — до двух знаков или числительное до тридцати.
 Известная щель: «2000 г» читается как год, а не как два килограмма.
 """
 
@@ -97,9 +97,17 @@ _DOSE = re.compile(
 )
 
 
-_POINT_UNIT_TAIL = re.compile(r"ед(?:иниц\w*)?\.?$")
+# A step of the pulse scale: a number of at most two digits or a numeral up to thirty.
+_SCALE_NUMBER = (
+    r"(?:\d{1,2}|ноль|нуль|одн(?:а|у|о|ой|ого|ому|им|ою)|один|"
+    r"дв(?:а|е|ух|ум|умя)|тр(?:и|ех|ем|емя)|четыр(?:е|ех|ем|ьмя)|"
+    r"пят(?:ь|и|ью)|шест(?:ь|и|ью)|сем(?:ь|и|ью)|восем(?:ь|ью)|восьми|"
+    r"девят(?:ь|и|ью)|десят(?:ь|и|ью)|"
+    r"(?:одиннадцат|двенадцат|тринадцат|четырнадцат|пятнадцат|шестнадцат|"
+    r"семнадцат|восемнадцат|девятнадцат|двадцат|тридцат)(?:ь|и|ью))"
+)
+_POINT_OF_SCALE = re.compile(rf"{_SCALE_NUMBER}\s*ед(?:иниц\w*)?\.?$")
 _ON_BEFORE = re.compile(r"(?<!\w)на\s+$")
-_THOUSAND = re.compile(r"тыс")
 _PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
 # The sentence of the match: what follows the last sentence mark before it.
 _SENTENCE_END = re.compile(r"[.!?;:]\s")
@@ -131,10 +139,11 @@ def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
     «Пульс снизился на 4 единицы»: «ед.» as a step of the pulse scale, not a dose.
 
     Only a number that follows «на» directly, in a sentence that names the pulse,
-    and not a thousand («на 5 тыс. ед.» is a dose). Anything else next to a pulse —
-    «пульс в норме, 5000 ед», «при пульсе выше 100 принимай 5000 ед» — is a dose.
+    and only a number of the scale: up to two digits or a numeral up to thirty.
+    Anything else next to a pulse — «пульс в норме, 5000 ед», «пульс в норме,
+    рассчитывай на 5000 ед», «на 5 тыс. ед.» — is a dose.
     """
-    if not _POINT_UNIT_TAIL.search(match.group()) or _THOUSAND.search(match.group()):
+    if not _POINT_OF_SCALE.fullmatch(match.group()):
         return False
     before = folded[max(0, match.start() - _SENTENCE_LOOKBACK) : match.start()]
     if not _ON_BEFORE.search(before):

@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/240
+// [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: tests of the Supplements screen state — the list and its states (loading, loaded, empty, error, no server), the cached list offline and a cached list of another day not claiming «принял сегодня», a press online (one POST under a key, no day) and offline (queued under the same key with the day of the press, shown at once, «ждёт отправки», survives a restart), the day boundary at 04:00, a refused press shown and not queued, a double tap sent once, delivery re-reading the list, a replay refused on a turned day and its retry to today, and adding with its checks and its need for the network
 import XCTest
 @testable import HabitTracker
@@ -13,10 +13,38 @@ final class MockSupplementsAPI: SupplementsAPI {
     private(set) var marks: [(id: Int, date: String?, key: String)] = []
     private(set) var created: [SupplementCreateDTO] = []
     private(set) var listFetches = 0
+    var ruleResult: Result<ServerDayRule, Error> = .failure(APIClientError.invalidResponse)
+    /// While set, a press does not answer until `releaseMarks()`; the count says how many are waiting.
+    var holdMarks = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var heldMarks: Int { held.count }
+
+    func fetchDayRule() async throws -> ServerDayRule { try ruleResult.get() }
+
+    func releaseMarks() {
+        holdMarks = false
+        held.forEach { $0.resume() }
+        held = []
+    }
+
+    /// The next list read answers only after `releaseList()`, with the list as it was when it was asked.
+    var holdNextList = false
+    private var heldList: CheckedContinuation<Void, Never>?
+    var isHoldingList: Bool { heldList != nil }
+
+    func releaseList() {
+        heldList?.resume()
+        heldList = nil
+    }
 
     func fetchSupplements() async throws -> [SupplementDTO] {
         listFetches += 1
-        return try listResult.get()
+        let asked = listResult
+        if holdNextList {
+            holdNextList = false
+            await withCheckedContinuation { heldList = $0 }
+        }
+        return try asked.get()
     }
 
     func createSupplement(_ payload: SupplementCreateDTO) async throws -> SupplementDTO {
@@ -26,6 +54,7 @@ final class MockSupplementsAPI: SupplementsAPI {
 
     func markIntake(supplementID: Int, intakeDate: String?, idempotencyKey: String) async throws -> SupplementIntakeDTO {
         marks.append((id: supplementID, date: intakeDate, key: idempotencyKey))
+        if holdMarks { await withCheckedContinuation { held.append($0) } }
         if !markResults.isEmpty { return try markResults.removeFirst().get() }
         return SupplementIntakeDTO(id: marks.count, supplementId: supplementID, intakeDate: intakeDate ?? "2026-10-27")
     }
@@ -57,7 +86,7 @@ final class SupplementsViewModelTests: XCTestCase {
             sender: { api.map { OutboxReplay(entries: Unused(), quickMarks: Unused(), day: Unused(), supplements: $0) } }
         )
         let model = SupplementsViewModel(
-            apiProvider: { api }, cacheStore: cache, outbox: queue, timeZone: TimeZone(identifier: "UTC")!,
+            apiProvider: { api }, cacheStore: cache, outbox: queue, rule: ServerDayRule(timeZoneID: "UTC", dayStartHour: 4),
             now: { [unowned self] in self.clock }
         )
         return (model, queue)
@@ -154,6 +183,96 @@ final class SupplementsViewModelTests: XCTestCase {
         XCTAssertEqual(model.state, .failure("Network error (\(URLError.notConnectedToInternet.rawValue))"))
     }
 
+    func testTheServersRuleComesWithTheListAndIsKept() async throws {
+        let cache = InMemoryCacheStore()
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1)])
+        api.ruleResult = .success(ServerDayRule(timeZoneID: "Asia/Tokyo", dayStartHour: 6))
+        let (model, _) = makeViewModel(api: api, cache: cache)
+
+        await model.load()
+
+        XCTAssertEqual(model.rule, ServerDayRule(timeZoneID: "Asia/Tokyo", dayStartHour: 6))
+        let kept = try XCTUnwrap(cache.load(SupplementsViewModel.Snapshot.self, forKey: SupplementsViewModel.cacheKey))
+        XCTAssertEqual(kept.value.rule?.timeZoneID, "Asia/Tokyo")
+        XCTAssertEqual(kept.value.day, "2026-10-27", "09:00 UTC is 18:00 in Tokyo")
+    }
+
+    func testARuleThatCannotBeReadLeavesTheKnownOne() async {
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1)])
+        let (model, _) = makeViewModel(api: api)
+
+        await model.load()
+
+        XCTAssertEqual(model.rule, ServerDayRule(timeZoneID: "UTC", dayStartHour: 4))
+    }
+
+    func testAWaitingPressOfAnotherDayIsNotTakenToday() async {
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1), .stub(id: 2)])
+        api.markResults = [.failure(offline), .failure(offline)] // the network is down: both presses stay queued
+        let (model, queue) = makeViewModel(api: api)
+        queue.enqueue(
+            .markSupplementTaken(QueuedSupplementIntake(supplementId: 1, intakeDate: "2026-10-26", pressedAt: clock)),
+            label: "Принял: Магний"
+        )
+        queue.enqueue(
+            .markSupplementTaken(QueuedSupplementIntake(supplementId: 2, intakeDate: "2026-10-27", pressedAt: clock)),
+            label: "Принял: Магний"
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.rows.map(\.isTaken), [false, true], "yesterday's press does not lock today's button")
+        XCTAssertEqual(model.rows.map(\.isWaiting), [false, true])
+        XCTAssertEqual(model.rows[1].waitingSince, clock)
+    }
+
+    func testTheDayTurningUnderAWaitingPressFreesTheButton() async {
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1)])
+        api.markResults = [.failure(offline), .failure(offline)]
+        let (model, queue) = makeViewModel(api: api)
+        queue.enqueue(
+            .markSupplementTaken(QueuedSupplementIntake(supplementId: 1, intakeDate: "2026-10-27", pressedAt: clock)),
+            label: "Принял: Магний"
+        )
+        await model.load()
+        XCTAssertEqual(model.rows.map(\.isTaken), [true])
+
+        clock = clock.addingTimeInterval(86_400)
+        await model.load()
+
+        XCTAssertEqual(model.rows.map(\.isTaken), [false])
+    }
+
+    func testTheTimerWaitsForTheNextTurnOfTheServersDay() {
+        let (model, _) = makeViewModel(api: MockSupplementsAPI())
+        XCTAssertEqual(model.secondsUntilDayTurn(), 19 * 3600, "from 09:00 to 04:00 the next day")
+    }
+
+    func testAnOldAnswerDroppedFromTheScreenDoesNotStayInTheCache() async throws {
+        let cache = InMemoryCacheStore()
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1, taken: false)])
+        let (model, _) = makeViewModel(api: api, cache: cache)
+        api.holdNextList = true
+        let older = Task { await model.load() }
+        await waitUntil { api.isHoldingList }
+        // A newer read is asked after the older one and answers first, with the press already on the server.
+        api.listResult = .success([.stub(id: 1, taken: true)])
+        await model.load()
+        XCTAssertEqual(model.rows.map(\.isTaken), [true])
+
+        api.releaseList()
+        await older.value
+
+        XCTAssertEqual(model.rows.map(\.isTaken), [true], "the older answer is not shown")
+        let kept = try XCTUnwrap(cache.load(SupplementsViewModel.Snapshot.self, forKey: SupplementsViewModel.cacheKey))
+        XCTAssertEqual(kept.value.items.map(\.takenToday), [true], "and it is not what the cache keeps")
+    }
+
     // MARK: A press online
 
     func testAPressOnlineIsOnePostUnderAKeyAndLeavesTheDayToTheServer() async {
@@ -185,6 +304,27 @@ final class SupplementsViewModelTests: XCTestCase {
         await model.markTaken(supplement)
 
         XCTAssertEqual(api.marks.count, 1)
+    }
+
+    func testTwoQuickTapsBeforeTheAnswerAreOnePost() async {
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1)])
+        let (model, queue) = makeViewModel(api: api)
+        await model.load()
+        let supplement = model.rows[0].supplement
+        api.holdMarks = true
+
+        let first = Task { await model.markTaken(supplement) }
+        await waitUntil { api.heldMarks == 1 }
+        XCTAssertEqual(model.rows.map(\.isSending), [true], "the button is off while the POST is on the way")
+        await model.markTaken(supplement)
+        api.releaseMarks()
+        await first.value
+
+        XCTAssertEqual(api.marks.count, 1)
+        XCTAssertTrue(queue.writes.isEmpty)
+        XCTAssertEqual(model.rows.map(\.isSending), [false])
+        XCTAssertEqual(model.rows.map(\.isTaken), [true])
     }
 
     func testARefusedPressIsShownAndNotQueued() async {

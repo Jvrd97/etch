@@ -720,7 +720,7 @@ Avoid-стрик карточка «N дней чистый» на экране 
 
 Экран «Добавки» (More → Добавки): список, добавление, «Принял» с работой без сети через общую очередь.
 
-Тронуто 18 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
+Тронуто 16 файлов. `new`: `Features/Supplements/{SupplementsFormat,SupplementsViewModel,SupplementsView}.swift`, `API/{APIClient,DTOs}+Supplements.swift`, тесты `SupplementsAPIClientTests`, `SupplementsViewModelTests`, `SupplementsFormatTests`. `mod`: `Cache/{OutboxQueue,OutboxReplay}.swift`, `API/APIClient+Outbox.swift`, `App/{AppNavigation,RootView}.swift`, `Features/{Today/TodayViewModel,Day/DayViewModel}.swift`, этот файл.
 
 - **Очередь.** Новый случай `OutboxAction.markSupplementTaken` хранит id добавки и день нажатия, имени в нём нет (имя только в подписи `Принял: <имя>` для полосы «ждёт отправки»). Реплей идёт через `OutboxSupplementsAPI`; поле `OutboxReplay.supplements` необязательное, существующие вызовы не менялись. В `TodayViewModel` и `DayViewModel` добавлено только имя нового случая в два `switch`.
 - **День нажатия.** Прямое нажатие день не шлёт: решает сервер. Нажатие из очереди шлёт `intake_date` по часам телефона со сменой суток в 04:00 (`SupplementsFormat.dayStartHour`). Сервер сверяет его со своим днём и отвечает 409, если день сменился. Запись уходит в «Не отправлено» с кнопкой «Записать в сегодня» (`forcedRetry` убирает дату).
@@ -773,3 +773,55 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - **`DailySummaryView.init(onApplied:)`** удалён вместе с фразами о нём в шапке: вызывающего не было, `retainer` теперь не опциональный.
 - Граница понедельника 03:59 / 04:00 проверена в `WeekFormatTests`. `VoiceDaySession` оставлен `internal`: на него ссылаются тесты.
 - Глазами в симуляторе лист не проверялся.
+
+## 2026-10-29 — #265 iOS Life (More → Жизнь)
+
+Файлы (new): `API/DTOs+Life.swift`, `API/APIClient+Life.swift`, `Features/Life/{LifeCalendar,LifeViewModel,LifeSquare,LifeView}.swift`, `HabitTrackerTests/Life{Calendar,ViewModel,APIClient}Tests.swift`. Файлы (mod): `App/AppNavigation.swift`, `App/RootView.swift` (добавлением), `README.md`.
+
+Расхождения с `/m/life`:
+- Квадрат дня и строка недели в вебе — ссылки на `/day/{date}` и `/week/{iso}`; в iOS экраны Day и Week не принимают дату снаружи (чужие файлы), поэтому квадрат открывает вид «день» внутри Life, ссылки «Открыть день/неделю» нет.
+- Дата рождения — текстовое поле `ГГГГ-ММ-ДД` с проверкой (системный DatePicker не берём, своего календаря в iOS нет).
+- Вид «жизнь» рисуется на Canvas; подсказок-tooltip нет, у квадратов есть подписи для VoiceOver.
+- Рамка (дата рождения, лет) хранится в UserDefaults под тем же ключом, что у веба.
+
+### PHASE-03/258: Добавки — правило дня сервера и хвосты #240
+
+Тронуто 8 файлов (7 кода и этот файл): `API/APIClient+Supplements.swift`, `Cache/OutboxReplay.swift`, `Features/Supplements/{SupplementsFormat,SupplementsView,SupplementsViewModel}.swift` (mod), тесты `SupplementsFormatTests`, `SupplementsViewModelTests` (mod).
+
+- **Правило дня.** `ServerDayRule` (пояс и час начала) приходит с сервера из окна `GET /week-review` (`fetchDayRule`), лежит в снимке кэша; день режется по настенным часам пояса сервера, а не вычитанием 4 часов абсолютного времени. Таймер на границу дня, смена часов и пояса перечитывают экран.
+- **Ожидающее нажатие** другого дня не блокирует кнопку; `pressedAt` показан в строке «ждёт отправки · нажато ЧЧ:ММ».
+- **Двойное нажатие.** Пока POST в пути, кнопка выключена (`isSending`).
+- **Кэш.** Отброшенный старый ответ загрузки заменяется показанным списком.
+- **`OutboxReplay.supplements`** не nil: по умолчанию `NoSupplementsAPI` (как мёртвая сеть), чужие вызывающие не менялись.
+- **Заменяет записи #240.** `OutboxReplay.supplements` больше не необязательное (по умолчанию `NoSupplementsAPI`), а `SupplementsFormat.dayStartHour` удалён: день режет `ServerDayRule` по правилу сервера.
+- Проверка вёрстки при крупном шрифте и VoiceOver на устройстве не делалась (#215).
+### PHASE-01/216: ADR-0024 и экран «Цели» (2026-10-29)
+
+Вариант A владельца: всё нативно. ADR-0024 в `docs/PHASE-01/ADRs/in-review/` заменяет пункты A1 и A5 ADR-0020. Экран Goals повторяет `components/goals/GoalsBoard.tsx`: уровни с «⚠ подтверди», милстоны со статусом, датой закрытия, кнопкой «Закрыть/Открыть» и чипами «Открывается чем», цели текущего квартала. Создания и правки целей в вебе нет (только `PATCH` статуса милстона), поэтому нет и в приложении. 8 файлов:
+
+- new `API/DTOs+Goals.swift`, `API/APIClient+Goals.swift`
+- new `Features/Goals/GoalsViewModel.swift`, `Features/Goals/GoalsView.swift`
+- new `HabitTrackerTests/GoalsAPIClientTests.swift`, `HabitTrackerTests/GoalsViewModelTests.swift`
+- mod `App/AppNavigation.swift` (case `.goals`), `App/RootView.swift` (строка `GoalsView()`)
+
+Скриншот снят с экрана, встроенного в окно тестового хоста на симуляторе, с данными фикстуры; путь More → Цели касанием и живой бэкенд не проверялись.
+
+## 2026-10-29 — #267 iOS Onboarding (More → Онбординг, лист первого запуска)
+
+Файлы (new): `API/DTOs+Onboarding.swift`, `API/APIClient+Onboarding.swift`, `Features/Onboarding/{OnboardingMessages,OnboardingTemplatesModel,OnboardingPlanModel,OnboardingGate,OnboardingView}.swift`, тесты `HabitTrackerTests/Onboarding{Fixtures,APIClientTests,TemplatesModelTests,PlanModelTests,GateTests}.swift`. Файлы (mod): `App/AppNavigation.swift`, `App/RootView.swift` (добавлением: case, строка switch, один модификатор `.onboardingGate`), `README.md`.
+
+Расхождения с `/m/onboarding`:
+- В вебе автоматического перехода при первом запуске нет: онбординг предлагает пустое состояние Categories («Describe them instead»). В iOS добавлен лист первого запуска (один раз, когда сервер вернул ноль категорий; сбой чтения ничего не открывает и не помечает) и строка в «Ещё». Ссылка в пустом состоянии Categories не добавлена: `Features/Categories/**` не моё.
+- После создания плана экран открывает Categories через `AppNavigation` (в вебе — `router.push`).
+- Тексты ошибок 503/502/400/422 переведены в понятные фразы: клиент iOS не несёт тело ответа сервера, `detail` не показывается.
+- Диктовки в вебе тоже нет, поле текстовое.
+- Глазами проверен только лист с шаблонами на мок-сервере; план модели, применение и офлайн — тестами, не вручную. Настоящий ИИ не вызывался.
+### PHASE-01/266: роли и правила разметки нативно (2026-10-29)
+
+Файлы: new `API/DTOs+Roles.swift`, `API/APIClient+Roles.swift`, `Features/Roles/{RolesFormat,RolesViewModel,RoleRulesViewModel,RolesView,RoleRulesView}.swift`, тесты `Roles{Fixtures,FormatTests,APIClientTests,ViewModelTests}`; mod `App/AppNavigation.swift`, `App/RootView.swift` (строка «Роли»), `README.md`.
+
+Расхождения с мобильным вебом:
+- Правило нельзя удалить: у сервера нет `DELETE /role-rules`. «Удалить» и «изменить» сведены к переключателю `is_active` (`PATCH`); правка образца, роли и веса существующего правила не сделана — в вебе её тоже нет.
+- Записи ролей (минуты, акт, подтверждение, «убрать», правила, переразметка) идут только при сети, в офлайн-очередь не попадают: у веба очереди нет, а запись не идемпотентна. Чтение — через кэш с пометкой «Offline».
+- Пятничный отчёт копируется в буфер кнопкой «Скопировать» (`UIPasteboard`).
+- Не проверено: экран в приложении на симуляторе через More (скриншот снят из окна теста с тестовым API), живой сервер.

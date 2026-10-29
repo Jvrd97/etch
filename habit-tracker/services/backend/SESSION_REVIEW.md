@@ -2918,3 +2918,21 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `_NUMBER`: не больше четырёх групп тысяч, `"1" + " 000" * 6000` обрабатывается за доли секунды (было 3 с). Вид с неразрывным пробелом добавлен в таблицу `SHAPES`.
 - Влит main; конфликт в `SESSION_REVIEW.md` решён оставлением обеих сторон.
 - Вне перечня путей: `ios/HabitTracker/HabitTrackerTests/WeekFixtures.swift` (владелец #243) — в JSON-ответ добавлены три поля сервера (`window.today_counted`, `verdict_line`, `health[].previous_days_with_data`), иначе сверка `tests/test_ios_week_fixture.py` (пришла с main) красная. Правка только данных; Swift-код и DTO не тронуты, `xcodebuild` не гонялся.
+
+## 2026-10-29 — PHASE-03/261, PHASE-03/262: iOS Неделя, хвосты и «сегодня войдёт»
+
+Тронут 1 файл бэкенда (`mod`), плюс iOS: `DTOs+Week.swift`, `WeekFormat.swift`, `WeekViewModel.swift`, `WeekFixtures.swift`, `WeekFormatTests.swift`, `WeekViewModelTests.swift` (все `mod`).
+
+- `tests/test_ios_week_fixture.py` — mod: проверка ключей Swift DTO против схемы недели (неверный ключ необязательного поля краснит тест); пропуск без исходников iOS только внутри docker.
+
+Проверки: `pytest tests/test_ios_week_fixture.py` — 4 passed; xcodebuild Week*/DailySummary* — зелёно.
+
+### PHASE-03/251 + PHASE-03/255, круг 4
+
+- `app/llm/dose_guard.py` — mod: исключение для пульса — только «на» + число до двух знаков или числительное до тридцати (`_SCALE_NUMBER`); «Пульс в норме, рассчитывай на 5000 ед» ловится.
+- `tests/test_dose_guard.py` — mod: в `CAUGHT_NEXT_TO_A_PULSE` шесть фраз; красные на 17ad34a, зелёные после правки.
+- `tests/test_ios_week_fixture.py` — mod: `AHEAD_OF_SERVER` убран (поля уже в схеме и фикстуре).
+- `ios/.../WeekFixtures.swift` — mod (вне перечня, только фикстура): маркер ревью и summary.
+- Влит main; конфликт в `SESSION_REVIEW.md` склеен обеими сторонами.
+
+Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_251` — 3414 passed, 2 skipped; bun test 2032/0, tsc, lint 0 ошибок.

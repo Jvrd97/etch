@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/240
-// summary: Supplements screen (More → Добавки) — the list with a «Принял» button per supplement («Принято сегодня» once marked, «ждёт отправки» while the press is in the queue), the shared offline-queue strip on top, the offline note over a cached list, an add sheet (name, dose, unit, planned time from two menus — no system date picker), loading, error with retry and empty states; no navigation stack of its own
+// [review:need-review] PHASE-03/240, PHASE-03/258
+// summary: re-reads when the server's day turns (timer, clock or zone change); «Принял: <название>» for VoiceOver; the button is off while its press is in flight; the form's error is cleared on close; Supplements screen (More → Добавки) — the list with a «Принял» button per supplement («Принято сегодня» once marked, «ждёт отправки» while the press is in the queue), the shared offline-queue strip on top, the offline note over a cached list, an add sheet (name, dose, unit, planned time from two menus — no system date picker), loading, error with retry and empty states; no navigation stack of its own
 import SwiftUI
 
 struct SupplementsView: View {
@@ -29,7 +29,7 @@ struct SupplementsView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    viewModel.errorMessage = nil
+                    viewModel.clearError()
                     isAdding = true
                 } label: {
                     Image(systemName: "plus")
@@ -43,10 +43,29 @@ struct SupplementsView: View {
             // The server's day may have turned while the app was away.
             if phase == .active { Task { await viewModel.load() } }
         }
+        .task(id: viewModel.rule) { await rereadWhenTheDayTurns() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            Task { await viewModel.load() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+            Task { await viewModel.load() }
+        }
         .sheet(isPresented: $isAdding) {
             SupplementFormSheet(viewModel: viewModel)
         }
     }
+
+    /// Sleeps to the next turn of the server's day, reads again, and waits for the one after.
+    private func rereadWhenTheDayTurns() async {
+        while !Task.isCancelled {
+            guard let seconds = viewModel.secondsUntilDayTurn() else { return }
+            try? await Task.sleep(for: .seconds(max(seconds, 0) + Self.turnSlackSeconds))
+            if Task.isCancelled { return }
+            await viewModel.load()
+        }
+    }
+
+    private static let turnSlackSeconds = 1.0
 
     @ViewBuilder
     private var content: some View {
@@ -60,7 +79,7 @@ struct SupplementsView: View {
                 title: "Добавок пока нет",
                 systemImage: "pills",
                 message: "Заведите добавки, которые пьёте: отметка «принял» попадает в советы.",
-                action: (label: "Добавить", run: { isAdding = true })
+                action: (label: "Добавить", run: { viewModel.clearError(); isAdding = true })
             )
         case .loaded:
             ScrollView {
@@ -98,7 +117,7 @@ private struct SupplementRowView: View {
                         .font(DS.Typography.caption)
                         .foregroundStyle(DS.Palette.textSecondary)
                     if row.isWaiting {
-                        Text("ждёт отправки")
+                        Text(Self.waitingText(since: row.waitingSince))
                             .font(DS.Typography.caption)
                             .foregroundStyle(DS.Palette.lime)
                     }
@@ -110,12 +129,19 @@ private struct SupplementRowView: View {
                         .font(DS.Typography.caption)
                 }
                 .buttonStyle(LimeButtonStyle(prominent: !row.isTaken))
-                .fixedSize()
-                .disabled(row.isTaken)
+                // Wraps to a second line at a large text size instead of being cut off or pushing the name out.
+                .fixedSize(horizontal: false, vertical: true)
+                .disabled(row.isTaken || row.isSending)
+                .accessibilityLabel(row.isTaken ? "Принято сегодня: \(row.supplement.name)" : "Принял: \(row.supplement.name)")
                 .accessibilityIdentifier("supplements.take.\(row.supplement.id)")
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private static func waitingText(since: Date?) -> String {
+        guard let since else { return "ждёт отправки" }
+        return "ждёт отправки · нажато " + since.formatted(date: .omitted, time: .shortened)
     }
 }
 
@@ -170,7 +196,10 @@ struct SupplementFormSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { dismiss() }
+                    Button("Отмена") {
+                        viewModel.clearError()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Сохранить") {
