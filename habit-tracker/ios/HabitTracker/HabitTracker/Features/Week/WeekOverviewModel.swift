@@ -19,7 +19,7 @@ enum WeekOverviewFormat: Equatable {
 
 struct WeekOverviewSlide: Equatable, Identifiable {
     enum Kind: String, Equatable {
-        case verdict, tasks, time, days, streak
+        case verdict, tasks, time, days, dayStreak, habitStreak
     }
 
     let kind: Kind
@@ -68,7 +68,8 @@ enum WeekOverview {
         if review.totals.tasksTotal > 0 { result.append(tasksSlide(review)) }
         if let time = timeSlide(review) { result.append(time) }
         if let days = daysSlide(review) { result.append(days) }
-        if let streak = streakSlide(review) { result.append(streak) }
+        if let dayStreak = dayStreakSlide(review) { result.append(dayStreak) }
+        if let streak = habitStreakSlide(review) { result.append(streak) }
         return result
     }
 
@@ -97,7 +98,7 @@ enum WeekOverview {
     private static func timeSlide(_ review: WeekReviewDTO) -> WeekOverviewSlide? {
         let totals = review.totals
         guard totals.roleMinutes > 0 || (totals.workMinutes ?? 0) > 0 else { return nil }
-        let useWork = (totals.workMinutes ?? 0) > 0
+        let useWork = usesWorkMinutes(review)
         let minutes = useWork ? (totals.workMinutes ?? 0) : totals.roleMinutes
         let delta = useWork ? review.delta.workMinutes : review.delta.roleMinutes
         return WeekOverviewSlide(
@@ -120,12 +121,40 @@ enum WeekOverview {
         )
     }
 
-    private static func streakSlide(_ review: WeekReviewDTO) -> WeekOverviewSlide? {
-        guard let top = review.habitStreaks.max(by: { $0.currentStreak < $1.currentStreak }) else { return nil }
+    private static func dayStreakSlide(_ review: WeekReviewDTO) -> WeekOverviewSlide? {
+        guard let streak = review.totals.dayStreakEnd else { return nil }
         return WeekOverviewSlide(
-            kind: .streak, title: "Серия без срывов", figure: top.currentStreak, format: .number,
-            caption: "дн. подряд · \(top.name)",
-            change: nil, trend: .flat
+            kind: .dayStreak, title: "Серия дней", figure: streak, format: .number,
+            caption: "на конец недели", change: nil, trend: .flat
         )
+    }
+
+    private static func habitStreakSlide(_ review: WeekReviewDTO) -> WeekOverviewSlide? {
+        guard let top = review.habitStreaks.max(by: { $0.currentStreak < $1.currentStreak }) else { return nil }
+        let relapses = top.relapses > 0 ? "\(WeekFormat.relapses(top.relapses)) за неделю" : "без срывов"
+        return WeekOverviewSlide(
+            kind: .habitStreak, title: "Лучшая серия привычки", figure: top.currentStreak, format: .number,
+            caption: "дн. подряд · \(top.name)\n\(relapses)", change: nil,
+            trend: top.relapses > 0 ? .down : .flat
+        )
+    }
+
+    // MARK: Charts
+
+    /// Work minutes when the week has any, else role minutes: the time slide and the time chart use the same field.
+    static func usesWorkMinutes(_ review: WeekReviewDTO) -> Bool {
+        (review.totals.workMinutes ?? 0) > 0
+    }
+
+    static func dayMinutes(_ day: WeekDayStatDTO, useWork: Bool) -> Int {
+        useWork ? (day.workMinutes ?? 0) : day.roleMinutes
+    }
+
+    static let planScale = 100.0
+
+    /// Share of the bar area a value fills: plan is a share of 100, so 40% fills 0.4; minutes use the peak.
+    static func fraction(_ value: Double?, scale: Double) -> Double {
+        guard let value, scale > 0 else { return 0 }
+        return min(max(value / scale, 0), 1)
     }
 }

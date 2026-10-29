@@ -10,10 +10,11 @@ private enum OverviewLayout {
     static let barWidth: CGFloat = 26
     static let barRadius: CGFloat = 6
     static let slideFigureSize: CGFloat = 64
-    static let slideMinHeight: CGFloat = 320
     static let roleBarHeight: CGFloat = 10
     static let trackOpacity = 0.15
     static let fullShare = 100.0
+    static let figureScale = 0.5
+    static let slideBaseHeight: CGFloat = 320
 }
 
 /// A number that counts from zero to its value; with `progress == 1` it is just the value.
@@ -33,7 +34,10 @@ private struct CountingText: View, Animatable {
 }
 
 /// Drives the one-time motion; with Reduce Motion it starts finished and never animates.
-private struct MotionProgress: ViewModifier {
+struct MotionProgress: ViewModifier {
+    /// Where the motion starts: finished with Reduce Motion, from zero otherwise.
+    static func initial(reduceMotion: Bool) -> Double { reduceMotion ? 1 : 0 }
+
     let reduceMotion: Bool
     let duration: Double
     let delay: Double
@@ -52,12 +56,14 @@ private struct MotionProgress: ViewModifier {
 struct WeekOverviewSlideView: View {
     let slide: WeekOverviewSlide
     let reduceMotion: Bool
+    @ScaledMetric(relativeTo: .largeTitle) private var figureSize = OverviewLayout.slideFigureSize
+    @ScaledMetric(relativeTo: .body) private var minHeight = OverviewLayout.slideBaseHeight
     @State private var progress: Double
 
     init(slide: WeekOverviewSlide, reduceMotion: Bool) {
         self.slide = slide
         self.reduceMotion = reduceMotion
-        _progress = State(initialValue: reduceMotion ? 1 : 0)
+        _progress = State(initialValue: MotionProgress.initial(reduceMotion: reduceMotion))
     }
 
     var body: some View {
@@ -67,10 +73,10 @@ struct WeekOverviewSlideView: View {
                 .foregroundStyle(DS.Palette.textSecondary)
             if let figure = slide.figure {
                 CountingText(progress: progress, target: figure, format: slide.format)
-                    .font(.system(size: OverviewLayout.slideFigureSize, weight: .bold, design: .rounded))
+                    .font(.system(size: figureSize, weight: .bold, design: .rounded))
                     .foregroundStyle(DS.Palette.lime)
                     .monospacedDigit()
-                    .minimumScaleFactor(0.5)
+                    .minimumScaleFactor(OverviewLayout.figureScale)
                     .lineLimit(1)
             }
             Text(slide.caption)
@@ -83,7 +89,7 @@ struct WeekOverviewSlideView: View {
                     .foregroundStyle(color(slide.trend))
             }
         }
-        .frame(maxWidth: .infinity, minHeight: OverviewLayout.slideMinHeight)
+        .frame(maxWidth: .infinity, minHeight: minHeight)
         .padding(DS.Spacing.lg)
         .modifier(MotionProgress(reduceMotion: reduceMotion, duration: OverviewLayout.countDuration, delay: 0, progress: $progress))
         .accessibilityElement(children: .ignore)
@@ -107,6 +113,9 @@ private func color(_ trend: WeekFormat.Trend) -> Color {
 struct WeekOverviewSlidesView: View {
     let slides: [WeekOverviewSlide]
     let reduceMotion: Bool
+    @ScaledMetric(relativeTo: .body) private var slideHeight = OverviewLayout.slideBaseHeight
+
+    private var slidesHeight: CGFloat { slideHeight + DS.Spacing.xl * 3 }
 
     var body: some View {
         TabView {
@@ -117,7 +126,7 @@ struct WeekOverviewSlidesView: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .always))
-        .frame(minHeight: OverviewLayout.slideMinHeight + DS.Spacing.xl * 3)
+        .frame(minHeight: slidesHeight)
     }
 }
 
@@ -137,7 +146,7 @@ private struct GrowingBar: View {
         self.value = value
         self.index = index
         self.reduceMotion = reduceMotion
-        _progress = State(initialValue: reduceMotion ? 1 : 0)
+        _progress = State(initialValue: MotionProgress.initial(reduceMotion: reduceMotion))
     }
 
     var body: some View {
@@ -166,11 +175,12 @@ private struct DayBarsCard: View {
     let title: String
     let days: [WeekDayStatDTO]
     let value: (WeekDayStatDTO) -> Double?
+    /// The value that fills the bar: 100 for a plan share, the peak for minutes.
+    let scale: Double
     let text: (Double) -> String
     let reduceMotion: Bool
 
     var body: some View {
-        let peak = max(days.compactMap(value).max() ?? 0, 1)
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 Text(title).font(DS.Typography.section).foregroundStyle(DS.Palette.textPrimary)
@@ -179,7 +189,7 @@ private struct DayBarsCard: View {
                     ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
                         let amount = value(day)
                         GrowingBar(
-                            fraction: (amount ?? 0) / peak, label: WeekFormat.weekdayShort(day.weekday),
+                            fraction: WeekOverview.fraction(amount, scale: scale), label: WeekFormat.weekdayShort(day.weekday),
                             value: amount.map(text) ?? "—", index: index, reduceMotion: reduceMotion
                         )
                         .accessibilityElement(children: .ignore)
@@ -203,7 +213,7 @@ private struct RoleShareRow: View {
         self.role = role
         self.index = index
         self.reduceMotion = reduceMotion
-        _progress = State(initialValue: reduceMotion ? 1 : 0)
+        _progress = State(initialValue: MotionProgress.initial(reduceMotion: reduceMotion))
     }
 
     var body: some View {
@@ -235,15 +245,18 @@ struct WeekOverviewFeedView: View {
     let review: WeekReviewDTO
     let reduceMotion: Bool
 
+    private var useWork: Bool { WeekOverview.usesWorkMinutes(review) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.lg) {
             DayBarsCard(
                 title: "План по дням", days: review.days,
-                value: { $0.planPct.map(Double.init) }, text: { "\(Int($0))%" }, reduceMotion: reduceMotion
+                value: { $0.planPct.map(Double.init) }, scale: WeekOverview.planScale, text: { "\(Int($0))%" }, reduceMotion: reduceMotion
             )
             DayBarsCard(
-                title: "Время по дням", days: review.days,
-                value: { $0.roleMinutes > 0 ? Double($0.roleMinutes) : nil },
+                title: useWork ? "Время работы по дням" : "Время по ролям по дням", days: review.days,
+                value: { WeekOverview.dayMinutes($0, useWork: useWork) > 0 ? Double(WeekOverview.dayMinutes($0, useWork: useWork)) : nil },
+                scale: max(Double(review.days.map { WeekOverview.dayMinutes($0, useWork: useWork) }.max() ?? 0), 1),
                 text: { WeekFormat.minutes(Int($0)) }, reduceMotion: reduceMotion
             )
             if !review.roles.isEmpty {

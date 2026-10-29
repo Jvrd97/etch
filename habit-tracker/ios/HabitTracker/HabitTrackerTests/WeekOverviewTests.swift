@@ -59,11 +59,85 @@ final class WeekOverviewTests: XCTestCase {
         }
     }
 
+    func testPlanFractionIsShareOf100() {
+        XCTAssertEqual(WeekOverview.fraction(40, scale: WeekOverview.planScale), 0.4, accuracy: 0.0001)
+        XCTAssertEqual(WeekOverview.fraction(nil, scale: 100), 0)
+        XCTAssertEqual(WeekOverview.fraction(150, scale: 100), 1)
+        XCTAssertEqual(WeekOverview.fraction(30, scale: 60), 0.5, accuracy: 0.0001)
+    }
+
+    func testTasksSlideDroppedWithoutTasks() throws {
+        let review = try WeekFixtures.review { object in
+            var totals = object["totals"] as? [String: Any] ?? [:]
+            totals["tasks_total"] = 0
+            totals["tasks_done"] = 0
+            object["totals"] = totals
+        }
+        XCTAssertFalse(WeekOverview.slides(review).contains { $0.kind == .tasks })
+    }
+
+    func testTimeSlideFallsBackToRoleMinutes() throws {
+        for work: Any in [NSNull(), 0] {
+            let review = try WeekFixtures.review { object in
+                var totals = object["totals"] as? [String: Any] ?? [:]
+                totals["work_minutes"] = work
+                totals["role_minutes"] = 90
+                object["totals"] = totals
+            }
+            XCTAssertFalse(WeekOverview.usesWorkMinutes(review))
+            let slide = try XCTUnwrap(WeekOverview.slides(review).first { $0.kind == .time })
+            XCTAssertEqual(slide.figure, 90)
+            XCTAssertEqual(slide.title, "Время по ролям")
+        }
+    }
+
+    func testNoHabitStreaksAndNoBestWorstDay() throws {
+        let review = try WeekFixtures.review { object in
+            object["habit_streaks"] = [Any]()
+            object["best_day"] = NSNull()
+            object["worst_day"] = NSNull()
+        }
+        let kinds = WeekOverview.slides(review).map(\.kind)
+        XCTAssertFalse(kinds.contains(.habitStreak))
+        XCTAssertFalse(kinds.contains(.days))
+    }
+
+    func testDayStreakAndHabitStreakAreSeparateSlides() throws {
+        let review = try WeekFixtures.review { object in
+            var totals = object["totals"] as? [String: Any] ?? [:]
+            totals["day_streak_end"] = 4
+            object["totals"] = totals
+            object["habit_streaks"] = [["category_id": 1, "name": "Без сахара", "current_streak": 9, "relapses": 2]]
+        }
+        let slides = WeekOverview.slides(review)
+        let day = try XCTUnwrap(slides.first { $0.kind == .dayStreak })
+        XCTAssertEqual(day.title, "Серия дней")
+        XCTAssertEqual(day.figure, 4)
+        let habit = try XCTUnwrap(slides.first { $0.kind == .habitStreak })
+        XCTAssertEqual(habit.figure, 9)
+        XCTAssertTrue(habit.caption.contains("за неделю"))
+        XCTAssertNotEqual(habit.title, day.title)
+    }
+
+    func testVerdictLineReachesTheCaption() throws {
+        let review = try WeekFixtures.review { $0["verdict_line"] = "Неделя выиграна: 5 из 7" }
+        let slide = try XCTUnwrap(WeekOverview.slides(review).first)
+        XCTAssertTrue(slide.caption.contains("Неделя выиграна: 5 из 7"))
+    }
+
+    func testReduceMotionStartsFinished() {
+        XCTAssertEqual(MotionProgress.initial(reduceMotion: true), 1)
+        XCTAssertEqual(MotionProgress.initial(reduceMotion: false), 0)
+    }
+
+    private static let renderWidth: CGFloat = 360
+    private static let renderScale: CGFloat = 2
+
     private func render<V: View>(_ view: V) throws -> UIImage {
         let renderer = ImageRenderer(
-            content: view.frame(width: 360).background(Color.black).environment(\.colorScheme, .dark)
+            content: view.frame(width: Self.renderWidth).background(Color.black).environment(\.colorScheme, .dark)
         )
-        renderer.scale = 2
+        renderer.scale = Self.renderScale
         return try XCTUnwrap(renderer.uiImage)
     }
 }
