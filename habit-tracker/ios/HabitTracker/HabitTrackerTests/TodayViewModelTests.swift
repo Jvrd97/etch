@@ -8,6 +8,15 @@ import Combine
 import XCTest
 @testable import HabitTracker
 
+/// Yields to other tasks until `condition` holds, for at most about two seconds by the clock; fails the
+/// test when it never does.
+@MainActor
+func spinUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+    let deadline = Date().addingTimeInterval(2)
+    while !condition() && Date() < deadline { await Task.yield() }
+    if !condition() { XCTFail("the condition did not hold within the wait", file: file, line: line) }
+}
+
 /// Scriptable stand-in for the API used by `TodayViewModel`. On the main actor: the screen reads it
 /// while the queue replays through it, and the two must not race on its state.
 @MainActor
@@ -36,11 +45,12 @@ final class MockTodayAPI: TodayScreenAPI {
     var duringFetchCategories: (@MainActor () async -> Void)?
 
     func fetchCategories() async throws -> [CategoryDTO] {
+        let answer = categoriesResult
         if let hook = duringFetchCategories {
             duringFetchCategories = nil
             await hook()
         }
-        return try categoriesResult.get()
+        return try answer.get()
     }
 
     /// Runs once inside the next entries read, after its answer is fixed and before it returns: the
@@ -827,7 +837,7 @@ final class TodayViewModelTests: XCTestCase {
         }
 
         let second = Task { await viewModel.load() }
-        while !inFlight { await Task.yield() }
+        await spinUntil { inFlight }
 
         XCTAssertEqual(viewModel.state, .loaded, "a full-screen loader would drop the scroll position")
         XCTAssertEqual(viewModel.categories.map(\.id), [1])
@@ -902,7 +912,7 @@ final class TodayViewModelTests: XCTestCase {
             await withCheckedContinuation { gate = $0 }
         }
         let first = Task { await viewModel.load() }
-        while !inFlight { await Task.yield() }
+        await spinUntil { inFlight }
         api.entriesResult = .success([])
         await viewModel.load()
         XCTAssertNil(viewModel.saveErrorMessage)
@@ -937,7 +947,7 @@ final class TodayViewModelTests: XCTestCase {
         }
         // The categories answer only after the re-read reached the screen (yielding, never sleeping).
         api.duringFetchCategories = {
-            for _ in 0..<5000 where viewModel.entries(forCategory: 1) != [delivered] { await Task.yield() }
+            await spinUntil { viewModel.entries(forCategory: 1) == [delivered] }
         }
 
         await viewModel.load()
@@ -957,7 +967,7 @@ final class TodayViewModelTests: XCTestCase {
             await withCheckedContinuation { gate = $0 }
         }
         let first = Task { await viewModel.load() }
-        while !inFlight { await Task.yield() }
+        await spinUntil { inFlight }
         api.categoriesResult = .success([pushups])
         await viewModel.load()
         XCTAssertEqual(viewModel.state, .loaded)
