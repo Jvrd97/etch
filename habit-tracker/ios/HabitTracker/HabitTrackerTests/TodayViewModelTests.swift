@@ -886,8 +886,9 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
         var inFlight = false
         var gate: CheckedContinuation<Void, Never>?
-        // L1 reads while the server is down and waits there; L2 reads after it and works.
-        api.entriesResult = .failure(APIClientError.timeout)
+        // L1 reads while the server refuses it (an error the cache does not cover with its copy) and waits
+        // there; L2 reads after it and works.
+        api.entriesResult = .failure(APIClientError.unauthorized)
         api.duringFetchEntries = {
             inFlight = true
             await withCheckedContinuation { gate = $0 }
@@ -903,6 +904,37 @@ final class TodayViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.saveErrorMessage, "the older read failed, but the screen already shows a newer answer")
         XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    /// A delivery during a load re-reads the records; that read says nothing about the categories and streaks
+    /// the load is still after, so its success must not silence the load's failure.
+    func testAFirstLoadThatFailsAfterAQuietRereadStillTurnsIntoTheErrorState() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        api.createEntryResult = .failure(APIClientError.timeout)
+        let (first, outbox) = makeOfflineViewModel(api: api)
+        await first.load()
+        _ = await first.saveEntry(categoryID: 1, values: [10: "42"])
+        let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: InMemoryCacheStore(), outbox: outbox,
+            timeZone: TimeZone(identifier: "UTC")!, now: { self.makeFixedDate() }
+        )
+        let readsBefore = api.fetchedEntryRanges.count
+        api.createEntryResult = .success(delivered)
+        api.categoriesResult = .failure(APIClientError.unauthorized)
+        api.duringCreateEntry = {
+            await waitUntil { api.fetchedEntryRanges.count > readsBefore }
+            api.entriesResult = .success([delivered])
+        }
+        api.duringFetchEntries = {
+            await waitUntil { api.entriesAnswered > 0 && viewModel.entries(forCategory: 1) == [delivered] }
+        }
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the re-read did reach the screen first")
+        XCTAssertEqual(viewModel.state, .failure(APIClientError.unauthorized.userMessage))
     }
 
     func testAFailedSecondLoadOfAnEmptyScreenStillSaysSo() async {

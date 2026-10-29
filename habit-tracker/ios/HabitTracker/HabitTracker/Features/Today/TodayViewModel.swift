@@ -81,6 +81,9 @@ final class TodayViewModel: ObservableObject {
     /// an answer older than the one on screen is dropped.
     private var entriesReadsSent = 0
     private var entriesReadShown = 0
+    /// Whole loads (categories, records, streaks) are numbered apart from the record re-reads above.
+    private var loadsSent = 0
+    private var loadShown = 0
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
@@ -186,9 +189,11 @@ final class TodayViewModel: ObservableObject {
     func load() async {
         let showsData = state == .loaded
         if !showsData { state = .loading }
+        loadsSent += 1
+        let load = loadsSent
         let read = nextEntriesRead()
         guard let api = apiProvider() else {
-            failLoad(Self.notConfiguredMessage, showsData: showsData, read: read)
+            failLoad(Self.notConfiguredMessage, showsData: showsData, load: load)
             return
         }
         let flushing = Task { await outbox?.flush() }
@@ -225,11 +230,12 @@ final class TodayViewModel: ObservableObject {
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
             state = .loaded
+            loadShown = max(loadShown, load)
             clearRefreshFailure()
         } catch let error as APIClientError {
-            failLoad(error.userMessage, showsData: showsData, read: read)
+            failLoad(error.userMessage, showsData: showsData, load: load)
         } catch {
-            failLoad("Unexpected error", showsData: showsData, read: read)
+            failLoad("Unexpected error", showsData: showsData, load: load)
         }
         await flushing.value
     }
@@ -237,9 +243,10 @@ final class TodayViewModel: ObservableObject {
     /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
     private var refreshFailureLine: String?
 
-    /// A failure of an old read says nothing when the answer of a newer read is already on screen.
-    private func failLoad(_ reason: String, showsData: Bool, read: Int) {
-        guard read > entriesReadShown else { return }
+    /// A refresh that failed late says nothing when a newer load already reached the screen. A first load
+    /// that failed always says so: there is nothing else on screen.
+    private func failLoad(_ reason: String, showsData: Bool, load: Int) {
+        if showsData, load < loadShown { return }
         if showsData {
             let line = "\(Self.refreshFailedMessage): \(reason)"
             saveErrorMessage = line
