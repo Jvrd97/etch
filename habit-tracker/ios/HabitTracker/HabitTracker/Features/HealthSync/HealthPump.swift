@@ -72,7 +72,8 @@ final class HealthPump: HealthSyncing {
 
     static let shared = HealthPump(
         store: HKHealthStore(),
-        api: { APIClient.live(timeout: HealthPump.uploadTimeout) }
+        api: { APIClient.live(timeout: HealthPump.uploadTimeout) },
+        syncLog: HealthSyncLog.shared
     )
 
     private static let logger = Logger(subsystem: "com.habittracker.app", category: "HealthPump")
@@ -88,11 +89,13 @@ final class HealthPump: HealthSyncing {
     private let pendingFailures: HealthPendingFailureStoring
     private let chunkLimit: Int
     private let pause: (Int) async throws -> Void
+    private let syncLog: HealthSyncLogging
     private var inFlight: Task<HealthSyncOutcome, Never>?
 
     init(
         store: HealthStoreQuerying,
         api: @escaping () -> HealthSamplesAPI?,
+        syncLog: HealthSyncLogging,
         metrics: [HealthMetricDefinition] = HealthPump.pumpedMetrics,
         mapper: HealthSampleMapper = HealthSampleMapper(),
         calendar: Calendar = .autoupdatingCurrent,
@@ -107,6 +110,7 @@ final class HealthPump: HealthSyncing {
     ) {
         self.store = store
         self.api = api
+        self.syncLog = syncLog
         self.metrics = metrics
         self.mapper = mapper
         self.calendar = calendar
@@ -120,15 +124,15 @@ final class HealthPump: HealthSyncing {
 
     /// Button run: asks for read access if still unanswered, then sends the window.
     func sync() async -> HealthSyncOutcome {
-        await joinOrStart(asking: true)
+        await joinOrStart(asking: true, source: .manual)
     }
 
     /// Launch run: never shows the sheet. Sends only after the person has answered it.
-    func syncIfAuthorized() async -> HealthSyncOutcome {
-        await joinOrStart(asking: false)
+    func syncIfAuthorized(source: HealthSyncSource = .appLaunch) async -> HealthSyncOutcome {
+        await joinOrStart(asking: false, source: source)
     }
 
-    private func joinOrStart(asking: Bool) async -> HealthSyncOutcome {
+    private func joinOrStart(asking: Bool, source: HealthSyncSource) async -> HealthSyncOutcome {
         if let inFlight {
             return await inFlight.value
         }
@@ -136,6 +140,7 @@ final class HealthPump: HealthSyncing {
         inFlight = run
         let outcome = await run.value
         inFlight = nil
+        syncLog.record(outcome, source: source, kind: asking ? .manual : .rolling, at: now())
         if case .failed(let failure) = outcome {
             Self.logger.error("health sync failed: \(failure.rawValue, privacy: .public)")
         }
