@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/209, PHASE-03/132, PHASE-03/238, PHASE-02/68, PHASE-02/70
+// [review:need-review] PHASE-03/209, PHASE-03/132, PHASE-03/238, PHASE-02/68, PHASE-02/70, PHASE-02/69
 // summary: the workouts section (week of workouts as events) sits under the sleep section; the sleep section (last night, stages, week of nights) sits under the sync block; the sync-lag block sits under the title, above the metrics; desktop /health screen — same catalog, same numbers as /m/health, through the shared useHealthMetrics hook and HealthMetricGroups body; only the page frame (title, loading, error) is drawn twice, as every other desktop/mobile pair in this app does
 
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -8,6 +8,7 @@ import HealthMetricGroups from '@/components/health/HealthMetricGroups';
 import HealthSyncStatus from '@/components/HealthSyncStatus';
 import SleepSection from '@/components/health/SleepSection';
 import { useSleepNights } from '@/components/health/useSleepNights';
+import { SLEEP_IDENTIFIER, metricHref } from '@/lib/health';
 import WorkoutsSection from '@/components/health/WorkoutsSection';
 import { useWorkouts } from '@/components/health/useWorkouts';
 import { useHealthMetrics } from '@/hooks/useHealthMetrics';
@@ -32,7 +33,7 @@ export default function HealthPage() {
       </div>
 
       <HealthSyncStatus status={syncStatus} />
-      <SleepSection nights={sleepNights} />
+      <SleepSection nights={sleepNights} detailHref={metricHref('/health', SLEEP_IDENTIFIER)} />
       <WorkoutsSection workouts={workouts} />
 
       {state.status === 'loading' && <LoadingSpinner size="lg" />}

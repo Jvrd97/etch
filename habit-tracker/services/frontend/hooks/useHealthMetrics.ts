@@ -1,9 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/209
-// summary: loads today's Health catalog once and hands both shells the same discriminated state — shared between /health and /m/health so the two screens cannot answer the same question differently
+// [review:need-review] PHASE-03/209, PHASE-02/69
+// summary: loads the Health catalog once, over the 30 days the row sparklines draw and hands both shells the same discriminated state — shared between /health and /m/health so the two screens cannot answer the same question differently
 
 import { useEffect, useState } from 'react';
 import { healthAPI, type HealthMetric } from '@/lib/api';
+import { SPARKLINE_DAYS, shiftDate } from '@/lib/health';
 import { localDate } from '@/lib/health-metrics';
 
 /**
@@ -19,7 +20,7 @@ export type HealthMetricsState =
   | { status: 'error'; message: string }
   | { status: 'ready'; metrics: HealthMetric[] };
 
-/** Today's Health catalog, fetched once per mount. */
+/** The Health catalog with the last 30 days, fetched once per mount. */
 export function useHealthMetrics(): HealthMetricsState {
   const [state, setState] = useState<HealthMetricsState>({ status: 'loading' });
 
@@ -27,7 +28,7 @@ export function useHealthMetrics(): HealthMetricsState {
     let cancelled = false;
     const today = localDate();
     void healthAPI
-      .getMetrics(today, today)
+      .getMetrics(shiftDate(today, 1 - SPARKLINE_DAYS), today)
       .then((response) => {
         if (!cancelled) setState({ status: 'ready', metrics: response.metrics });
       })

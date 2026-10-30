@@ -17,6 +17,7 @@ function metric(group: HealthMetricGroup, displayName: string): HealthMetric {
     display_name: displayName,
     group,
     days: [{ date: '2026-10-20', value: 1 }],
+    baseline: null,
   };
 }
 

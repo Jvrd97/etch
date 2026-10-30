@@ -1,6 +1,6 @@
 "use client";
-// [review:need-review] PHASE-02/68
-// summary: the metric detail body both /health/[identifier] and /m/health/[identifier] render — the daily series of a switchable period, the chosen day, and its 24 hours (empty hours drawn as "нет данных", min–max for a discrete hour); sleep shows its nights instead of hours
+// [review:need-review] PHASE-02/68, PHASE-02/69
+// summary: the metric detail body both /health/[identifier] and /m/health/[identifier] render — the daily series of a switchable period, the chosen day, and its 24 hours (empty hours drawn as "нет данных", min–max for a discrete hour); sleep shows the nights of the chosen period, ending at the chosen day, instead of hours
 
 import Link from "next/link";
 import { useState } from "react";
@@ -8,11 +8,14 @@ import type { HealthMetricDays, HealthMetricHours } from "@/lib/api";
 import {
   DEFAULT_PERIOD_DAYS,
   HEALTH_PERIODS,
+  formatQuantity,
   formatValue,
   hourLabel,
   hourRange,
   hourSlots,
+  shiftDate,
 } from "@/lib/health";
+import { localDate } from "@/lib/health-metrics";
 import SleepSection, { nightLabel } from "./SleepSection";
 import {
   useMetricDays,
@@ -118,7 +121,7 @@ function Loaded({
         <>
           <DailyList series={series} day={day} onDay={onDay} />
           {isSleep ? (
-            <Nights read={readNights} />
+            <Nights read={readNights} day={day} periodDays={periodDays} />
           ) : (
             day !== null && (
               <Hours
@@ -197,7 +200,7 @@ function DailyList({
                 {nightLabel(entry.date)}
               </span>
               <span className="tabular-nums text-text-primary">
-                {formatValue(entry.value)} {series.canonical_unit}
+                {formatQuantity(series.identifier, entry.value, series.canonical_unit)}
               </span>
             </button>
           </li>
@@ -283,7 +286,16 @@ function HourRows({ hours }: { hours: HealthMetricHours }) {
   );
 }
 
-function Nights({ read }: { read?: SleepRead }) {
-  const nights = useSleepNights(read);
-  return <SleepSection nights={nights} />;
+function Nights({
+  read,
+  day,
+  periodDays,
+}: {
+  read?: SleepRead;
+  day: string | null;
+  periodDays: number;
+}) {
+  const to = day ?? localDate();
+  const nights = useSleepNights(read, { from: shiftDate(to, 1 - periodDays), to });
+  return <SleepSection nights={nights} listLabel="Ночи периода" />;
 }

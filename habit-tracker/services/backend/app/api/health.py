@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68, PHASE-02/70
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68, PHASE-02/70, PHASE-02/69
 # summary: POST /health/samples (raw intake of quantity, category samples and workouts, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) GET /health/sleep (nights by wake date) and GET /health/workouts (workouts by start date)
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,6 +15,7 @@ from app.health.aggregate import (
     UnitError,
     aggregate_samples,
 )
+from app.health.baseline import BASELINE_DAYS, metric_baseline
 from app.health.sleep import SleepValueError
 from app.health.workouts import activity_label
 from app.models.health import (
@@ -23,6 +25,7 @@ from app.models.health import (
     HealthWorkout,
 )
 from app.schemas.health import (
+    HealthBaseline,
     HealthDayValue,
     HealthHourValue,
     HealthMetricDaysResponse,
@@ -261,7 +264,14 @@ async def get_metrics(
     """
     _check_range(date_from, date_to)
     metrics = await health_crud.get_catalog(db)
-    days = await health_crud.daily_values(db, metrics, date_from, date_to)
+    # One read for every metric: far enough back to cover the baseline of the
+    # latest day, then cut to the range the caller asked for.
+    history_from = date_from - timedelta(days=BASELINE_DAYS)
+    history = await health_crud.daily_values(db, metrics, history_from, date_to)
+    days = {
+        metric_id: [day for day in values if day.local_date >= date_from]
+        for metric_id, values in history.items()
+    }
 
     return HealthMetricsResponse(
         metrics=[
@@ -275,10 +285,28 @@ async def get_metrics(
                     HealthDayValue(date=day.local_date, value=day.value)
                     for day in days.get(metric.id, [])
                 ],
+                baseline=_baseline_out(
+                    metric.identifier,
+                    metric.kind,
+                    {d.local_date: d.value for d in history.get(metric.id, [])},
+                    date_from,
+                    date_to,
+                ),
             )
             for metric in metrics
         ]
     )
+
+
+def _baseline_out(
+    identifier: str,
+    kind: str,
+    by_day: dict[date, float],
+    date_from: date,
+    date_to: date,
+) -> HealthBaseline | None:
+    baseline = metric_baseline(identifier, kind, by_day, date_from, date_to)
+    return None if baseline is None else HealthBaseline(**asdict(baseline))
 
 
 async def _known_metric(db: AsyncSession, identifier: str) -> HealthMetric:

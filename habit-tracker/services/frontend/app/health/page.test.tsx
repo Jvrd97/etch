@@ -13,6 +13,7 @@ const METRICS: HealthMetric[] = [
     display_name: 'Шаги',
     group: 'movement',
     days: [{ date: '2026-09-05', value: 4321 }],
+    baseline: null,
   },
   {
     identifier: 'heart',
@@ -21,6 +22,7 @@ const METRICS: HealthMetric[] = [
     display_name: 'Пульс',
     group: 'heart',
     days: [],
+    baseline: null,
   },
 ];
 
@@ -67,7 +69,7 @@ describe('/health', () => {
     expect(screen.getByRole('heading', { name: /Health/ })).toBeDefined();
     await waitFor(() => expect(screen.getByText('Движение и энергия')).toBeDefined());
     expect(screen.getByText('Сердце и дыхание')).toBeDefined();
-    expect(screen.getByText('4321 count')).toBeDefined();
+    expect(screen.getByText('4321')).toBeDefined();
     expect(screen.getByText('Нет данных')).toBeDefined();
   });
 
@@ -105,14 +107,14 @@ describe('/health', () => {
     getSleep.mockImplementationOnce(() => Promise.reject(new Error('network down')));
     render(<HealthPage />);
 
-    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
     expect(screen.queryByRole('heading', { name: 'Сон' })).toBeNull();
   });
 
   it('links every catalog row to its detail screen', async () => {
     render(<HealthPage />);
 
-    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
     expect(screen.getByRole('link', { name: /Шаги/ }).getAttribute('href')).toBe('/health/steps');
   });
 });

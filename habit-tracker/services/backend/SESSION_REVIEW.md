@@ -2988,6 +2988,18 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `frontend/app/health/[identifier]/page.tsx`, `app/m/health/[identifier]/page.tsx`, `components/health/MetricDetail.tsx` (+ тест), `useMetricDetail.ts`, `lib/health.ts` — new.
 - `frontend/components/health/HealthMetricGroups.tsx`, `app/health/page.tsx`, `app/m/health/page.tsx` (+ тесты), `lib/api.ts` — mod: ссылка со строки метрики, типы и `healthAPI.getMetricDays/getMetricHours`.
 
+## 2026-10-30 — PHASE-02/69: база метрики и спарклайн в списке
+
+Тронуто 17 файлов (4 `new`, 13 `mod`), миграций нет, каталог и `crud/health.py` не тронуты.
+
+- `backend/app/health/baseline.py`, `tests/test_health_baseline.py` — new: среднее и разброс по 30 дням до последнего дня, минимум 7 дней, отклонение; рост SQL от числа метрик.
+- `backend/app/api/health.py`, `app/schemas/health.py` — mod: `GET /health/metrics` отдаёт `baseline` (одна выборка на все метрики, глубже запрошенного периода).
+- `frontend/components/health/HealthMetricGroups.tsx` (+ новый тест), `SleepSection.tsx`, `MetricDetail.tsx`, `useSleepNights.ts` (+ тесты), `hooks/useHealthMetrics.ts`, `lib/health.ts`, `lib/api.ts`, `app/health/page.tsx`, `app/m/health/page.tsx` (+ тесты) — mod/new: спарклайн за 30 дней, отклонение, ссылка на сон, ночи по периоду, единый `formatValue`.
+
+### PHASE-02/69, круг 2
+
+`baseline.py` — mod (`metric_baseline`: только количественные виды, накопительная сравнивается по последнему целому дню, пол разброса), `api/health.py` — mod (история от `date_from − 30`), `tests/test_health_baseline.py` — mod; фронт: `HealthMetricGroups.tsx` (дата давнего значения, «вне обычного» текстом, нейтральная линия), `lib/health.ts` (единица в отклонении) и тест — mod.
+
 ## 2026-10-30 — PHASE-03/272: все метрики Apple Health, кроме отслеживания цикла
 
 Тронуто 11 файлов бэкенда (4 `new`, 7 `mod`), миграция `b55c9394752b` от головы `4359c5a3d24e`.

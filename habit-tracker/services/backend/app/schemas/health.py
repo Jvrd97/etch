@@ -184,6 +184,20 @@ class HealthDayValue(BaseModel):
     value: float
 
 
+class HealthBaseline(BaseModel):
+    """The metric's own usual level and where its latest day stands against it."""
+
+    mean: float
+    stddev: float
+    # Days of history behind the mean; gaps are not counted.
+    days: int
+    # The day the deviation is about; not the shown last day for a cumulative metric.
+    day: date
+    # Latest day minus the mean, in the metric's unit.
+    deviation: float
+    outside_typical: bool
+
+
 class HealthMetricSeries(BaseModel):
     """A catalogue metric with whatever days the requested range holds."""
 
@@ -195,6 +209,8 @@ class HealthMetricSeries(BaseModel):
     # Empty for a metric the phone never filled. The app cannot tell a refused
     # permission from an absent measurement, so it says neither.
     days: list[HealthDayValue]
+    # None while the metric has too little history: no deviation, not a false one.
+    baseline: HealthBaseline | None = None
 
 
 class HealthMetricsResponse(BaseModel):
