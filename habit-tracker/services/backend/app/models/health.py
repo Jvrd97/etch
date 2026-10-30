@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
-# summary: Health contour tables — metric catalogue, the hourly bucket keyed by (metric, local_date, hour), the sleep night keyed by its wake date and the sync-run journal
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/70
+# summary: Health contour tables — metric catalogue, the hourly bucket keyed by (metric, local_date, hour), the sleep night keyed by its wake date, the workout keyed by its HealthKit UUID and the sync-run journal
 from __future__ import annotations
 
 import uuid
@@ -225,3 +225,43 @@ class HealthSyncRun(Base):
         return (
             f"<HealthSyncRun(id={self.id}, kind='{self.kind}', status='{self.status}')>"
         )
+
+
+class HealthWorkout(Base):
+    """
+    One workout (`HKWorkout`), kept as an event: a type, real bounds, numbers.
+
+    The natural key is the HealthKit UUID, so a window the phone reads again on
+    every sync overwrites its rows instead of doubling them. `local_date` is the
+    date the workout *started* on the device's clock: a session across midnight
+    is one entry. `duration_min` is the active time HealthKit reports (a paused
+    run is shorter than `ended_at - started_at`).
+
+    The numbers HealthKit may not hold (no watch, no heart-rate permission) are
+    NULL, not zero: "no data" and "0 kcal" are different answers.
+    """
+
+    __tablename__ = "health_workouts"
+    __table_args__ = (Index("ix_health_workouts_local_date", "local_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workout_uuid: Mapped[uuid.UUID] = mapped_column(Uuid, unique=True)
+
+    activity_type: Mapped[str] = mapped_column(String(40))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    utc_offset_minutes: Mapped[int] = mapped_column(Integer)
+    local_date: Mapped[date] = mapped_column(Date)
+
+    duration_min: Mapped[float] = mapped_column(Float)
+    energy_kcal: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_heart_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_heart_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<HealthWorkout(uuid={self.workout_uuid}, type={self.activity_type})>"

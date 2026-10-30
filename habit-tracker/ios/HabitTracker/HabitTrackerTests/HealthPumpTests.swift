@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272, PHASE-02/70
 // summary: HealthPump on a fake HKHealthStore (raw samples, HealthKit hourly sums and sleep intervals; a per-type read error for a type HealthKit will not give, the sheet answered per type) and a fake API — read-only request with sleep in the same sheet, sleep as raw stages in the same chunk and run from 18:00 before the window and never split, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk and a metric too large for one left out, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
 import HealthKit
 import XCTest
@@ -68,12 +68,13 @@ final class HealthPumpTests: XCTestCase {
         [.stepCount, .restingHeartRate].contains($0.typeIdentifier)
     }
 
-    /// What this pump asks to read: the two quantity types and sleep, in one sheet.
+    /// What this pump asks to read: the two quantity types, sleep and workouts, in one sheet.
     private var pumpedTypes: Set<String> {
         [
             HKQuantityTypeIdentifier.stepCount.rawValue,
             HKQuantityTypeIdentifier.restingHeartRate.rawValue,
             HKCategoryTypeIdentifier.sleepAnalysis.rawValue,
+            HealthWorkoutCatalog.identifier,
         ]
     }
 
@@ -523,6 +524,7 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
     var latest: [HKQuantityTypeIdentifier: HKQuantitySample] = [:]
     var categories: [HKCategoryTypeIdentifier: [HKCategorySample]] = [:]
+    var workoutRecords: [HealthWorkoutRecord] = []
     var readError: Error?
     /// Fails every read of one type (by raw identifier), as HealthKit does for a type it will not give.
     var typeErrors: [String: Error] = [:]
@@ -537,6 +539,7 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     private(set) var queries: [(type: String, from: Date, to: Date)] = []
     private(set) var sumQueries: [(type: String, from: Date, to: Date)] = []
     private(set) var categoryQueries: [(type: String, from: Date, to: Date)] = []
+    private(set) var workoutQueries: [(from: Date, to: Date)] = []
 
     var healthDataAvailable: Bool { available }
 
@@ -587,6 +590,14 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
             throw failure
         }
         return categories[HKCategoryTypeIdentifier(rawValue: type.identifier)] ?? []
+    }
+
+    func workouts(from: Date, to: Date) async throws -> [HealthWorkoutRecord] {
+        workoutQueries.append((from, to))
+        if let failure = readError ?? typeErrors[HealthWorkoutCatalog.identifier] {
+            throw failure
+        }
+        return workoutRecords.filter { $0.start >= from && $0.start < to }
     }
 
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
