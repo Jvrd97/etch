@@ -2958,3 +2958,9 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/api/health.py`, `app/schemas/health.py`, `app/models/health.py` — mod: 409 на чужое устройство, `sync_run_id` требует `chunk_index` и `chunks_total`, колонка `chunks_seen`.
 - `alembic/versions/2026_10_29_1000-f1b3d5a7c9e2_health_sync_run.py` — mod: колонка `chunks_seen` (ревизия ещё не в main).
 - `tests/test_health_sync_run.py` — mod: повтор чанка, гонка двух доставок, чужое устройство, залипший `interrupted`, обратимость миграции.
+### PHASE-03/271 (круги 1–2)
+
+- `app/llm/dose_guard.py` — mod: исключение для шкалы пульса убрано целиком; «на N ед» рядом со словом о пульсе — всегда доза. Причина: точечные правила (глагол, вещество, белый список) протекали на повелительных формах и словах после единицы; сервер пульс пишет только в «уд/мин» (`health_format.py`).
+- `tests/test_dose_guard.py` — mod: в `CAUGHT_NEXT_TO_A_PULSE` фразы круга 1 и все атакующие фразы ревью; в `PASSED` пульс только в «уд/мин» и «ударах»; 20 красных на c56e8bf.
+
+Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_271`.

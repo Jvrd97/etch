@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/251
+# [review:need-review] PHASE-03/271
 # summary: the dose net under the health advice — folds the answer (compatibility decomposition, no invisible characters, no accents), then looks for a number or a number word glued to a dose unit or a pharmacy abbreviation, and for fractions of a tablet
 """
 The net under «не называй дозу» (`#223`, `#246`, `#251`).
@@ -25,8 +25,12 @@ are written for the folded text: no «ё» in them, «й» as it is.
 
 **Что не считается.** Одинокая буква «г» — год, если перед ней год или дата
 («в 2026 г.», «12.2026 г.»); шаги, проценты, пульс и минуты не единицы дозы.
-«Единица» после слов о пульсе в той же фразе и «на» («пульс снизился на 4 единицы») —
-пункт шкалы, а не доза, если число — до двух знаков или числительное до тридцати.
+Пульс измеряется в «уд/мин» и «ударах» — их защита не считает единицей дозы. «ед» и «единиц»
+рядом со словом о пульсе («пульс снизился на 4 единицы», «добавь на 10 ед») — всегда доза:
+точечные исключения для шкалы пульса (круги 3–4 `#251`, `#271` круг 1) раз за разом пропускали
+2-значные дозы инсулина, поэтому исключение убрано целиком. Сервер такие строки не пишет:
+`health_format.py` форматирует пульс только как «N уд/мин». Ложное срабатывание на «единицы
+пульса» допустимо: при сомнении ловим дозу.
 Известная щель: «2000 г» читается как год, а не как два килограмма.
 """
 
@@ -97,23 +101,6 @@ _DOSE = re.compile(
 )
 
 
-# A step of the pulse scale: a number of at most two digits or a numeral up to thirty.
-_SCALE_NUMBER = (
-    r"(?:\d{1,2}|ноль|нуль|одн(?:а|у|о|ой|ого|ому|им|ою)|один|"
-    r"дв(?:а|е|ух|ум|умя)|тр(?:и|ех|ем|емя)|четыр(?:е|ех|ем|ьмя)|"
-    r"пят(?:ь|и|ью)|шест(?:ь|и|ью)|сем(?:ь|и|ью)|восем(?:ь|ью)|восьми|"
-    r"девят(?:ь|и|ью)|десят(?:ь|и|ью)|"
-    r"(?:одиннадцат|двенадцат|тринадцат|четырнадцат|пятнадцат|шестнадцат|"
-    r"семнадцат|восемнадцат|девятнадцат|двадцат|тридцат)(?:ь|и|ью))"
-)
-_POINT_OF_SCALE = re.compile(rf"{_SCALE_NUMBER}\s*ед(?:иниц\w*)?\.?$")
-_ON_BEFORE = re.compile(r"(?<!\w)на\s+$")
-_PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
-# The sentence of the match: what follows the last sentence mark before it.
-_SENTENCE_END = re.compile(r"[.!?;:]\s")
-_SENTENCE_LOOKBACK = 120
-
-
 def _fold(text: str) -> str:
     kept: list[str] = []
     for ch in unicodedata.normalize("NFKD", text):
@@ -127,25 +114,4 @@ def _fold(text: str) -> str:
 def names_a_dose(text: str) -> bool:
     """True when the text names a dose of anything: a number or a fraction and its unit."""
     folded = _fold(text)
-    for match in _DOSE.finditer(folded):
-        if _is_a_pulse_point(folded, match):
-            continue
-        return True
-    return False
-
-
-def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
-    """
-    «Пульс снизился на 4 единицы»: «ед.» as a step of the pulse scale, not a dose.
-
-    Only a number that follows «на» directly, in a sentence that names the pulse,
-    and only a number of the scale: up to two digits or a numeral up to thirty.
-    Anything else next to a pulse — «пульс в норме, 5000 ед», «пульс в норме,
-    рассчитывай на 5000 ед», «на 5 тыс. ед.» — is a dose.
-    """
-    if not _POINT_OF_SCALE.fullmatch(match.group()):
-        return False
-    before = folded[max(0, match.start() - _SENTENCE_LOOKBACK) : match.start()]
-    if not _ON_BEFORE.search(before):
-        return False
-    return _PULSE_WORDS.search(_SENTENCE_END.split(before)[-1]) is not None
+    return _DOSE.search(folded) is not None
