@@ -13,6 +13,7 @@ const METRICS: HealthMetric[] = [
     display_name: 'Шаги',
     group: 'movement',
     days: [{ date: '2026-09-05', value: 4321 }],
+    baseline: null,
   },
   {
     identifier: 'heart',
@@ -21,6 +22,7 @@ const METRICS: HealthMetric[] = [
     display_name: 'Пульс',
     group: 'heart',
     days: [],
+    baseline: null,
   },
 ];
 

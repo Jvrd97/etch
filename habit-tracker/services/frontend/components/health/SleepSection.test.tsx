@@ -85,7 +85,31 @@ describe('SleepSection', () => {
   });
 });
 
+describe('the way into the sleep detail screen', () => {
+  it('links to the detail screen when the caller names one', () => {
+    render(<SleepSection nights={[NIGHT]} detailHref="/health/HKCategoryTypeIdentifierSleepAnalysis" />);
+    expect(screen.getByRole('link', { name: 'Все ночи' }).getAttribute('href')).toBe(
+      '/health/HKCategoryTypeIdentifierSleepAnalysis'
+    );
+  });
+
+  it('has no link without one', () => {
+    render(<SleepSection nights={[NIGHT]} />);
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+});
+
 describe('useSleepNights', () => {
+  it('asks for the range it is given', async () => {
+    const asked: Array<[string, string]> = [];
+    const read = (dateFrom: string, dateTo: string) => {
+      asked.push([dateFrom, dateTo]);
+      return Promise.resolve({ nights: [NIGHT] });
+    };
+    renderHook(() => useSleepNights(read, { from: '2026-09-01', to: '2026-09-30' }));
+    await waitFor(() => expect(asked).toEqual([['2026-09-01', '2026-09-30']]));
+  });
+
   it('asks for today and the six nights before it', async () => {
     const asked: Array<[string, string]> = [];
     const read = (dateFrom: string, dateTo: string) => {

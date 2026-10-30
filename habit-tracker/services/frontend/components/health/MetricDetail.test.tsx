@@ -207,4 +207,38 @@ describe("MetricDetail", () => {
     expect(screen.queryByRole("list", { name: "Часы дня" })).toBeNull();
     expect(readHours).not.toHaveBeenCalled();
   });
+
+  it("reads the nights of the chosen period, ending at the chosen day", async () => {
+    const asked: Array<[string, string]> = [];
+    const readNights = (from: string, to: string) => {
+      asked.push([from, to]);
+      return Promise.resolve({ nights: [] });
+    };
+    render(
+      <MetricDetail
+        identifier="sleep"
+        backHref="/health"
+        readDays={() =>
+          Promise.resolve({
+            identifier: "sleep",
+            display_name: "Сон",
+            kind: "sleep",
+            canonical_unit: "min",
+            days: [
+              { date: "2026-10-19", value: 400 },
+              { date: "2026-10-20", value: 390 },
+            ],
+          })
+        }
+        readHours={() => Promise.resolve(hoursOf("2026-10-20"))}
+        readNights={readNights}
+      />,
+    );
+
+    await waitFor(() => expect(asked).toContainEqual(["2026-09-21", "2026-10-20"]));
+    fireEvent.click(screen.getByRole("button", { name: "7 дней" }));
+    await waitFor(() => expect(asked).toContainEqual(["2026-10-14", "2026-10-20"]));
+    fireEvent.click(screen.getByRole("button", { name: /19 окт/ }));
+    await waitFor(() => expect(asked).toContainEqual(["2026-10-13", "2026-10-19"]));
+  });
 });

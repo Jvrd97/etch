@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-03/209, PHASE-02/68
-// summary: the catalog body both /health and /m/health render — the Apple access link, each group's rows with a value or "Нет данных", and the whole-catalog empty state; identical markup is the point, since the two screens show the same numbers
+// [review:need-review] PHASE-03/209, PHASE-02/68, PHASE-02/69
+// summary: the catalog body both /health and /m/health render — the Apple access link, each group's rows with the latest value, a 30-day sparkline and the deviation from the metric's own baseline (or "Нет данных"), and the whole-catalog empty state; identical markup is the point, since the two screens show the same numbers
 
 import Link from 'next/link';
 import type { HealthMetric } from '@/lib/api';
-import { metricHref } from '@/lib/health';
+import { TrendSparkline } from '@/components/dashboard/TrendSparkline';
+import { deviationText, formatValue, metricHref, sparklinePoints } from '@/lib/health';
 import {
   HEALTH_ACCESS_LABEL,
   HEALTH_ACCESS_URL,
@@ -70,14 +71,36 @@ function HealthAccessLink() {
 
 function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath: string }) {
   const latest = metric.days.at(-1);
+  const { baseline } = metric;
   return (
     <Link
       href={metricHref(basePath, metric.identifier)}
       className="flex min-h-14 items-center justify-between gap-4 border-b border-white/5 px-4 py-3 last:border-b-0"
     >
       <span className="text-sm text-text-primary">{metric.display_name}</span>
-      <span className="text-right text-sm tabular-nums text-text-secondary">
-        {latest === undefined ? 'Нет данных' : `${latest.value} ${metric.canonical_unit}`}
+      <span className="flex items-center gap-3">
+        <span className="text-lime">
+          <TrendSparkline
+            points={latest === undefined ? [] : sparklinePoints(metric.days, latest.date)}
+            color="currentColor"
+          />
+        </span>
+        <span className="text-right text-sm tabular-nums text-text-secondary">
+          {latest === undefined ? (
+            'Нет данных'
+          ) : (
+            <>
+              {`${formatValue(latest.value)} ${metric.canonical_unit}`}
+              {baseline !== null && (
+                <span
+                  className={`block text-xs ${baseline.outside_typical ? 'text-lime' : ''}`}
+                >
+                  {deviationText(baseline)}
+                </span>
+              )}
+            </>
+          )}
+        </span>
       </span>
     </Link>
   );

@@ -1,9 +1,13 @@
-// [review:need-review] PHASE-02/68
-// summary: vocabulary of the metric detail screen — the periods of the daily series, the 24 hour slots (an hour without data is a null slot, never skipped), the link a catalog row points at, and how a value and an hour range print
+// [review:need-review] PHASE-02/68, PHASE-02/69
+// summary: vocabulary of the metric detail screen — the periods of the daily series, the 24 hour slots (an hour without data is a null slot, never skipped), the link a catalog row points at, how a value, a deviation from the metric's own baseline and an hour range print, and the 30-day sparkline points with a gap kept as a gap
 
-import type { HealthHourValue } from "@/lib/api";
+import type { HealthBaseline, HealthDayValue, HealthHourValue } from "@/lib/api";
+import type { TrendPoint } from "@/lib/trends";
 
 export const HOURS_PER_DAY = 24;
+
+/** Sleep has no group row in the catalog list; its detail screen is opened by this identifier. */
+export const SLEEP_IDENTIFIER = "HKCategoryTypeIdentifierSleepAnalysis";
 
 /** Periods the daily series can be read over, in days counting today. */
 export const HEALTH_PERIODS: ReadonlyArray<{ days: number; label: string }> = [
@@ -54,4 +58,38 @@ export function formatValue(value: number): string {
 export function hourRange(hour: HealthHourValue): string | null {
   if (hour.min === hour.max) return null;
   return `${formatValue(hour.min)}–${formatValue(hour.max)}`;
+}
+
+/** Days the list sparkline covers, counting the last one. */
+export const SPARKLINE_DAYS = 30;
+
+/** `YYYY-MM-DD` shifted by whole days, on the calendar alone (no timezone arithmetic). */
+export function shiftDate(isoDate: string, days: number): string {
+  const moment = new Date(`${isoDate}T00:00:00Z`);
+  moment.setUTCDate(moment.getUTCDate() + days);
+  return moment.toISOString().slice(0, 10);
+}
+
+/**
+ * The `count` calendar days ending at `endDate`, oldest first. A day the server
+ * sent nothing for is a null point — a gap in the line, never a zero.
+ */
+export function sparklinePoints(
+  days: readonly HealthDayValue[],
+  endDate: string,
+  count: number = SPARKLINE_DAYS,
+): TrendPoint[] {
+  if (days.length === 0) return [];
+  const byDate = new Map(days.map((day) => [day.date, day.value]));
+  return Array.from({ length: count }, (_, index) => {
+    const date = shiftDate(endDate, index - (count - 1));
+    return { date, value: byDate.get(date) ?? null };
+  });
+}
+
+/** `+500 к обычному`, or `как обычно` when the day sits exactly on the mean. */
+export function deviationText(baseline: HealthBaseline): string {
+  const rounded = Number(baseline.deviation.toFixed(ROUND_DIGITS));
+  if (rounded === 0) return "как обычно";
+  return `${rounded > 0 ? "+" : "−"}${formatValue(Math.abs(rounded))} к обычному`;
 }

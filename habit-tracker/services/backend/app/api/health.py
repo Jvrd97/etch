@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68
-# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) and GET /health/sleep (nights by wake date)
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68, PHASE-02/69
+# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values and each metric's baseline against its own history), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) and GET /health/sleep (nights by wake date)
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,9 +15,11 @@ from app.health.aggregate import (
     UnitError,
     aggregate_samples,
 )
+from app.health.baseline import BASELINE_DAYS, compute_baseline
 from app.health.sleep import SleepValueError
 from app.models.health import HealthMetric, HealthSleepNight, HealthSyncRun
 from app.schemas.health import (
+    HealthBaseline,
     HealthDayValue,
     HealthHourValue,
     HealthMetricDaysResponse,
@@ -252,7 +255,14 @@ async def get_metrics(
     """
     _check_range(date_from, date_to)
     metrics = await health_crud.get_catalog(db)
-    days = await health_crud.daily_values(db, metrics, date_from, date_to)
+    # One read for every metric: far enough back to cover the baseline of the
+    # latest day, then cut to the range the caller asked for.
+    history_from = min(date_from, date_to - timedelta(days=BASELINE_DAYS))
+    history = await health_crud.daily_values(db, metrics, history_from, date_to)
+    days = {
+        metric_id: [day for day in values if day.local_date >= date_from]
+        for metric_id, values in history.items()
+    }
 
     return HealthMetricsResponse(
         metrics=[
@@ -266,10 +276,24 @@ async def get_metrics(
                     HealthDayValue(date=day.local_date, value=day.value)
                     for day in days.get(metric.id, [])
                 ],
+                baseline=_baseline_out(
+                    {d.local_date: d.value for d in history.get(metric.id, [])},
+                    [d.local_date for d in days.get(metric.id, [])],
+                ),
             )
             for metric in metrics
         ]
     )
+
+
+def _baseline_out(
+    by_day: dict[date, float], shown: list[date]
+) -> HealthBaseline | None:
+    """Baseline of the latest shown day; none when the range holds no day."""
+    if not shown:
+        return None
+    baseline = compute_baseline(by_day, shown[-1])
+    return None if baseline is None else HealthBaseline(**asdict(baseline))
 
 
 async def _known_metric(db: AsyncSession, identifier: str) -> HealthMetric:

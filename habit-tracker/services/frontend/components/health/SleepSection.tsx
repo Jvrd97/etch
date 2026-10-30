@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-03/238
-// summary: the sleep section both /health and /m/health render — the last night (asleep, bedtime and wake time on the phone's own clock, minutes per stage) and the week of nights by wake date; nothing before the answer, an honest line when no night arrived
+// [review:need-review] PHASE-03/238, PHASE-02/69
+// summary: the sleep section both /health and /m/health render — the last night (asleep, bedtime and wake time on the phone's own clock, minutes per stage) and the week of nights by wake date; a link into the sleep detail screen when the caller names one, nothing before the answer, an honest line when no night arrived
 
+import Link from 'next/link';
 import type { HealthSleepNight } from '@/lib/api';
 
 const MINUTES_PER_HOUR = 60;
@@ -56,9 +57,17 @@ export function nightLabel(isoDate: string): string {
 export interface SleepSectionProps {
   /** Oldest first; null while loading or after a failed read. */
   nights: HealthSleepNight[] | null;
+  /** Where the sleep detail screen lives; sleep has no row in the catalog groups, so this is its way in. */
+  detailHref?: string;
+  /** Name of the nights list; the detail screen reads a period, not a week. */
+  listLabel?: string;
 }
 
-export default function SleepSection({ nights }: SleepSectionProps) {
+export default function SleepSection({
+  nights,
+  detailHref,
+  listLabel = 'Ночи недели',
+}: SleepSectionProps) {
   if (nights === null) return null;
 
   const last = nights.at(-1);
@@ -67,6 +76,14 @@ export default function SleepSection({ nights }: SleepSectionProps) {
       <h2 id="health-sleep" className="text-sm font-semibold text-text-secondary">
         Сон
       </h2>
+      {detailHref !== undefined && (
+        <Link
+          href={detailHref}
+          className="inline-flex min-h-11 items-center text-sm font-medium text-lime"
+        >
+          Все ночи
+        </Link>
+      )}
       <div className="overflow-hidden rounded-3xl border border-white/5 bg-card">
         {last === undefined ? (
           <p role="status" className="px-4 py-3 text-sm text-text-secondary">
@@ -75,7 +92,7 @@ export default function SleepSection({ nights }: SleepSectionProps) {
         ) : (
           <>
             <LastNight night={last} />
-            <ol aria-label="Ночи недели" className="border-t border-white/5">
+            <ol aria-label={listLabel} className="border-t border-white/5">
               {nights.map((night) => (
                 <li
                   key={night.date}
