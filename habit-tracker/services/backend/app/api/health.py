@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
-# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values) and GET /health/sleep (nights by wake date)
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68
+# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) and GET /health/sleep (nights by wake date)
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -15,9 +15,12 @@ from app.health.aggregate import (
     aggregate_samples,
 )
 from app.health.sleep import SleepValueError
-from app.models.health import HealthSleepNight, HealthSyncRun
+from app.models.health import HealthMetric, HealthSleepNight, HealthSyncRun
 from app.schemas.health import (
     HealthDayValue,
+    HealthHourValue,
+    HealthMetricDaysResponse,
+    HealthMetricHoursResponse,
     HealthMetricSeries,
     HealthMetricsResponse,
     HealthSamplesRequest,
@@ -266,6 +269,84 @@ async def get_metrics(
             )
             for metric in metrics
         ]
+    )
+
+
+async def _known_metric(db: AsyncSession, identifier: str) -> HealthMetric:
+    metric = await health_crud.get_metric(db, identifier)
+    if metric is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"unknown health metric: {identifier}",
+        )
+    return metric
+
+
+@router.get("/metrics/{identifier}/days", response_model=HealthMetricDaysResponse)
+async def get_metric_days(
+    identifier: str,
+    date_from: date = Query(..., description="Start of the range, inclusive"),
+    date_to: date = Query(..., description="End of the range, inclusive"),
+    db: AsyncSession = Depends(get_db),
+) -> HealthMetricDaysResponse:
+    """
+    Дневной ряд одной метрики — те же числа, что в `GET /health/metrics`.
+
+    День без данных в ответ не попадает. Для сна день — минуты сна ночи,
+    закончившейся в этот день; ночи по фазам отдаёт `GET /health/sleep`.
+    """
+    _check_range(date_from, date_to)
+    metric = await _known_metric(db, identifier)
+    days = await health_crud.daily_values(db, [metric], date_from, date_to)
+    return HealthMetricDaysResponse(
+        identifier=metric.identifier,
+        display_name=metric.display_name,
+        kind=metric.kind,
+        canonical_unit=metric.canonical_unit,
+        days=[
+            HealthDayValue(date=day.local_date, value=day.value)
+            for day in days.get(metric.id, [])
+        ],
+    )
+
+
+@router.get("/metrics/{identifier}/hours", response_model=HealthMetricHoursResponse)
+async def get_metric_hours(
+    identifier: str,
+    day: date = Query(..., alias="date", description="Local day (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+) -> HealthMetricHoursResponse:
+    """
+    Часы одного локального дня метрики.
+
+    Час записан в календаре устройства, поэтому день читается без пересчёта
+    времени и день перехода на зимнее время не даёт ни дыр, ни дублей. Часы без
+    данных не возвращаются: «нет данных» — не ноль, пустые ячейки рисует экран.
+    Сон часов не имеет (его ночи — `GET /health/sleep`) и отвечает 422.
+    """
+    metric = await _known_metric(db, identifier)
+    if MetricKind(metric.kind) is MetricKind.SLEEP:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{identifier} has nights, not hours: use GET /health/sleep",
+        )
+    buckets = await health_crud.metric_hours(db, metric.id, day)
+    return HealthMetricHoursResponse(
+        identifier=metric.identifier,
+        display_name=metric.display_name,
+        kind=metric.kind,
+        canonical_unit=metric.canonical_unit,
+        date=day,
+        hours=[
+            HealthHourValue(
+                hour=bucket.hour,
+                value=bucket.value,
+                min=bucket.min_value,
+                max=bucket.max_value,
+                sample_count=bucket.sample_count,
+            )
+            for bucket in buckets
+        ],
     )
 
 

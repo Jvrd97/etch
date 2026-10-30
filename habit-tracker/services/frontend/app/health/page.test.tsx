@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/209, PHASE-03/238
+// [review:need-review] PHASE-03/209, PHASE-03/238, PHASE-02/68
 // summary: desktop /health screen tests — same catalog fixture as /m/health, confirming the title frame plus the shared loading/error/sync-hint states HealthMetricGroups now owns; the sleep section above the catalog and the catalog surviving a failed sleep read
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
@@ -107,5 +107,12 @@ describe('/health', () => {
 
     await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
     expect(screen.queryByRole('heading', { name: 'Сон' })).toBeNull();
+  });
+
+  it('links every catalog row to its detail screen', async () => {
+    render(<HealthPage />);
+
+    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    expect(screen.getByRole('link', { name: /Шаги/ }).getAttribute('href')).toBe('/health/steps');
   });
 });
