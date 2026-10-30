@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/233, PHASE-03/238
-// summary: read-only HealthKit authorization (quantity catalogue and category types such as sleep, in one sheet) and latest-sample reads for every catalog type, over the same HealthStoreQuerying seam the pump uses
+// [review:need-review] PHASE-02/65, PHASE-03/233, PHASE-03/238, PHASE-03/272
+// summary: read-only HealthKit authorization (the whole quantity and category catalogue, cycle tracking never, in one sheet) and latest-sample reads for every catalog type, a type without read access left empty, over the same HealthStoreQuerying seam the pump uses
 
 import Foundation
 import HealthKit
@@ -39,13 +39,23 @@ final class HealthKitDataReader: HealthDataReading {
         try await store.requestReadAuthorization(for: Set(quantities + categories))
     }
 
+    /// A type the person did not allow (or was never asked about) has no value; the rest
+    /// still read. Any other HealthKit error fails the read.
     func readLatestValues(for metrics: [HealthMetricDefinition]) async throws -> [String: Double] {
         var values: [String: Double] = [:]
         for metric in metrics {
-            if let sample = try await store.latestSample(of: HKQuantityType(metric.typeIdentifier)) {
+            let sample: HKQuantitySample?
+            do {
+                sample = try await store.latestSample(of: HKQuantityType(metric.typeIdentifier))
+            } catch let error as HKError where Self.notAllowed.contains(error.code) {
+                continue
+            }
+            if let sample {
                 values[metric.identifier] = sample.quantity.doubleValue(for: HKUnit(from: metric.unit))
             }
         }
         return values
     }
+
+    private static let notAllowed: [HKError.Code] = [.errorAuthorizationDenied, .errorAuthorizationNotDetermined]
 }

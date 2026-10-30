@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185, PHASE-03/238
-# summary: Health arithmetic, including canonical units for the complete catalog, the shared minutes-per-hour constant and the sleep kind that is folded into nights instead of hours
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185, PHASE-03/238, PHASE-03/272
+# summary: Health arithmetic, including canonical units for the complete catalog (every HealthKit type but cycle tracking), the shared minutes-per-hour constant and the sleep kind that is folded into nights instead of hours
 """
 Aggregation of raw HealthKit samples into local hourly buckets.
 
@@ -135,9 +135,11 @@ _UNITS: dict[str, tuple[str, float]] = {
     # rate, base count per minute
     "count/min": ("rate", 1.0),
     "bpm": ("rate", 1.0),
-    # mass, base kilogram
+    # mass, base kilogram. Nutrients come in milligrams and micrograms.
     "kg": ("mass", 1.0),
     "g": ("mass", 0.001),
+    "mg": ("mass", 1e-6),
+    "mcg": ("mass", 1e-9),
     "lb": ("mass", 0.45359237),
     "st": ("mass", 6.35029318),
     # ratio, base percentage point. HealthKit hands fractions out for some
@@ -146,10 +148,25 @@ _UNITS: dict[str, tuple[str, float]] = {
     "fraction": ("ratio", 100.0),
     # dimensionless counts
     "count": ("count", 1.0),
-    # volume, base millilitre
+    # volume, base millilitre. Lung volumes come in litres.
     "mL": ("volume", 1.0),
+    "L": ("volume", 1000.0),
     # oxygen uptake, base millilitre per kilogram per minute
     "mL/(kg*min)": ("oxygen_uptake", 1.0),
+    # The rest are single-unit dimensions: the phone reads each type in the
+    # catalogue's canonical unit, so the server only has to recognise it. A
+    # dimension gains a second unit when a client starts sending one.
+    "m/s": ("speed", 1.0),
+    "W": ("power", 1.0),
+    "degC": ("temperature", 1.0),
+    "mmHg": ("pressure", 1.0),
+    "L/min": ("flow", 1.0),
+    "mg/dL": ("glucose", 1.0),
+    "IU": ("insulin", 1.0),
+    "dBASPL": ("sound_level", 1.0),
+    "mcS": ("conductance", 1.0),
+    "kcal/(kg*hr)": ("physical_effort", 1.0),
+    "appleEffortScore": ("effort_score", 1.0),
 }
 
 

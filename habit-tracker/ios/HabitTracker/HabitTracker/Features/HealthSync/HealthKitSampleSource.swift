@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238
-// summary: the one read-only seam over HKHealthStore (availability, request status, read request for quantity and category types, samples of a window, category samples overlapping a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO and of a category sample to the five-field one
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
+// summary: the one read-only seam over HKHealthStore (availability, request status, read request for quantity and category types, samples of a window, category samples overlapping a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO and of a category sample to the five-field one, its start optionally clipped to the reading window
 import Foundation
 import HealthKit
 
@@ -118,12 +118,16 @@ struct HealthSampleMapper {
     }
 
     /// The raw category value (a sleep stage) and the interval, nothing derived. The offset
-    /// is the one at the end: the server names a night by the local date it ended on.
-    func dto(_ sample: HKCategorySample, category: HealthCategoryDefinition) -> HealthCategorySampleDTO {
+    /// is the one at the end: the server names a night by the local date it ended on, and
+    /// places a count in the hour of its end. `notBefore` cuts an interval that began
+    /// before the reading window at the window's start; the end never moves.
+    func dto(
+        _ sample: HKCategorySample, category: HealthCategoryDefinition, notBefore: Date? = nil
+    ) -> HealthCategorySampleDTO {
         HealthCategorySampleDTO(
             identifier: category.identifier,
             value: sample.value,
-            start: Self.wireInstant(sample.startDate),
+            start: Self.wireInstant(max(sample.startDate, notBefore ?? sample.startDate)),
             end: Self.wireInstant(sample.endDate),
             utcOffsetMinutes: zone(of: sample).secondsFromGMT(for: sample.endDate) / Self.secondsPerMinute
         )

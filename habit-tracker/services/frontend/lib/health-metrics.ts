@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/209
-// summary: shared Health screen vocabulary — the four groups the catalog is drawn under, today in the reader's own timezone, the "catalog has nothing yet" test, and the Apple access link both shells point at
+// [review:need-review] PHASE-03/209, PHASE-03/272
+// summary: shared Health screen vocabulary — the groups the whole Apple Health catalog (all but cycle tracking) is drawn under, today in the reader's own timezone, the "catalog has nothing yet" test, and the Apple access link both shells point at
 
 import type { HealthMetric, HealthMetricGroup } from '@/lib/api';
 
@@ -15,6 +15,11 @@ export const HEALTH_GROUPS: ReadonlyArray<{ id: HealthMetricGroup; title: string
   { id: 'heart', title: 'Сердце и дыхание' },
   { id: 'body', title: 'Тело' },
   { id: 'nutrition', title: 'Питание' },
+  { id: 'mobility', title: 'Подвижность' },
+  { id: 'hearing', title: 'Слух' },
+  { id: 'mind', title: 'Осознанность' },
+  { id: 'symptoms', title: 'Симптомы' },
+  { id: 'other', title: 'Другое' },
 ];
 
 /** Today in the reader's own timezone, as the backend's `date_from`/`date_to` want it. */

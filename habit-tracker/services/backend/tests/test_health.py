@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/238
-# summary: Health API integration tests, including the complete catalog (24 quantity metrics and sleep) and runtime-added metrics
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/238, PHASE-03/272
+# summary: Health API integration tests, including the complete catalog (every HealthKit type but cycle tracking, by group) and runtime-added metrics
 """
 Tests for `POST /api/v1/health/samples` and `GET /api/v1/health/metrics`.
 
@@ -26,114 +26,29 @@ RESTING_HR = "HKQuantityTypeIdentifierRestingHeartRate"
 BERLIN_SUMMER_OFFSET = 120
 
 EXPECTED_GROUP_SIZES = {
-    "movement": 7,
-    "heart": 7,
-    "body": 5,
-    "nutrition": 5,
+    "movement": 38,
+    "mobility": 9,
+    "heart": 23,
+    "body": 9,
+    "nutrition": 40,
+    "hearing": 5,
+    "mind": 1,
+    "symptoms": 39,
+    "other": 7,
     "sleep": 1,
 }
 
+# Every row the seed holds, as the API must hand it back. The rows themselves are
+# pinned by `tests/fixtures/health/metric_catalog.json` (shared with iOS) and by
+# the migration snapshots (`test_health_catalog_all_types.py`).
 EXPECTED_CATALOG = {
-    "HKQuantityTypeIdentifierStepCount": ("cumulative", "count", "Шаги", "movement"),
-    "HKQuantityTypeIdentifierDistanceWalkingRunning": (
-        "cumulative",
-        "m",
-        "Дистанция ходьбы и бега",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierFlightsClimbed": (
-        "cumulative",
-        "count",
-        "Этажи",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierActiveEnergyBurned": (
-        "cumulative",
-        "kcal",
-        "Активная энергия",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierBasalEnergyBurned": (
-        "cumulative",
-        "kcal",
-        "Базальная энергия",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierAppleExerciseTime": (
-        "cumulative",
-        "min",
-        "Минуты тренировки",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierAppleStandTime": (
-        "cumulative",
-        "min",
-        "Время стоя",
-        "movement",
-    ),
-    "HKQuantityTypeIdentifierHeartRate": ("discrete", "count/min", "Пульс", "heart"),
-    "HKQuantityTypeIdentifierRestingHeartRate": (
-        "discrete",
-        "count/min",
-        "Пульс покоя",
-        "heart",
-    ),
-    "HKQuantityTypeIdentifierWalkingHeartRateAverage": (
-        "discrete",
-        "count/min",
-        "Средний пульс при ходьбе",
-        "heart",
-    ),
-    "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": (
-        "discrete",
-        "ms",
-        "Вариабельность пульса (SDNN)",
-        "heart",
-    ),
-    "HKQuantityTypeIdentifierRespiratoryRate": (
-        "discrete",
-        "count/min",
-        "Частота дыхания",
-        "heart",
-    ),
-    "HKQuantityTypeIdentifierOxygenSaturation": ("discrete", "%", "Сатурация", "heart"),
-    "HKQuantityTypeIdentifierVO2Max": ("discrete", "mL/(kg*min)", "VO2max", "heart"),
-    "HKQuantityTypeIdentifierBodyMass": ("discrete", "kg", "Вес", "body"),
-    "HKQuantityTypeIdentifierBodyFatPercentage": (
-        "discrete",
-        "%",
-        "Процент жира",
-        "body",
-    ),
-    "HKQuantityTypeIdentifierLeanBodyMass": (
-        "discrete",
-        "kg",
-        "Мышечная масса",
-        "body",
-    ),
-    "HKQuantityTypeIdentifierBodyMassIndex": (
-        "discrete",
-        "count",
-        "Индекс массы тела",
-        "body",
-    ),
-    "HKQuantityTypeIdentifierHeight": ("discrete", "cm", "Рост", "body"),
-    "HKQuantityTypeIdentifierDietaryEnergyConsumed": (
-        "cumulative",
-        "kcal",
-        "Съеденные калории",
-        "nutrition",
-    ),
-    "HKQuantityTypeIdentifierDietaryProtein": ("cumulative", "g", "Белки", "nutrition"),
-    "HKQuantityTypeIdentifierDietaryFatTotal": ("cumulative", "g", "Жиры", "nutrition"),
-    "HKQuantityTypeIdentifierDietaryCarbohydrates": (
-        "cumulative",
-        "g",
-        "Углеводы",
-        "nutrition",
-    ),
-    "HKQuantityTypeIdentifierDietaryWater": ("cumulative", "mL", "Вода", "nutrition"),
-    "HKCategoryTypeIdentifierSleepAnalysis": ("sleep", "min", "Сон", "sleep"),
+    metric.identifier: (
+        metric.kind.value,
+        metric.canonical_unit,
+        metric.display_name,
+        metric.group,
+    )
+    for metric in SEED_METRICS
 }
 
 
@@ -219,9 +134,9 @@ class TestSampleIntake:
             json={
                 "samples": [
                     sample(
-                        "HKQuantityTypeIdentifierNumberOfTimesFallen",
-                        1,
-                        "count",
+                        "HKQuantityTypeIdentifierBasalBodyTemperature",
+                        36.6,
+                        "degC",
                         "2026-07-20T06:00:00Z",
                     )
                 ]
@@ -229,7 +144,8 @@ class TestSampleIntake:
         )
 
         assert response.status_code == 422
-        assert "HKQuantityTypeIdentifierNumberOfTimesFallen" in response.text
+        # Cycle tracking is the one section the catalogue leaves out (#272).
+        assert "HKQuantityTypeIdentifierBasalBodyTemperature" in response.text
 
     async def test_runtime_catalog_row_is_accepted_without_application_restart(
         self, client: AsyncClient, db_session: AsyncSession

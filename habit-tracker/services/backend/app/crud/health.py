@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238
-# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, a duration type into hourly minutes) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238, PHASE-03/272
+# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, any other category type into hourly minutes or counts via app.health.categories) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
 
@@ -24,12 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.health.aggregate import (
     HourBucket,
     MetricKind,
-    RawSample,
     UnitError,
-    aggregate_samples,
     fold_daily,
 )
 from app.health.catalog import SEED_METRICS
+from app.health.categories import CategoryInterval, category_hours
 from app.health.sleep import SleepInterval, SleepNight, fold_nights, stage_of
 from app.models.health import (
     HealthHourBucket,
@@ -38,8 +37,6 @@ from app.models.health import (
     HealthSyncRun,
 )
 from app.schemas.health import HealthCategorySampleIn
-
-SECONDS_PER_MINUTE = 60
 
 
 # Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
@@ -278,9 +275,10 @@ async def ingest_category_samples(
     """
     Write category samples by the kind their catalogue row names; rows written.
 
-    `sleep` folds into nights (`app.health.sleep`). `cumulative` treats each
-    sample as a duration and spreads its minutes over the local hours, so a
-    category type such as a mindful session needs a catalogue row, not code.
+    `sleep` folds into nights (`app.health.sleep`). `cumulative` goes into
+    hourly buckets by its canonical unit (`app.health.categories`): minutes of
+    a session with iPhone and Watch copies counted once, or one count per
+    event. A new category type needs a catalogue row, not code.
     Any other kind cannot take an interval and raises `UnitError`, as an
     unknown sleep stage raises `SleepValueError`; the caller refuses the chunk.
     """
@@ -304,18 +302,16 @@ async def ingest_category_samples(
             ]
             written += await upsert_nights(db, fold_nights(intervals))
         elif kind is MetricKind.CUMULATIVE:
-            durations = [
-                RawSample(
-                    value=(sample.end - sample.start).total_seconds()
-                    / SECONDS_PER_MINUTE,
-                    unit="min",
+            occurrences = [
+                CategoryInterval(
+                    value=sample.value,
                     start=sample.start,
                     end=sample.end,
                     utc_offset_minutes=sample.utc_offset_minutes,
                 )
                 for sample in group
             ]
-            buckets = aggregate_samples(durations, kind, metric.canonical_unit)
+            buckets = category_hours(identifier, occurrences, metric.canonical_unit)
             written += await upsert_buckets(db, metric.id, buckets)
         else:
             raise UnitError(f"{identifier} does not take category samples")

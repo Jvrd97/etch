@@ -1,13 +1,13 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238
-// summary: HKCategorySample (sleep) → HealthCategorySampleDTO with the raw stage, UTC instants and the offset at its end, the five-field shape and the sleep body the server fixture expects; HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (catalogue kinds, HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
+// summary: the pump sends the whole catalogue, every type read in a unit HealthKit accepts for it, the catalogue equal to the server fixture (keys, kinds, units, category kind and unit); HKCategorySample (sleep) → HealthCategorySampleDTO with the raw stage, UTC instants and the offset at its end, the five-field shape and the sleep body the server fixture expects; HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
 import HealthKit
 import XCTest
 @testable import HabitTracker
 
 final class HealthSampleMappingTests: XCTestCase {
     private let berlin = TimeZone(identifier: "Europe/Berlin")!
-    private let steps = HealthPump.pumpedMetrics[0]
-    private let restingHeartRate = HealthPump.pumpedMetrics[1]
+    private let steps = HealthSampleMappingTests.catalog(.stepCount)
+    private let restingHeartRate = HealthSampleMappingTests.catalog(.restingHeartRate)
 
     private static func instant(_ text: String) -> Date {
         let formatter = ISO8601DateFormatter()
@@ -28,13 +28,9 @@ final class HealthSampleMappingTests: XCTestCase {
         )
     }
 
-    func testPumpedMetricsAreStepsAndRestingHeartRateInServerUnits() {
-        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.identifier), [
-            "HKQuantityTypeIdentifierStepCount",
-            "HKQuantityTypeIdentifierRestingHeartRate",
-        ])
-        // Strings the server's unit table knows (`app/health/aggregate.py`, `_UNITS`).
-        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.wireUnit), ["count", "count/min"])
+    func testThePumpSendsTheWholeCatalogue() {
+        XCTAssertEqual(HealthPump.pumpedMetrics, HealthMetricCatalog.metrics)
+        XCTAssertEqual(HealthPump.pumpedCategories, HealthCategoryCatalog.categories)
     }
 
     private static func hour(_ start: String, _ end: String, _ steps: Double?) -> HealthHourSum {
@@ -55,16 +51,23 @@ final class HealthSampleMappingTests: XCTestCase {
             let healthKitSaysCumulative = HKQuantityType(metric.typeIdentifier).aggregationStyle == .cumulative
             XCTAssertEqual(metric.kind == .cumulative, healthKitSaysCumulative, metric.identifier)
         }
-        XCTAssertEqual(HealthPump.pumpedMetrics.map(\.kind), [.cumulative, .discrete])
     }
 
-    func testOnlyTheTwoPercentMetricsAreReadAsPercentAndNoneIsSentAsPercent() {
+    func testEveryPercentIsReadAsPercentAndSentAsFraction() {
         // Wire units against the server's table: `testCatalogKindsAndUnitsMatchTheServerFixture`.
         XCTAssertFalse(HealthMetricCatalog.metrics.contains { $0.wireUnit == "%" })
-        XCTAssertEqual(
-            HealthMetricCatalog.metrics.filter { $0.unit == "%" }.map(\.typeIdentifier),
-            [.oxygenSaturation, .bodyFatPercentage]
-        )
+        let percents = HealthMetricCatalog.metrics.filter { $0.unit == "%" }
+        XCTAssertTrue(percents.contains { $0.typeIdentifier == .oxygenSaturation })
+        XCTAssertTrue(percents.allSatisfy { $0.wireUnit == "fraction" })
+    }
+
+    func testEveryTypeIsReadInAUnitHealthKitAcceptsForIt() {
+        for metric in HealthMetricCatalog.metrics {
+            XCTAssertTrue(
+                HKQuantityType(metric.typeIdentifier).is(compatibleWith: HKUnit(from: metric.unit)),
+                metric.identifier
+            )
+        }
     }
 
     func testMapperFollowsTheDeviceZoneWithoutARestart() {
@@ -88,14 +91,18 @@ final class HealthSampleMappingTests: XCTestCase {
         let rows = try decoder.decode([Row].self, from: Data(contentsOf: url))
 
         let categories = HealthCategoryCatalog.categories
-        XCTAssertEqual(
-            Set(rows.map(\.identifier)),
-            Set(HealthMetricCatalog.metrics.map(\.identifier) + categories.map(\.identifier))
-        )
-        for row in rows {
+        let onThisDevice = Set(HealthMetricCatalog.metrics.map(\.identifier) + categories.map(\.identifier))
+        if #available(iOS 26.2, *) {
+            XCTAssertEqual(Set(rows.map(\.identifier)), onThisDevice)
+        } else {
+            // An older system lacks the newest types; it must still carry nothing the server lacks.
+            XCTAssertTrue(onThisDevice.isSubset(of: Set(rows.map(\.identifier))))
+        }
+        for row in rows where onThisDevice.contains(row.identifier) {
             if let category = categories.first(where: { $0.identifier == row.identifier }) {
-                // A category type is sent raw; the server's kind decides how it folds.
+                // A category type is sent raw; the server's kind and unit decide how it folds.
                 XCTAssertEqual(category.serverKind, row.kind, row.identifier)
+                XCTAssertEqual(category.serverUnit, row.canonicalUnit, row.identifier)
                 continue
             }
             let metric = try XCTUnwrap(HealthMetricCatalog.metrics.first { $0.identifier == row.identifier })

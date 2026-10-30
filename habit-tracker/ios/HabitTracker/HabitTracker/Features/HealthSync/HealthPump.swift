@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238
-// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272
+// summary: HealthKit pump — reads the last 7 days of the whole catalogue off the main thread (cumulative types as HealthKit's deduplicated hourly sums anchored at local midnight, discrete types as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole, other category types as intervals clipped to the window; a type with no data or no read access is skipped, not a failed run), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
 import Foundation
 import HealthKit
 import os
@@ -67,9 +67,7 @@ final class HealthPump: HealthSyncing {
     /// The n-th retry waits n steps.
     nonisolated static let retryDelayStep: Duration = .seconds(2)
 
-    nonisolated static let pumpedMetrics: [HealthMetricDefinition] = HealthMetricCatalog.metrics.filter {
-        [.stepCount, .restingHeartRate].contains($0.typeIdentifier)
-    }
+    nonisolated static let pumpedMetrics: [HealthMetricDefinition] = HealthMetricCatalog.metrics
     nonisolated static let pumpedCategories: [HealthCategoryDefinition] = HealthCategoryCatalog.categories
 
     static let shared = HealthPump(
@@ -236,30 +234,44 @@ final class HealthPump: HealthSyncing {
             let type = HKQuantityType(metric.typeIdentifier)
             switch metric.kind {
             case .cumulative:
-                let hours = try await Self.hourlySumsOrEmpty(store, type, from: start, to: end)
+                let hours = try await Self.readable { try await store.hourlySums(of: type, from: start, to: end) }
                 perMetric.append(HealthChunk(samples: hours.compactMap { mapper.dto($0, metric: metric) }))
             case .discrete:
-                let samples = try await store.quantitySamples(of: type, from: start, to: end)
+                let samples = try await Self.readable { try await store.quantitySamples(of: type, from: start, to: end) }
                 perMetric.append(HealthChunk(samples: samples.map { mapper.dto($0, metric: metric) }))
             }
         }
         for category in categories {
-            let samples = try await store.categorySamples(
-                of: HKCategoryType(category.typeIdentifier), from: start.addingTimeInterval(-category.lead), to: end
-            )
-            perMetric.append(HealthChunk(categorySamples: samples.map { mapper.dto($0, category: category) }))
+            let from = start.addingTimeInterval(-category.lead)
+            let samples = try await Self.readable {
+                try await store.categorySamples(of: HKCategoryType(category.typeIdentifier), from: from, to: end)
+            }
+            let notBefore = category.clipsToWindow ? from : nil
+            perMetric.append(HealthChunk(categorySamples: samples.map {
+                mapper.dto($0, category: category, notBefore: notBefore)
+            }))
         }
         return perMetric
     }
 
-    /// HealthKit throws `.errorNoData` for a window it holds nothing in: that is an empty
-    /// week, not a failed read. Any other error stays one.
-    private nonisolated static func hourlySumsOrEmpty(
-        _ store: HealthStoreQuerying, _ type: HKQuantityType, from: Date, to: Date
-    ) async throws -> [HealthHourSum] {
+    /// Errors that say "nothing to read for this type", not "the read broke".
+    private nonisolated static let unreadable: [HKError.Code] = [
+        // A window HealthKit holds nothing in (the statistics query throws it).
+        .errorNoData,
+        // Read access to this one type is off, or was never asked: a type the catalogue
+        // gained after the person answered the sheet.
+        .errorAuthorizationDenied,
+        .errorAuthorizationNotDetermined,
+    ]
+
+    /// One type's read, where a type HealthKit will not give is an empty week for that
+    /// type and the run goes on with the others. Any other error fails the run.
+    private nonisolated static func readable<Record>(
+        _ read: () async throws -> [Record]
+    ) async throws -> [Record] {
         do {
-            return try await store.hourlySums(of: type, from: from, to: to)
-        } catch let error as HKError where error.code == .errorNoData {
+            return try await read()
+        } catch let error as HKError where unreadable.contains(error.code) {
             return []
         }
     }
