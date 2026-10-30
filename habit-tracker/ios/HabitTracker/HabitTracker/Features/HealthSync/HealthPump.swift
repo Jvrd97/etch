@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272
-// summary: HealthKit pump — reads the last 7 days of the whole catalogue off the main thread (cumulative types as HealthKit's deduplicated hourly sums anchored at local midnight, discrete types as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole, other category types as intervals clipped to the window; a type with no data or no read access is skipped, not a failed run), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
+// summary: HealthKit pump — reads the last 7 days of the whole catalogue off the main thread (cumulative types as HealthKit's deduplicated hourly sums anchored at local midnight, discrete types as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole, other category types as intervals clipped to the window; a type with no data or no read access is skipped, not a failed run; an hourly interval ending at or before the window start is not sent), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch reads only the types the permission sheet was already answered for, leaves out by identifier a metric too large for one chunk (journaled) while the rest still go, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
 import Foundation
 import HealthKit
 import os
@@ -91,7 +91,7 @@ final class HealthPump: HealthSyncing {
     private let chunkLimit: Int
     private let pause: (Int) async throws -> Void
     private let syncLog: HealthSyncLogging
-    private var inFlight: Task<HealthSyncOutcome, Never>?
+    private var inFlight: Task<HealthRunResult, Never>?
 
     init(
         store: HealthStoreQuerying,
@@ -137,39 +137,49 @@ final class HealthPump: HealthSyncing {
 
     private func joinOrStart(asking: Bool, source: HealthSyncSource) async -> HealthSyncOutcome {
         if let inFlight {
-            return await inFlight.value
+            return await inFlight.value.outcome
         }
         let run = Task { await self.run(asking: asking) }
         inFlight = run
-        let outcome = await run.value
+        let result = await run.value
+        let outcome = result.outcome
         inFlight = nil
-        syncLog.record(outcome, source: source, kind: asking ? .manual : .rolling, at: now())
+        let kind: HealthSyncRunKind = asking ? .manual : .rolling
+        for metric in result.tooLarge {
+            syncLog.recordSkipped(metric: metric, because: .chunkTooLarge, source: source, kind: kind, at: now())
+        }
+        syncLog.record(outcome, source: source, kind: kind, at: now())
         if case .failed(let failure) = outcome {
             Self.logger.error("health sync failed: \(failure.rawValue, privacy: .public)")
         }
         return outcome
     }
 
-    private func run(asking: Bool) async -> HealthSyncOutcome {
+    private func run(asking: Bool) async -> HealthRunResult {
         guard store.healthDataAvailable else {
-            return asking ? .failed(.healthDataUnavailable) : .skipped
+            return HealthRunResult(asking ? .failed(.healthDataUnavailable) : .skipped)
         }
-        let quantityTypes: [HKObjectType] = metrics.map { HKQuantityType($0.typeIdentifier) }
-        let categoryTypes: [HKObjectType] = categories.map { HKCategoryType($0.typeIdentifier) }
-        let types = Set(quantityTypes + categoryTypes)
+        var metrics = self.metrics
+        var categories = self.categories
         do {
             if asking {
-                try await store.requestReadAuthorization(for: types)
-            } else if try await store.readAuthorizationRequestStatus(for: types) != .unnecessary {
-                return .skipped
+                try await store.requestReadAuthorization(for: Self.types(metrics, categories))
+            } else if try await store.readAuthorizationRequestStatus(for: Self.types(metrics, categories)) != .unnecessary {
+                // The catalogue grew since the person answered the sheet: read what they
+                // were already asked about; the Health screen asks for the rest.
+                metrics = try await answered(metrics, type: { HKQuantityType($0.typeIdentifier) })
+                categories = try await answered(categories, type: { HKCategoryType($0.typeIdentifier) })
+                guard !metrics.isEmpty || !categories.isEmpty else {
+                    return HealthRunResult(.skipped)
+                }
             }
         } catch let error as HKError where error.code == .errorHealthDataUnavailable {
-            return .failed(.healthDataUnavailable)
+            return HealthRunResult(.failed(.healthDataUnavailable))
         } catch {
-            return .failed(.authorizationFailed)
+            return HealthRunResult(.failed(.authorizationFailed))
         }
         guard let api = api() else {
-            return .notConfigured
+            return HealthRunResult(.notConfigured)
         }
 
         await deliverPendingFailures(to: api)
@@ -181,13 +191,14 @@ final class HealthPump: HealthSyncing {
                 calendar: calendar, end: now()
             )
         } catch {
-            return .failed(.readFailed)
+            return HealthRunResult(.failed(.readFailed))
         }
         guard perMetric.contains(where: { !$0.isEmpty }) else {
-            return .nothingToSend
+            return HealthRunResult(.nothingToSend)
         }
-        guard let chunks = pack(perMetric) else {
-            return .failed(.chunkTooLarge)
+        let (chunks, tooLarge) = pack(perMetric)
+        guard !chunks.isEmpty else {
+            return HealthRunResult(.failed(.chunkTooLarge), tooLarge: tooLarge)
         }
 
         let runId = makeRunId().uuidString
@@ -205,10 +216,33 @@ final class HealthPump: HealthSyncing {
                 answers.append(answer)
             case .failure(let failure):
                 await report(failure, runId: runId, kind: kind, device: device, chunksTotal: chunks.count, to: api)
-                return .failed(failure)
+                return HealthRunResult(.failed(failure), tooLarge: tooLarge)
             }
         }
-        return .sent(answers)
+        return HealthRunResult(.sent(answers), tooLarge: tooLarge)
+    }
+
+    private nonisolated static func types(
+        _ metrics: [HealthMetricDefinition], _ categories: [HealthCategoryDefinition]
+    ) -> Set<HKObjectType> {
+        let quantityTypes: [HKObjectType] = metrics.map { HKQuantityType($0.typeIdentifier) }
+        let categoryTypes: [HKObjectType] = categories.map { HKCategoryType($0.typeIdentifier) }
+        return Set(quantityTypes + categoryTypes)
+    }
+
+    /// The definitions whose type the person has already answered the sheet for, one
+    /// status check each: HealthKit reports `.unnecessary` only when every type in the
+    /// set was asked before.
+    private func answered<Definition>(
+        _ definitions: [Definition], type: (Definition) -> HKObjectType
+    ) async throws -> [Definition] {
+        var kept: [Definition] = []
+        for definition in definitions {
+            if try await store.readAuthorizationRequestStatus(for: [type(definition)]) == .unnecessary {
+                kept.append(definition)
+            }
+        }
+        return kept
     }
 
     /// Today and the six days before it, from local midnight until `end`; a category type
@@ -247,7 +281,11 @@ final class HealthPump: HealthSyncing {
                 try await store.categorySamples(of: HKCategoryType(category.typeIdentifier), from: from, to: end)
             }
             let notBefore = category.clipsToWindow ? from : nil
-            perMetric.append(HealthChunk(categorySamples: samples.map {
+            // An hourly interval that ends at the window's start or before it belongs to an
+            // hour the window does not cover; clipped, it would shrink to nothing at the
+            // start and be counted in the window's first hour.
+            let inWindow = category.clipsToWindow ? samples.filter { $0.endDate > from } : samples
+            perMetric.append(HealthChunk(categorySamples: inWindow.map {
                 mapper.dto($0, category: category, notBefore: notBefore)
             }))
         }
@@ -278,13 +316,17 @@ final class HealthPump: HealthSyncing {
 
     /// Whole metrics per chunk. The server overwrites an hour (or a night) with what the
     /// chunk holds for it, so one metric split over two chunks would lose part of it.
-    /// Returns nil when a single metric does not fit.
-    private func pack(_ perMetric: [HealthChunk]) -> [HealthChunk]? {
+    /// A metric that alone does not fit a chunk (raw heart rate at 1 Hz over a week) is
+    /// left out by identifier, and the others still go.
+    private func pack(_ perMetric: [HealthChunk]) -> (chunks: [HealthChunk], tooLarge: [String]) {
         var chunks: [HealthChunk] = []
+        var tooLarge: [String] = []
         var current = HealthChunk()
         for metric in perMetric where !metric.isEmpty {
             guard metric.count <= chunkLimit else {
-                return nil
+                // A non-empty metric always has an identifier.
+                tooLarge += metric.identifier.map { [$0] } ?? []
+                continue
             }
             if current.count + metric.count > chunkLimit {
                 chunks.append(current)
@@ -295,7 +337,7 @@ final class HealthPump: HealthSyncing {
         if !current.isEmpty {
             chunks.append(current)
         }
-        return chunks
+        return (chunks, tooLarge)
     }
 
     /// Tells the server its run died, by class. The report is written down first and
@@ -392,10 +434,23 @@ struct HealthChunk: Equatable {
     var categorySamples: [HealthCategorySampleDTO] = []
 
     var count: Int { samples.count + categorySamples.count }
+    /// The type of one metric's records, before packing.
+    var identifier: String? { samples.first?.identifier ?? categorySamples.first?.identifier }
     var isEmpty: Bool { count == 0 }
 
     mutating func append(_ other: HealthChunk) {
         samples += other.samples
         categorySamples += other.categorySamples
+    }
+}
+
+/// A run's outcome and the metrics it left out for not fitting one chunk.
+struct HealthRunResult {
+    let outcome: HealthSyncOutcome
+    let tooLarge: [String]
+
+    init(_ outcome: HealthSyncOutcome, tooLarge: [String] = []) {
+        self.outcome = outcome
+        self.tooLarge = tooLarge
     }
 }

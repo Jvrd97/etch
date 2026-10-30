@@ -872,3 +872,7 @@ Avoid-стрик карточка «N дней чистый» на экране 
 ## 2026-10-30 — #272 все метрики Apple Health, кроме отслеживания цикла
 
 Файлы (8: 1 new, 7 mod): `Features/HealthSync/HealthMetricCatalog.swift` (119 количественных типов, агрегат из `aggregationStyle`, 53 категорийных с видом и единицей сервера; типы iOS 18 и 26.2 под `#available`), `HealthPump.swift` (качает весь каталог; тип без данных или без доступа пропускается, прочие ошибки — `readFailed`; часовые категории обрезаются по началу окна), `HealthKitSampleSource.swift` (`notBefore` в маппере категорий), `HealthDataReader.swift` (последние значения пропускают тип без доступа), тесты `HealthMetricCatalogTests` (new), `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests`. Не проверено: лист разрешений и данные на устройстве (#215).
+
+### #272 круг 2 (ревью da00a48)
+
+Файлы (5 mod): `HealthPump.swift` (часовой интервал, закончившийся в начале окна или раньше, не уходит; метрика больше чанка пропускается целиком, остальные уходят, `chunkTooLarge` пишется в журнал на тип; при запуске без нового листа читаются типы, на которые разрешение уже было, по одной проверке статуса на тип), `HealthSyncLog.swift` (поле `metric` у записи, `recordSkipped`), тесты `HealthMetricCatalogTests`, `HealthPumpTests` (фейк отвечает статусом по набору отвеченных типов). Проверки: Health* 96/0 на sw-132.

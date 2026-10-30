@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/272
-// summary: the whole-catalogue contract on the phone — no cycle-tracking type in the catalogue or in either permission sheet (pump, Health screen), every type asked in one sheet, a type without read access skipped while the others still go (pump and latest values), an hourly category type clipped to the window and a night not
+// summary: the whole-catalogue contract on the phone — no cycle-tracking type in the catalogue or in either permission sheet (pump, Health screen), every type asked in one sheet, a type without read access skipped while the others still go (pump and latest values), an hourly category type clipped to the window and a night not, an hourly interval ending at the window start not sent, a metric too large for a chunk journaled while steps and sleep go, a launch after the catalogue grew sending the types already allowed
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -42,17 +42,22 @@ final class HealthMetricCatalogTests: XCTestCase {
         ISO8601DateFormatter().date(from: text)!
     }
 
-    private func makePump(store: FakeHealthStore, api: FakeHealthAPI) -> HealthPump {
+    private func makePump(
+        store: FakeHealthStore, api: FakeHealthAPI,
+        log: HealthSyncLog? = nil,
+        chunkLimit: Int = HealthPump.maxSamplesPerChunk
+    ) -> HealthPump {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = berlin
         return HealthPump(
             store: store,
             api: { api },
-            syncLog: HealthSyncLog(store: InMemoryHealthSyncLogStore()),
+            syncLog: log ?? HealthSyncLog(store: InMemoryHealthSyncLogStore()),
             mapper: HealthSampleMapper(timeZone: berlin),
             calendar: calendar,
             now: { Self.now },
             pendingFailures: InMemoryPendingFailures(),
+            chunkLimit: chunkLimit,
             pause: { _ in }
         )
     }
@@ -165,6 +170,75 @@ final class HealthMetricCatalogTests: XCTestCase {
         XCTAssertEqual(
             store.categoryQueries.first { $0.type == HKCategoryTypeIdentifier.mindfulSession.rawValue }?.from,
             Self.windowStart
+        )
+    }
+
+    func testAnHourlyIntervalEndingAtTheWindowStartIsNotSent() async {
+        let store = FakeHealthStore()
+        let api = FakeHealthAPI()
+        let formatter = ISO8601DateFormatter()
+        // HealthKit selects by overlap, so the stand hour 23:00-00:00 right before the window comes back.
+        store.categories[.appleStandHour] = [
+            HKCategorySample(
+                type: HKCategoryType(.appleStandHour), value: HKCategoryValueAppleStandHour.stood.rawValue,
+                start: formatter.date(from: "2026-10-13T21:00:00Z")!, end: formatter.date(from: "2026-10-13T22:00:00Z")!
+            ),
+            HKCategorySample(
+                type: HKCategoryType(.appleStandHour), value: HKCategoryValueAppleStandHour.stood.rawValue,
+                start: formatter.date(from: "2026-10-13T22:00:00Z")!, end: formatter.date(from: "2026-10-13T23:00:00Z")!
+            ),
+        ]
+
+        _ = await makePump(store: store, api: api).sync()
+
+        let stood = api.posted.flatMap(\.categorySamples)
+            .filter { $0.identifier == HKCategoryTypeIdentifier.appleStandHour.rawValue }
+        XCTAssertEqual(stood.map(\.start), ["2026-10-13T22:00:00.000Z"])
+    }
+
+    func testAMetricTooLargeForAChunkIsJournaledAndStepsAndSleepStillGo() async {
+        let store = FakeHealthStore()
+        let api = FakeHealthAPI()
+        let log = HealthSyncLog(store: InMemoryHealthSyncLogStore())
+        store.hourSums[.stepCount] = [FakeHealthStore.hour(1200, "2026-10-19T06:00:00Z")]
+        store.categories[.sleepAnalysis] = [
+            FakeHealthStore.sleep(.asleepCore, "2026-10-19T21:30:00Z", "2026-10-20T01:00:00Z"),
+        ]
+        store.samples[.heartRate] = (0..<3).map { second in
+            FakeHealthStore.sample(.heartRate, 60, HKUnit(from: "count/min"), "2026-10-20T03:00:0\(second)Z")
+        }
+
+        let outcome = await makePump(store: store, api: api, log: log, chunkLimit: 2).sync()
+
+        XCTAssertEqual(outcome, .sent([FakeHealthAPI.defaultReply]))
+        XCTAssertEqual(api.posted.flatMap(\.samples).map(\.identifier), [HKQuantityTypeIdentifier.stepCount.rawValue])
+        XCTAssertEqual(api.posted.flatMap(\.categorySamples).count, 1)
+        let skipped = log.entries.filter { $0.metric != nil }
+        XCTAssertEqual(skipped.map(\.metric), [HKQuantityTypeIdentifier.heartRate.rawValue])
+        XCTAssertEqual(skipped.map(\.outcome), [.failed(.chunkTooLarge)])
+        XCTAssertEqual(log.entries.last?.outcome, .ok)
+    }
+
+    func testALaunchAfterTheCatalogueGrewStillSendsTheTypesAlreadyAllowed() async {
+        let store = FakeHealthStore()
+        let api = FakeHealthAPI()
+        // The sheet of the previous release: steps and sleep, nothing the catalogue gained since.
+        store.answered = [HKQuantityTypeIdentifier.stepCount.rawValue, HKCategoryTypeIdentifier.sleepAnalysis.rawValue]
+        store.hourSums[.stepCount] = [FakeHealthStore.hour(1200, "2026-10-19T06:00:00Z")]
+        store.categories[.sleepAnalysis] = [
+            FakeHealthStore.sleep(.asleepCore, "2026-10-19T21:30:00Z", "2026-10-20T01:00:00Z"),
+        ]
+
+        let outcome = await makePump(store: store, api: api).syncIfAuthorized()
+
+        XCTAssertEqual(outcome, .sent([FakeHealthAPI.defaultReply]))
+        XCTAssertTrue(store.authorizationRequests.isEmpty)
+        XCTAssertEqual(api.posted.flatMap(\.samples).map(\.identifier), [HKQuantityTypeIdentifier.stepCount.rawValue])
+        XCTAssertEqual(api.posted.flatMap(\.categorySamples).count, 1)
+        // Only the allowed types were read; the new ones wait for the Health screen's sheet.
+        XCTAssertEqual(
+            Set((store.queries + store.sumQueries + store.categoryQueries).map(\.type)),
+            [HKQuantityTypeIdentifier.stepCount.rawValue, HKCategoryTypeIdentifier.sleepAnalysis.rawValue]
         )
     }
 }

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272
-// summary: HealthPump on a fake HKHealthStore (raw samples, HealthKit hourly sums and sleep intervals; a per-type read error for a type HealthKit will not give) and a fake API — read-only request with sleep in the same sheet, sleep as raw stages in the same chunk and run from 18:00 before the window and never split, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
+// summary: HealthPump on a fake HKHealthStore (raw samples, HealthKit hourly sums and sleep intervals; a per-type read error for a type HealthKit will not give, the sheet answered per type) and a fake API — read-only request with sleep in the same sheet, sleep as raw stages in the same chunk and run from 18:00 before the window and never split, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk and a metric too large for one left out, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -309,8 +309,23 @@ final class HealthPumpTests: XCTestCase {
         XCTAssertTrue(api.failureReports.isEmpty)
     }
 
-    func testMetricLargerThanAChunkFailsWithoutSendingAPart() async {
+    func testMetricLargerThanAChunkIsLeftOutWholeAndTheRestGoes() async {
         fillWeek()
+
+        let outcome = await makePump(chunkLimit: 1).sync()
+
+        // Two hours of steps do not fit one record; resting heart rate does.
+        XCTAssertEqual(outcome, .sent([FakeHealthAPI.defaultReply]))
+        XCTAssertEqual(api.posted.flatMap(\.samples).map(\.identifier), [
+            HKQuantityTypeIdentifier.restingHeartRate.rawValue,
+        ])
+    }
+
+    func testRunWhereNoMetricFitsAChunkFailsWithoutSendingAPart() async {
+        store.hourSums[.stepCount] = [
+            FakeHealthStore.hour(1200, "2026-10-19T06:00:00Z"),
+            FakeHealthStore.hour(800, "2026-10-20T06:00:00Z"),
+        ]
 
         let outcome = await makePump(chunkLimit: 1).sync()
 
@@ -500,6 +515,9 @@ final class HealthPumpTests: XCTestCase {
 final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var available = true
     var requestStatus: HKAuthorizationRequestStatus = .unnecessary
+    /// When set, the types the sheet was answered for: a set is `.unnecessary` only if all
+    /// of it was asked, as HealthKit reports it. Overrides `requestStatus`.
+    var answered: Set<String>?
     var samples: [HKQuantityTypeIdentifier: [HKQuantitySample]] = [:]
     /// What HKStatisticsCollectionQuery would hand back: already deduplicated across sources.
     var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
@@ -523,9 +541,13 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     var healthDataAvailable: Bool { available }
 
     func readAuthorizationRequestStatus(for types: Set<HKObjectType>) async throws -> HKAuthorizationRequestStatus {
-        statusChecks.append(Set(types.map(\.identifier)))
+        let asked = Set(types.map(\.identifier))
+        statusChecks.append(asked)
         if let authorizationError {
             throw authorizationError
+        }
+        if let answered {
+            return asked.isSubset(of: answered) ? .unnecessary : .shouldRequest
         }
         return requestStatus
     }
