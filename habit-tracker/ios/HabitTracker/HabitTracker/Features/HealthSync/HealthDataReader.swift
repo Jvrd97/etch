@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/233
-// summary: read-only HealthKit authorization and latest-sample reads for every catalog type, over the same HealthStoreQuerying seam the pump uses
+// [review:need-review] PHASE-02/65, PHASE-03/233, PHASE-03/238
+// summary: read-only HealthKit authorization (quantity catalogue and category types such as sleep, in one sheet) and latest-sample reads for every catalog type, over the same HealthStoreQuerying seam the pump uses
 
 import Foundation
 import HealthKit
@@ -27,11 +27,16 @@ final class HealthKitDataReader: HealthDataReading {
         guard store.healthDataAvailable else {
             throw HealthDataReaderError.healthDataUnavailable
         }
-        let selected = HealthMetricCatalog.metrics.filter { identifiers.contains($0.identifier) }
-        guard selected.count == identifiers.count else {
+        let quantities: [HKObjectType] = HealthMetricCatalog.metrics
+            .filter { identifiers.contains($0.identifier) }
+            .map { HKQuantityType($0.typeIdentifier) }
+        let categories: [HKObjectType] = HealthCategoryCatalog.categories
+            .filter { identifiers.contains($0.identifier) }
+            .map { HKCategoryType($0.typeIdentifier) }
+        guard quantities.count + categories.count == identifiers.count else {
             throw HealthDataReaderError.unknownIdentifiers
         }
-        try await store.requestReadAuthorization(for: Set(selected.map { HKQuantityType($0.typeIdentifier) }))
+        try await store.requestReadAuthorization(for: Set(quantities + categories))
     }
 
     func readLatestValues(for metrics: [HealthMetricDefinition]) async throws -> [String: Double] {

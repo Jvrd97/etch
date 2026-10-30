@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251, PHASE-03/238
 # summary: tests for the health summary and the advice built on it — steps, workout minutes and resting heart rate against the previous window, sleep honestly «данных нет», supplement adherence per day, the window closed by yesterday, a flat SQL statement count, «данных мало» instead of an invented advice, the fixed disclaimer, 422/503/502, and no supplement name or health value in a log line
 """
 Advice from sleep, sport and supplements (`#223`).
@@ -227,14 +227,15 @@ async def test_names_and_units_come_from_the_catalogue(
     assert figure(body, "resting_hr")["name"] == "Пульс покоя"
 
 
-async def test_sleep_says_no_data_instead_of_a_zero(
+async def test_sleep_without_nights_says_no_data_instead_of_a_zero(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     await fill_window(db_session)
 
     sleep = figure(await get_summary(client), "sleep")
 
-    assert sleep["available"] is False
+    # The metric is in the catalogue (#238); no night arrived in the window.
+    assert sleep["available"] is True
     assert sleep["enough_data"] is False
     assert sleep["avg_per_day"] is None
     assert sleep["days_with_data"] == 0

@@ -1,7 +1,7 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: POST /health/samples (raw intake, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status and GET /health/metrics (daily values)
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
+# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values) and GET /health/sleep (nights by wake date)
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,13 +14,16 @@ from app.health.aggregate import (
     UnitError,
     aggregate_samples,
 )
-from app.models.health import HealthSyncRun
+from app.health.sleep import SleepValueError
+from app.models.health import HealthSleepNight, HealthSyncRun
 from app.schemas.health import (
     HealthDayValue,
     HealthMetricSeries,
     HealthMetricsResponse,
     HealthSamplesRequest,
     HealthSamplesResponse,
+    HealthSleepNightOut,
+    HealthSleepResponse,
     HealthSyncFailureIn,
     HealthSyncRunOut,
     HealthSyncStatusResponse,
@@ -47,6 +50,9 @@ async def ingest_samples(
     `(metric, local_date, hour)`. Повторная отправка того же чанка ничего не
     меняет: `Idempotency-Key` здесь не нужен.
 
+    Категорийные типы приходят в `category_samples`: сон сводится в ночи по дате
+    пробуждения и перезаписывает каждую ночь, которую чанк несёт целиком.
+
     Чанк обрабатывается целиком: незнакомый идентификатор или единица отвергают
     весь запрос с 422. Прерванный бэкфилл лечится повторной отправкой, а тихо
     пропущенный час не замечает никто.
@@ -55,7 +61,10 @@ async def ingest_samples(
         metric.identifier: metric for metric in await health_crud.get_catalog(db)
     }
 
-    unknown = sorted({s.identifier for s in payload.samples} - catalog.keys())
+    sent = {s.identifier for s in payload.samples} | {
+        s.identifier for s in payload.category_samples
+    }
+    unknown = sorted(sent - catalog.keys())
     if unknown:
         await _fail_run(db, payload, "unknown_metric")
         raise HTTPException(
@@ -75,20 +84,25 @@ async def ingest_samples(
             )
         )
 
+    # Hourly buckets and nights alike: the rows this chunk wrote.
     buckets_written = 0
-    for identifier, raw in by_identifier.items():
-        metric = catalog[identifier]
-        try:
-            buckets = aggregate_samples(
-                raw, MetricKind(metric.kind), metric.canonical_unit
-            )
-        except UnitError as error:
-            await _fail_run(db, payload, "unit")
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"{identifier}: {error}",
-            ) from error
-        buckets_written += await health_crud.upsert_buckets(db, metric.id, buckets)
+    try:
+        for identifier, raw in by_identifier.items():
+            metric = catalog[identifier]
+            kind = MetricKind(metric.kind)
+            if kind is MetricKind.SLEEP:
+                raise UnitError(f"{identifier} is a category type")
+            buckets = aggregate_samples(raw, kind, metric.canonical_unit)
+            buckets_written += await health_crud.upsert_buckets(db, metric.id, buckets)
+        buckets_written += await health_crud.ingest_category_samples(
+            db, catalog, payload.category_samples
+        )
+    except (UnitError, SleepValueError) as error:
+        await _fail_run(db, payload, "unit")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
 
     try:
         await health_crud.record_chunk(
@@ -100,7 +114,7 @@ async def ingest_samples(
             chunks_total=payload.chunks_total,
             range_from=payload.range_from,
             range_to=payload.range_to,
-            samples_received=len(payload.samples),
+            samples_received=payload.sample_count,
             buckets_written=buckets_written,
         )
     except health_crud.DeviceMismatchError as error:
@@ -112,7 +126,7 @@ async def ingest_samples(
     await db.commit()
 
     return HealthSamplesResponse(
-        samples_received=len(payload.samples), buckets_written=buckets_written
+        samples_received=payload.sample_count, buckets_written=buckets_written
     )
 
 
@@ -233,21 +247,7 @@ async def get_metrics(
     данных возвращается с пустым списком дней: экран показывает «нет данных», а
     не прячет строку.
     """
-    if date_from > date_to:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="date_from must be <= date_to",
-        )
-    range_days = (date_to - date_from).days + 1
-    if range_days > MAX_RANGE_DAYS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"date range is too long: {range_days} days requested, "
-                f"maximum is {MAX_RANGE_DAYS} days"
-            ),
-        )
-
+    _check_range(date_from, date_to)
     metrics = await health_crud.get_catalog(db)
     days = await health_crud.daily_values(db, metrics, date_from, date_to)
 
@@ -266,4 +266,59 @@ async def get_metrics(
             )
             for metric in metrics
         ]
+    )
+
+
+def _check_range(date_from: date, date_to: date) -> None:
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_from must be <= date_to",
+        )
+    range_days = (date_to - date_from).days + 1
+    if range_days > MAX_RANGE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"date range is too long: {range_days} days requested, "
+                f"maximum is {MAX_RANGE_DAYS} days"
+            ),
+        )
+
+
+@router.get("/sleep", response_model=HealthSleepResponse)
+async def get_sleep(
+    date_from: date = Query(..., description="First wake date, inclusive (YYYY-MM-DD)"),
+    date_to: date = Query(..., description="Last wake date, inclusive (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+) -> HealthSleepResponse:
+    """
+    Ночи сна за период по дате пробуждения.
+
+    Ночь — минуты по фазам, время отбоя и подъёма. Отбой и подъём отдаются со
+    смещением, в котором жило устройство, поэтому «23:40» читается из самой
+    строки. Ночь без данных в ответ не попадает: это «нет данных», а не ноль.
+    """
+    _check_range(date_from, date_to)
+    return HealthSleepResponse(
+        nights=[
+            _night_out(night)
+            for night in await health_crud.sleep_nights(db, date_from, date_to)
+        ]
+    )
+
+
+def _night_out(night: HealthSleepNight) -> HealthSleepNightOut:
+    lived = timezone(timedelta(minutes=night.utc_offset_minutes))
+    return HealthSleepNightOut(
+        date=night.wake_date,
+        bedtime=night.bedtime.astimezone(lived),
+        wake_time=night.wake_time.astimezone(lived),
+        in_bed_min=night.in_bed_min,
+        asleep_min=night.asleep_min,
+        awake_min=night.awake_min,
+        core_min=night.core_min,
+        deep_min=night.deep_min,
+        rem_min=night.rem_min,
+        unspecified_min=night.unspecified_min,
     )

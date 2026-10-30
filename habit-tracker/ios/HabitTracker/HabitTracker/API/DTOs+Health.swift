@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131
-// summary: wire types of POST /health/samples — one raw HealthKit sample in exactly the six fields of the server's HealthSampleIn, the chunk around it with the sync-run bookkeeping (run id, kind, device id, chunk position), the server's answer, and the failure-by-class report of a run that died
+// [review:need-review] PHASE-03/131, PHASE-03/238
+// summary: wire types of POST /health/samples — one raw HealthKit sample in exactly the six fields of the server's HealthSampleIn, one category sample (a sleep interval with its raw stage) in the five fields of HealthCategorySampleIn, the chunk around them with the sync-run bookkeeping (run id, kind, device id, chunk position), the server's answer, and the failure-by-class report of a run that died
 import Foundation
 
 /// One HealthKit sample as the device read it. Mirrors `HealthSampleIn` field for
@@ -16,6 +16,20 @@ struct HealthSampleDTO: Encodable, Hashable {
     /// Equal to `start` for an instantaneous reading.
     let end: String
     /// The device offset when the sample was recorded; places it in a lived hour.
+    let utcOffsetMinutes: Int
+}
+
+/// One HealthKit category sample (a sleep interval). Mirrors `HealthCategorySampleIn`:
+/// the raw category value and the interval, nothing folded. For sleep the value is
+/// `HKCategoryValueSleepAnalysis` (0 in bed, 1 asleep, 2 awake, 3 core, 4 deep, 5 REM);
+/// the server turns intervals into nights by wake date.
+struct HealthCategorySampleDTO: Encodable, Hashable {
+    let identifier: String
+    let value: Int
+    /// ISO 8601 instant in UTC with milliseconds.
+    let start: String
+    let end: String
+    /// The device offset at the end of the interval.
     let utcOffsetMinutes: Int
 }
 
@@ -43,6 +57,8 @@ enum HealthSyncFailureKindDTO: String, Codable, Hashable {
 /// journal knows which run a chunk belongs to and how far the run got.
 struct HealthSamplesRequestDTO: Encodable, Hashable {
     let samples: [HealthSampleDTO]
+    /// Category types; each night the chunk touches arrives whole.
+    var categorySamples: [HealthCategorySampleDTO] = []
     /// One id per run, the same on every chunk of it.
     var syncRunId: String?
     var kind: HealthSyncRunKind?
@@ -69,5 +85,6 @@ struct HealthSyncRunAckDTO: Decodable, Equatable {
 /// What the chunk turned into on the server.
 struct HealthSamplesResponseDTO: Decodable, Equatable {
     let samplesReceived: Int
+    /// Hourly buckets and sleep nights the chunk wrote.
     let bucketsWritten: Int
 }

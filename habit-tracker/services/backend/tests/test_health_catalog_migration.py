@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/65
-# summary: the immutable migration snapshot matches runtime and inserts only its 22 genuinely new metrics
+# [review:need-review] PHASE-02/65, PHASE-03/238
+# summary: the immutable migration snapshot matches the runtime quantity metrics and inserts only its 22 genuinely new metrics; sleep arrives in its own later migration
 
 from importlib import util
 from pathlib import Path
@@ -10,6 +10,14 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.dml import Insert
 
 from app.health.catalog import SEED_METRICS
+
+# Sleep (#238) is a later row of a later migration; this snapshot holds the
+# quantity metrics only.
+QUANTITY_SEEDS = [
+    metric
+    for metric in SEED_METRICS
+    if metric.identifier.startswith("HKQuantityTypeIdentifier")
+]
 
 MIGRATION_PATH = (
     Path(__file__).parents[1]
@@ -40,7 +48,7 @@ def test_migration_snapshot_matches_runtime_catalog(migration: ModuleType) -> No
             metric.display_name,
             metric.group,
         )
-        for metric in SEED_METRICS
+        for metric in QUANTITY_SEEDS
     ]
 
     assert migration.METRICS == runtime_snapshot
@@ -66,7 +74,7 @@ def test_upgrade_is_plain_insert_of_only_new_metrics(
     assert "ON CONFLICT" not in sql
     assert inserted_identifiers == {
         metric.identifier
-        for metric in SEED_METRICS
+        for metric in QUANTITY_SEEDS
         if metric.identifier not in ORIGINAL_IDENTIFIERS
     }
     assert len(inserted_identifiers) == 22

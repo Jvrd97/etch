@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
-// summary: the one read-only seam over HKHealthStore (availability, request status, read request, samples of a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238
+// summary: the one read-only seam over HKHealthStore (availability, request status, read request for quantity and category types, samples of a window, category samples overlapping a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO and of a category sample to the five-field one
 import Foundation
 import HealthKit
 
@@ -18,14 +18,16 @@ struct HealthHourSum: Equatable {
 protocol HealthStoreQuerying: Sendable {
     var healthDataAvailable: Bool { get }
     /// `.unnecessary` once the person has answered the sheet for these types.
-    func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus
+    func readAuthorizationRequestStatus(for types: Set<HKObjectType>) async throws -> HKAuthorizationRequestStatus
     /// Shows the system sheet if any type is still unanswered; otherwise returns at once.
-    func requestReadAuthorization(for types: Set<HKQuantityType>) async throws
+    func requestReadAuthorization(for types: Set<HKObjectType>) async throws
     /// Raw samples that start inside `[from, to)`, oldest first. For discrete metrics.
     func quantitySamples(of type: HKQuantityType, from: Date, to: Date) async throws -> [HKQuantitySample]
     /// Hour-long sums covering `[from, to)`, anchored at `from`. For cumulative metrics.
     /// A window with no data at all may throw `HKError.errorNoData`; the pump reads that as an empty week.
     func hourlySums(of type: HKQuantityType, from: Date, to: Date) async throws -> [HealthHourSum]
+    /// Category samples (sleep intervals) overlapping `[from, to)`, oldest first.
+    func categorySamples(of type: HKCategoryType, from: Date, to: Date) async throws -> [HKCategorySample]
     /// The most recent sample of the type, if any.
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample?
 }
@@ -33,11 +35,11 @@ protocol HealthStoreQuerying: Sendable {
 extension HKHealthStore: HealthStoreQuerying {
     var healthDataAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
-    func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus {
+    func readAuthorizationRequestStatus(for types: Set<HKObjectType>) async throws -> HKAuthorizationRequestStatus {
         try await statusForAuthorizationRequest(toShare: [], read: types)
     }
 
-    func requestReadAuthorization(for types: Set<HKQuantityType>) async throws {
+    func requestReadAuthorization(for types: Set<HKObjectType>) async throws {
         try await requestAuthorization(toShare: [], read: types)
     }
 
@@ -73,6 +75,17 @@ extension HKHealthStore: HealthStoreQuerying {
         return hours
     }
 
+    func categorySamples(of type: HKCategoryType, from: Date, to: Date) async throws -> [HKCategorySample] {
+        // Overlap, not strict start: the server places an interval by its end, and an
+        // interval that began before the window still belongs to a night inside it.
+        let window = HKQuery.predicateForSamples(withStart: from, end: to)
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.categorySample(type: type, predicate: window)],
+            sortDescriptors: [SortDescriptor(\.startDate)]
+        )
+        return try await descriptor.result(for: self)
+    }
+
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
         let descriptor = HKSampleQueryDescriptor(
             predicates: [.quantitySample(type: type)],
@@ -104,6 +117,18 @@ struct HealthSampleMapper {
         )
     }
 
+    /// The raw category value (a sleep stage) and the interval, nothing derived. The offset
+    /// is the one at the end: the server names a night by the local date it ended on.
+    func dto(_ sample: HKCategorySample, category: HealthCategoryDefinition) -> HealthCategorySampleDTO {
+        HealthCategorySampleDTO(
+            identifier: category.identifier,
+            value: sample.value,
+            start: Self.wireInstant(sample.startDate),
+            end: Self.wireInstant(sample.endDate),
+            utcOffsetMinutes: zone(of: sample).secondsFromGMT(for: sample.endDate) / Self.secondsPerMinute
+        )
+    }
+
     /// Nil for an empty hour: absent data is not sent as a zero.
     func dto(_ hour: HealthHourSum, metric: HealthMetricDefinition) -> HealthSampleDTO? {
         guard let sum = hour.sum else {
@@ -127,7 +152,7 @@ struct HealthSampleMapper {
         )
     }
 
-    private func zone(of sample: HKQuantitySample) -> TimeZone {
+    private func zone(of sample: HKSample) -> TimeZone {
         if let name = sample.metadata?[HKMetadataKeyTimeZone] as? String,
            let recorded = TimeZone(identifier: name) {
             return recorded

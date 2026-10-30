@@ -2958,3 +2958,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/api/health.py`, `app/schemas/health.py`, `app/models/health.py` — mod: 409 на чужое устройство, `sync_run_id` требует `chunk_index` и `chunks_total`, колонка `chunks_seen`.
 - `alembic/versions/2026_10_29_1000-f1b3d5a7c9e2_health_sync_run.py` — mod: колонка `chunks_seen` (ревизия ещё не в main).
 - `tests/test_health_sync_run.py` — mod: повтор чанка, гонка двух доставок, чужое устройство, залипший `interrupted`, обратимость миграции.
+
+## 2026-10-30 — PHASE-03/238: сон из HealthKit (категорийный тип)
+
+Тронуто 17 файлов бэкенда (4 `new`, 13 `mod`), миграция `4359c5a3d24e` от головы `f1b3d5a7c9e2`.
+
+- `alembic/versions/2026_10_30_1000-4359c5a3d24e_health_sleep_nights.py` — new: таблица `health_sleep_nights` (уникальный `wake_date`) и строка каталога сна; downgrade снимает обе, корзины целы.
+- `app/health/sleep.py` — new: фазы по сырым значениям HealthKit, ночь по дате пробуждения (граница 18:00), минуты по фазам по разрезу времени (источники не складываются), отбой и подъём самой длинной сессии.
+- `app/health/aggregate.py` — mod: вид `MetricKind.SLEEP`. `app/health/catalog.py` — mod: строка сна, группа `sleep`.
+- `app/models/health.py`, `app/models/__init__.py` — mod: `HealthSleepNight`.
+- `app/schemas/health.py` — mod: `category_samples` в чанке (общий предел 50 000), `HealthSleepNightOut`, `HealthSleepResponse`.
+- `app/crud/health.py` — mod: `ingest_category_samples` (сон → ночи, `cumulative` → минуты по часам), `upsert_nights`, `sleep_nights`, сон в `daily_values` (значение дня — `asleep_min`), `HEALTH_SPECS` без правок — сон доступен через каталог.
+- `app/api/health.py` — mod: приём категорий в том же чанке и журнале, отказ классом `unit`, `GET /health/sleep`.
+- `app/crud/supplement_advice.py` — mod (вне перечня, только docstring): абзац «сон честно пуст» устарел.
+- Тесты: `tests/test_health_sleep.py` (new, 18), `tests/test_health_sleep_api.py` (new, 16), `test_health.py`, `test_health_advice.py`, `test_health_catalog_migration.py`, `test_week_review.py`, `tests/fixtures/health/metric_catalog.json` — mod.

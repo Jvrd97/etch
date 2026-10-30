@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/132
-// summary: wire tests for POST /api/v1/health/samples — path, key header, snake_case body without an Idempotency-Key, decoded counts, a refused chunk as a typed error, the sync-run keys of a chunk and the failure report by class
+// [review:need-review] PHASE-03/131, PHASE-03/132, PHASE-03/238
+// summary: wire tests for POST /api/v1/health/samples — path, key header, snake_case body (samples and category_samples) without an Idempotency-Key, decoded counts, a refused chunk as a typed error, the sync-run keys of a chunk and the failure report by class
 import XCTest
 @testable import HabitTracker
 
@@ -95,7 +95,7 @@ final class HealthAPIClientTests: XCTestCase {
         XCTAssertEqual(body["chunks_total"] as? Int, 3)
     }
 
-    func testChunkWithoutRunKeysSendsOnlySamples() async throws {
+    func testChunkWithoutRunKeysSendsOnlyTheTwoSampleLists() async throws {
         var captured: URLRequest?
         MockURLProtocol.requestHandler = { request in
             captured = request
@@ -106,7 +106,9 @@ final class HealthAPIClientTests: XCTestCase {
 
         let data = try XCTUnwrap(TodayScreenAPITests.bodyData(of: try XCTUnwrap(captured)))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(Set(body.keys), ["samples"])
+        // `category_samples` goes as an empty list; the server defaults it the same way.
+        XCTAssertEqual(Set(body.keys), ["samples", "category_samples"])
+        XCTAssertEqual((body["category_samples"] as? [Any])?.count, 0)
     }
 
     func testFailureReportGoesToTheRunWithAClassAndNoMessage() async throws {

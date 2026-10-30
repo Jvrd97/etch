@@ -118,5 +118,10 @@
     "identifier": "HKQuantityTypeIdentifierDietaryWater",
     "kind": "cumulative",
     "canonical_unit": "mL"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSleepAnalysis",
+    "kind": "sleep",
+    "canonical_unit": "min"
   }
 ]

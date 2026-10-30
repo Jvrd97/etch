@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245
-# summary: the health summary behind the advice — steps, workout minutes and resting heart rate over a window of 7-14 closed days against the window before it, sleep honestly absent, supplement adherence per day; four statements whatever the window and the number of supplements
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/238
+# summary: the health summary behind the advice — steps, workout minutes and resting heart rate over a window of 7-14 closed days against the window before it, sleep as minutes asleep of the night by wake date, supplement adherence per day; four statements whatever the window and the number of supplements
 """
 The summary of sleep, sport and supplements (`#223`).
 
@@ -11,9 +11,8 @@ The summary of sleep, sport and supplements (`#223`).
 каталог здоровья и дневные значения здоровья за оба окна читаются по одному
 запросу; разбор по дням идёт в питоне.
 
-**Сон честно пуст.** Метрики сна в каталоге нет (#238): фигура `sleep` приходит с
-`available=false`, а не нулями. Когда метрика появится в каталоге, она заработает
-без правок: ключ — идентификатор HealthKit.
+**Сон — минуты сна ночи по дате пробуждения** (#238). Ночей в окне нет — фигура
+`sleep` приходит без среднего и с `days_with_data=0`, а не нулями.
 
 **Соблюдение.** Добавка запланирована на день, если она заведена к этому дню
 или раньше и ушла в архив позже него: день архивации в план не входит, потому

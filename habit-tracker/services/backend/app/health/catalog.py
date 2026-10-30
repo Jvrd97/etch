@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
-# summary: the canonical 24-metric Health catalog shared by runtime and test database seeding
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/238
+# summary: the canonical Health catalog — 24 quantity metrics and sleep (a category type, in minutes asleep per night) — shared by runtime and test database seeding
 """
 Seed rows of the metric catalogue.
 
@@ -29,6 +29,9 @@ GROUP_MOVEMENT = "movement"
 GROUP_HEART = "heart"
 GROUP_BODY = "body"
 GROUP_NUTRITION = "nutrition"
+GROUP_SLEEP = "sleep"
+
+SLEEP_IDENTIFIER = "HKCategoryTypeIdentifierSleepAnalysis"
 
 SEED_METRICS: tuple[MetricSeed, ...] = (
     MetricSeed(
@@ -198,5 +201,14 @@ SEED_METRICS: tuple[MetricSeed, ...] = (
         canonical_unit="mL",
         display_name="Вода",
         group=GROUP_NUTRITION,
+    ),
+    # A category type: its day value is minutes asleep of the night that ended
+    # that day; stages, bedtime and wake time live in `health_sleep_nights`.
+    MetricSeed(
+        identifier=SLEEP_IDENTIFIER,
+        kind=MetricKind.SLEEP,
+        canonical_unit="min",
+        display_name="Сон",
+        group=GROUP_SLEEP,
     ),
 )

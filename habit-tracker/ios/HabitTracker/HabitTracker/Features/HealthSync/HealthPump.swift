@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132
-// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples), packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238
+// summary: HealthKit pump — reads the last 7 days off the main thread (steps as HealthKit's deduplicated hourly sums anchored at local midnight, resting heart rate as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch runs only when the permission sheet was already answered, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
 import Foundation
 import HealthKit
 import os
@@ -49,7 +49,8 @@ protocol HealthSyncing: AnyObject {
 ///
 /// Cumulative metrics go as HealthKit's own hourly sums, one record per hour: only
 /// HealthKit knows which of iPhone and Watch to count for a given minute, and the sums
-/// match the Health app. Discrete metrics go as raw samples. The client adds nothing up
+/// match the Health app. Discrete metrics go as raw samples, sleep as raw stage intervals
+/// that the server folds into nights. The client adds nothing up
 /// itself (ADR-0020, A2 with its 2026-10-27 amendment). Retrying is safe because the server
 /// overwrites hourly buckets on their natural key, so a chunk sent twice changes
 /// nothing. Nothing is queued on disk: HealthKit already keeps the samples, and the
@@ -69,6 +70,7 @@ final class HealthPump: HealthSyncing {
     nonisolated static let pumpedMetrics: [HealthMetricDefinition] = HealthMetricCatalog.metrics.filter {
         [.stepCount, .restingHeartRate].contains($0.typeIdentifier)
     }
+    nonisolated static let pumpedCategories: [HealthCategoryDefinition] = HealthCategoryCatalog.categories
 
     static let shared = HealthPump(
         store: HKHealthStore(),
@@ -80,6 +82,7 @@ final class HealthPump: HealthSyncing {
     private let store: HealthStoreQuerying
     private let api: () -> HealthSamplesAPI?
     private let metrics: [HealthMetricDefinition]
+    private let categories: [HealthCategoryDefinition]
     let mapper: HealthSampleMapper
     let calendar: Calendar
     private let now: () -> Date
@@ -94,6 +97,7 @@ final class HealthPump: HealthSyncing {
         store: HealthStoreQuerying,
         api: @escaping () -> HealthSamplesAPI?,
         metrics: [HealthMetricDefinition] = HealthPump.pumpedMetrics,
+        categories: [HealthCategoryDefinition] = HealthPump.pumpedCategories,
         mapper: HealthSampleMapper = HealthSampleMapper(),
         calendar: Calendar = .autoupdatingCurrent,
         now: @escaping () -> Date = Date.init,
@@ -108,6 +112,7 @@ final class HealthPump: HealthSyncing {
         self.store = store
         self.api = api
         self.metrics = metrics
+        self.categories = categories
         self.mapper = mapper
         self.calendar = calendar
         self.now = now
@@ -146,7 +151,9 @@ final class HealthPump: HealthSyncing {
         guard store.healthDataAvailable else {
             return asking ? .failed(.healthDataUnavailable) : .skipped
         }
-        let types = Set(metrics.map { HKQuantityType($0.typeIdentifier) })
+        let quantityTypes: [HKObjectType] = metrics.map { HKQuantityType($0.typeIdentifier) }
+        let categoryTypes: [HKObjectType] = categories.map { HKCategoryType($0.typeIdentifier) }
+        let types = Set(quantityTypes + categoryTypes)
         do {
             if asking {
                 try await store.requestReadAuthorization(for: types)
@@ -164,10 +171,11 @@ final class HealthPump: HealthSyncing {
 
         await deliverPendingFailures(to: api)
 
-        let perMetric: [[HealthSampleDTO]]
+        let perMetric: [HealthChunk]
         do {
             perMetric = try await Self.readWindow(
-                store: store, metrics: metrics, mapper: mapper, calendar: calendar, end: now()
+                store: store, metrics: metrics, categories: categories, mapper: mapper,
+                calendar: calendar, end: now()
             )
         } catch {
             return .failed(.readFailed)
@@ -185,7 +193,8 @@ final class HealthPump: HealthSyncing {
         var answers: [HealthSamplesResponseDTO] = []
         for (index, chunk) in chunks.enumerated() {
             let request = HealthSamplesRequestDTO(
-                samples: chunk, syncRunId: runId, kind: kind, deviceId: device,
+                samples: chunk.samples, categorySamples: chunk.categorySamples,
+                syncRunId: runId, kind: kind, deviceId: device,
                 chunkIndex: index, chunksTotal: chunks.count
             )
             switch await send(request, to: api) {
@@ -199,7 +208,8 @@ final class HealthPump: HealthSyncing {
         return .sent(answers)
     }
 
-    /// Today and the six days before it, from local midnight until `end`. Nonisolated,
+    /// Today and the six days before it, from local midnight until `end`; a category type
+    /// starts its `lead` earlier (sleep: 18:00 the evening before). Nonisolated,
     /// so turning thousands of samples into DTOs does not run on the main thread.
     /// The calendar and the mapper both follow the device zone, read at different moments:
     /// a zone change in the middle of one run (rare) can leave the window and the offsets
@@ -207,25 +217,32 @@ final class HealthPump: HealthSyncing {
     private nonisolated static func readWindow(
         store: HealthStoreQuerying,
         metrics: [HealthMetricDefinition],
+        categories: [HealthCategoryDefinition],
         mapper: HealthSampleMapper,
         calendar: Calendar,
         end: Date
-    ) async throws -> [[HealthSampleDTO]] {
+    ) async throws -> [HealthChunk] {
         let today = calendar.startOfDay(for: end)
         guard let start = calendar.date(byAdding: .day, value: 1 - windowDays, to: today) else {
             return []
         }
-        var perMetric: [[HealthSampleDTO]] = []
+        var perMetric: [HealthChunk] = []
         for metric in metrics {
             let type = HKQuantityType(metric.typeIdentifier)
             switch metric.kind {
             case .cumulative:
                 let hours = try await Self.hourlySumsOrEmpty(store, type, from: start, to: end)
-                perMetric.append(hours.compactMap { mapper.dto($0, metric: metric) })
+                perMetric.append(HealthChunk(samples: hours.compactMap { mapper.dto($0, metric: metric) }))
             case .discrete:
                 let samples = try await store.quantitySamples(of: type, from: start, to: end)
-                perMetric.append(samples.map { mapper.dto($0, metric: metric) })
+                perMetric.append(HealthChunk(samples: samples.map { mapper.dto($0, metric: metric) }))
             }
+        }
+        for category in categories {
+            let samples = try await store.categorySamples(
+                of: HKCategoryType(category.typeIdentifier), from: start.addingTimeInterval(-category.lead), to: end
+            )
+            perMetric.append(HealthChunk(categorySamples: samples.map { mapper.dto($0, category: category) }))
         }
         return perMetric
     }
@@ -242,21 +259,21 @@ final class HealthPump: HealthSyncing {
         }
     }
 
-    /// Whole metrics per chunk. The server overwrites an hour with what the chunk
-    /// holds for it, so one metric split over two chunks would lose part of an hour.
+    /// Whole metrics per chunk. The server overwrites an hour (or a night) with what the
+    /// chunk holds for it, so one metric split over two chunks would lose part of it.
     /// Returns nil when a single metric does not fit.
-    private func pack(_ perMetric: [[HealthSampleDTO]]) -> [[HealthSampleDTO]]? {
-        var chunks: [[HealthSampleDTO]] = []
-        var current: [HealthSampleDTO] = []
-        for samples in perMetric where !samples.isEmpty {
-            guard samples.count <= chunkLimit else {
+    private func pack(_ perMetric: [HealthChunk]) -> [HealthChunk]? {
+        var chunks: [HealthChunk] = []
+        var current = HealthChunk()
+        for metric in perMetric where !metric.isEmpty {
+            guard metric.count <= chunkLimit else {
                 return nil
             }
-            if current.count + samples.count > chunkLimit {
+            if current.count + metric.count > chunkLimit {
                 chunks.append(current)
-                current = []
+                current = HealthChunk()
             }
-            current.append(contentsOf: samples)
+            current.append(metric)
         }
         if !current.isEmpty {
             chunks.append(current)
@@ -348,5 +365,20 @@ final class HealthPump: HealthSyncing {
         case nil:
             return .network
         }
+    }
+}
+
+/// The records of one chunk, or of one metric before packing: quantity samples and
+/// category samples travel in the same request under two keys.
+struct HealthChunk: Equatable {
+    var samples: [HealthSampleDTO] = []
+    var categorySamples: [HealthCategorySampleDTO] = []
+
+    var count: Int { samples.count + categorySamples.count }
+    var isEmpty: Bool { count == 0 }
+
+    mutating func append(_ other: HealthChunk) {
+        samples += other.samples
+        categorySamples += other.categorySamples
     }
 }
