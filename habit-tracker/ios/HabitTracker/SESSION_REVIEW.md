@@ -852,3 +852,16 @@ Avoid-стрик карточка «N дней чистый» на экране 
 ## 2026-10-30 — #274 остатки ревью #270
 
 Файлы (11, все mod): `App/AppNavigation.swift`, `App/RootView.swift`, `Features/Day/DayFormat.swift`, `Features/Day/DayView.swift`, `Features/Day/DayViewModel.swift`, `Features/Life/LifeCalendar.swift`, `Features/Life/LifeView.swift`, `Features/Life/LifeViewModel.swift`, тесты `AppNavigationTests`, `DayViewModelTests`, `LifeViewModelTests`. Одна загрузка при переходе в Day (общая задача на день), будущая дата рождения из хранилища отвергается, `isWeekCode` знает недели года. Тесты не запускались; переходы глазами не проверены.
+
+## 2026-10-30 — PHASE-03/273-ios-healthkit-delivery-log
+
+Журнал прихода данных из Apple Health на телефоне: кольцевой буфер на 500 записей в JSON-файле, экран «Журнал синка» с вкладки Health (сводка за сутки и неделю, интервалы между приходами, паузы видны как есть). Источник `backgroundWake` для #133 заложен в модели и покрыт тестом записи.
+
+Файлов тронуто: 6 (3 new, 3 mod).
+
+- `HabitTracker/Features/HealthSync/HealthSyncLog.swift` — new, модель записи, файловое хранилище, буфер, расчёт интервалов и сводки.
+- `HabitTracker/Features/HealthSync/HealthSyncLogView.swift` — new, экран журнала.
+- `HabitTrackerTests/HealthSyncLogTests.swift` — new, 9 тестов.
+- `HabitTracker/Features/HealthSync/HealthPump.swift` — mod, свойство `syncLog` и одна строка записи после прогона.
+- `HabitTracker/Features/HealthSync/HealthSyncView.swift` — mod, ссылка на экран журнала.
+- `SESSION_REVIEW.md` — mod.

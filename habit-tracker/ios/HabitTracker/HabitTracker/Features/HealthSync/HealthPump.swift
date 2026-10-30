@@ -88,6 +88,8 @@ final class HealthPump: HealthSyncing {
     private let pendingFailures: HealthPendingFailureStoring
     private let chunkLimit: Int
     private let pause: (Int) async throws -> Void
+    /// Journal of run ends for the on-device sync log (#273); tests replace it.
+    var syncLog: HealthSyncLogging = HealthSyncLog.shared
     private var inFlight: Task<HealthSyncOutcome, Never>?
 
     init(
@@ -136,6 +138,7 @@ final class HealthPump: HealthSyncing {
         inFlight = run
         let outcome = await run.value
         inFlight = nil
+        syncLog.record(outcome, source: asking ? .manual : .appLaunch, at: now())
         if case .failed(let failure) = outcome {
             Self.logger.error("health sync failed: \(failure.rawValue, privacy: .public)")
         }

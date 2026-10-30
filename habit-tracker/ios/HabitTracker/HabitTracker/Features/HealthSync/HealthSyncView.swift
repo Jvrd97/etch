@@ -132,6 +132,11 @@ struct HealthSyncView: View {
             }
             .listRowBackground(DS.Palette.card)
 
+            Section {
+                NavigationLink("Журнал синка") { HealthSyncLogView.live() }
+            }
+            .listRowBackground(DS.Palette.card)
+
             ForEach(HealthMetricGroup.allCases, id: \.self) { group in
                 Section(group.title) {
                     ForEach(viewModel.rows.filter { $0.metric.group == group }) { row in
