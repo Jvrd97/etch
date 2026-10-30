@@ -2940,9 +2940,9 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 
 Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_251` — 3414 passed, 2 skipped; bun test 2032/0, tsc, lint 0 ошибок.
 
-### PHASE-03/271
+### PHASE-03/271 (круги 1–2)
 
-- `app/llm/dose_guard.py` — mod: перевод строки — граница предложения; исключение для пульса — только если «на» стоит сразу после слова изменения пульса (или после единицы идёт «ниже/больше») и дальше нет названия вещества.
-- `tests/test_dose_guard.py` — mod: 10 фраз в `CAUGHT_NEXT_TO_A_PULSE`, 5 в `PASSED`; 10 красных на 342b7aa, зелёные после правки.
+- `app/llm/dose_guard.py` — mod: исключение для шкалы пульса убрано целиком; «на N ед» рядом со словом о пульсе — всегда доза. Причина: точечные правила (глагол, вещество, белый список) протекали на повелительных формах и словах после единицы; сервер пульс пишет только в «уд/мин» (`health_format.py`).
+- `tests/test_dose_guard.py` — mod: в `CAUGHT_NEXT_TO_A_PULSE` фразы круга 1 и все атакующие фразы ревью; в `PASSED` пульс только в «уд/мин» и «ударах»; 20 красных на c56e8bf.
 
 Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_271`.

@@ -25,9 +25,12 @@ are written for the folded text: no «ё» in them, «й» as it is.
 
 **Что не считается.** Одинокая буква «г» — год, если перед ней год или дата
 («в 2026 г.», «12.2026 г.»); шаги, проценты, пульс и минуты не единицы дозы.
-«Единица» после глагола изменения пульса и «на» («пульс снизился на 4 единицы») —
-пункт шкалы, а не доза, если число — до двух знаков или числительное до тридцати и после
-единицы не стоит название вещества. Перевод строки — граница предложения.
+Пульс измеряется в «уд/мин» и «ударах» — их защита не считает единицей дозы. «ед» и «единиц»
+рядом со словом о пульсе («пульс снизился на 4 единицы», «добавь на 10 ед») — всегда доза:
+точечные исключения для шкалы пульса (круги 3–4 `#251`, `#271` круг 1) раз за разом пропускали
+2-значные дозы инсулина, поэтому исключение убрано целиком. Сервер такие строки не пишет:
+`health_format.py` форматирует пульс только как «N уд/мин». Ложное срабатывание на «единицы
+пульса» допустимо: при сомнении ловим дозу.
 Известная щель: «2000 г» читается как год, а не как два килограмма.
 """
 
@@ -98,49 +101,6 @@ _DOSE = re.compile(
 )
 
 
-# A step of the pulse scale: a number of at most two digits or a numeral up to thirty.
-_SCALE_NUMBER = (
-    r"(?:\d{1,2}|ноль|нуль|одн(?:а|у|о|ой|ого|ому|им|ою)|один|"
-    r"дв(?:а|е|ух|ум|умя)|тр(?:и|ех|ем|емя)|четыр(?:е|ех|ем|ьмя)|"
-    r"пят(?:ь|и|ью)|шест(?:ь|и|ью)|сем(?:ь|и|ью)|восем(?:ь|ью)|восьми|"
-    r"девят(?:ь|и|ью)|десят(?:ь|и|ью)|"
-    r"(?:одиннадцат|двенадцат|тринадцат|четырнадцат|пятнадцат|шестнадцат|"
-    r"семнадцат|восемнадцат|девятнадцат|двадцат|тридцат)(?:ь|и|ью))"
-)
-_POINT_OF_SCALE = re.compile(rf"{_SCALE_NUMBER}\s*ед(?:иниц\w*)?\.?$")
-# «на» that follows a verb or a word of change of the pulse, with nothing between them.
-_CHANGE_BEFORE_ON = re.compile(
-    r"(?<!\w)(?:сниз\w*|пониз\w*|повыс\w*|выр[оа]с\w*|возрос\w*|упал\w*|"
-    r"уменьш\w*|увелич\w*|подскочил\w*|подрос\w*|сократил\w*|поднял\w*|"
-    r"опустил\w*|ускорил\w*|замедл\w*|ниже|выше)\s+на\s+$"
-)
-# «58 уд/мин, на 4 единицы ниже»: the change word follows the unit instead.
-_BARE_ON_BEFORE = re.compile(r"(?:[,—–-]|мин)\s*на\s+$")
-_COMPARATIVE_AFTER = re.compile(r"\.?\s*(?:ниже|выше|меньше|больше|чаще|реже)(?!\w)")
-# What may follow the unit in the same clause; anything else («инсулина», «магния») is a dose.
-_AFTER_POINT_WORDS = frozenset(
-    {
-        "ниже",
-        "выше",
-        "меньше",
-        "больше",
-        "чаще",
-        "реже",
-        "чем",
-        "а",
-        "но",
-        "за",
-        "к",
-        "против",
-    }
-)
-_CLAUSE_END = re.compile(r"[.!?;:,\n—–]")
-_PULSE_WORDS = re.compile(r"пульс|сердцебиен|уд/мин|ударов")
-# The sentence of the match: what follows the last sentence mark or line break before it.
-_SENTENCE_END = re.compile(r"[.!?;:]\s|\n")
-_SENTENCE_LOOKBACK = 120
-
-
 def _fold(text: str) -> str:
     kept: list[str] = []
     for ch in unicodedata.normalize("NFKD", text):
@@ -154,34 +114,4 @@ def _fold(text: str) -> str:
 def names_a_dose(text: str) -> bool:
     """True when the text names a dose of anything: a number or a fraction and its unit."""
     folded = _fold(text)
-    for match in _DOSE.finditer(folded):
-        if _is_a_pulse_point(folded, match):
-            continue
-        return True
-    return False
-
-
-def _is_a_pulse_point(folded: str, match: re.Match[str]) -> bool:
-    """
-    «Пульс снизился на 4 единицы»: «ед.» as a step of the pulse scale, not a dose.
-
-    All of it must hold: the number is of the scale (up to two digits or a numeral up to
-    thirty); in the same sentence (a line break ends it) a pulse word stands; «на» follows
-    a word of change of the pulse («снизился», «вырос», «ниже») or the unit is followed by
-    «ниже»/«больше»; and no name of a substance follows the unit. «Пульс в норме,
-    добавь на 10 ед», «на 99 ед» and «- добавь на 10 ед инсулина» are doses.
-    """
-    if not _POINT_OF_SCALE.fullmatch(match.group()):
-        return False
-    before = folded[max(0, match.start() - _SENTENCE_LOOKBACK) : match.start()]
-    after = folded[match.end() :]
-    named_after = _COMPARATIVE_AFTER.match(after) is not None
-    changed = _CHANGE_BEFORE_ON.search(before) or (
-        named_after and _BARE_ON_BEFORE.search(before)
-    )
-    if not changed:
-        return False
-    if _PULSE_WORDS.search(_SENTENCE_END.split(before)[-1]) is None:
-        return False
-    words = _CLAUSE_END.split(after, maxsplit=1)[0].split()
-    return not words or words[0] in _AFTER_POINT_WORDS
+    return _DOSE.search(folded) is not None
