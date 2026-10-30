@@ -101,12 +101,14 @@ def test_a_cumulative_metric_is_compared_on_the_last_whole_day() -> None:
     )
     assert steps is not None
     assert steps.deviation == 0.0
+    assert steps.day == TODAY - timedelta(days=1)
     assert steps.outside_typical is False
     heart = metric_baseline(
         HEART, "discrete", by_day, TODAY - timedelta(days=10), TODAY
     )
     assert heart is not None
     assert heart.deviation == -7200.0
+    assert heart.day == TODAY
 
 
 def test_a_cumulative_metric_asked_for_today_alone_has_no_baseline() -> None:

@@ -146,6 +146,8 @@ class HealthBaseline(BaseModel):
     stddev: float
     # Days of history behind the mean; gaps are not counted.
     days: int
+    # The day the deviation is about; not the shown last day for a cumulative metric.
+    day: date
     # Latest day minus the mean, in the metric's unit.
     deviation: float
     outside_typical: bool

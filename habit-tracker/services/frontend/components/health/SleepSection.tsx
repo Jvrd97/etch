@@ -3,6 +3,7 @@
 
 import Link from 'next/link';
 import type { HealthSleepNight } from '@/lib/api';
+import { dayLabel } from '@/lib/health';
 
 const MINUTES_PER_HOUR = 60;
 
@@ -45,14 +46,8 @@ export function wallClock(instant: string): string {
   return /T(\d{2}:\d{2})/.exec(instant)?.[1] ?? '';
 }
 
-/** `2026-10-20` → `20 окт.`, on the calendar date alone. */
-export function nightLabel(isoDate: string): string {
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric',
-    month: 'short',
-    timeZone: 'UTC',
-  }).format(new Date(`${isoDate}T00:00:00Z`));
-}
+/** Kept under its sleep name for the callers that already import it. */
+export const nightLabel = dayLabel;
 
 export interface SleepSectionProps {
   /** Oldest first; null while loading or after a failed read. */

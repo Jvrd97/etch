@@ -20,7 +20,7 @@ const HEART: HealthMetric = {
     { date: '2026-10-18', value: 60 },
     { date: '2026-10-20', value: 67.3333333 },
   ],
-  baseline: { mean: 62, stddev: 2, days: 20, deviation: 5.3333333, outside_typical: true },
+  baseline: { mean: 62, stddev: 2, days: 20, day: '2026-10-20', deviation: 5.3333333, outside_typical: true },
 };
 
 const STEPS: HealthMetric = {
@@ -94,6 +94,23 @@ describe('a last value that is not today', () => {
   });
 });
 
+describe('a deviation about another day than the shown one', () => {
+  it('names the day it was counted on', () => {
+    const steps: HealthMetric = {
+      ...STEPS,
+      days: [{ date: '2026-10-20', value: 1500 }],
+      baseline: { mean: 1200, stddev: 100, days: 20, day: '2026-10-19', deviation: 300, outside_typical: true },
+    };
+    render(<HealthMetricGroups metrics={[steps]} basePath="/health" />);
+    expect(row('Шаги').textContent).toContain('19 окт.: +300 count к обычному');
+  });
+
+  it('adds no prefix when the days coincide', () => {
+    render(<HealthMetricGroups metrics={[HEART]} basePath="/health" />);
+    expect(row('Пульс').textContent).not.toContain(': +5.3');
+  });
+});
+
 describe('sparkline vocabulary', () => {
   it('lays 30 calendar days with null on a missing day', () => {
     const points = sparklinePoints(HEART.days, '2026-10-20');
@@ -108,7 +125,7 @@ describe('sparkline vocabulary', () => {
   });
 
   it('words the deviation by sign', () => {
-    const base = { mean: 10, stddev: 1, days: 9, outside_typical: false };
+    const base = { mean: 10, stddev: 1, days: 9, day: '2026-10-20', outside_typical: false };
     expect(deviationText({ ...base, deviation: -12.04 }, 'кг')).toBe('−12 кг к обычному');
     expect(deviationText({ ...base, deviation: 0.01 }, 'кг')).toBe('как обычно');
   });

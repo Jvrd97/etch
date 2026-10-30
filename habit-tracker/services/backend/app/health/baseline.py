@@ -13,14 +13,11 @@ Days without a measurement are absent from the map and are simply not counted:
 a gap is not a zero. With fewer than `MIN_BASELINE_DAYS` days behind it the
 baseline does not exist, and the screen shows no deviation instead of a false one.
 
-**Which metrics have a baseline.** Quantity types (`HKQuantityType…`) and sleep.
-Every other category type — event, symptom, minutes of a session — has none, and
-the catalog's `kind` cannot tell them apart: a category counted in minutes or
-events is `cumulative` like steps. The gate is therefore the source type, the
-identifier prefix `CATEGORY_PREFIX`, with sleep (a category folded into nights)
-let through by its `sleep` kind. Such a category has none: for them a missing day may mean "zero events" or
-"nothing recorded", and that is not decided, so a mean over the recorded days
-would be a guess. The gate reads the catalog's `kind`, not a list of names.
+**Which metrics have a baseline.** Quantity types and sleep. Category types are cut
+off by the `CATEGORY_PREFIX` of the identifier, because their catalog `kind` is
+`cumulative`, like steps; sleep, a category folded into nights, passes by its
+`sleep` kind. For event, symptom and session categories a missing day may mean
+"zero" or "nothing recorded", which is undecided, so a mean would be a guess.
 
 **Today is not compared for cumulative metrics.** The day still being lived holds
 only part of the steps or kilocalories it will end with; against whole days it
@@ -63,6 +60,8 @@ class Baseline:
     mean: float
     stddev: float
     days: int
+    # The day the deviation is about: the last whole day for a cumulative metric.
+    day: date
     deviation: float
     outside_typical: bool
 
@@ -82,6 +81,7 @@ def compute_baseline(by_day: dict[date, float], latest_day: date) -> Baseline | 
         mean=mean,
         stddev=stddev,
         days=len(values),
+        day=latest_day,
         deviation=deviation,
         outside_typical=abs(deviation) > OUTSIDE_STDDEVS * spread,
     )

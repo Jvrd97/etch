@@ -3926,6 +3926,8 @@ export interface HealthBaseline {
   stddev: number;
   /** Days of history behind the mean; gaps are not counted. */
   days: number;
+  /** The day the deviation is about; not the shown last day for a cumulative metric (that one is still being lived). */
+  day: string;
   /** Latest day minus the mean, in the metric's unit. */
   deviation: number;
   outside_typical: boolean;

@@ -96,3 +96,12 @@ export function deviationText(baseline: HealthBaseline, unit: string): string {
 
 /** The marker next to a deviation beyond the metric's usual spread; text, so colour is not the only signal. */
 export const OUTSIDE_TYPICAL_TEXT = "вне обычного";
+
+/** `2026-10-20` → `20 окт.`, on the calendar date alone. */
+export function dayLabel(isoDate: string): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  }).format(new Date(`${isoDate}T00:00:00Z`));
+}
