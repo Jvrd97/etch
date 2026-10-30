@@ -8,6 +8,7 @@ import type { HealthMetricDays, HealthMetricHours } from "@/lib/api";
 import {
   DEFAULT_PERIOD_DAYS,
   HEALTH_PERIODS,
+  formatQuantity,
   formatValue,
   hourLabel,
   hourRange,
@@ -199,7 +200,7 @@ function DailyList({
                 {nightLabel(entry.date)}
               </span>
               <span className="tabular-nums text-text-primary">
-                {formatValue(entry.value)} {series.canonical_unit}
+                {formatQuantity(series.identifier, entry.value, series.canonical_unit)}
               </span>
             </button>
           </li>

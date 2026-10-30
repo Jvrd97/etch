@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/238
-// summary: wire types of POST /health/samples — one raw HealthKit sample in exactly the six fields of the server's HealthSampleIn, one category sample (a sleep interval with its raw stage) in the five fields of HealthCategorySampleIn, the chunk around them with the sync-run bookkeeping (run id, kind, device id, chunk position), the server's answer, and the failure-by-class report of a run that died
+// [review:need-review] PHASE-03/131, PHASE-03/238, PHASE-02/70
+// summary: wire types of POST /health/samples — one raw HealthKit sample in exactly the six fields of the server's HealthSampleIn, one category sample (a sleep interval with its raw stage) in the five fields of HealthCategorySampleIn, one workout in the fields of HealthWorkoutIn, the chunk around them with the sync-run bookkeeping (run id, kind, device id, chunk position), the server's answer, and the failure-by-class report of a run that died
 import Foundation
 
 /// One HealthKit sample as the device read it. Mirrors `HealthSampleIn` field for
@@ -33,6 +33,28 @@ struct HealthCategorySampleDTO: Encodable, Hashable {
     let utcOffsetMinutes: Int
 }
 
+/// One `HKWorkout`. Mirrors `HealthWorkoutIn`: HealthKit's own UUID makes a window read
+/// again on every sync an overwrite on the server. A number HealthKit does not hold for
+/// the workout (no watch, no heart-rate permission) is nil and left out of the body,
+/// never sent as zero.
+struct HealthWorkoutDTO: Encodable, Hashable {
+    let uuid: String
+    /// `HKWorkoutActivityType` in snake_case, e.g. `running`; `other` for a type the app
+    /// has no name for.
+    let activityType: String
+    /// ISO 8601 instants in UTC with milliseconds.
+    let start: String
+    let end: String
+    /// The device offset at the start: it names the day the workout belongs to.
+    let utcOffsetMinutes: Int
+    /// Active time as HealthKit reports it (a paused run is shorter than end minus start).
+    let durationSeconds: Double
+    let energyKcal: Double?
+    let distanceM: Double?
+    let avgHeartRate: Double?
+    let maxHeartRate: Double?
+}
+
 /// The three kinds of run the server journal tells apart (`SyncRunKind`). A new kind is
 /// a case here and a value in the server schema, not a migration.
 enum HealthSyncRunKind: String, Codable, Hashable {
@@ -59,6 +81,8 @@ struct HealthSamplesRequestDTO: Encodable, Hashable {
     let samples: [HealthSampleDTO]
     /// Category types; each night the chunk touches arrives whole.
     var categorySamples: [HealthCategorySampleDTO] = []
+    /// Workouts, each under its own UUID.
+    var workouts: [HealthWorkoutDTO] = []
     /// One id per run, the same on every chunk of it.
     var syncRunId: String?
     var kind: HealthSyncRunKind?

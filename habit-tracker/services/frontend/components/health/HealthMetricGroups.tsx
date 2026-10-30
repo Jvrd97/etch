@@ -4,7 +4,7 @@
 import Link from 'next/link';
 import type { HealthMetric } from '@/lib/api';
 import { TrendSparkline } from '@/components/dashboard/TrendSparkline';
-import { dayLabel, deviationText, formatValue, metricHref, OUTSIDE_TYPICAL_TEXT, sparklinePoints } from '@/lib/health';
+import { dayLabel, deviationText, formatQuantity, metricHref, OUTSIDE_TYPICAL_TEXT, sparklinePoints } from '@/lib/health';
 import {
   HEALTH_ACCESS_LABEL,
   HEALTH_ACCESS_URL,
@@ -91,7 +91,7 @@ function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath:
             'Нет данных'
           ) : (
             <>
-              {`${formatValue(latest.value)} ${metric.canonical_unit}`}
+              {formatQuantity(metric.identifier, latest.value, metric.canonical_unit)}
               {latest.date !== localDate() && (
                 <span className="block text-xs">{dayLabel(latest.date)}</span>
               )}
@@ -100,7 +100,7 @@ function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath:
                   className={`block text-xs ${baseline.outside_typical ? 'text-lime' : ''}`}
                 >
                   {baseline.day !== latest.date && `${dayLabel(baseline.day)}: `}
-                  {deviationText(baseline, metric.canonical_unit)}
+                  {deviationText(baseline, metric.identifier, metric.canonical_unit)}
                   {baseline.outside_typical && `, ${OUTSIDE_TYPICAL_TEXT}`}
                 </span>
               )}

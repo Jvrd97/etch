@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68
-# summary: Health DTOs — raw-sample intake payload (quantity and category samples, optional sync-run bookkeeping), the metrics-with-daily-values response, the sleep nights response and the sync-status journal view
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68, PHASE-02/70
+# summary: Health DTOs — raw-sample intake payload (quantity and category samples, workouts, optional sync-run bookkeeping), the metrics-with-daily-values response, the sleep nights response and the sync-status journal view
 """
 Wire types of the Health contour.
 
@@ -13,8 +13,11 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+
+from app.health.workouts import ACTIVITY_TYPE_PATTERN, MAX_ACTIVITY_TYPE_LENGTH
 
 # A chunk is one week of one device. The bound is a DoS guard: every sample in a
 # request is materialised before anything is written.
@@ -76,6 +79,43 @@ class HealthCategorySampleIn(BaseModel):
     )
 
 
+class HealthWorkoutIn(BaseModel):
+    """
+    One `HKWorkout` as the device read it. The UUID is HealthKit's own, which makes
+    a re-sent window an overwrite. The optional numbers are absent when HealthKit
+    holds none for the workout; the phone sends no zero in their place.
+    """
+
+    uuid: UUID
+    activity_type: str = Field(
+        ...,
+        pattern=ACTIVITY_TYPE_PATTERN,
+        max_length=MAX_ACTIVITY_TYPE_LENGTH,
+        description="HKWorkoutActivityType in snake_case, e.g. 'running'",
+    )
+    start: datetime = Field(..., description="Workout start, timezone-aware")
+    end: datetime = Field(..., description="Workout end, timezone-aware")
+    utc_offset_minutes: int = Field(
+        ...,
+        ge=-int(18 * 60),
+        le=int(18 * 60),
+        description="Device UTC offset at the start; defines the local date",
+    )
+    duration_seconds: float = Field(
+        ..., ge=0, description="Active duration HealthKit reports, in seconds"
+    )
+    energy_kcal: float | None = Field(None, ge=0)
+    distance_m: float | None = Field(None, ge=0)
+    avg_heart_rate: float | None = Field(None, gt=0, description="beats per minute")
+    max_heart_rate: float | None = Field(None, gt=0, description="beats per minute")
+
+    @model_validator(mode="after")
+    def _ends_after_it_starts(self) -> HealthWorkoutIn:
+        if self.end < self.start:
+            raise ValueError("a workout cannot end before it starts")
+        return self
+
+
 class HealthSamplesRequest(BaseModel):
     """One chunk of raw samples. Processed whole or not at all."""
 
@@ -83,6 +123,11 @@ class HealthSamplesRequest(BaseModel):
     # Category types. A chunk carries every interval of each night it touches:
     # the server overwrites a night with what the chunk holds for it.
     category_samples: list[HealthCategorySampleIn] = Field(
+        default_factory=list, max_length=MAX_SAMPLES_PER_CHUNK
+    )
+
+    # Workouts: events with their own UUID, upserted one by one.
+    workouts: list[HealthWorkoutIn] = Field(
         default_factory=list, max_length=MAX_SAMPLES_PER_CHUNK
     )
 
@@ -104,7 +149,7 @@ class HealthSamplesRequest(BaseModel):
 
     @property
     def sample_count(self) -> int:
-        return len(self.samples) + len(self.category_samples)
+        return len(self.samples) + len(self.category_samples) + len(self.workouts)
 
     @model_validator(mode="after")
     def _chunk_bound_covers_both_lists(self) -> HealthSamplesRequest:
@@ -233,6 +278,31 @@ class HealthSleepResponse(BaseModel):
     """Nights of a date range, oldest first; a night with no data is absent, not zero."""
 
     nights: list[HealthSleepNightOut]
+
+
+class HealthWorkoutOut(BaseModel):
+    """
+    One workout. `start`/`end` carry the offset the device lived at, so "18:00" is the
+    string's own clock. A number HealthKit did not hold is `null`, never zero.
+    """
+
+    id: UUID
+    activity_type: str
+    activity_label: str
+    date: date
+    start: datetime
+    end: datetime
+    duration_min: float
+    energy_kcal: float | None
+    distance_m: float | None
+    avg_heart_rate: float | None
+    max_heart_rate: float | None
+
+
+class HealthWorkoutsResponse(BaseModel):
+    """Workouts of a date range by start date, oldest first."""
+
+    workouts: list[HealthWorkoutOut]
 
 
 class HealthSyncFailureIn(BaseModel):

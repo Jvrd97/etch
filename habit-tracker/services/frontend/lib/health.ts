@@ -87,11 +87,55 @@ export function sparklinePoints(
   });
 }
 
+/** Raw HealthKit units that print differently on the screen; a unit not listed here prints as it is. */
+const UNIT_LABELS: Readonly<Record<string, string>> = {
+  count: "",
+  "count/min": "уд/мин",
+  kg: "кг",
+  g: "г",
+  mg: "мг",
+  mcg: "мкг",
+  m: "м",
+  cm: "см",
+  "m/s": "м/с",
+  min: "мин",
+  ms: "мс",
+  kcal: "ккал",
+  degC: "°C",
+  mL: "мл",
+  L: "л",
+  dBASPL: "дБ",
+  mmHg: "мм рт. ст.",
+};
+
+/** A bare count means something only for some metrics: steps, flights of stairs. */
+const COUNT_LABELS: Readonly<Record<string, string>> = {
+  HKQuantityTypeIdentifierStepCount: "шагов",
+  HKQuantityTypeIdentifierFlightsClimbed: "этажей",
+  HKQuantityTypeIdentifierRespiratoryRate: "дых/мин",
+};
+
+const BREATHS_PER_MIN_IDENTIFIER = "HKQuantityTypeIdentifierRespiratoryRate";
+
+/** The unit as a reader would say it: no `count`, no `count/min`; empty when there is no word for it. */
+export function unitLabel(identifier: string, unit: string): string {
+  if (identifier === BREATHS_PER_MIN_IDENTIFIER) return COUNT_LABELS[identifier];
+  if (unit === "count") return COUNT_LABELS[identifier] ?? "";
+  return UNIT_LABELS[unit] ?? unit;
+}
+
+/** `4321 шагов`, `67.3 уд/мин`, or just `3` for a bare count. */
+export function formatQuantity(identifier: string, value: number, unit: string): string {
+  const label = unitLabel(identifier, unit);
+  return label === "" ? formatValue(value) : `${formatValue(value)} ${label}`;
+}
+
 /** `+0.4 кг к обычному`, or `как обычно` when the day sits exactly on the mean. */
-export function deviationText(baseline: HealthBaseline, unit: string): string {
+export function deviationText(baseline: HealthBaseline, identifier: string, unit: string): string {
   const rounded = Number(baseline.deviation.toFixed(ROUND_DIGITS));
   if (rounded === 0) return "как обычно";
-  return `${rounded > 0 ? "+" : "−"}${formatValue(Math.abs(rounded))} ${unit} к обычному`;
+  const label = unitLabel(identifier, unit);
+  return `${rounded > 0 ? "+" : "−"}${formatValue(Math.abs(rounded))}${label === "" ? "" : ` ${label}`} к обычному`;
 }
 
 /** The marker next to a deviation beyond the metric's usual spread; text, so colour is not the only signal. */

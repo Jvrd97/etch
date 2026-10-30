@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
+// [review:need-review] PHASE-02/70, PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
 // summary: Health section tests for its catalog (every quantity type but cycle tracking, seven groups), first-entry authorization (every category type in the same sheet), complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
 
 import HealthKit
@@ -34,10 +34,14 @@ final class HealthSyncViewModelTests: XCTestCase {
         await viewModel.enterSection()
 
         XCTAssertEqual(reader.authorizationRequests, 1)
-        // Every category type, sleep included, is asked in the same sheet as the quantity types.
+        // Every category type, sleep included, and the workout type are asked in the same sheet
+        // as the quantity types.
         XCTAssertEqual(
             reader.requestedIdentifiers,
-            Set(HealthMetricCatalog.metrics.map(\.identifier) + HealthCategoryCatalog.categories.map(\.identifier))
+            Set(
+                HealthMetricCatalog.metrics.map(\.identifier) + HealthCategoryCatalog.categories.map(\.identifier)
+                    + [HealthWorkoutCatalog.identifier]
+            )
         )
         XCTAssertEqual(reader.readIdentifiers, Set(HealthMetricCatalog.metrics.map(\.identifier)))
         XCTAssertEqual(reader.readCalls, 1)

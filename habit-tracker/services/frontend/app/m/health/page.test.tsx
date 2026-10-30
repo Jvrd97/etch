@@ -91,7 +91,7 @@ describe('/m/health', () => {
     expect(screen.getByText('Сердце и дыхание')).toBeDefined();
     expect(screen.getByText('Тело')).toBeDefined();
     expect(screen.getByText('Питание')).toBeDefined();
-    expect(screen.getByText('4321 count')).toBeDefined();
+    expect(screen.getByText('4321')).toBeDefined();
     expect(screen.getAllByText('Нет данных')).toHaveLength(3);
     expect(screen.queryByText(/Доступ запрещён/i)).toBeNull();
   });
@@ -140,14 +140,14 @@ describe('/m/health', () => {
     getSleep.mockImplementationOnce(() => Promise.reject(new Error('network down')));
     render(<HealthPage />);
 
-    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
     expect(screen.queryByRole('heading', { name: 'Сон' })).toBeNull();
   });
 
   it('links every catalog row to its detail screen', async () => {
     render(<HealthPage />);
 
-    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
     expect(screen.getByRole('link', { name: /Шаги/ }).getAttribute('href')).toBe('/m/health/steps');
   });
 });

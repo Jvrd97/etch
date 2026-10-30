@@ -5,13 +5,13 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { HealthMetric } from '@/lib/api';
 import { localDate } from '@/lib/health-metrics';
-import { deviationText, sparklinePoints } from '@/lib/health';
+import { deviationText, formatQuantity, sparklinePoints, unitLabel } from '@/lib/health';
 import HealthMetricGroups from './HealthMetricGroups';
 
 afterEach(cleanup);
 
 const HEART: HealthMetric = {
-  identifier: 'heart',
+  identifier: 'HKQuantityTypeIdentifierHeartRate',
   kind: 'discrete',
   canonical_unit: 'count/min',
   display_name: 'Пульс',
@@ -24,7 +24,7 @@ const HEART: HealthMetric = {
 };
 
 const STEPS: HealthMetric = {
-  identifier: 'steps',
+  identifier: 'HKQuantityTypeIdentifierStepCount',
   kind: 'cumulative',
   canonical_unit: 'count',
   display_name: 'Шаги',
@@ -50,8 +50,8 @@ function row(name: string): HTMLElement {
 describe('catalog rows', () => {
   it('prints the value with the one formatter and shows the deviation from the baseline', () => {
     render(<HealthMetricGroups metrics={[HEART, STEPS, WEIGHT]} basePath="/health" />);
-    expect(screen.getByText('67.3 count/min')).toBeDefined();
-    expect(screen.getByText('+5.3 count/min к обычному, вне обычного')).toBeDefined();
+    expect(screen.getByText('67.3 уд/мин')).toBeDefined();
+    expect(screen.getByText('+5.3 уд/мин к обычному, вне обычного')).toBeDefined();
   });
 
   it('shows no deviation without a baseline, and no overall score', () => {
@@ -102,12 +102,23 @@ describe('a deviation about another day than the shown one', () => {
       baseline: { mean: 1200, stddev: 100, days: 20, day: '2026-10-19', deviation: 300, outside_typical: true },
     };
     render(<HealthMetricGroups metrics={[steps]} basePath="/health" />);
-    expect(row('Шаги').textContent).toContain('19 окт.: +300 count к обычному');
+    expect(row('Шаги').textContent).toContain('19 окт.: +300 шагов к обычному');
   });
 
   it('adds no prefix when the days coincide', () => {
     render(<HealthMetricGroups metrics={[HEART]} basePath="/health" />);
     expect(row('Пульс').textContent).not.toContain(': +5.3');
+  });
+});
+
+describe('units on the screen', () => {
+  it('never prints a raw HealthKit unit', () => {
+    expect(unitLabel('HKQuantityTypeIdentifierStepCount', 'count')).toBe('шагов');
+    expect(unitLabel('HKQuantityTypeIdentifierHeartRate', 'count/min')).toBe('уд/мин');
+    expect(unitLabel('HKQuantityTypeIdentifierRespiratoryRate', 'count/min')).toBe('дых/мин');
+    expect(unitLabel('HKQuantityTypeIdentifierSomethingCounted', 'count')).toBe('');
+    expect(formatQuantity('HKQuantityTypeIdentifierSomethingCounted', 3, 'count')).toBe('3');
+    expect(formatQuantity('HKQuantityTypeIdentifierStepCount', 4321, 'count')).toBe('4321 шагов');
   });
 });
 
@@ -126,7 +137,7 @@ describe('sparkline vocabulary', () => {
 
   it('words the deviation by sign', () => {
     const base = { mean: 10, stddev: 1, days: 9, day: '2026-10-20', outside_typical: false };
-    expect(deviationText({ ...base, deviation: -12.04 }, 'кг')).toBe('−12 кг к обычному');
-    expect(deviationText({ ...base, deviation: 0.01 }, 'кг')).toBe('как обычно');
+    expect(deviationText({ ...base, deviation: -12.04 }, 'HKQuantityTypeIdentifierBodyMass', 'kg')).toBe('−12 кг к обычному');
+    expect(deviationText({ ...base, deviation: 0.01 }, 'HKQuantityTypeIdentifierBodyMass', 'kg')).toBe('как обычно');
   });
 });

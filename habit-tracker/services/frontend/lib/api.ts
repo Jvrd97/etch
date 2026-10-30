@@ -1,7 +1,7 @@
 /**
  * API Client for Habit Tracker Backend
  */
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176, PHASE-01/206, PHASE-03/238, PHASE-03/272, PHASE-02/68, PHASE-02/69
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, PHASE-01/201, PHASE-02/65, PHASE-03/86, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/93, PHASE-03/94, PHASE-03/109, PHASE-03/110, PHASE-03/111, PHASE-03/115, PHASE-03/116, PHASE-03/117, PHASE-03/118, PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/134, PHASE-03/143, PHASE-03/147, PHASE-03/152, 175, #176, PHASE-01/206, PHASE-03/238, PHASE-03/272, PHASE-02/68, PHASE-02/70, PHASE-02/69
 // summary: entriesAPI.getAll takes the backend's `sort` — `created_at_desc` plus a limit fetches the last written entry without pulling the history; dayAPI reads one day with the rule it is judged by, its plan, its marks and its итог, and writes back a whole plan, a single mark, the day's notebook or one of the two touches that close the day — the 15:40 review and the evening final, each idempotent by its own key — edits one line of the plan at a time, marks the anchors of a day by kind, writes its training, and reads and edits the work intervals a day's measured time is made of; goalsAPI reads the goal board and moves one milestone; rolesAPI reads the distribution of a day's minutes together with its acts and writes both by hand; trainingAPI reads the derived state with its gated suggestion and opens or closes a complaint; chatAPI keeps the conversation feed, streams one turn through fetch + ReadableStream instead of waiting for a whole body, resets a stuck dialogue, reads back the day card the prompt carried, and applies a plan the chat proposed; dayRulesAPI reads every version of the day canon and publishes the next one; daysAPI reads a range of days, weeksAPI reads and writes one week, and quickMarksAPI is the whole contract of a quick mark — the directory with today's state on it, the button entered, patched, reordered and deleted by hand, one POST per tap whose answer already carries the new sum, the undo of the last tap and the split of taps by source
 // summary: every request now carries the session cookie (`credentials: 'include'`) and a 401 sends the reader to the login screen; authAPI trades the key for that cookie and drops it again
 // [review:need-review] PHASE-01/178-builtin-category-templates
@@ -4001,6 +4001,29 @@ export interface HealthSleepResponse {
   nights: HealthSleepNight[];
 }
 
+/**
+ * `#70`: one workout from Apple Health. `date` is the day it started on; `start`/`end`
+ * carry the offset the phone lived at, so the wall-clock time is read from the string.
+ * A number HealthKit did not hold is `null`, never zero.
+ */
+export interface HealthWorkout {
+  id: string;
+  activity_type: string;
+  activity_label: string;
+  date: string;
+  start: string;
+  end: string;
+  duration_min: number;
+  energy_kcal: number | null;
+  distance_m: number | null;
+  avg_heart_rate: number | null;
+  max_heart_rate: number | null;
+}
+
+export interface HealthWorkoutsResponse {
+  workouts: HealthWorkout[];
+}
+
 /** `#68`: the daily series of one metric — the same numbers as the catalog list. */
 export interface HealthMetricDays {
   identifier: string;
@@ -4050,6 +4073,10 @@ export const healthAPI = {
   getSleep: async (dateFrom: string, dateTo: string) => {
     const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
     return fetcher<HealthSleepResponse>(`/health/sleep?${query.toString()}`);
+  },
+  getWorkouts: async (dateFrom: string, dateTo: string) => {
+    const query = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    return fetcher<HealthWorkoutsResponse>(`/health/workouts?${query.toString()}`);
   },
 };
 
