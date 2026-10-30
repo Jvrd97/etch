@@ -32,6 +32,7 @@ xcodebuild test -project HabitTracker.xcodeproj -scheme HabitTracker \
 | `Features/DailySummary/DailySummaryView.swift` | #213 |
 | экран блокировки: модификатор `.appLock()` в `HabitTrackerApp` | #214 |
 | `Features/HealthSync/`, вкладка Health | #131 |
+| `Features/Health/` (список метрик, детальный экран), `API/*HealthMetrics*` | #268 |
 | `Features/Life/LifeView.swift`, More → Жизнь | #265 |
 | `Features/Goals/`, строка «Цели» в More | #216 |
 | `Features/Onboarding/OnboardingView.swift`, More → Онбординг и лист первого запуска (`.onboardingGate` в `RootView`) | #267 |

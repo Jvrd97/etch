@@ -5,6 +5,7 @@
 // [review:need-review] PHASE-01/208, PHASE-03/229, PHASE-03/230, PHASE-03/250
 // [review:need-review] PHASE-03/240 — the «Добавки» row under More (one case, one title, one icon, one screen line)
 // [review:need-review] PHASE-01/216 — the Goals screen line under More
+// [review:need-review] PHASE-01/268 — the Health tab opens the metrics list (the pump screen is one row away)
 // summary: root tab bar (Today, Day, Chat, Health, More) — each tab owns one NavigationStack, More lists the remaining screens (+ the Неделя row under More, #229; the More stack hands its pushed screens a hold/release by token, so several instances of one screen cannot lift each other's block, #250)
 import SwiftUI
 
@@ -40,7 +41,7 @@ struct RootView: View {
         case .chat:
             NavigationStack { ChatView() }
         case .health:
-            NavigationStack { HealthSyncView(viewModel: .live()) }
+            NavigationStack { HealthMetricsView(viewModel: .live()) }
         case .more:
             NavigationStack(path: Binding(get: { navigation.morePath }, set: { navigation.setMorePath($0) })) {
                 MoreList()
