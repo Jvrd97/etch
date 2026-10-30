@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: Health contour tables — metric catalogue, the hourly bucket keyed by (metric, local_date, hour) and the sync-run journal
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
+# summary: Health contour tables — metric catalogue, the hourly bucket keyed by (metric, local_date, hour), the sleep night keyed by its wake date and the sync-run journal
 from __future__ import annotations
 
 import uuid
@@ -117,6 +117,44 @@ class HealthHourBucket(Base):
             f"<HealthHourBucket(metric_id={self.metric_id}, "
             f"date={self.local_date}, hour={self.hour}, value={self.value})>"
         )
+
+
+class HealthSleepNight(Base):
+    """
+    One night of sleep, keyed by the local date the person woke up on.
+
+    Sleep does not fit an hourly bucket: its numbers (minutes per stage,
+    bedtime, wake time) belong to a night that crosses midnight. The fold lives
+    in `app.health.sleep`; a chunk carries every interval of each night it
+    touches, so a re-sent night overwrites its row, as an hour does a bucket.
+
+    `bedtime`/`wake_time` are instants; `utc_offset_minutes` is the clock the
+    device lived on at wake time, which is how a reader shows "23:40".
+    """
+
+    __tablename__ = "health_sleep_nights"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wake_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+
+    bedtime: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    wake_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    utc_offset_minutes: Mapped[int] = mapped_column(Integer)
+
+    in_bed_min: Mapped[float] = mapped_column(Float)
+    asleep_min: Mapped[float] = mapped_column(Float)
+    awake_min: Mapped[float] = mapped_column(Float)
+    core_min: Mapped[float] = mapped_column(Float)
+    deep_min: Mapped[float] = mapped_column(Float)
+    rem_min: Mapped[float] = mapped_column(Float)
+    unspecified_min: Mapped[float] = mapped_column(Float)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<HealthSleepNight(wake_date={self.wake_date})>"
 
 
 class HealthSyncRun(Base):

@@ -865,3 +865,6 @@ Avoid-стрик карточка «N дней чистый» на экране 
 - `HabitTracker/Features/HealthSync/HealthPump.swift` — mod, свойство `syncLog` и одна строка записи после прогона.
 - `HabitTracker/Features/HealthSync/HealthSyncView.swift` — mod, ссылка на экран журнала.
 - `SESSION_REVIEW.md` — mod.
+## 2026-10-30 — #238 сон из HealthKit
+
+Файлы (10, все mod): `API/DTOs+Health.swift`, `Features/HealthSync/HealthDataReader.swift`, `HealthKitSampleSource.swift`, `HealthMetricCatalog.swift`, `HealthPump.swift`, `HealthSyncView.swift`, тесты `HealthAPIClientTests`, `HealthPumpTests`, `HealthSampleMappingTests`, `HealthSyncViewModelTests`. Насос читает сон сырыми интервалами с 18:00 накануне окна и шлёт их `category_samples` в том же чанке и прогоне; разрешение на сон — в одном листе с остальными. Точка журнала #273 в `HealthPump.swift` не сдвинута (`joinOrStart`/`run` прежние). Проверки: полный прогон 950/0 на sw-132. Не проверено: на устройстве с настоящими данными сна (#215).

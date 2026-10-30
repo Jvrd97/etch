@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254
-// summary: HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (catalogue kinds, HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238
+// summary: HKCategorySample (sleep) → HealthCategorySampleDTO with the raw stage, UTC instants and the offset at its end, the five-field shape and the sleep body the server fixture expects; HKQuantitySample and HealthKit hourly sums → HealthSampleDTO (catalogue kinds, HealthKit unit vs wire unit with % sent as fraction, UTC instants, the device offset per hour across midnight and DST, empty hours dropped), the six-field wire shape and the body the server fixture expects
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -87,8 +87,17 @@ final class HealthSampleMappingTests: XCTestCase {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let rows = try decoder.decode([Row].self, from: Data(contentsOf: url))
 
-        XCTAssertEqual(Set(rows.map(\.identifier)), Set(HealthMetricCatalog.metrics.map(\.identifier)))
+        let categories = HealthCategoryCatalog.categories
+        XCTAssertEqual(
+            Set(rows.map(\.identifier)),
+            Set(HealthMetricCatalog.metrics.map(\.identifier) + categories.map(\.identifier))
+        )
         for row in rows {
+            if let category = categories.first(where: { $0.identifier == row.identifier }) {
+                // A category type is sent raw; the server's kind decides how it folds.
+                XCTAssertEqual(category.serverKind, row.kind, row.identifier)
+                continue
+            }
             let metric = try XCTUnwrap(HealthMetricCatalog.metrics.first { $0.identifier == row.identifier })
             XCTAssertEqual(metric.kind == .cumulative, row.kind == "cumulative", row.identifier)
             // A percentage is read as HealthKit's fraction and labelled `fraction`; the server converts it.
@@ -239,5 +248,97 @@ final class HealthSampleMappingTests: XCTestCase {
         XCTAssertEqual(samples[2]["unit"] as? String, "count/min")
         XCTAssertEqual(samples[2]["value"] as? Double, 54)
         XCTAssertEqual(samples[2]["start"] as? String, "2026-10-20T03:00:00.250Z")
+    }
+
+    // MARK: - Sleep
+
+    private static func sleep(
+        _ stage: HKCategoryValueSleepAnalysis, start: String, end: String, metadata: [String: Any]? = nil
+    ) -> HKCategorySample {
+        HKCategorySample(
+            type: HKCategoryType(.sleepAnalysis), value: stage.rawValue,
+            start: instant(start), end: instant(end), metadata: metadata
+        )
+    }
+
+    func testSleepIntervalBecomesItsRawStageAndUTCInstants() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+
+        let dto = mapper.dto(
+            Self.sleep(.asleepREM, start: "2026-10-20T01:00:00.000Z", end: "2026-10-20T02:00:00.000Z"),
+            category: HealthCategoryCatalog.sleep
+        )
+
+        XCTAssertEqual(dto, HealthCategorySampleDTO(
+            identifier: "HKCategoryTypeIdentifierSleepAnalysis", value: 5,
+            start: "2026-10-20T01:00:00.000Z", end: "2026-10-20T02:00:00.000Z", utcOffsetMinutes: 120
+        ))
+    }
+
+    func testSleepOffsetIsTheOneAtWakeTimeAcrossTheClockChange() {
+        // Berlin leaves summer time at 03:00 on 2026-10-25: in bed at +2, awake at +1.
+        let mapper = HealthSampleMapper(timeZone: berlin)
+
+        let dto = mapper.dto(
+            Self.sleep(.asleepCore, start: "2026-10-24T21:00:00.000Z", end: "2026-10-25T05:00:00.000Z"),
+            category: HealthCategoryCatalog.sleep
+        )
+
+        XCTAssertEqual(dto.utcOffsetMinutes, 60)
+    }
+
+    func testSleepRecordedInAnotherZoneKeepsThatZone() {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+
+        let dto = mapper.dto(
+            Self.sleep(
+                .asleepCore, start: "2026-10-20T04:30:00.000Z", end: "2026-10-20T11:30:00.000Z",
+                metadata: [HKMetadataKeyTimeZone: "America/New_York"]
+            ),
+            category: HealthCategoryCatalog.sleep
+        )
+
+        XCTAssertEqual(dto.utcOffsetMinutes, -240)
+    }
+
+    func testCategorySampleIsExactlyTheFiveServerFields() throws {
+        let dto = HealthCategorySampleDTO(
+            identifier: "HKCategoryTypeIdentifierSleepAnalysis", value: 3,
+            start: "2026-10-20T01:00:00.000Z", end: "2026-10-20T02:00:00.000Z", utcOffsetMinutes: 120
+        )
+        let fields: Set<String> = ["identifier", "value", "start", "end", "utc_offset_minutes"]
+
+        let data = try APIJSONCoding.makeEncoder().encode(dto)
+        let keys = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys
+
+        XCTAssertEqual(Set(keys), fields)
+        XCTAssertEqual(Mirror(reflecting: dto).children.count, fields.count)
+    }
+
+    /// Same values as `DEVICE_SLEEP_BODY` in `services/backend/tests/test_health_sleep_api.py`.
+    func testEncodedSleepChunkMatchesTheServerFixture() throws {
+        let mapper = HealthSampleMapper(timeZone: berlin)
+        let request = HealthSamplesRequestDTO(
+            samples: [],
+            categorySamples: [
+                Self.sleep(.asleepCore, start: "2026-10-19T21:30:00.000Z", end: "2026-10-20T01:00:00.000Z"),
+                Self.sleep(.asleepDeep, start: "2026-10-20T01:00:00.000Z", end: "2026-10-20T02:00:00.000Z"),
+            ].map { mapper.dto($0, category: HealthCategoryCatalog.sleep) }
+        )
+
+        let data = try APIJSONCoding.makeEncoder().encode(request)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let samples = try XCTUnwrap(json["category_samples"] as? [[String: Any]])
+
+        XCTAssertEqual((json["samples"] as? [Any])?.count, 0)
+        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples[0]["identifier"] as? String, "HKCategoryTypeIdentifierSleepAnalysis")
+        XCTAssertEqual(samples[0]["value"] as? Int, 3)
+        XCTAssertEqual(samples[0]["start"] as? String, "2026-10-19T21:30:00.000Z")
+        XCTAssertEqual(samples[0]["end"] as? String, "2026-10-20T01:00:00.000Z")
+        XCTAssertEqual(samples[0]["utc_offset_minutes"] as? Int, 120)
+        XCTAssertEqual(samples[1]["value"] as? Int, 4)
+        XCTAssertEqual(samples[1]["start"] as? String, "2026-10-20T01:00:00.000Z")
+        XCTAssertEqual(samples[1]["end"] as? String, "2026-10-20T02:00:00.000Z")
     }
 }

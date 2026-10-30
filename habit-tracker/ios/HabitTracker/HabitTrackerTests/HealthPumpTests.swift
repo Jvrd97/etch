@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132
-// summary: HealthPump on a fake HKHealthStore (raw samples and HealthKit hourly sums) and a fake API — read-only request, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238
+// summary: HealthPump on a fake HKHealthStore (raw samples, HealthKit hourly sums and sleep intervals) and a fake API — read-only request with sleep in the same sheet, sleep as raw stages in the same chunk and run from 18:00 before the window and never split, cumulative metrics as deduplicated hourly sums anchored at local midnight, discrete as samples, empty hours dropped, whole metrics per chunk, retry of transient failures only (never of an encoding failure), authorization failures named, one run for concurrent callers, a launch run that never shows the permission sheet, the sync-run bookkeeping on every chunk (one run id, kind, device id, position) and a dead run reported by class without inventing a success
 import HealthKit
 import XCTest
 @testable import HabitTracker
@@ -60,9 +60,17 @@ final class HealthPumpTests: XCTestCase {
         ]
     }
 
-    private var stepsAndRestingHeartRate: Set<String> {
-        [HKQuantityTypeIdentifier.stepCount.rawValue, HKQuantityTypeIdentifier.restingHeartRate.rawValue]
+    /// What the pump asks to read: the two pumped quantity types and sleep, in one sheet.
+    private var pumpedTypes: Set<String> {
+        [
+            HKQuantityTypeIdentifier.stepCount.rawValue,
+            HKQuantityTypeIdentifier.restingHeartRate.rawValue,
+            HKCategoryTypeIdentifier.sleepAnalysis.rawValue,
+        ]
     }
+
+    /// 18:00 in Berlin the evening before the window: the first night of the window starts collecting here.
+    private static let sleepWindowStart = instant("2026-10-13T16:00:00Z")
 
     func testManualSyncAsksReadOnlyAccessThenSendsTheWeekAsOneChunk() async {
         fillWeek()
@@ -71,7 +79,7 @@ final class HealthPumpTests: XCTestCase {
         let outcome = await makePump().sync()
 
         XCTAssertEqual(outcome, .sent([Self.accepted]))
-        XCTAssertEqual(store.authorizationRequests, [stepsAndRestingHeartRate])
+        XCTAssertEqual(store.authorizationRequests, [pumpedTypes])
         XCTAssertEqual(store.sumQueries.map(\.type), [HKQuantityTypeIdentifier.stepCount.rawValue])
         XCTAssertEqual(store.queries.map(\.type), [HKQuantityTypeIdentifier.restingHeartRate.rawValue])
         XCTAssertTrue((store.queries + store.sumQueries).allSatisfy { $0.from == Self.windowStart && $0.to == Self.now })
@@ -82,6 +90,56 @@ final class HealthPumpTests: XCTestCase {
             HKQuantityTypeIdentifier.restingHeartRate.rawValue,
         ])
         XCTAssertEqual(api.posted.first?.samples.first?.utcOffsetMinutes, 120)
+    }
+
+    func testSleepGoesAsRawStagesInTheSameChunkFromTheEveningBeforeTheWindow() async {
+        fillWeek()
+        store.categories[.sleepAnalysis] = [
+            FakeHealthStore.sleep(.asleepCore, "2026-10-19T21:30:00Z", "2026-10-20T01:00:00Z"),
+            FakeHealthStore.sleep(.asleepDeep, "2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z"),
+        ]
+        api.script = [.success(Self.accepted)]
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .sent([Self.accepted]))
+        XCTAssertEqual(store.categoryQueries.map(\.type), [HKCategoryTypeIdentifier.sleepAnalysis.rawValue])
+        XCTAssertEqual(store.categoryQueries.first?.from, Self.sleepWindowStart)
+        XCTAssertEqual(store.categoryQueries.first?.to, Self.now)
+        XCTAssertEqual(api.posted.count, 1)
+        let chunk = api.posted[0]
+        XCTAssertEqual(chunk.samples.count, 3)
+        XCTAssertEqual(chunk.categorySamples.map(\.value), [3, 4])
+        XCTAssertEqual(Set(chunk.categorySamples.map(\.identifier)), [HKCategoryTypeIdentifier.sleepAnalysis.rawValue])
+        XCTAssertEqual(chunk.categorySamples.first?.utcOffsetMinutes, 120)
+        XCTAssertEqual(chunk.syncRunId, Self.runId.uuidString)
+    }
+
+    func testSleepAloneIsSomethingToSend() async {
+        store.categories[.sleepAnalysis] = [
+            FakeHealthStore.sleep(.inBed, "2026-10-19T21:00:00Z", "2026-10-20T05:00:00Z"),
+        ]
+
+        let outcome = await makePump().sync()
+
+        XCTAssertEqual(outcome, .sent([FakeHealthAPI.defaultReply]))
+        XCTAssertEqual(api.posted.first?.samples, [])
+        XCTAssertEqual(api.posted.first?.categorySamples.count, 1)
+    }
+
+    func testSleepIsOneWholeMetricWhenChunksSplit() async {
+        fillWeek()
+        store.categories[.sleepAnalysis] = [
+            FakeHealthStore.sleep(.asleepCore, "2026-10-19T21:30:00Z", "2026-10-20T01:00:00Z"),
+            FakeHealthStore.sleep(.asleepREM, "2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z"),
+        ]
+
+        _ = await makePump(chunkLimit: 3).sync()
+
+        // Steps (2) and resting HR (1) fill the first chunk; the night goes whole into the next.
+        XCTAssertEqual(api.posted.map(\.samples.count), [3, 0])
+        XCTAssertEqual(api.posted.map(\.categorySamples.count), [0, 2])
+        XCTAssertEqual(api.posted.map(\.chunksTotal), [2, 2])
     }
 
     func testEmptyWeekSendsNothingAndSaysSo() async {
@@ -124,7 +182,7 @@ final class HealthPumpTests: XCTestCase {
 
         XCTAssertEqual(outcome, .sent([Self.accepted]))
         XCTAssertTrue(store.authorizationRequests.isEmpty)
-        XCTAssertEqual(store.statusChecks, [stepsAndRestingHeartRate])
+        XCTAssertEqual(store.statusChecks, [pumpedTypes])
         XCTAssertEqual(api.posted.count, 1)
     }
 
@@ -438,6 +496,7 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     /// What HKStatisticsCollectionQuery would hand back: already deduplicated across sources.
     var hourSums: [HKQuantityTypeIdentifier: [HealthHourSum]] = [:]
     var latest: [HKQuantityTypeIdentifier: HKQuantitySample] = [:]
+    var categories: [HKCategoryTypeIdentifier: [HKCategorySample]] = [:]
     var readError: Error?
     /// Fails only the hourly-sum query; samples and the latest reading are unaffected.
     var sumError: Error?
@@ -449,10 +508,11 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
     private(set) var statusChecks: [Set<String>] = []
     private(set) var queries: [(type: String, from: Date, to: Date)] = []
     private(set) var sumQueries: [(type: String, from: Date, to: Date)] = []
+    private(set) var categoryQueries: [(type: String, from: Date, to: Date)] = []
 
     var healthDataAvailable: Bool { available }
 
-    func readAuthorizationRequestStatus(for types: Set<HKQuantityType>) async throws -> HKAuthorizationRequestStatus {
+    func readAuthorizationRequestStatus(for types: Set<HKObjectType>) async throws -> HKAuthorizationRequestStatus {
         statusChecks.append(Set(types.map(\.identifier)))
         if let authorizationError {
             throw authorizationError
@@ -460,7 +520,7 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
         return requestStatus
     }
 
-    func requestReadAuthorization(for types: Set<HKQuantityType>) async throws {
+    func requestReadAuthorization(for types: Set<HKObjectType>) async throws {
         authorizationRequests.append(Set(types.map(\.identifier)))
         if let authorizationError {
             throw authorizationError
@@ -489,6 +549,14 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
         return hourSums[HKQuantityTypeIdentifier(rawValue: type.identifier)] ?? []
     }
 
+    func categorySamples(of type: HKCategoryType, from: Date, to: Date) async throws -> [HKCategorySample] {
+        categoryQueries.append((type.identifier, from, to))
+        if let readError {
+            throw readError
+        }
+        return categories[HKCategoryTypeIdentifier(rawValue: type.identifier)] ?? []
+    }
+
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
         if let readError {
             throw readError
@@ -505,6 +573,17 @@ final class FakeHealthStore: HealthStoreQuerying, @unchecked Sendable {
             start: begin,
             end: begin.addingTimeInterval(secondsPerHour),
             sum: steps.map { HKQuantity(unit: .count(), doubleValue: $0) }
+        )
+    }
+
+    /// One sleep interval of `stage` between two ISO instants.
+    static func sleep(_ stage: HKCategoryValueSleepAnalysis, _ start: String, _ end: String) -> HKCategorySample {
+        let formatter = ISO8601DateFormatter()
+        return HKCategorySample(
+            type: HKCategoryType(.sleepAnalysis),
+            value: stage.rawValue,
+            start: formatter.date(from: start)!,
+            end: formatter.date(from: end)!
         )
     }
 

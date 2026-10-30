@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65
-# summary: Health API integration tests, including the complete catalog and runtime-added metrics
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/238
+# summary: Health API integration tests, including the complete catalog (24 quantity metrics and sleep) and runtime-added metrics
 """
 Tests for `POST /api/v1/health/samples` and `GET /api/v1/health/metrics`.
 
@@ -30,6 +30,7 @@ EXPECTED_GROUP_SIZES = {
     "heart": 7,
     "body": 5,
     "nutrition": 5,
+    "sleep": 1,
 }
 
 EXPECTED_CATALOG = {
@@ -132,6 +133,7 @@ EXPECTED_CATALOG = {
         "nutrition",
     ),
     "HKQuantityTypeIdentifierDietaryWater": ("cumulative", "mL", "Вода", "nutrition"),
+    "HKCategoryTypeIdentifierSleepAnalysis": ("sleep", "min", "Сон", "sleep"),
 }
 
 
@@ -334,7 +336,7 @@ class TestMetricsRead:
         }
         assert all(m["days"] == [] for m in metrics)
 
-    async def test_catalog_has_exactly_the_four_canonical_groups(
+    async def test_catalog_has_exactly_the_canonical_groups(
         self, client: AsyncClient
     ) -> None:
         response = await client.get(

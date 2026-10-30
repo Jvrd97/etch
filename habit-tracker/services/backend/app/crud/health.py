@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132
-# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind) — catalogue seed/read, natural-key upsert of hourly buckets, daily fold by local_date, and the one comparison of a metric against the window before it that the week review and the advice share
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238
+# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, a duration type into hourly minutes) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
 
@@ -11,7 +11,7 @@ bucket was already written in the calendar the user lived.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -21,9 +21,25 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.health.aggregate import HourBucket, MetricKind, fold_daily
+from app.health.aggregate import (
+    HourBucket,
+    MetricKind,
+    RawSample,
+    UnitError,
+    aggregate_samples,
+    fold_daily,
+)
 from app.health.catalog import SEED_METRICS
-from app.models.health import HealthHourBucket, HealthMetric, HealthSyncRun
+from app.health.sleep import SleepInterval, SleepNight, fold_nights, stage_of
+from app.models.health import (
+    HealthHourBucket,
+    HealthMetric,
+    HealthSleepNight,
+    HealthSyncRun,
+)
+from app.schemas.health import HealthCategorySampleIn
+
+SECONDS_PER_MINUTE = 60
 
 
 # Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
@@ -50,7 +66,8 @@ class HealthSpec(NamedTuple):
 # Ключ в ответе, подпись на случай отсутствия метрики и идентификатор каталога.
 # Имя метрики, которая в каталоге есть, берётся у каталога: «тренировки» было бы
 # подменой названия `Минуты тренировки`. Метрика, которой в каталоге нет, едет с
-# `available=false`, а не нулями. Когда #238 заведёт сон, правка — только здесь.
+# `available=false`, а не нулями. Сон в каталоге с #238: его день — минуты сна
+# ночи, закончившейся в этот день.
 HEALTH_SPECS: tuple[HealthSpec, ...] = (
     HealthSpec("sleep", "Сон", "HKCategoryTypeIdentifierSleepAnalysis"),
     HealthSpec("steps", "Шаги", "HKQuantityTypeIdentifierStepCount"),
@@ -148,11 +165,24 @@ async def daily_values(
     the day's value is decided by `app.health.aggregate.fold_daily`, so the
     weighted-average rule is stated in exactly one place and is testable without
     a database. Days with no buckets simply do not appear — "нет данных" is not a
-    zero.
+    zero. Sleep has no buckets: its day is the minutes asleep of the night that
+    ended on it, read from `health_sleep_nights`.
     """
-    kinds = {metric.id: MetricKind(metric.kind) for metric in metrics}
+    kinds = {
+        metric.id: MetricKind(metric.kind)
+        for metric in metrics
+        if metric.kind != MetricKind.SLEEP
+    }
+    sleep = [metric.id for metric in metrics if metric.kind == MetricKind.SLEEP]
+    days: dict[int, list[DailyValue]] = {metric_id: [] for metric_id in kinds}
+    if sleep:
+        asleep = [
+            DailyValue(local_date=night.wake_date, value=night.asleep_min)
+            for night in await sleep_nights(db, date_from, date_to)
+        ]
+        days.update({metric_id: list(asleep) for metric_id in sleep})
     if not kinds:
-        return {}
+        return days
 
     result = await db.execute(
         select(
@@ -171,7 +201,6 @@ async def daily_values(
         .order_by(HealthHourBucket.metric_id, HealthHourBucket.local_date)
     )
 
-    days: dict[int, list[DailyValue]] = {metric_id: [] for metric_id in kinds}
     for metric_id, local_date, value_sum, weighted_sum, count_sum in result.all():
         value = fold_daily(
             kinds[metric_id],
@@ -183,6 +212,114 @@ async def daily_values(
             continue
         days[metric_id].append(DailyValue(local_date=local_date, value=value))
     return days
+
+
+async def upsert_nights(db: AsyncSession, nights: Sequence[SleepNight]) -> int:
+    """
+    Write nights on their wake date, overwriting what was there.
+
+    The same rule as `upsert_buckets`: a chunk carries every interval of each
+    night it touches, so the night it folds to is the newer answer.
+    """
+    if not nights:
+        return 0
+    rows = [
+        {
+            "wake_date": night.wake_date,
+            "bedtime": night.bedtime,
+            "wake_time": night.wake_time,
+            "utc_offset_minutes": night.utc_offset_minutes,
+            "in_bed_min": night.in_bed_min,
+            "asleep_min": night.asleep_min,
+            "awake_min": night.awake_min,
+            "core_min": night.core_min,
+            "deep_min": night.deep_min,
+            "rem_min": night.rem_min,
+            "unspecified_min": night.unspecified_min,
+        }
+        for night in nights
+    ]
+    statement = pg_insert(HealthSleepNight).values(rows)
+    statement = statement.on_conflict_do_update(
+        index_elements=[HealthSleepNight.wake_date],
+        set_={
+            **{
+                column: statement.excluded[column]
+                for column in rows[0]
+                if column != "wake_date"
+            },
+            "updated_at": func.now(),
+        },
+    )
+    await db.execute(statement)
+    return len(rows)
+
+
+async def sleep_nights(
+    db: AsyncSession, date_from: date, date_to: date
+) -> list[HealthSleepNight]:
+    """Nights whose wake date falls in the inclusive range, oldest first."""
+    result = await db.execute(
+        select(HealthSleepNight)
+        .where(
+            HealthSleepNight.wake_date >= date_from,
+            HealthSleepNight.wake_date <= date_to,
+        )
+        .order_by(HealthSleepNight.wake_date)
+    )
+    return list(result.scalars().all())
+
+
+async def ingest_category_samples(
+    db: AsyncSession,
+    catalog: Mapping[str, HealthMetric],
+    samples: Sequence[HealthCategorySampleIn],
+) -> int:
+    """
+    Write category samples by the kind their catalogue row names; rows written.
+
+    `sleep` folds into nights (`app.health.sleep`). `cumulative` treats each
+    sample as a duration and spreads its minutes over the local hours, so a
+    category type such as a mindful session needs a catalogue row, not code.
+    Any other kind cannot take an interval and raises `UnitError`, as an
+    unknown sleep stage raises `SleepValueError`; the caller refuses the chunk.
+    """
+    by_identifier: dict[str, list[HealthCategorySampleIn]] = {}
+    for sample in samples:
+        by_identifier.setdefault(sample.identifier, []).append(sample)
+
+    written = 0
+    for identifier, group in by_identifier.items():
+        metric = catalog[identifier]
+        kind = MetricKind(metric.kind)
+        if kind is MetricKind.SLEEP:
+            intervals = [
+                SleepInterval(
+                    stage=stage_of(sample.value),
+                    start=sample.start,
+                    end=sample.end,
+                    utc_offset_minutes=sample.utc_offset_minutes,
+                )
+                for sample in group
+            ]
+            written += await upsert_nights(db, fold_nights(intervals))
+        elif kind is MetricKind.CUMULATIVE:
+            durations = [
+                RawSample(
+                    value=(sample.end - sample.start).total_seconds()
+                    / SECONDS_PER_MINUTE,
+                    unit="min",
+                    start=sample.start,
+                    end=sample.end,
+                    utc_offset_minutes=sample.utc_offset_minutes,
+                )
+                for sample in group
+            ]
+            buckets = aggregate_samples(durations, kind, metric.canonical_unit)
+            written += await upsert_buckets(db, metric.id, buckets)
+        else:
+            raise UnitError(f"{identifier} does not take category samples")
+    return written
 
 
 @dataclass(frozen=True)

@@ -2361,3 +2361,15 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 Задержка первого круга Today, измерено на заглушке API (не на реальном бэкенде) с ответом 150 мс на запрос, dev-фронт, headless Chrome по CDP: до — запрос записей уходил через ~155 мс после `/day-mode`, два последовательных круга, ~300 мс до готового экрана; после — день, категории, записи и кнопки уходят в один момент, ~150 мс. `GET /day-mode` на загрузку: до 2 (хук и бейдж), после 1. Живой реальной базы нет: `habit_test_247` пуста, миграции в рое не запускаются.
 
 Остатки вне объёма (отдельный тикет, не делались): тренды дашборда (`useDashboard.ts` около 267, `trendDateRange(new Date())`), `todayISO()` в `app/chat/page.tsx:412`, `app/journal/page.tsx:175`, `app/m/journal/page.tsx:181`, `components/roles/RoleRulesScreen.tsx:69` (тот же UTC-баг), `hooks/useCategoryDetail.ts:95`, `hooks/useTable.ts:31-32`, `components/day/WorkIntervals.tsx:93`; бэкенд `GET /entries` без дат не подставляет `today_local()`.
+
+## 2026-10-30 — PHASE-03/238: секция сна на /health и /m/health
+
+Тронуто 8 файлов (3 `new`, 5 `mod`).
+
+- `components/health/SleepSection.tsx` — new: последняя ночь (сон, отбой и подъём по часам телефона, минуты по фазам) и ночи недели; до ответа — ничего, без ночей — честная строка.
+- `components/health/useSleepNights.ts` — new: чтение семи ночей; сбой убирает секцию, каталог остаётся.
+- `components/health/SleepSection.test.tsx` — new.
+- `app/health/page.tsx`, `app/m/health/page.tsx` и их тесты — mod: секция под блоком синка.
+- `lib/api.ts` — mod (добавлением): `HealthSleepNight`, `healthAPI.getSleep`, вид и группа `sleep`.
+
+Не проверено глазами: `next dev` не запускался (правило роя про `.next`); проверка — компонентные тесты и живой `GET /health/sleep` на 8938.

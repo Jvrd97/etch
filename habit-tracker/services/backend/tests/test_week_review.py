@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/255
-# summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with an absent sleep metric, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/255, PHASE-03/238
+# summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with sleep read from nights by wake date, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
 """
 Weekly review: one answer for the whole week, cut on the day boundary.
 
@@ -27,6 +27,7 @@ from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.day.debt import week_verdict_line
 from app.health.aggregate import HourBucket
+from app.health.sleep import SleepNight
 from app.llm.client import LLMClient, LLMError
 from app.main import app
 from app.models import Category, Entry, EntryValue, Field
@@ -143,6 +144,30 @@ async def add_health(db: AsyncSession, identifier: str, on: date, value: float) 
                 min_value=value,
                 max_value=value,
                 utc_offset_minutes=120,
+            )
+        ],
+    )
+    await db.commit()
+
+
+async def add_night(db: AsyncSession, wake_date: date, asleep_min: float) -> None:
+    """One night of sleep ending on `wake_date`, all of it core sleep."""
+    wake = datetime.combine(wake_date, datetime.min.time(), tzinfo=timezone.utc)
+    await health_crud.upsert_nights(
+        db,
+        [
+            SleepNight(
+                wake_date=wake_date,
+                bedtime=wake - timedelta(minutes=asleep_min),
+                wake_time=wake,
+                utc_offset_minutes=0,
+                in_bed_min=asleep_min,
+                asleep_min=asleep_min,
+                awake_min=0,
+                core_min=asleep_min,
+                deep_min=0,
+                rem_min=0,
+                unspecified_min=0,
             )
         ],
     )
@@ -535,9 +560,11 @@ async def test_an_avoid_category_not_yet_tracked_is_left_out(
     assert (await get_week(client))["habit_streaks"] == []
 
 
-async def test_health_is_compared_day_by_day_and_a_missing_sleep_metric_says_so(
+async def test_health_is_compared_day_by_day_and_sleep_reads_nights_by_wake_date(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    await add_night(db_session, MONDAY + timedelta(days=2), 420)
+    await add_night(db_session, PREVIOUS_MONDAY, 480)
     await add_health(db_session, STEPS, MONDAY, 8000)
     await add_health(db_session, STEPS, MONDAY + timedelta(days=1), 4000)
     await add_health(db_session, STEPS, PREVIOUS_MONDAY, 3000)
@@ -560,11 +587,14 @@ async def test_health_is_compared_day_by_day_and_a_missing_sleep_metric_says_so(
     workouts = health["workouts"]
     assert (workouts["total"], workouts["unit"]) == (45, "min")
     assert workouts["daily"][6] == 45
-    # Sleep is not in the catalogue: "нет такой метрики" is not "спал ноль часов".
+    # Sleep is minutes asleep of the night that ended that day; a day without a
+    # night is "нет данных", not "спал ноль часов".
     sleep = health["sleep"]
-    assert sleep["available"] is False
-    assert sleep["total"] is None and sleep["daily"] == [None] * 7
-    assert sleep["previous_days_with_data"] == 0
+    assert (sleep["available"], sleep["unit"]) == (True, "min")
+    assert sleep["daily"] == [None, None, 420, None, None, None, None]
+    assert (sleep["avg_per_day"], sleep["days_with_data"]) == (420, 1)
+    assert sleep["previous_avg_per_day"] == 480
+    assert sleep["delta_avg_per_day"] == -60
 
 
 async def test_role_shares_are_the_ones_of_the_weekly_role_summary(

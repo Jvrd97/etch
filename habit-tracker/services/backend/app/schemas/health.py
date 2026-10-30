@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics
-# summary: Health DTOs — raw-sample intake payload (with optional sync-run bookkeeping), the metrics-with-daily-values response and the sync-status journal view
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
+# summary: Health DTOs — raw-sample intake payload (quantity and category samples, optional sync-run bookkeeping), the metrics-with-daily-values response, the sleep nights response and the sync-status journal view
 """
 Wire types of the Health contour.
 
@@ -54,10 +54,37 @@ class HealthSampleIn(BaseModel):
     )
 
 
+class HealthCategorySampleIn(BaseModel):
+    """
+    One HealthKit category sample (sleep, a mindful session): an interval and
+    HealthKit's raw category value. For sleep the value is the stage
+    (`HKCategoryValueSleepAnalysis`, see `app.health.sleep.SleepStage`).
+    """
+
+    identifier: str = Field(
+        ...,
+        description="HealthKit type identifier, e.g. HKCategoryTypeIdentifierSleepAnalysis",
+    )
+    value: int = Field(..., description="HealthKit raw category value")
+    start: datetime = Field(..., description="Interval start, timezone-aware")
+    end: datetime = Field(..., description="Interval end, timezone-aware")
+    utc_offset_minutes: int = Field(
+        ...,
+        ge=-int(18 * 60),
+        le=int(18 * 60),
+        description="Device UTC offset when the sample was recorded",
+    )
+
+
 class HealthSamplesRequest(BaseModel):
     """One chunk of raw samples. Processed whole or not at all."""
 
     samples: list[HealthSampleIn] = Field(..., max_length=MAX_SAMPLES_PER_CHUNK)
+    # Category types. A chunk carries every interval of each night it touches:
+    # the server overwrites a night with what the chunk holds for it.
+    category_samples: list[HealthCategorySampleIn] = Field(
+        default_factory=list, max_length=MAX_SAMPLES_PER_CHUNK
+    )
 
     # Journal bookkeeping, all optional: a client that sends none of it gets a
     # one-chunk `rolling` run, so the lag still sees it.
@@ -74,6 +101,16 @@ class HealthSamplesRequest(BaseModel):
     chunks_total: int | None = Field(None, ge=1)
     range_from: date | None = None
     range_to: date | None = None
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.samples) + len(self.category_samples)
+
+    @model_validator(mode="after")
+    def _chunk_bound_covers_both_lists(self) -> HealthSamplesRequest:
+        if self.sample_count > MAX_SAMPLES_PER_CHUNK:
+            raise ValueError(f"a chunk holds at most {MAX_SAMPLES_PER_CHUNK} samples")
+        return self
 
     @model_validator(mode="after")
     def _run_needs_its_position(self) -> HealthSamplesRequest:
@@ -117,6 +154,33 @@ class HealthMetricSeries(BaseModel):
 
 class HealthMetricsResponse(BaseModel):
     metrics: list[HealthMetricSeries]
+
+
+class HealthSleepNightOut(BaseModel):
+    """
+    One night, named by the local date the person woke up on.
+
+    Minutes per stage count every moment once across iPhone, Watch and apps.
+    `bedtime`/`wake_time` carry the offset the device lived at, so "23:40" is
+    the string's own clock, not the reader's.
+    """
+
+    date: date
+    bedtime: datetime
+    wake_time: datetime
+    in_bed_min: float
+    asleep_min: float
+    awake_min: float
+    core_min: float
+    deep_min: float
+    rem_min: float
+    unspecified_min: float
+
+
+class HealthSleepResponse(BaseModel):
+    """Nights of a date range, oldest first; a night with no data is absent, not zero."""
+
+    nights: list[HealthSleepNightOut]
 
 
 class HealthSyncFailureIn(BaseModel):

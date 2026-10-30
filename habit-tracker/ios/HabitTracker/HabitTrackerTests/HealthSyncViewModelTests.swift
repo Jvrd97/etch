@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254
-// summary: Health section tests for its 24-type catalog, first-entry authorization, complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
+// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238
+// summary: Health section tests for its 24-type catalog, first-entry authorization (sleep in the same sheet), complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
 
 import HealthKit
 import XCTest
@@ -28,7 +28,11 @@ final class HealthSyncViewModelTests: XCTestCase {
         await viewModel.enterSection()
 
         XCTAssertEqual(reader.authorizationRequests, 1)
-        XCTAssertEqual(reader.requestedIdentifiers, Set(HealthMetricCatalog.metrics.map(\.identifier)))
+        // Sleep is asked in the same sheet as the 24 quantity types (#238).
+        XCTAssertEqual(
+            reader.requestedIdentifiers,
+            Set(HealthMetricCatalog.metrics.map(\.identifier) + [HKCategoryTypeIdentifier.sleepAnalysis.rawValue])
+        )
         XCTAssertEqual(reader.readIdentifiers, Set(HealthMetricCatalog.metrics.map(\.identifier)))
         XCTAssertEqual(reader.readCalls, 1)
     }
@@ -51,7 +55,7 @@ final class HealthSyncViewModelTests: XCTestCase {
 
         XCTAssertEqual(syncer.calls, 1)
         XCTAssertEqual(viewModel.syncState, .finished(syncer.outcome))
-        XCTAssertEqual(viewModel.syncMessage, "Отправлено: принято семплов 412, записано часов 96")
+        XCTAssertEqual(viewModel.syncMessage, "Отправлено: принято семплов 412, записано часов и ночей 96")
     }
 
     func testEmptyWeekPointsToSettingsInsteadOfAnEmptyChart() async {
@@ -114,6 +118,23 @@ final class HealthSyncViewModelTests: XCTestCase {
 
         XCTAssertEqual(store.authorizationRequests, [Set(metrics.map(\.identifier))])
         XCTAssertEqual(values, [HKQuantityTypeIdentifier.restingHeartRate.rawValue: 54])
+    }
+
+    func testReaderAsksSleepAsACategoryTypeAndRefusesAnUnknownIdentifier() async throws {
+        let store = FakeHealthStore()
+        let reader = HealthKitDataReader(store: store)
+        let sleep = HKCategoryTypeIdentifier.sleepAnalysis.rawValue
+        let steps = HKQuantityTypeIdentifier.stepCount.rawValue
+
+        try await reader.requestReadAuthorization(for: [steps, sleep])
+
+        XCTAssertEqual(store.authorizationRequests, [[steps, sleep]])
+        do {
+            try await reader.requestReadAuthorization(for: [sleep, "HKCategoryTypeIdentifierMenstrualFlow"])
+            XCTFail("expected unknownIdentifiers")
+        } catch {
+            XCTAssertEqual(error as? HealthDataReaderError, .unknownIdentifiers)
+        }
     }
 
     func testReaderOnADeviceWithoutHealthDataAsksNothing() async {

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/234, PHASE-03/233
-// summary: the exact 24 HealthKit quantity types, their kind (cumulative or discrete), the HealthKit unit they are read in and the unit the server is sent, names, and four screen groups
+// [review:need-review] PHASE-02/65, PHASE-03/234, PHASE-03/233, PHASE-03/238
+// summary: the exact 24 HealthKit quantity types, their kind (cumulative or discrete), the HealthKit unit they are read in and the unit the server is sent, names, and four screen groups; the category types the pump sends as raw intervals (sleep), with the server kind and how far before the window to read
 
 import HealthKit
 
@@ -87,4 +87,33 @@ enum HealthMetricCatalog {
             wireUnit: wireUnit ?? unit
         )
     }
+}
+
+/// A HealthKit category type the pump sends as raw intervals (`category_samples`):
+/// HealthKit's raw category value, a start and an end. The server decides what the
+/// value means by its catalogue kind; the app does not fold anything.
+struct HealthCategoryDefinition: Identifiable, Equatable, Sendable {
+    let typeIdentifier: HKCategoryTypeIdentifier
+    let displayName: String
+    /// The server catalogue kind (`sleep` folds into nights by wake date).
+    let serverKind: String
+    /// How long before the window's first midnight to start reading. The server sends
+    /// every interval of a night to one row and overwrites it, so the first night of
+    /// the window has to arrive whole.
+    let lead: TimeInterval
+
+    var identifier: String { typeIdentifier.rawValue }
+    var id: String { identifier }
+}
+
+enum HealthCategoryCatalog {
+    /// Server `NIGHT_BOUNDARY_HOUR` (`app/health/sleep.py`): the night that ends on a date
+    /// collects every interval ending after 18:00 the evening before, six hours before midnight.
+    static let nightLead: TimeInterval = 6 * 60 * 60
+
+    static let sleep = HealthCategoryDefinition(
+        typeIdentifier: .sleepAnalysis, displayName: "Сон", serverKind: "sleep", lead: nightLead
+    )
+
+    static let categories: [HealthCategoryDefinition] = [sleep]
 }

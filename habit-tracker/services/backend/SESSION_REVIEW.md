@@ -2964,3 +2964,17 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_dose_guard.py` — mod: в `CAUGHT_NEXT_TO_A_PULSE` фразы круга 1 и все атакующие фразы ревью; в `PASSED` пульс только в «уд/мин» и «ударах»; 20 красных на c56e8bf.
 
 Проверки: ruff, format, mypy --strict, alembic heads (одна), pytest на `habit_test_271`.
+
+## 2026-10-30 — PHASE-03/238: сон из HealthKit (категорийный тип)
+
+Тронуто 17 файлов бэкенда (4 `new`, 13 `mod`), миграция `4359c5a3d24e` от головы `f1b3d5a7c9e2`.
+
+- `alembic/versions/2026_10_30_1000-4359c5a3d24e_health_sleep_nights.py` — new: таблица `health_sleep_nights` (уникальный `wake_date`) и строка каталога сна; downgrade снимает обе, корзины целы.
+- `app/health/sleep.py` — new: фазы по сырым значениям HealthKit, ночь по дате пробуждения (граница 18:00), минуты по фазам по разрезу времени (источники не складываются), отбой и подъём самой длинной сессии.
+- `app/health/aggregate.py` — mod: вид `MetricKind.SLEEP`. `app/health/catalog.py` — mod: строка сна, группа `sleep`.
+- `app/models/health.py`, `app/models/__init__.py` — mod: `HealthSleepNight`.
+- `app/schemas/health.py` — mod: `category_samples` в чанке (общий предел 50 000), `HealthSleepNightOut`, `HealthSleepResponse`.
+- `app/crud/health.py` — mod: `ingest_category_samples` (сон → ночи, `cumulative` → минуты по часам), `upsert_nights`, `sleep_nights`, сон в `daily_values` (значение дня — `asleep_min`), `HEALTH_SPECS` без правок — сон доступен через каталог.
+- `app/api/health.py` — mod: приём категорий в том же чанке и журнале, отказ классом `unit`, `GET /health/sleep`.
+- `app/crud/supplement_advice.py` — mod (вне перечня, только docstring): абзац «сон честно пуст» устарел.
+- Тесты: `tests/test_health_sleep.py` (new, 18), `tests/test_health_sleep_api.py` (new, 16), `test_health.py`, `test_health_advice.py`, `test_health_catalog_migration.py`, `test_week_review.py`, `tests/fixtures/health/metric_catalog.json` — mod.

@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185
-# summary: Health arithmetic, including canonical units for the complete 24-metric catalog and the shared minutes-per-hour constant
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-02/65, PHASE-03/185, PHASE-03/238
+# summary: Health arithmetic, including canonical units for the complete catalog, the shared minutes-per-hour constant and the sleep kind that is folded into nights instead of hours
 """
 Aggregation of raw HealthKit samples into local hourly buckets.
 
@@ -41,10 +41,14 @@ class MetricKind(str, Enum):
     kilocalories, distance): they add up. `DISCRETE` metrics are readings of a
     state at a moment (resting heart rate, weight, HRV): they average, and the
     average has to be weighted by how many readings each bucket holds.
+
+    `SLEEP` is a category type folded into nights by `app.health.sleep`; it
+    never reaches an hourly bucket, so nothing in this module handles it.
     """
 
     CUMULATIVE = "cumulative"
     DISCRETE = "discrete"
+    SLEEP = "sleep"
 
 
 class UnitError(ValueError):

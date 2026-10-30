@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233, PHASE-03/254
-// summary: Health section that requests access on first entry, shows four groups with honest empty values, and sends the last 7 days to the server with the result in words, including a joined launch run and a failed permission request
+// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238
+// summary: Health section that requests access on first entry (sleep in the same sheet), shows four groups with honest empty values, and sends the last 7 days to the server with the result in words, including a joined launch run and a failed permission request
 
 import SwiftUI
 import UIKit
@@ -50,10 +50,10 @@ final class HealthSyncViewModel: ObservableObject {
         switch outcome {
         case .sent(let answers):
             return answers
-                .map { "Отправлено: принято семплов \($0.samplesReceived), записано часов \($0.bucketsWritten)" }
+                .map { "Отправлено: принято семплов \($0.samplesReceived), записано часов и ночей \($0.bucketsWritten)" }
                 .joined(separator: "\n")
         case .nothingToSend:
-            return "За 7 дней нет шагов и пульса покоя. Если доступ закрыт, откройте его в Настройках"
+            return "За 7 дней нет шагов, пульса покоя и сна. Если доступ закрыт, откройте его в Настройках"
         case .notConfigured:
             return "Укажите адрес сервера в More → Settings"
         case .skipped:
@@ -89,7 +89,8 @@ final class HealthSyncViewModel: ObservableObject {
         hasEntered = true
         do {
             let metrics = HealthMetricCatalog.metrics
-            try await reader.requestReadAuthorization(for: Set(metrics.map(\.identifier)))
+            let categories = HealthCategoryCatalog.categories.map(\.identifier)
+            try await reader.requestReadAuthorization(for: Set(metrics.map(\.identifier) + categories))
             let values = try await reader.readLatestValues(for: metrics)
             rows = metrics.map { HealthMetricRow(metric: $0, value: values[$0.identifier]) }
         } catch {
