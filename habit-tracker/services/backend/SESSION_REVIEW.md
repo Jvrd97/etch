@@ -2978,3 +2978,12 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/api/health.py` — mod: приём категорий в том же чанке и журнале, отказ классом `unit`, `GET /health/sleep`.
 - `app/crud/supplement_advice.py` — mod (вне перечня, только docstring): абзац «сон честно пуст» устарел.
 - Тесты: `tests/test_health_sleep.py` (new, 18), `tests/test_health_sleep_api.py` (new, 16), `test_health.py`, `test_health_advice.py`, `test_health_catalog_migration.py`, `test_week_review.py`, `tests/fixtures/health/metric_catalog.json` — mod.
+
+## 2026-10-30 — PHASE-02/68: детальный экран метрики, часы дня
+
+Тронуто 12 файлов (6 `new`, 6 `mod`), миграций нет, каталог не тронут.
+
+- `backend/app/api/health.py`, `app/crud/health.py`, `app/schemas/health.py` — mod: `GET /health/metrics/{identifier}/days` и `/hours?date=` (404 на неизвестную метрику, 422 на часы сна), `get_metric`, `metric_hours`; добавлением.
+- `backend/tests/test_health_metric_detail.py` — new: пустой день, час с одним семплом, min/max, DST-день, те же числа, что в списке, рост SQL.
+- `frontend/app/health/[identifier]/page.tsx`, `app/m/health/[identifier]/page.tsx`, `components/health/MetricDetail.tsx` (+ тест), `useMetricDetail.ts`, `lib/health.ts` — new.
+- `frontend/components/health/HealthMetricGroups.tsx`, `app/health/page.tsx`, `app/m/health/page.tsx` (+ тесты), `lib/api.ts` — mod: ссылка со строки метрики, типы и `healthAPI.getMetricDays/getMetricHours`.
