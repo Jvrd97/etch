@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238, PHASE-03/272
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238, PHASE-03/272, PHASE-02/68
 # summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, any other category type into hourly minutes or counts via app.health.categories) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
@@ -103,6 +103,36 @@ async def get_catalog(db: AsyncSession) -> list[HealthMetric]:
     """Every known metric, in a stable order for the screen."""
     result = await db.execute(
         select(HealthMetric).order_by(HealthMetric.group, HealthMetric.id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_metric(db: AsyncSession, identifier: str) -> HealthMetric | None:
+    """One catalogue metric by its HealthKit identifier."""
+    result = await db.execute(
+        select(HealthMetric).where(HealthMetric.identifier == identifier)
+    )
+    return result.scalar_one_or_none()
+
+
+async def metric_hours(
+    db: AsyncSession, metric_id: int, local_date: date
+) -> list[HealthHourBucket]:
+    """
+    The hourly buckets of one local day, in hour order.
+
+    The rows are read as stored: an hour the device never reported has no row and
+    stays absent, so the screen decides how to draw a gap. On the day clocks go
+    back the repeated hour is one bucket under the natural key, already merged on
+    write.
+    """
+    result = await db.execute(
+        select(HealthHourBucket)
+        .where(
+            HealthHourBucket.metric_id == metric_id,
+            HealthHourBucket.local_date == local_date,
+        )
+        .order_by(HealthHourBucket.hour)
     )
     return list(result.scalars().all())
 

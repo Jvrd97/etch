@@ -1,7 +1,9 @@
-// [review:need-review] PHASE-03/209
+// [review:need-review] PHASE-03/209, PHASE-02/68
 // summary: the catalog body both /health and /m/health render — the Apple access link, each group's rows with a value or "Нет данных", and the whole-catalog empty state; identical markup is the point, since the two screens show the same numbers
 
+import Link from 'next/link';
 import type { HealthMetric } from '@/lib/api';
+import { metricHref } from '@/lib/health';
 import {
   HEALTH_ACCESS_LABEL,
   HEALTH_ACCESS_URL,
@@ -12,9 +14,11 @@ import {
 
 export interface HealthMetricGroupsProps {
   metrics: HealthMetric[];
+  /** `/health` on the desktop, `/m/health` on the phone: where a row's detail screen lives. */
+  basePath: string;
 }
 
-export default function HealthMetricGroups({ metrics }: HealthMetricGroupsProps) {
+export default function HealthMetricGroups({ metrics, basePath }: HealthMetricGroupsProps) {
   if (isCatalogEmpty(metrics)) {
     return (
       <div className="space-y-5 animate-fade-rise">
@@ -42,7 +46,7 @@ export default function HealthMetricGroups({ metrics }: HealthMetricGroupsProps)
             {metrics
               .filter((metric) => metric.group === group.id)
               .map((metric) => (
-                <HealthMetricRow key={metric.identifier} metric={metric} />
+                <HealthMetricRow key={metric.identifier} metric={metric} basePath={basePath} />
               ))}
           </div>
         </section>
@@ -64,14 +68,17 @@ function HealthAccessLink() {
   );
 }
 
-function HealthMetricRow({ metric }: { metric: HealthMetric }) {
+function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath: string }) {
   const latest = metric.days.at(-1);
   return (
-    <div className="flex min-h-14 items-center justify-between gap-4 border-b border-white/5 px-4 py-3 last:border-b-0">
+    <Link
+      href={metricHref(basePath, metric.identifier)}
+      className="flex min-h-14 items-center justify-between gap-4 border-b border-white/5 px-4 py-3 last:border-b-0"
+    >
       <span className="text-sm text-text-primary">{metric.display_name}</span>
       <span className="text-right text-sm tabular-nums text-text-secondary">
         {latest === undefined ? 'Нет данных' : `${latest.value} ${metric.canonical_unit}`}
       </span>
-    </div>
+    </Link>
   );
 }

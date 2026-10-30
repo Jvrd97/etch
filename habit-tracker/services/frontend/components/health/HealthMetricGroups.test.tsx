@@ -30,7 +30,7 @@ describe('HealthMetricGroups', () => {
       metric('other', 'Глюкоза крови'),
     ];
 
-    render(<HealthMetricGroups metrics={metrics} />);
+    render(<HealthMetricGroups metrics={metrics} basePath="/health" />);
 
     for (const [group, name] of [
       ['Симптомы', 'Головная боль'],

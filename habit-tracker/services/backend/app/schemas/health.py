@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68
 # summary: Health DTOs — raw-sample intake payload (quantity and category samples, optional sync-run bookkeeping), the metrics-with-daily-values response, the sleep nights response and the sync-status journal view
 """
 Wire types of the Health contour.
@@ -154,6 +154,42 @@ class HealthMetricSeries(BaseModel):
 
 class HealthMetricsResponse(BaseModel):
     metrics: list[HealthMetricSeries]
+
+
+class HealthMetricDaysResponse(BaseModel):
+    """The daily series of one metric over a range, oldest first."""
+
+    identifier: str
+    display_name: str
+    kind: str
+    canonical_unit: str
+    days: list[HealthDayValue]
+
+
+class HealthHourValue(BaseModel):
+    """
+    One local hour that holds data. `value` is the sum for a cumulative metric and
+    the mean for a discrete one; `min`/`max` bound the readings of the hour (equal
+    to `value` for an hour with one reading, and for a cumulative metric they are
+    the extremes of the pieces that made the sum).
+    """
+
+    hour: int
+    value: float
+    min: float
+    max: float
+    sample_count: int
+
+
+class HealthMetricHoursResponse(BaseModel):
+    """The hours of one local day; an hour with no data is absent, not zero."""
+
+    identifier: str
+    display_name: str
+    kind: str
+    canonical_unit: str
+    date: date
+    hours: list[HealthHourValue]
 
 
 class HealthSleepNightOut(BaseModel):

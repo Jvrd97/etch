@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/132, PHASE-03/238
+// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/132, PHASE-03/238, PHASE-02/68
 // summary: the sleep section (last night, stages, week of nights) sits under the sync block; the sync-lag block sits above the catalog; mobile Health catalog — markup only; the fetch and the catalog body now come from useHealthMetrics/HealthMetricGroups, shared with the desktop /health screen so the two shells cannot disagree on a number
 
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -21,7 +21,7 @@ export default function HealthPage() {
       <SleepSection nights={sleepNights} />
       {state.status === 'loading' && <LoadingSpinner size="lg" />}
       {state.status === 'error' && <p className="text-sm text-danger">{state.message}</p>}
-      {state.status === 'ready' && <HealthMetricGroups metrics={state.metrics} />}
+      {state.status === 'ready' && <HealthMetricGroups metrics={state.metrics} basePath="/m/health" />}
     </div>
   );
 }

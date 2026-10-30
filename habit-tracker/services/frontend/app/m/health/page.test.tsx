@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/238
+// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/238, PHASE-02/68
 // summary: mobile Health screen tests for server grouping, values, the Apple settings link, the whole-catalog sync hint and a failed load — all through the shared useHealthMetrics/HealthMetricGroups now behind this page; the sleep section above the catalog and the catalog surviving a failed sleep read
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
@@ -138,5 +138,12 @@ describe('/m/health', () => {
 
     await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
     expect(screen.queryByRole('heading', { name: 'Сон' })).toBeNull();
+  });
+
+  it('links every catalog row to its detail screen', async () => {
+    render(<HealthPage />);
+
+    await waitFor(() => expect(screen.getByText('4321 count')).toBeDefined());
+    expect(screen.getByRole('link', { name: /Шаги/ }).getAttribute('href')).toBe('/m/health/steps');
   });
 });
