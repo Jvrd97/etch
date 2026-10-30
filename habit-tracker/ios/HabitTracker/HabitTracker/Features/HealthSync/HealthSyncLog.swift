@@ -32,7 +32,8 @@ struct HealthSyncLogEntry: Codable, Equatable, Identifiable {
     let at: Date
     let source: HealthSyncSource
     let kind: HealthSyncRunKind
-    /// Samples the server accepted, summed over the chunks. Zero when nothing arrived.
+    /// Samples the server accepted, summed over the chunks: the size of the 7-day window
+    /// that was sent, not the new data. Zero when nothing arrived.
     let samples: Int
     /// Chunks the server answered.
     let chunks: Int
@@ -49,9 +50,16 @@ protocol HealthSyncLogStoring: AnyObject {
 
 /// The journal in a JSON file in Application Support: it must survive a restart, and
 /// 500 short entries are too many for `UserDefaults`.
+///
+/// A file that exists but cannot be read whole is copied to `.bak` before anything is
+/// written over it; a single broken entry is skipped, the rest is kept.
 final class FileHealthSyncLogStore: HealthSyncLogStoring {
     private static let logger = Logger(subsystem: "com.habittracker.app", category: "HealthSyncLog")
+    /// Readable after the first unlock, so a background write on a locked phone works.
+    static let writeOptions: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
     private let url: URL
+    /// The file could neither be read nor backed up: writing would destroy it.
+    private var mustNotOverwrite = false
 
     init(url: URL) {
         self.url = url
@@ -62,21 +70,63 @@ final class FileHealthSyncLogStore: HealthSyncLogStoring {
         return base.appendingPathComponent("health-sync-log.json")
     }
 
+    var backupURL: URL { url.appendingPathExtension("bak") }
+
     func load() -> [HealthSyncLogEntry] {
-        guard let data = try? Data(contentsOf: url) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return []
+        } catch {
+            Self.logger.error("health sync log not readable")
+            keepBackup()
             return []
         }
-        return (try? Self.decoder.decode([HealthSyncLogEntry].self, from: data)) ?? []
+        guard let lossy = try? Self.decoder.decode([LossyEntry].self, from: data) else {
+            Self.logger.error("health sync log is not valid JSON")
+            keepBackup()
+            return []
+        }
+        let entries = lossy.compactMap(\.entry)
+        if entries.count != lossy.count {
+            Self.logger.error("health sync log: broken entries skipped")
+            keepBackup()
+        }
+        return entries
     }
 
     func save(_ entries: [HealthSyncLogEntry]) {
+        guard !mustNotOverwrite else {
+            return
+        }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try Self.encoder.encode(entries).write(to: url, options: .atomic)
+            try Self.encoder.encode(entries).write(to: url, options: Self.writeOptions)
         } catch {
             Self.logger.error("health sync log not saved")
+        }
+    }
+
+    private func keepBackup() {
+        let manager = FileManager.default
+        try? manager.removeItem(at: backupURL)
+        do {
+            try manager.copyItem(at: url, to: backupURL)
+        } catch {
+            Self.logger.error("health sync log backup failed")
+            mustNotOverwrite = true
+        }
+    }
+
+    /// One entry that fails to decode becomes nil instead of failing the whole array.
+    private struct LossyEntry: Decodable {
+        let entry: HealthSyncLogEntry?
+
+        init(from decoder: Decoder) throws {
+            entry = try? HealthSyncLogEntry(from: decoder)
         }
     }
 
@@ -95,7 +145,7 @@ final class FileHealthSyncLogStore: HealthSyncLogStoring {
 
 @MainActor
 protocol HealthSyncLogging: AnyObject {
-    func record(_ outcome: HealthSyncOutcome, source: HealthSyncSource, at: Date)
+    func record(_ outcome: HealthSyncOutcome, source: HealthSyncSource, kind: HealthSyncRunKind, at: Date)
 }
 
 /// The ring buffer. The oldest entries go first once `capacity` is reached.
@@ -131,7 +181,7 @@ final class HealthSyncLog: HealthSyncLogging {
     }
 
     /// Writes down the end of one run. Takes only the counts out of the outcome.
-    func record(_ outcome: HealthSyncOutcome, source: HealthSyncSource, at: Date) {
+    func record(_ outcome: HealthSyncOutcome, source: HealthSyncSource, kind: HealthSyncRunKind, at: Date) {
         var samples = 0
         var chunks = 0
         let logged: HealthSyncLogOutcome
@@ -151,7 +201,7 @@ final class HealthSyncLog: HealthSyncLogging {
         }
         append(HealthSyncLogEntry(
             id: makeId(), at: at, source: source,
-            kind: source == .manual ? .manual : .rolling,
+            kind: kind,
             samples: samples, chunks: chunks, outcome: logged
         ))
     }
@@ -163,14 +213,16 @@ final class HealthSyncLog: HealthSyncLogging {
     }
 }
 
-/// Arrivals in a window: how many, how far apart, when the last one was.
+/// Arrivals in a window: how many, how far apart (the open pause included), when the last one was.
 struct HealthSyncLogSummary: Equatable {
     let arrivals: Int
-    /// Gaps between neighbouring arrivals inside the window; nil with fewer than two arrivals.
+    /// Gaps between neighbouring arrivals that end in the window, plus the open one; nil with no arrival at all.
     let medianInterval: TimeInterval?
     let longestInterval: TimeInterval?
     /// Latest arrival of the whole journal, not only of the window.
     let lastArrival: Date?
+    /// `now` minus the last arrival: the pause that is still going on. Nil before the first arrival.
+    let openInterval: TimeInterval?
 }
 
 enum HealthSyncLogMath {
@@ -196,14 +248,23 @@ enum HealthSyncLogMath {
         return result
     }
 
+    /// Gaps count when they end inside the window, so a pause that began before its edge
+    /// is not cut off, and the pause still going on counts as the newest gap.
     static func summary(_ entries: [HealthSyncLogEntry], window: TimeInterval, now: Date) -> HealthSyncLogSummary {
-        let inWindow = entries.filter { $0.at >= now.addingTimeInterval(-window) && $0.at <= now }
-        let gaps = intervals(inWindow).sorted()
+        let start = now.addingTimeInterval(-window)
+        let times = entries.filter { $0.isArrival && $0.at <= now }.map(\.at)
+        var gaps = zip(times, times.dropFirst()).filter { $1 >= start }.map { $1.timeIntervalSince($0) }
+        let open = times.last.map { now.timeIntervalSince($0) }
+        if let open {
+            gaps.append(open)
+        }
+        gaps.sort()
         return HealthSyncLogSummary(
-            arrivals: inWindow.filter(\.isArrival).count,
+            arrivals: times.filter { $0 >= start }.count,
             medianInterval: median(gaps),
             longestInterval: gaps.last,
-            lastArrival: entries.last(where: \.isArrival)?.at
+            lastArrival: times.last,
+            openInterval: open
         )
     }
 

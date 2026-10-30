@@ -38,6 +38,7 @@ final class HealthPumpTests: XCTestCase {
         return HealthPump(
             store: store,
             api: { configured ? api : nil },
+            syncLog: HealthSyncLog(store: InMemoryHealthSyncLogStore()),
             mapper: HealthSampleMapper(timeZone: berlin),
             calendar: calendar,
             now: { Self.now },
@@ -402,7 +403,7 @@ final class HealthPumpTests: XCTestCase {
     }
 
     func testPumpBuiltWithoutZoneArgumentsFollowsTheDeviceZoneLive() {
-        let pump = HealthPump(store: store, api: { nil })
+        let pump = HealthPump(store: store, api: { nil }, syncLog: HealthSyncLog(store: InMemoryHealthSyncLogStore()))
 
         XCTAssertEqual(pump.calendar, Calendar.autoupdatingCurrent)
         XCTAssertNotEqual(pump.calendar, Calendar.current)

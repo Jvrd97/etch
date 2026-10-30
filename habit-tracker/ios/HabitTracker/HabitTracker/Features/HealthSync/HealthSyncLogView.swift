@@ -61,13 +61,16 @@ struct HealthSyncLogView: View {
                         Text("\(HealthSyncLogText.source(entry.source)) · \(HealthSyncLogText.outcome(entry.outcome))")
                             .foregroundStyle(entry.isArrival ? DS.Palette.lime : DS.Palette.textSecondary)
                         if entry.isArrival {
-                            Text("Образцов: \(entry.samples), чанков: \(entry.chunks)\(gapText(gaps[entry.id]))")
+                            Text("Отправлено образцов (окно 7 дней): \(entry.samples), чанков: \(entry.chunks)\(gapText(gaps[entry.id]))")
                                 .foregroundStyle(DS.Palette.textSecondary)
                         }
                     }
                 }
             }
             .listRowBackground(DS.Palette.card)
+            Section {} footer: {
+                Text("Фоновой доставки данных пока нет (#133): частота прихода равна частоте синков, то есть входов в приложение и нажатий кнопки. Паузы, когда телефон заблокирован или нет сети, показаны как есть.")
+            }
         }
         .navigationTitle("Журнал синка")
         .dsScreenBackground()
@@ -84,6 +87,7 @@ struct HealthSyncLogView: View {
             row("Приходов данных", "\(summary.arrivals)")
             row("Медианный интервал", summary.medianInterval.map(HealthSyncLogText.duration) ?? "—")
             row("Максимальный интервал", summary.longestInterval.map(HealthSyncLogText.duration) ?? "—")
+            row("Без данных уже", summary.openInterval.map(HealthSyncLogText.duration) ?? "—")
             row("Последний приход", summary.lastArrival.map {
                 "\($0.formatted(date: .abbreviated, time: .shortened)), \(HealthSyncLogText.duration(now.timeIntervalSince($0))) назад"
             } ?? "ещё не было")

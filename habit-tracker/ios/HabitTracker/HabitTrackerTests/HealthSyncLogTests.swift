@@ -80,8 +80,9 @@ final class HealthSyncLogTests: XCTestCase {
         let day = HealthSyncLogMath.summary(entries, window: HealthSyncLogMath.day, now: now)
         XCTAssertEqual(day.arrivals, 4)
         XCTAssertEqual(day.medianInterval, 4 * 3600)
-        XCTAssertEqual(day.longestInterval, 13 * 3600)
+        XCTAssertEqual(day.longestInterval, 80 * 3600, "the pause across the window edge counts")
         XCTAssertEqual(day.lastArrival, entries.last?.at)
+        XCTAssertEqual(day.openInterval, 2 * 3600)
 
         let week = HealthSyncLogMath.summary(entries, window: HealthSyncLogMath.week, now: now)
         XCTAssertEqual(week.arrivals, 5)
@@ -91,13 +92,61 @@ final class HealthSyncLogTests: XCTestCase {
     func testSummaryWithoutArrivalsIsHonestlyEmpty() {
         let summary = HealthSyncLogMath.summary([entry(0, .skipped)], window: HealthSyncLogMath.day, now: Self.t0)
 
-        XCTAssertEqual(summary, HealthSyncLogSummary(arrivals: 0, medianInterval: nil, longestInterval: nil, lastArrival: nil))
+        XCTAssertEqual(summary, HealthSyncLogSummary(arrivals: 0, medianInterval: nil, longestInterval: nil, lastArrival: nil, openInterval: nil))
+    }
+
+    func testTwoDaysWithoutDataShowUpAsTheLongestPause() {
+        let now = Self.t0.addingTimeInterval(72 * 3600)
+        let hourly = (0..<24).map { entry(Double($0) * 60) }
+
+        let day = HealthSyncLogMath.summary(hourly, window: HealthSyncLogMath.day, now: now)
+
+        XCTAssertEqual(day.arrivals, 0)
+        XCTAssertEqual(day.openInterval, 49 * 3600)
+        XCTAssertEqual(day.longestInterval, 49 * 3600)
+        let week = HealthSyncLogMath.summary(hourly, window: HealthSyncLogMath.week, now: now)
+        XCTAssertEqual(week.longestInterval, 49 * 3600)
+        XCTAssertEqual(week.arrivals, 24)
+    }
+
+    func testABrokenEntryIsSkippedAndTheFileIsBackedUp() throws {
+        let log = makeLog()
+        log.append(entry(0))
+        log.append(entry(10))
+        var items = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        items.insert(["junk": 1], at: 1)
+        try JSONSerialization.data(withJSONObject: items).write(to: url)
+
+        XCTAssertEqual(makeLog().entries.count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path))
+    }
+
+    func testAnUnreadableFileIsBackedUpNotErased() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: url)
+        let log = makeLog()
+
+        XCTAssertTrue(log.entries.isEmpty)
+        log.append(entry(0))
+
+        XCTAssertEqual(try Data(contentsOf: url.appendingPathExtension("bak")), Data("not json".utf8))
+        XCTAssertEqual(makeLog().entries.count, 1)
+    }
+
+    func testAMissingFileIsAnEmptyJournalWithoutBackup() {
+        XCTAssertTrue(makeLog().entries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path))
+    }
+
+    func testTheFileIsWrittenWithTheBackgroundFriendlyProtection() {
+        XCTAssertTrue(FileHealthSyncLogStore.writeOptions.contains(.completeFileProtectionUntilFirstUserAuthentication))
+        XCTAssertTrue(FileHealthSyncLogStore.writeOptions.contains(.atomic))
     }
 
     func testTheStoredFileHoldsNoMetricValue() throws {
         let log = makeLog()
-        log.record(.sent([HealthSamplesResponseDTO(samplesReceived: 42, bucketsWritten: 7)]), source: .manual, at: Self.t0)
-        log.record(.failed(.readFailed), source: .appLaunch, at: Self.t0)
+        log.record(.sent([HealthSamplesResponseDTO(samplesReceived: 42, bucketsWritten: 7)]), source: .manual, kind: .manual, at: Self.t0)
+        log.record(.failed(.readFailed), source: .appLaunch, kind: .rolling, at: Self.t0)
 
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]]
         let allowed: Set<String> = ["id", "at", "source", "kind", "samples", "chunks", "outcome"]
@@ -112,7 +161,7 @@ final class HealthSyncLogTests: XCTestCase {
 
     func testABackgroundWakeCanBeWritten() {
         let log = makeLog()
-        log.record(.sent([HealthSamplesResponseDTO(samplesReceived: 1, bucketsWritten: 1)]), source: .backgroundWake, at: Self.t0)
+        log.record(.sent([HealthSamplesResponseDTO(samplesReceived: 1, bucketsWritten: 1)]), source: .backgroundWake, kind: .rolling, at: Self.t0)
 
         XCTAssertEqual(makeLog().entries.first?.source, .backgroundWake)
         XCTAssertEqual(makeLog().entries.first?.kind, .rolling)
@@ -125,14 +174,31 @@ final class HealthSyncLogTests: XCTestCase {
         let api = FakeHealthAPI()
         store.hourSums[.stepCount] = [FakeHealthStore.hour(1200, "2026-10-19T06:00:00Z")]
         api.script = [.success(HealthSamplesResponseDTO(samplesReceived: 1, bucketsWritten: 1)), .failure(APIClientError.unauthorized)]
-        let log = makeLog()
-        let pump = HealthPump(store: store, api: { api }, pendingFailures: InMemoryPendingFailures())
-        pump.syncLog = log
+        let log = HealthSyncLog(store: InMemoryHealthSyncLogStore())
+        let pump = HealthPump(store: store, api: { api }, syncLog: log, pendingFailures: InMemoryPendingFailures())
 
         _ = await pump.sync()
         _ = await pump.syncIfAuthorized()
 
         XCTAssertEqual(log.entries.map(\.outcome), [.ok, .failed(.unauthorized)])
         XCTAssertEqual(log.entries.map(\.source), [.manual, .appLaunch])
+        XCTAssertEqual(log.entries.map(\.kind), [.manual, .rolling])
     }
+
+    func testTheSourceOfALaunchRunReachesTheJournal() async {
+        let store = FakeHealthStore()
+        let log = HealthSyncLog(store: InMemoryHealthSyncLogStore())
+        let pump = HealthPump(store: store, api: { FakeHealthAPI() }, syncLog: log, pendingFailures: InMemoryPendingFailures())
+
+        _ = await pump.syncIfAuthorized(source: .backgroundWake)
+
+        XCTAssertEqual(log.entries.map(\.source), [.backgroundWake])
+        XCTAssertEqual(log.entries.map(\.kind), [.rolling])
+    }
+}
+
+final class InMemoryHealthSyncLogStore: HealthSyncLogStoring {
+    private var stored: [HealthSyncLogEntry] = []
+    func load() -> [HealthSyncLogEntry] { stored }
+    func save(_ entries: [HealthSyncLogEntry]) { stored = entries }
 }
