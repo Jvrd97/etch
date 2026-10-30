@@ -102,7 +102,7 @@ struct HealthMetricDetailView: View {
             let peak = hours.hours.map(\.value).max() ?? 0
             Section(title) {
                 ForEach(slots.indices, id: \.self) { hour in
-                    HealthHourRow(hour: hour, slot: slots[hour], peak: peak, discrete: hours.kind == "discrete")
+                    HealthHourRow(hour: hour, slot: slots[hour], peak: peak, discrete: hours.kind == "discrete", whole: HealthMetricsFormat.isWhole(unit: hours.canonicalUnit))
                 }
             }
             .listRowBackground(DS.Palette.card)
@@ -115,6 +115,7 @@ private struct HealthHourRow: View {
     let slot: HealthHourValueDTO?
     let peak: Double
     let discrete: Bool
+    let whole: Bool
 
     private static let minShare = 0.02
 
@@ -130,7 +131,7 @@ private struct HealthHourRow: View {
                         .frame(width: box.size.width * (peak > 0 ? max(Self.minShare, slot.value / peak) : Self.minShare))
                 }
                 .frame(height: 8)
-                Text(HealthMetricsFormat.formatValue(slot.value)).monospacedDigit()
+                Text(whole ? String(Int(slot.value.rounded())) : HealthMetricsFormat.formatValue(slot.value)).monospacedDigit()
                 if discrete, let range = HealthMetricsFormat.hourRange(slot) {
                     Text(range).font(DS.Typography.caption).foregroundStyle(DS.Palette.textSecondary)
                 }

@@ -170,6 +170,16 @@ final class HealthMetricsViewModelTests: XCTestCase {
         XCTAssertEqual(model.nights, .ready([HealthMetricsFixtures.night("2026-10-28")]))
     }
 
+    func testSleepIsToldByTheKindTheServerSendsNotByTheIdentifier() async {
+        let api = MockHealthMetricsAPI()
+        api.daysHandler = { id, _, _ in self.days([("2026-10-28", 430)], id: id, kind: "sleep") }
+        let model = detail(api, id: "SomeOtherSleepType")
+        await model.load()
+        XCTAssertTrue(model.isSleep)
+        XCTAssertFalse(api.calls.contains { $0.hasPrefix("hours") })
+        XCTAssertTrue(api.calls.contains { $0.hasPrefix("sleep") })
+    }
+
     func testDetailFailureIsInWordsAndOfflineServesTheCachedSeries() async {
         let store = InMemoryCacheStore()
         let api = MockHealthMetricsAPI()

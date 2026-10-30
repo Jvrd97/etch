@@ -4,6 +4,9 @@ import SwiftUI
 
 struct HealthMetricsView: View {
     @StateObject private var viewModel: HealthMetricsViewModel
+    /// The pump screen's model lives here: opening the tab asks for HealthKit access once (the launch run
+    /// only syncs what is already allowed), and the pump screen opened from the list shares the same model.
+    @StateObject private var pump = HealthSyncViewModel.live()
 
     init(viewModel: HealthMetricsViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -15,7 +18,10 @@ struct HealthMetricsView: View {
             // Inline, like the More stack: a large title of a scrolling screen renders blank on the iOS 26 simulator.
             .navigationBarTitleDisplayMode(.inline)
             .dsScreenBackground()
-            .task { await viewModel.appear() }
+            .task {
+                await pump.enterSection()
+                await viewModel.appear()
+            }
     }
 
     @ViewBuilder
@@ -40,7 +46,7 @@ struct HealthMetricsView: View {
                 if let error = viewModel.refreshError {
                     Text(error).font(DS.Typography.caption).foregroundStyle(DS.Palette.danger)
                 }
-                NavigationLink("Синк и журнал") { HealthSyncView(viewModel: .live()) }
+                NavigationLink("Синк и журнал") { HealthSyncView(viewModel: pump) }
                     .foregroundStyle(DS.Palette.lime)
             }
             .listRowBackground(DS.Palette.card)

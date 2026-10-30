@@ -19,6 +19,14 @@ final class HealthMetricsFormatTests: XCTestCase {
         XCTAssertEqual(HealthMetricsFormat.unitLabel(identifier: "x", unit: "W"), "Вт")
     }
 
+    func testCountsAndEnergyPrintWholeTheRestKeepsOneDecimal() {
+        let steps = "HKQuantityTypeIdentifierStepCount"
+        XCTAssertEqual(HealthMetricsFormat.formatQuantity(identifier: steps, value: 8781.6, unit: "count"), "8782 шагов")
+        XCTAssertEqual(HealthMetricsFormat.formatQuantity(identifier: "x", value: 559.3, unit: "kcal"), "559 ккал")
+        XCTAssertEqual(HealthMetricsFormat.formatQuantity(identifier: "x", value: 559.3, unit: "m"), "559.3 м")
+        XCTAssertEqual(HealthMetricsFormat.deviationText(baseline(deviation: -1400.4), identifier: steps, unit: "count"), "−1400 шагов к обычному")
+    }
+
     func testValueKeepsOneDecimalAtMost() {
         XCTAssertEqual(HealthMetricsFormat.formatValue(5), "5")
         XCTAssertEqual(HealthMetricsFormat.formatValue(5.04), "5")

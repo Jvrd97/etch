@@ -12,7 +12,6 @@ final class HealthMetricDetailViewModel: ObservableObject {
 
     let identifier: String
     let title: String
-    let isSleep: Bool
 
     @Published private(set) var periodDays = HealthMetricsFormat.defaultPeriodDays
     @Published private(set) var days: Phase<HealthMetricDaysResponseDTO> = .loading
@@ -39,7 +38,6 @@ final class HealthMetricDetailViewModel: ObservableObject {
     ) {
         self.identifier = identifier
         self.title = title
-        self.isSleep = identifier == HealthMetricsFormat.sleepIdentifier
         self.apiProvider = apiProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.now = now
@@ -55,6 +53,9 @@ final class HealthMetricDetailViewModel: ObservableObject {
     static func daysKey(_ identifier: String, period: Int) -> String { "health.days.\(identifier).\(period)" }
     static func hoursKey(_ identifier: String, day: String) -> String { "health.hours.\(identifier).\(day)" }
     static func nightsKey(_ period: Int, to day: String) -> String { "health.nights.\(period).\(day)" }
+
+    /// Sleep is told by the kind the server sends, as on the web; its nights replace the hours.
+    var isSleep: Bool { series?.kind == "sleep" }
 
     var series: HealthMetricDaysResponseDTO? {
         if case .ready(let value) = days { return value }

@@ -71,10 +71,14 @@ enum HealthMetricsFormat {
         return String(rounded)
     }
 
-    /// `4321 шагов`, `67.3 уд/мин`, or just `3` for a bare count.
+    /// Counts (steps, flights, falls) and kilocalories print whole; the rest keeps one decimal.
+    static func isWhole(unit: String) -> Bool { unit == "count" || unit == "kcal" }
+
+    /// `4322 шагов`, `67.3 уд/мин`, or just `3` for a bare count.
     static func formatQuantity(identifier: String, value: Double, unit: String) -> String {
         let label = unitLabel(identifier: identifier, unit: unit)
-        return label.isEmpty ? formatValue(value) : "\(formatValue(value)) \(label)"
+        let number = isWhole(unit: unit) ? String(Int(value.rounded())) : formatValue(value)
+        return label.isEmpty ? number : "\(number) \(label)"
     }
 
     /// `+0.4 кг к обычному`, or `как обычно` when the day sits exactly on the mean.
@@ -83,18 +87,27 @@ enum HealthMetricsFormat {
         if rounded == 0 { return "как обычно" }
         let label = unitLabel(identifier: identifier, unit: unit)
         let sign = rounded > 0 ? "+" : "−"
-        return "\(sign)\(formatValue(abs(rounded)))\(label.isEmpty ? "" : " \(label)") к обычному"
+        let magnitude = isWhole(unit: unit) ? String(Int(abs(baseline.deviation).rounded())) : formatValue(abs(rounded))
+        return "\(sign)\(magnitude)\(label.isEmpty ? "" : " \(label)") к обычному"
     }
 
     static let outsideTypicalText = "вне обычного"
 
     // MARK: Dates
 
-    private static var utc: Calendar {
+    private static let utc: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         return calendar
-    }
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "d MMM"
+        return formatter
+    }()
 
     /// `yyyy-MM-dd` for a moment in the reader's own calendar, as the server's `date_from`/`date_to` want it.
     static func localDate(_ moment: Date, calendar: Calendar = .current) -> String {
@@ -118,11 +131,7 @@ enum HealthMetricsFormat {
     /// `2026-10-20` → `20 окт.`
     static func dayLabel(_ iso: String) -> String {
         guard let date = parse(iso) else { return iso }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ru_RU")
-        formatter.timeZone = utc.timeZone
-        formatter.dateFormat = "d MMM"
-        return formatter.string(from: date)
+        return dayFormatter.string(from: date)
     }
 
     // MARK: Series
@@ -198,7 +207,7 @@ enum HealthMetricsFormat {
 
     static let notConfiguredMessage = "Укажите адрес сервера в More → Settings"
     static let loadFailedMessage = "Не удалось загрузить данные здоровья"
-    static let syncHint = "Данных ещё нет — откройте приложение на телефоне и нажмите синк."
+    static let syncHint = "Данных ещё нет — откройте «Синк и журнал» и нажмите «Отправить за 7 дней»."
 
     static func message(for error: APIClientError) -> String {
         switch error {
