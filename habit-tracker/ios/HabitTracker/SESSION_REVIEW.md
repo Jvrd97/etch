@@ -876,3 +876,7 @@ Avoid-стрик карточка «N дней чистый» на экране 
 ### #272 круг 2 (ревью da00a48)
 
 Файлы (5 mod): `HealthPump.swift` (часовой интервал, закончившийся в начале окна или раньше, не уходит; метрика больше чанка пропускается целиком, остальные уходят, `chunkTooLarge` пишется в журнал на тип; при запуске без нового листа читаются типы, на которые разрешение уже было, по одной проверке статуса на тип), `HealthSyncLog.swift` (поле `metric` у записи, `recordSkipped`), тесты `HealthMetricCatalogTests`, `HealthPumpTests` (фейк отвечает статусом по набору отвеченных типов). Проверки: Health* 96/0 на sw-132.
+
+## 2026-10-30 — #268 вкладка Health показывает метрики
+
+Файлы (10: 9 new, 1 mod): `API/APIClient+HealthMetrics.swift`, `API/DTOs+HealthMetrics.swift`, `Features/Health/` (`HealthMetricsFormat`, `HealthMetricsViewModel`, `HealthMetricDetailViewModel`, `HealthMetricsView`, `HealthMetricDetailView`, `HealthMetricsComponents`, `HealthSleepWorkoutsSections`), тесты `HealthMetricsFormatTests`, `HealthMetricsViewModelTests`, `HealthMetricsAPIClientTests`, `HealthMetricsFixtures` (все new), `App/RootView.swift` (mod, одна строка вкладки). Вкладка Health — список метрик по группам со спарклайном, отклонением и блоком отставания сверху; экран насоса и журнал — по строке «Синк и журнал». Чтения идут параллельно, в кэш чтения ложатся по очереди (хранилище не потокобезопасно). Не проверено: на устройстве с настоящими данными (#215); экран насоса теперь запрашивает доступ к HealthKit при входе в него, а не при открытии вкладки.
