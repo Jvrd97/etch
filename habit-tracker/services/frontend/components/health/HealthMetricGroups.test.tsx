@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { HealthMetric } from '@/lib/api';
+import { localDate } from '@/lib/health-metrics';
 import { deviationText, sparklinePoints } from '@/lib/health';
 import HealthMetricGroups from './HealthMetricGroups';
 
@@ -50,7 +51,7 @@ describe('catalog rows', () => {
   it('prints the value with the one formatter and shows the deviation from the baseline', () => {
     render(<HealthMetricGroups metrics={[HEART, STEPS, WEIGHT]} basePath="/health" />);
     expect(screen.getByText('67.3 count/min')).toBeDefined();
-    expect(screen.getByText('+5.3 к обычному')).toBeDefined();
+    expect(screen.getByText('+5.3 count/min к обычному, вне обычного')).toBeDefined();
   });
 
   it('shows no deviation without a baseline, and no overall score', () => {
@@ -72,6 +73,27 @@ describe('catalog rows', () => {
   });
 });
 
+describe('a last value that is not today', () => {
+  it('names its date, and says nothing for today', () => {
+    const today: HealthMetric = {
+      ...STEPS,
+      days: [{ date: localDate(), value: 100 }],
+    };
+    render(<HealthMetricGroups metrics={[HEART, today]} basePath="/health" />);
+    expect(row('Пульс').textContent).toContain('20 окт');
+    expect(row('Шаги').textContent).not.toMatch(/окт|янв|февр|мар|апр|мая|июн|июл|авг|сент|нояб|дек/);
+  });
+
+  it('marks a deviation beyond the usual in words, not only in colour', () => {
+    const calm: HealthMetric = {
+      ...HEART,
+      baseline: { ...HEART.baseline!, outside_typical: false },
+    };
+    render(<HealthMetricGroups metrics={[calm]} basePath="/health" />);
+    expect(row('Пульс').textContent).not.toContain('вне обычного');
+  });
+});
+
 describe('sparkline vocabulary', () => {
   it('lays 30 calendar days with null on a missing day', () => {
     const points = sparklinePoints(HEART.days, '2026-10-20');
@@ -87,7 +109,7 @@ describe('sparkline vocabulary', () => {
 
   it('words the deviation by sign', () => {
     const base = { mean: 10, stddev: 1, days: 9, outside_typical: false };
-    expect(deviationText({ ...base, deviation: -12.04 })).toBe('−12 к обычному');
-    expect(deviationText({ ...base, deviation: 0.01 })).toBe('как обычно');
+    expect(deviationText({ ...base, deviation: -12.04 }, 'кг')).toBe('−12 кг к обычному');
+    expect(deviationText({ ...base, deviation: 0.01 }, 'кг')).toBe('как обычно');
   });
 });

@@ -17,6 +17,7 @@ from app.health.baseline import (
     BASELINE_DAYS,
     MIN_BASELINE_DAYS,
     compute_baseline,
+    metric_baseline,
 )
 from tests.conftest import test_engine
 
@@ -81,6 +82,44 @@ def test_days_older_than_the_baseline_period_are_not_counted() -> None:
     assert result.mean == 100.0
 
 
+def test_a_flat_history_does_not_make_every_difference_unusual() -> None:
+    by_day = run_of([100.0] * 10 + [101.0])
+    result = compute_baseline(by_day, TODAY)
+    assert result is not None
+    assert result.stddev == 0.0
+    assert result.outside_typical is False
+
+
+def test_a_cumulative_metric_is_compared_on_the_last_whole_day() -> None:
+    # Ten steady days, then a morning with 800 steps so far.
+    by_day = run_of([8000.0] * 10 + [800.0])
+    steps = metric_baseline("cumulative", by_day, TODAY - timedelta(days=10), TODAY)
+    assert steps is not None
+    assert steps.deviation == 0.0
+    assert steps.outside_typical is False
+    heart = metric_baseline("discrete", by_day, TODAY - timedelta(days=10), TODAY)
+    assert heart is not None
+    assert heart.deviation == -7200.0
+
+
+def test_a_cumulative_metric_asked_for_today_alone_has_no_baseline() -> None:
+    by_day = run_of([8000.0] * 10 + [800.0])
+    assert metric_baseline("cumulative", by_day, TODAY, TODAY) is None
+
+
+def test_sleep_is_compared_on_the_last_shown_night() -> None:
+    by_day = run_of([420.0] * 10 + [300.0])
+    result = metric_baseline("sleep", by_day, TODAY, TODAY)
+    assert result is not None
+    assert result.deviation == -120.0
+
+
+@pytest.mark.parametrize("kind", ["category", "event", "symptom", "unheard-of"])
+def test_other_kinds_have_no_baseline(kind: str) -> None:
+    by_day = run_of([3.0] * 10 + [9.0])
+    assert metric_baseline(kind, by_day, TODAY, TODAY) is None
+
+
 @pytest.fixture(autouse=True)
 async def catalog(db_session: AsyncSession) -> None:
     await health_crud.seed_catalog(db_session)
@@ -109,23 +148,50 @@ async def list_metrics(client: AsyncClient, date_from: date) -> dict[str, Any]:
     return body
 
 
+def heart_on(day: date, value: float) -> dict[str, Any]:
+    stamp = f"{day.isoformat()}T10:00:00Z"
+    return {
+        "identifier": HEART,
+        "value": value,
+        "unit": "count/min",
+        "start": stamp,
+        "end": stamp,
+        "utc_offset_minutes": 0,
+    }
+
+
 async def test_the_list_carries_the_baseline_although_it_asks_for_one_day(
     client: AsyncClient,
 ) -> None:
-    samples = [steps_on(TODAY - timedelta(days=i), 1000.0) for i in range(1, 15)]
-    samples.append(steps_on(TODAY, 1500.0))
+    samples = [heart_on(TODAY - timedelta(days=i), 60.0) for i in range(1, 15)]
+    samples.append(heart_on(TODAY, 75.0))
     response = await client.post(SAMPLES_URL, json={"samples": samples})
     assert response.status_code == 200, response.text
 
     body = await list_metrics(client, TODAY)
-    steps = next(m for m in body["metrics"] if m["identifier"] == STEPS)
-    assert [d["date"] for d in steps["days"]] == [TODAY.isoformat()]
-    assert steps["baseline"]["mean"] == 1000.0
-    assert steps["baseline"]["days"] == 14
-    assert steps["baseline"]["deviation"] == 500.0
     heart = next(m for m in body["metrics"] if m["identifier"] == HEART)
-    assert heart["days"] == []
-    assert heart["baseline"] is None
+    assert [d["date"] for d in heart["days"]] == [TODAY.isoformat()]
+    assert heart["baseline"]["mean"] == 60.0
+    assert heart["baseline"]["days"] == 14
+    assert heart["baseline"]["deviation"] == 15.0
+    steps = next(m for m in body["metrics"] if m["identifier"] == STEPS)
+    assert steps["days"] == []
+    assert steps["baseline"] is None
+
+
+async def test_a_partial_today_of_a_cumulative_metric_gives_no_false_deviation(
+    client: AsyncClient,
+) -> None:
+    samples = [steps_on(TODAY - timedelta(days=i), 8000.0) for i in range(1, 15)]
+    samples.append(steps_on(TODAY, 800.0))
+    response = await client.post(SAMPLES_URL, json={"samples": samples})
+    assert response.status_code == 200, response.text
+
+    body = await list_metrics(client, TODAY - timedelta(days=1))
+    steps = next(m for m in body["metrics"] if m["identifier"] == STEPS)
+    assert steps["days"][-1]["value"] == 800.0
+    assert steps["baseline"]["deviation"] == 0.0
+    assert steps["baseline"]["outside_typical"] is False
 
 
 async def count_statements(client: AsyncClient) -> int:

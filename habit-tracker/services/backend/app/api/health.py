@@ -15,7 +15,7 @@ from app.health.aggregate import (
     UnitError,
     aggregate_samples,
 )
-from app.health.baseline import BASELINE_DAYS, compute_baseline
+from app.health.baseline import BASELINE_DAYS, metric_baseline
 from app.health.sleep import SleepValueError
 from app.models.health import HealthMetric, HealthSleepNight, HealthSyncRun
 from app.schemas.health import (
@@ -257,7 +257,7 @@ async def get_metrics(
     metrics = await health_crud.get_catalog(db)
     # One read for every metric: far enough back to cover the baseline of the
     # latest day, then cut to the range the caller asked for.
-    history_from = min(date_from, date_to - timedelta(days=BASELINE_DAYS))
+    history_from = date_from - timedelta(days=BASELINE_DAYS)
     history = await health_crud.daily_values(db, metrics, history_from, date_to)
     days = {
         metric_id: [day for day in values if day.local_date >= date_from]
@@ -277,8 +277,10 @@ async def get_metrics(
                     for day in days.get(metric.id, [])
                 ],
                 baseline=_baseline_out(
+                    metric.kind,
                     {d.local_date: d.value for d in history.get(metric.id, [])},
-                    [d.local_date for d in days.get(metric.id, [])],
+                    date_from,
+                    date_to,
                 ),
             )
             for metric in metrics
@@ -287,12 +289,9 @@ async def get_metrics(
 
 
 def _baseline_out(
-    by_day: dict[date, float], shown: list[date]
+    kind: str, by_day: dict[date, float], date_from: date, date_to: date
 ) -> HealthBaseline | None:
-    """Baseline of the latest shown day; none when the range holds no day."""
-    if not shown:
-        return None
-    baseline = compute_baseline(by_day, shown[-1])
+    baseline = metric_baseline(kind, by_day, date_from, date_to)
     return None if baseline is None else HealthBaseline(**asdict(baseline))
 
 

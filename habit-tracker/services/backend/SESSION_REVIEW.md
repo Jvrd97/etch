@@ -2995,3 +2995,7 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `backend/app/health/baseline.py`, `tests/test_health_baseline.py` — new: среднее и разброс по 30 дням до последнего дня, минимум 7 дней, отклонение; рост SQL от числа метрик.
 - `backend/app/api/health.py`, `app/schemas/health.py` — mod: `GET /health/metrics` отдаёт `baseline` (одна выборка на все метрики, глубже запрошенного периода).
 - `frontend/components/health/HealthMetricGroups.tsx` (+ новый тест), `SleepSection.tsx`, `MetricDetail.tsx`, `useSleepNights.ts` (+ тесты), `hooks/useHealthMetrics.ts`, `lib/health.ts`, `lib/api.ts`, `app/health/page.tsx`, `app/m/health/page.tsx` (+ тесты) — mod/new: спарклайн за 30 дней, отклонение, ссылка на сон, ночи по периоду, единый `formatValue`.
+
+### PHASE-02/69, круг 2
+
+`baseline.py` — mod (`metric_baseline`: только количественные виды, накопительная сравнивается по последнему целому дню, пол разброса), `api/health.py` — mod (история от `date_from − 30`), `tests/test_health_baseline.py` — mod; фронт: `HealthMetricGroups.tsx` (дата давнего значения, «вне обычного» текстом, нейтральная линия), `lib/health.ts` (единица в отклонении) и тест — mod.

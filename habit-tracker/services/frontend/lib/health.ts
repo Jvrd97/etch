@@ -87,9 +87,12 @@ export function sparklinePoints(
   });
 }
 
-/** `+500 к обычному`, or `как обычно` when the day sits exactly on the mean. */
-export function deviationText(baseline: HealthBaseline): string {
+/** `+0.4 кг к обычному`, or `как обычно` when the day sits exactly on the mean. */
+export function deviationText(baseline: HealthBaseline, unit: string): string {
   const rounded = Number(baseline.deviation.toFixed(ROUND_DIGITS));
   if (rounded === 0) return "как обычно";
-  return `${rounded > 0 ? "+" : "−"}${formatValue(Math.abs(rounded))} к обычному`;
+  return `${rounded > 0 ? "+" : "−"}${formatValue(Math.abs(rounded))} ${unit} к обычному`;
 }
+
+/** The marker next to a deviation beyond the metric's usual spread; text, so colour is not the only signal. */
+export const OUTSIDE_TYPICAL_TEXT = "вне обычного";

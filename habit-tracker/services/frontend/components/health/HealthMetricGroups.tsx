@@ -4,13 +4,15 @@
 import Link from 'next/link';
 import type { HealthMetric } from '@/lib/api';
 import { TrendSparkline } from '@/components/dashboard/TrendSparkline';
-import { deviationText, formatValue, metricHref, sparklinePoints } from '@/lib/health';
+import { deviationText, formatValue, metricHref, OUTSIDE_TYPICAL_TEXT, sparklinePoints } from '@/lib/health';
+import { nightLabel } from '@/components/health/SleepSection';
 import {
   HEALTH_ACCESS_LABEL,
   HEALTH_ACCESS_URL,
   HEALTH_GROUPS,
   HEALTH_SYNC_HINT,
   isCatalogEmpty,
+  localDate,
 } from '@/lib/health-metrics';
 
 export interface HealthMetricGroupsProps {
@@ -79,7 +81,7 @@ function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath:
     >
       <span className="text-sm text-text-primary">{metric.display_name}</span>
       <span className="flex items-center gap-3">
-        <span className="text-lime">
+        <span className="text-text-secondary">
           <TrendSparkline
             points={latest === undefined ? [] : sparklinePoints(metric.days, latest.date)}
             color="currentColor"
@@ -91,11 +93,15 @@ function HealthMetricRow({ metric, basePath }: { metric: HealthMetric; basePath:
           ) : (
             <>
               {`${formatValue(latest.value)} ${metric.canonical_unit}`}
+              {latest.date !== localDate() && (
+                <span className="block text-xs">{nightLabel(latest.date)}</span>
+              )}
               {baseline !== null && (
                 <span
                   className={`block text-xs ${baseline.outside_typical ? 'text-lime' : ''}`}
                 >
-                  {deviationText(baseline)}
+                  {deviationText(baseline, metric.canonical_unit)}
+                  {baseline.outside_typical && `, ${OUTSIDE_TYPICAL_TEXT}`}
                 </span>
               )}
             </>

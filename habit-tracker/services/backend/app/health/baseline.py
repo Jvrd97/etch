@@ -12,6 +12,22 @@ anyone and needs no calibration.
 Days without a measurement are absent from the map and are simply not counted:
 a gap is not a zero. With fewer than `MIN_BASELINE_DAYS` days behind it the
 baseline does not exist, and the screen shows no deviation instead of a false one.
+
+**Which metrics have a baseline.** Only the quantitative kinds (`BASELINE_KINDS`:
+cumulative, discrete, sleep). Any other kind of the catalog — event, symptom and
+other category types — has none: for them a missing day may mean "zero events" or
+"nothing recorded", and that is not decided, so a mean over the recorded days
+would be a guess. The gate reads the catalog's `kind`, not a list of names.
+
+**Today is not compared for cumulative metrics.** The day still being lived holds
+only part of the steps or kilocalories it will end with; against whole days it
+would read as a false drop every morning. A cumulative metric is compared on the
+last day before the range's end (the latest whole day); discrete metrics and sleep
+use the last shown day.
+
+**A flat history is not infinitely steady.** With zero spread any difference would
+be "outside the usual", so the spread used for that judgement has a floor
+(`MIN_SPREAD_SHARE` of the mean, never below `MIN_SPREAD_ABSOLUTE`).
 """
 
 from __future__ import annotations
@@ -20,11 +36,20 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import fmean, pstdev
 
+from app.health.aggregate import MetricKind
+
 BASELINE_DAYS = 30
 MIN_BASELINE_DAYS = 7
 # The latest day is "outside the usual" when it is further from the mean than
 # this many standard deviations of the baseline days.
 OUTSIDE_STDDEVS = 1.5
+# Floor of the spread used for "outside the usual": a share of the mean, and an
+# absolute minimum for a mean near zero.
+MIN_SPREAD_SHARE = 0.05
+MIN_SPREAD_ABSOLUTE = 0.01
+BASELINE_KINDS = frozenset(
+    {MetricKind.CUMULATIVE, MetricKind.DISCRETE, MetricKind.SLEEP}
+)
 
 
 @dataclass(frozen=True)
@@ -48,10 +73,36 @@ def compute_baseline(by_day: dict[date, float], latest_day: date) -> Baseline | 
     mean = fmean(values)
     stddev = pstdev(values)
     deviation = latest - mean
+    spread = max(stddev, MIN_SPREAD_SHARE * abs(mean), MIN_SPREAD_ABSOLUTE)
     return Baseline(
         mean=mean,
         stddev=stddev,
         days=len(values),
         deviation=deviation,
-        outside_typical=abs(deviation) > OUTSIDE_STDDEVS * stddev,
+        outside_typical=abs(deviation) > OUTSIDE_STDDEVS * spread,
     )
+
+
+def metric_baseline(
+    kind: str, by_day: dict[date, float], date_from: date, date_to: date
+) -> Baseline | None:
+    """
+    Baseline of one catalog metric for the range `date_from..date_to`.
+
+    `by_day` holds the metric's history, reaching `BASELINE_DAYS` before `date_from`.
+    """
+    try:
+        metric_kind = MetricKind(kind)
+    except ValueError:
+        return None
+    if metric_kind not in BASELINE_KINDS:
+        return None
+    shown = [
+        day
+        for day in by_day
+        if date_from <= day <= date_to
+        and (metric_kind != MetricKind.CUMULATIVE or day < date_to)
+    ]
+    if not shown:
+        return None
+    return compute_baseline(by_day, max(shown))
