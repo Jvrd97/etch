@@ -277,6 +277,7 @@ async def get_metrics(
                     for day in days.get(metric.id, [])
                 ],
                 baseline=_baseline_out(
+                    metric.identifier,
                     metric.kind,
                     {d.local_date: d.value for d in history.get(metric.id, [])},
                     date_from,
@@ -289,9 +290,13 @@ async def get_metrics(
 
 
 def _baseline_out(
-    kind: str, by_day: dict[date, float], date_from: date, date_to: date
+    identifier: str,
+    kind: str,
+    by_day: dict[date, float],
+    date_from: date,
+    date_to: date,
 ) -> HealthBaseline | None:
-    baseline = metric_baseline(kind, by_day, date_from, date_to)
+    baseline = metric_baseline(identifier, kind, by_day, date_from, date_to)
     return None if baseline is None else HealthBaseline(**asdict(baseline))
 
 

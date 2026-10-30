@@ -13,9 +13,12 @@ Days without a measurement are absent from the map and are simply not counted:
 a gap is not a zero. With fewer than `MIN_BASELINE_DAYS` days behind it the
 baseline does not exist, and the screen shows no deviation instead of a false one.
 
-**Which metrics have a baseline.** Only the quantitative kinds (`BASELINE_KINDS`:
-cumulative, discrete, sleep). Any other kind of the catalog — event, symptom and
-other category types — has none: for them a missing day may mean "zero events" or
+**Which metrics have a baseline.** Quantity types (`HKQuantityType…`) and sleep.
+Every other category type — event, symptom, minutes of a session — has none, and
+the catalog's `kind` cannot tell them apart: a category counted in minutes or
+events is `cumulative` like steps. The gate is therefore the source type, the
+identifier prefix `CATEGORY_PREFIX`, with sleep (a category folded into nights)
+let through by its `sleep` kind. Such a category has none: for them a missing day may mean "zero events" or
 "nothing recorded", and that is not decided, so a mean over the recorded days
 would be a guess. The gate reads the catalog's `kind`, not a list of names.
 
@@ -37,6 +40,7 @@ from datetime import date, timedelta
 from statistics import fmean, pstdev
 
 from app.health.aggregate import MetricKind
+from app.health.categories import CATEGORY_PREFIX
 
 BASELINE_DAYS = 30
 MIN_BASELINE_DAYS = 7
@@ -84,7 +88,11 @@ def compute_baseline(by_day: dict[date, float], latest_day: date) -> Baseline | 
 
 
 def metric_baseline(
-    kind: str, by_day: dict[date, float], date_from: date, date_to: date
+    identifier: str,
+    kind: str,
+    by_day: dict[date, float],
+    date_from: date,
+    date_to: date,
 ) -> Baseline | None:
     """
     Baseline of one catalog metric for the range `date_from..date_to`.
@@ -96,6 +104,8 @@ def metric_baseline(
     except ValueError:
         return None
     if metric_kind not in BASELINE_KINDS:
+        return None
+    if metric_kind != MetricKind.SLEEP and identifier.startswith(CATEGORY_PREFIX):
         return None
     shown = [
         day

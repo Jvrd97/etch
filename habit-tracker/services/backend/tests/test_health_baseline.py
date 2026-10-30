@@ -23,6 +23,9 @@ from tests.conftest import test_engine
 
 STEPS = "HKQuantityTypeIdentifierStepCount"
 HEART = "HKQuantityTypeIdentifierHeartRate"
+SLEEP = "HKCategoryTypeIdentifierSleepAnalysis"
+MINDFUL = "HKCategoryTypeIdentifierMindfulSession"
+HEART_EVENT = "HKCategoryTypeIdentifierHighHeartRateEvent"
 SAMPLES_URL = "/api/v1/health/samples"
 METRICS_URL = "/api/v1/health/metrics"
 TODAY = date(2026, 7, 20)
@@ -93,23 +96,27 @@ def test_a_flat_history_does_not_make_every_difference_unusual() -> None:
 def test_a_cumulative_metric_is_compared_on_the_last_whole_day() -> None:
     # Ten steady days, then a morning with 800 steps so far.
     by_day = run_of([8000.0] * 10 + [800.0])
-    steps = metric_baseline("cumulative", by_day, TODAY - timedelta(days=10), TODAY)
+    steps = metric_baseline(
+        STEPS, "cumulative", by_day, TODAY - timedelta(days=10), TODAY
+    )
     assert steps is not None
     assert steps.deviation == 0.0
     assert steps.outside_typical is False
-    heart = metric_baseline("discrete", by_day, TODAY - timedelta(days=10), TODAY)
+    heart = metric_baseline(
+        HEART, "discrete", by_day, TODAY - timedelta(days=10), TODAY
+    )
     assert heart is not None
     assert heart.deviation == -7200.0
 
 
 def test_a_cumulative_metric_asked_for_today_alone_has_no_baseline() -> None:
     by_day = run_of([8000.0] * 10 + [800.0])
-    assert metric_baseline("cumulative", by_day, TODAY, TODAY) is None
+    assert metric_baseline(STEPS, "cumulative", by_day, TODAY, TODAY) is None
 
 
 def test_sleep_is_compared_on_the_last_shown_night() -> None:
     by_day = run_of([420.0] * 10 + [300.0])
-    result = metric_baseline("sleep", by_day, TODAY, TODAY)
+    result = metric_baseline(SLEEP, "sleep", by_day, TODAY, TODAY)
     assert result is not None
     assert result.deviation == -120.0
 
@@ -117,7 +124,9 @@ def test_sleep_is_compared_on_the_last_shown_night() -> None:
 @pytest.mark.parametrize("kind", ["category", "event", "symptom", "unheard-of"])
 def test_other_kinds_have_no_baseline(kind: str) -> None:
     by_day = run_of([3.0] * 10 + [9.0])
-    assert metric_baseline(kind, by_day, TODAY, TODAY) is None
+    assert (
+        metric_baseline("HKQuantityTypeIdentifierX", kind, by_day, TODAY, TODAY) is None
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +201,32 @@ async def test_a_partial_today_of_a_cumulative_metric_gives_no_false_deviation(
     assert steps["days"][-1]["value"] == 800.0
     assert steps["baseline"]["deviation"] == 0.0
     assert steps["baseline"]["outside_typical"] is False
+
+
+async def test_category_types_of_the_catalog_have_no_baseline_but_sleep_does(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Minutes of a session and events are `cumulative` in the catalog, like steps."""
+    rows = {
+        m.identifier: m
+        for m in await health_crud.get_catalog(db_session)
+        if m.identifier in (MINDFUL, HEART_EVENT, SLEEP)
+    }
+    by_day = run_of([5.0] * 10 + [9.0])
+    for identifier in (MINDFUL, HEART_EVENT):
+        assert rows[identifier].kind == "cumulative"
+        assert (
+            metric_baseline(
+                identifier,
+                rows[identifier].kind,
+                by_day,
+                TODAY - timedelta(days=10),
+                TODAY - timedelta(days=1),
+            )
+            is None
+        )
+    assert rows[SLEEP].kind == "sleep"
+    assert metric_baseline(SLEEP, rows[SLEEP].kind, by_day, TODAY, TODAY) is not None
 
 
 async def count_statements(client: AsyncClient) -> int:

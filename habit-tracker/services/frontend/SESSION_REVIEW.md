@@ -2373,3 +2373,11 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `lib/api.ts` — mod (добавлением): `HealthSleepNight`, `healthAPI.getSleep`, вид и группа `sleep`.
 
 Не проверено глазами: `next dev` не запускался (правило роя про `.next`); проверка — компонентные тесты и живой `GET /health/sleep` на 8938.
+
+## 2026-10-30 — PHASE-03/272: группы всего каталога Apple Health
+
+- `lib/health-metrics.ts` — mod: группы `mobility`, `hearing`, `mind`, `symptoms`, `other` в `HEALTH_GROUPS`.
+- `lib/api.ts` — mod (добавлением): те же группы в союзе `HealthMetricGroup`.
+- `components/health/HealthMetricGroups.test.tsx` — new: метрика каждой новой группы под своим заголовком.
+
+Не проверено глазами: `next dev` не запускался (правило роя); проверка — компонентный тест и tsc.

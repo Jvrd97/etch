@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238
-// summary: Health section tests for its 24-type catalog, first-entry authorization (sleep in the same sheet), complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
+// [review:need-review] PHASE-02/65, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
+// summary: Health section tests for its catalog (every quantity type but cycle tracking, seven groups), first-entry authorization (every category type in the same sheet), complete reads, empty values, the sync button with its result text (a joined launch run and a failed permission request named in words), and the latest-value reader over the one HealthKit seam
 
 import HealthKit
 import XCTest
@@ -7,16 +7,22 @@ import XCTest
 
 @MainActor
 final class HealthSyncViewModelTests: XCTestCase {
-    func testCatalogContainsExactlyTwentyFourTypesInFourGroups() {
+    func testCatalogIsEveryQuantityTypeButCycleTrackingInSevenGroups() throws {
+        guard #available(iOS 18.0, *) else {
+            throw XCTSkip("the catalogue counts below are for iOS 18 and later")
+        }
         let metrics = HealthMetricCatalog.metrics
 
-        XCTAssertEqual(metrics.count, 24)
-        XCTAssertEqual(Set(metrics.map(\.identifier)).count, 24)
+        XCTAssertEqual(metrics.count, 119)
+        XCTAssertEqual(Set(metrics.map(\.identifier)).count, 119)
         XCTAssertEqual(Dictionary(grouping: metrics, by: \.group).mapValues(\.count), [
-            .movement: 7,
-            .heart: 7,
-            .body: 5,
-            .nutrition: 5,
+            .movement: 37,
+            .mobility: 8,
+            .heart: 17,
+            .body: 9,
+            .nutrition: 40,
+            .hearing: 3,
+            .other: 5,
         ])
     }
 
@@ -28,10 +34,10 @@ final class HealthSyncViewModelTests: XCTestCase {
         await viewModel.enterSection()
 
         XCTAssertEqual(reader.authorizationRequests, 1)
-        // Sleep is asked in the same sheet as the 24 quantity types (#238).
+        // Every category type, sleep included, is asked in the same sheet as the quantity types.
         XCTAssertEqual(
             reader.requestedIdentifiers,
-            Set(HealthMetricCatalog.metrics.map(\.identifier) + [HKCategoryTypeIdentifier.sleepAnalysis.rawValue])
+            Set(HealthMetricCatalog.metrics.map(\.identifier) + HealthCategoryCatalog.categories.map(\.identifier))
         )
         XCTAssertEqual(reader.readIdentifiers, Set(HealthMetricCatalog.metrics.map(\.identifier)))
         XCTAssertEqual(reader.readCalls, 1)
@@ -42,7 +48,7 @@ final class HealthSyncViewModelTests: XCTestCase {
 
         await viewModel.enterSection()
 
-        XCTAssertEqual(viewModel.rows.count, 24)
+        XCTAssertEqual(viewModel.rows.count, HealthMetricCatalog.metrics.count)
         XCTAssertTrue(viewModel.rows.allSatisfy { $0.value == nil })
     }
 
@@ -111,7 +117,7 @@ final class HealthSyncViewModelTests: XCTestCase {
             .restingHeartRate, 54, HKUnit(from: "count/min"), "2026-10-20T03:00:00Z"
         )
         let reader = HealthKitDataReader(store: store)
-        let metrics = HealthPump.pumpedMetrics
+        let metrics = HealthMetricCatalog.metrics.filter { [.stepCount, .restingHeartRate].contains($0.typeIdentifier) }
 
         try await reader.requestReadAuthorization(for: Set(metrics.map(\.identifier)))
         let values = try await reader.readLatestValues(for: metrics)

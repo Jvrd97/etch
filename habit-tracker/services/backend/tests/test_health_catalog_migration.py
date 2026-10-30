@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/65, PHASE-03/238
-# summary: the immutable migration snapshot matches the runtime quantity metrics and inserts only its 22 genuinely new metrics; sleep arrives in its own later migration
+# [review:need-review] PHASE-02/65, PHASE-03/238, PHASE-03/272
+# summary: the immutable migration snapshot matches the first 24 runtime quantity metrics and inserts only its 22 genuinely new metrics; sleep and the rest of HealthKit arrive in later migrations
 
 from importlib import util
 from pathlib import Path
@@ -11,13 +11,14 @@ from sqlalchemy.sql.dml import Insert
 
 from app.health.catalog import SEED_METRICS
 
-# Sleep (#238) is a later row of a later migration; this snapshot holds the
-# quantity metrics only.
+# Sleep (#238) and the rest of HealthKit (#272) are rows of later migrations;
+# this snapshot holds the first 24 quantity metrics, which open the catalogue.
+SNAPSHOT_SIZE = 24
 QUANTITY_SEEDS = [
     metric
     for metric in SEED_METRICS
     if metric.identifier.startswith("HKQuantityTypeIdentifier")
-]
+][:SNAPSHOT_SIZE]
 
 MIGRATION_PATH = (
     Path(__file__).parents[1]

@@ -123,5 +123,740 @@
     "identifier": "HKCategoryTypeIdentifierSleepAnalysis",
     "kind": "sleep",
     "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleMoveTime",
+    "kind": "cumulative",
+    "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierTimeInDaylight",
+    "kind": "cumulative",
+    "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceCycling",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceWheelchair",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierPushCount",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceSwimming",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierSwimmingStrokeCount",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceDownhillSnowSports",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceCrossCountrySkiing",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistancePaddleSports",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceRowing",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDistanceSkatingSports",
+    "kind": "cumulative",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierNikeFuel",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierPhysicalEffort",
+    "kind": "discrete",
+    "canonical_unit": "kcal/(kg*hr)"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWorkoutEffortScore",
+    "kind": "discrete",
+    "canonical_unit": "appleEffortScore"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierEstimatedWorkoutEffortScore",
+    "kind": "discrete",
+    "canonical_unit": "appleEffortScore"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRunningSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRunningPower",
+    "kind": "discrete",
+    "canonical_unit": "W"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRunningStrideLength",
+    "kind": "discrete",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRunningVerticalOscillation",
+    "kind": "discrete",
+    "canonical_unit": "cm"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRunningGroundContactTime",
+    "kind": "discrete",
+    "canonical_unit": "ms"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierCyclingSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierCyclingPower",
+    "kind": "discrete",
+    "canonical_unit": "W"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierCyclingFunctionalThresholdPower",
+    "kind": "discrete",
+    "canonical_unit": "W"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierCyclingCadence",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierCrossCountrySkiingSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierPaddleSportsSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierRowingSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierUnderwaterDepth",
+    "kind": "discrete",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWaterTemperature",
+    "kind": "discrete",
+    "canonical_unit": "degC"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWalkingSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWalkingStepLength",
+    "kind": "discrete",
+    "canonical_unit": "cm"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWalkingAsymmetryPercentage",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWalkingDoubleSupportPercentage",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleWalkingSteadiness",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierSixMinuteWalkTestDistance",
+    "kind": "discrete",
+    "canonical_unit": "m"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierStairAscentSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierStairDescentSpeed",
+    "kind": "discrete",
+    "canonical_unit": "m/s"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierHeartRateRecoveryOneMinute",
+    "kind": "discrete",
+    "canonical_unit": "count/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAtrialFibrillationBurden",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierPeripheralPerfusionIndex",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBloodPressureSystolic",
+    "kind": "discrete",
+    "canonical_unit": "mmHg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBloodPressureDiastolic",
+    "kind": "discrete",
+    "canonical_unit": "mmHg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierForcedVitalCapacity",
+    "kind": "discrete",
+    "canonical_unit": "L"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierForcedExpiratoryVolume1",
+    "kind": "discrete",
+    "canonical_unit": "L"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierPeakExpiratoryFlowRate",
+    "kind": "discrete",
+    "canonical_unit": "L/min"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierInhalerUsage",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleSleepingBreathingDisturbances",
+    "kind": "discrete",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierWaistCircumference",
+    "kind": "discrete",
+    "canonical_unit": "cm"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBodyTemperature",
+    "kind": "discrete",
+    "canonical_unit": "degC"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierAppleSleepingWristTemperature",
+    "kind": "discrete",
+    "canonical_unit": "degC"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierElectrodermalActivity",
+    "kind": "discrete",
+    "canonical_unit": "mcS"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierEnvironmentalAudioExposure",
+    "kind": "discrete",
+    "canonical_unit": "dBASPL"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierHeadphoneAudioExposure",
+    "kind": "discrete",
+    "canonical_unit": "dBASPL"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierEnvironmentalSoundReduction",
+    "kind": "discrete",
+    "canonical_unit": "dBASPL"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFiber",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietarySugar",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFatSaturated",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFatMonounsaturated",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFatPolyunsaturated",
+    "kind": "cumulative",
+    "canonical_unit": "g"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryCholesterol",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietarySodium",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryPotassium",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryCalcium",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryIron",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryMagnesium",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryPhosphorus",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryZinc",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryCopper",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryManganese",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryChloride",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryCaffeine",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminC",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminE",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminB6",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryThiamin",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryRiboflavin",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryNiacin",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryPantothenicAcid",
+    "kind": "cumulative",
+    "canonical_unit": "mg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminA",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminB12",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminD",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryVitaminK",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryFolate",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryBiotin",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryIodine",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietarySelenium",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryChromium",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierDietaryMolybdenum",
+    "kind": "cumulative",
+    "canonical_unit": "mcg"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierNumberOfAlcoholicBeverages",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBloodGlucose",
+    "kind": "discrete",
+    "canonical_unit": "mg/dL"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierInsulinDelivery",
+    "kind": "cumulative",
+    "canonical_unit": "IU"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierBloodAlcoholContent",
+    "kind": "discrete",
+    "canonical_unit": "%"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierNumberOfTimesFallen",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKQuantityTypeIdentifierUVExposure",
+    "kind": "discrete",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAppleStandHour",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierMindfulSession",
+    "kind": "cumulative",
+    "canonical_unit": "min"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHighHeartRateEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierLowHeartRateEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierIrregularHeartRhythmEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierLowCardioFitnessEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHypertensionEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSleepApneaEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAppleWalkingSteadinessEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAudioExposureEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHeadphoneAudioExposureEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierToothbrushingEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHandwashingEvent",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAbdominalCramps",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAcne",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierAppetiteChanges",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierBladderIncontinence",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierBloating",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierBreastPain",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierChestTightnessOrPain",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierChills",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierConstipation",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierCoughing",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierDiarrhea",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierDizziness",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierDrySkin",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierFainting",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierFatigue",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierFever",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierGeneralizedBodyAche",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHairLoss",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHeadache",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHeartburn",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierHotFlashes",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierLossOfSmell",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierLossOfTaste",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierLowerBackPain",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierMemoryLapse",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierMoodChanges",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierNausea",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierNightSweats",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierPelvicPain",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierRapidPoundingOrFlutteringHeartbeat",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierRunnyNose",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierShortnessOfBreath",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSinusCongestion",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSkippedHeartbeat",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSleepChanges",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierSoreThroat",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierVaginalDryness",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierVomiting",
+    "kind": "cumulative",
+    "canonical_unit": "count"
+  },
+  {
+    "identifier": "HKCategoryTypeIdentifierWheezing",
+    "kind": "cumulative",
+    "canonical_unit": "count"
   }
 ]
