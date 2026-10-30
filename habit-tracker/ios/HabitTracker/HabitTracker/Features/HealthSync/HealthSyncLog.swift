@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/273
-// summary: on-device journal of health sync runs — a ring buffer of 500 entries in a JSON file (time, source, run kind, counts, outcome class; never a metric value), and the pure maths of arrival intervals and day/week summaries
+// [review:need-review] PHASE-03/273, PHASE-03/272
+// summary: on-device journal of health sync runs — a ring buffer of 500 entries in a JSON file (time, source, run kind, counts, outcome class, the type identifier of a metric a run left out; never a metric value), and the pure maths of arrival intervals and day/week summaries
 import Foundation
 import os
 
@@ -38,6 +38,9 @@ struct HealthSyncLogEntry: Codable, Equatable, Identifiable {
     /// Chunks the server answered.
     let chunks: Int
     let outcome: HealthSyncLogOutcome
+    /// The one metric this entry is about, when a run left a metric out (its HealthKit
+    /// type identifier, never a value); nil for a whole run. Absent in older files.
+    var metric: String?
 
     /// Data reached the server: the only outcome that counts as an arrival.
     var isArrival: Bool { outcome == .ok }
@@ -146,6 +149,10 @@ final class FileHealthSyncLogStore: HealthSyncLogStoring {
 @MainActor
 protocol HealthSyncLogging: AnyObject {
     func record(_ outcome: HealthSyncOutcome, source: HealthSyncSource, kind: HealthSyncRunKind, at: Date)
+    /// One metric a run left out, by class (`chunkTooLarge`), next to the run's own entry.
+    func recordSkipped(
+        metric: String, because failure: HealthSyncFailure, source: HealthSyncSource, kind: HealthSyncRunKind, at: Date
+    )
 }
 
 /// The ring buffer. The oldest entries go first once `capacity` is reached.
@@ -203,6 +210,15 @@ final class HealthSyncLog: HealthSyncLogging {
             id: makeId(), at: at, source: source,
             kind: kind,
             samples: samples, chunks: chunks, outcome: logged
+        ))
+    }
+
+    func recordSkipped(
+        metric: String, because failure: HealthSyncFailure, source: HealthSyncSource, kind: HealthSyncRunKind, at: Date
+    ) {
+        append(HealthSyncLogEntry(
+            id: makeId(), at: at, source: source, kind: kind,
+            samples: 0, chunks: 0, outcome: .failed(failure), metric: metric
         ))
     }
 

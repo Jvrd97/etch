@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/238
-# summary: sleep through POST /health/samples (category samples, the same chunk and journal as the quantity metrics) and GET /health/sleep — a night across midnight, iPhone and Watch not added up, a re-sent night overwritten not doubled, an empty range, the sleep day in /health/metrics, refusals by class (unknown stage, sleep as a quantity, a quantity as a category), and a category type added by a catalogue row alone
+# [review:need-review] PHASE-03/238, PHASE-03/272
+# summary: sleep through POST /health/samples (category samples, the same chunk and journal as the quantity metrics) and GET /health/sleep — a night across midnight, iPhone and Watch not added up, a re-sent night overwritten not doubled, an empty range, the sleep day in /health/metrics, refusals by class (unknown stage, sleep as a quantity, a quantity as a category), a cycle-tracking type refused as unknown, and a category type added by a catalogue row alone
 """
 Sleep end to end on the HTTP surface.
 
@@ -25,7 +25,10 @@ from app.models import HealthHourBucket, HealthMetric, HealthSleepNight, HealthS
 
 SLEEP = "HKCategoryTypeIdentifierSleepAnalysis"
 STEPS = "HKQuantityTypeIdentifierStepCount"
-MINDFUL = "HKCategoryTypeIdentifierMindfulSession"
+# Cycle tracking is the one section the catalogue leaves out (#272).
+NOT_IN_CATALOGUE = "HKCategoryTypeIdentifierMenstrualFlow"
+# A category type HealthKit might add one day: the server learns it from a row.
+FUTURE_SESSION = "HKCategoryTypeIdentifierFutureSession"
 BERLIN = 120
 
 IN_BED, ASLEEP, AWAKE, CORE, DEEP, REM = range(6)
@@ -262,14 +265,14 @@ async def test_an_unknown_category_type_is_refused_as_unknown_metric(
             "category_samples": [
                 {
                     **stage(0, "2026-10-20T01:00:00Z", "2026-10-20T01:10:00Z"),
-                    "identifier": MINDFUL,
+                    "identifier": NOT_IN_CATALOGUE,
                 }
             ],
         },
     )
 
     assert response.status_code == 422
-    assert MINDFUL in response.json()["detail"]
+    assert NOT_IN_CATALOGUE in response.json()["detail"]
 
 
 async def test_a_category_type_with_minutes_is_one_catalogue_row_away(
@@ -278,10 +281,10 @@ async def test_a_category_type_with_minutes_is_one_catalogue_row_away(
     """A category type that is a duration needs a row, not code: minutes per hour."""
     db_session.add(
         HealthMetric(
-            identifier=MINDFUL,
+            identifier=FUTURE_SESSION,
             kind="cumulative",
             canonical_unit="min",
-            display_name="Осознанность",
+            display_name="Будущая сессия",
             group="mind",
         )
     )
@@ -294,7 +297,7 @@ async def test_a_category_type_with_minutes_is_one_catalogue_row_away(
                 # 09:50-10:10 Berlin: ten minutes in each hour.
                 {
                     **stage(0, "2026-10-20T07:50:00Z", "2026-10-20T08:10:00Z"),
-                    "identifier": MINDFUL,
+                    "identifier": FUTURE_SESSION,
                 }
             ]
         },
@@ -304,7 +307,7 @@ async def test_a_category_type_with_minutes_is_one_catalogue_row_away(
         await db_session.execute(
             select(HealthHourBucket.hour, HealthHourBucket.value)
             .join(HealthMetric)
-            .where(HealthMetric.identifier == MINDFUL)
+            .where(HealthMetric.identifier == FUTURE_SESSION)
             .order_by(HealthHourBucket.hour)
         )
     ).all()

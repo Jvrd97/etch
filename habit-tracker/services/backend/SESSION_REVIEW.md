@@ -2987,3 +2987,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `backend/tests/test_health_metric_detail.py` — new: пустой день, час с одним семплом, min/max, DST-день, те же числа, что в списке, рост SQL.
 - `frontend/app/health/[identifier]/page.tsx`, `app/m/health/[identifier]/page.tsx`, `components/health/MetricDetail.tsx` (+ тест), `useMetricDetail.ts`, `lib/health.ts` — new.
 - `frontend/components/health/HealthMetricGroups.tsx`, `app/health/page.tsx`, `app/m/health/page.tsx` (+ тесты), `lib/api.ts` — mod: ссылка со строки метрики, типы и `healthAPI.getMetricDays/getMetricHours`.
+
+## 2026-10-30 — PHASE-03/272: все метрики Apple Health, кроме отслеживания цикла
+
+Тронуто 11 файлов бэкенда (4 `new`, 7 `mod`), миграция `b55c9394752b` от головы `4359c5a3d24e`.
+
+- `alembic/versions/2026_10_30_1200-b55c9394752b_health_all_metrics_except_cycle.py` — new: 147 строк каталога (95 количественных, 52 категорийных) снимком; downgrade удаляет ровно их, корзины уходят каскадом.
+- `app/health/categories.py` — new: категорийные типы (кроме сна) в часовые корзины — минуты по объединению интервалов (iPhone и часы не складываются), счёт в часе последнего мгновения интервала, одинаковые интервалы считаются один раз, значение «не было» (idle у часа стояния, notPresent у симптомов) не считается; количественный тип в `category_samples` — отказ `UnitError`.
+- `app/health/catalog.py` — mod: весь HealthKit кроме раздела цикла (172 строки), новые группы `mobility`, `hearing`, `mind`, `symptoms`, `other`.
+- `app/health/aggregate.py` — mod: единицы `mg`, `mcg`, `L` и одноединичные измерения (скорость, мощность, температура, давление, поток, глюкоза, инсулин, звук, проводимость, нагрузка, оценка усилия).
+- `app/crud/health.py` — mod: ветка `cumulative` в `ingest_category_samples` зовёт `category_hours` (строка в журнале доски для #68).
+- Тесты: `tests/test_health_catalog_all_types.py` (new: исключение цикла, миграции вместе равны каталогу, upgrade/downgrade только своих строк), `tests/test_health_category_hours.py` (new: дедуп минут iPhone+часы, счёт, «не было», то же через API), `test_health.py`, `test_health_catalog_migration.py`, `test_health_sleep_api.py`, `tests/fixtures/health/metric_catalog.json` — mod.
