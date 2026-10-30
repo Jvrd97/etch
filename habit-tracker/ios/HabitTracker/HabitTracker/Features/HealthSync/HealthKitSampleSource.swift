@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272
-// summary: the one read-only seam over HKHealthStore (availability, request status, read request for quantity and category types, samples of a window, category samples overlapping a window, HealthKit's deduplicated hourly sums, the latest sample) and the mapping of a sample or an hourly sum to the six-field wire DTO and of a category sample to the five-field one, its start optionally clipped to the reading window
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-03/272, PHASE-02/70
+// summary: the one read-only seam over HKHealthStore (availability, request status, read request for quantity and category types, samples of a window, category samples overlapping a window, HealthKit's deduplicated hourly sums, the latest sample) workouts started in a window read into plain records (type, interval, active time, energy, distance, average and maximum heart rate from the workout's own statistics), and the mapping of a sample or an hourly sum to the six-field wire DTO, of a category sample to the five-field one and of a workout to its DTO with the start's offset, its start optionally clipped to the reading window
 import Foundation
 import HealthKit
 
@@ -10,6 +10,75 @@ struct HealthHourSum: Equatable {
     let start: Date
     let end: Date
     let sum: HKQuantity?
+}
+
+/// One `HKWorkout` reduced to what the wire carries. The numbers come from the workout's
+/// own statistics, which HealthKit fills from the samples recorded during it; a number the
+/// workout has no statistics for (no watch, no heart-rate permission) is nil.
+struct HealthWorkoutRecord: Equatable {
+    let uuid: UUID
+    let activityType: HKWorkoutActivityType
+    let start: Date
+    let end: Date
+    /// Active time, as `HKWorkout.duration` reports it.
+    let duration: TimeInterval
+    let energyKcal: Double?
+    let distanceM: Double?
+    let avgHeartRate: Double?
+    let maxHeartRate: Double?
+    /// `HKMetadataKeyTimeZone`, when the workout recorded where it was done.
+    let timeZoneName: String?
+
+    private static let distanceTypes: [HKQuantityTypeIdentifier] = {
+        var types: [HKQuantityTypeIdentifier] = [
+            .distanceWalkingRunning, .distanceCycling, .distanceSwimming, .distanceWheelchair,
+            .distanceDownhillSnowSports,
+        ]
+        if #available(iOS 18.0, *) {
+            types += [.distanceCrossCountrySkiing, .distancePaddleSports, .distanceRowing, .distanceSkatingSports]
+        }
+        return types
+    }()
+    private static let beatsPerMinute = HKUnit.count().unitDivided(by: .minute())
+
+    init(
+        uuid: UUID, activityType: HKWorkoutActivityType, start: Date, end: Date, duration: TimeInterval,
+        energyKcal: Double? = nil, distanceM: Double? = nil, avgHeartRate: Double? = nil,
+        maxHeartRate: Double? = nil, timeZoneName: String? = nil
+    ) {
+        self.uuid = uuid
+        self.activityType = activityType
+        self.start = start
+        self.end = end
+        self.duration = duration
+        self.energyKcal = energyKcal
+        self.distanceM = distanceM
+        self.avgHeartRate = avgHeartRate
+        self.maxHeartRate = maxHeartRate
+        self.timeZoneName = timeZoneName
+    }
+
+    init(_ workout: HKWorkout) {
+        let heartRate = workout.statistics(for: HKQuantityType(.heartRate))
+        // A workout carries one distance statistic for its sport; sum so a multisport
+        // session (swim and run) does not lose a leg.
+        let distances = Self.distanceTypes.compactMap {
+            workout.statistics(for: HKQuantityType($0))?.sumQuantity()?.doubleValue(for: .meter())
+        }
+        self.init(
+            uuid: workout.uuid,
+            activityType: workout.workoutActivityType,
+            start: workout.startDate,
+            end: workout.endDate,
+            duration: workout.duration,
+            energyKcal: workout.statistics(for: HKQuantityType(.activeEnergyBurned))?
+                .sumQuantity()?.doubleValue(for: .kilocalorie()),
+            distanceM: distances.isEmpty ? nil : distances.reduce(0, +),
+            avgHeartRate: heartRate?.averageQuantity()?.doubleValue(for: Self.beatsPerMinute),
+            maxHeartRate: heartRate?.maximumQuantity()?.doubleValue(for: Self.beatsPerMinute),
+            timeZoneName: workout.metadata?[HKMetadataKeyTimeZone] as? String
+        )
+    }
 }
 
 /// Everything the app reads from `HKHealthStore`, for the pump and the Health screen
@@ -28,6 +97,9 @@ protocol HealthStoreQuerying: Sendable {
     func hourlySums(of type: HKQuantityType, from: Date, to: Date) async throws -> [HealthHourSum]
     /// Category samples (sleep intervals) overlapping `[from, to)`, oldest first.
     func categorySamples(of type: HKCategoryType, from: Date, to: Date) async throws -> [HKCategorySample]
+    /// Workouts that start inside `[from, to)`, oldest first. A workout belongs to the day
+    /// it started, so one that began before the window is not this window's.
+    func workouts(from: Date, to: Date) async throws -> [HealthWorkoutRecord]
     /// The most recent sample of the type, if any.
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample?
 }
@@ -86,6 +158,15 @@ extension HKHealthStore: HealthStoreQuerying {
         return try await descriptor.result(for: self)
     }
 
+    func workouts(from: Date, to: Date) async throws -> [HealthWorkoutRecord] {
+        let window = HKQuery.predicateForSamples(withStart: from, end: to, options: .strictStartDate)
+        let descriptor = HKSampleQueryDescriptor(
+            predicates: [.workout(window)],
+            sortDescriptors: [SortDescriptor(\.startDate)]
+        )
+        return try await descriptor.result(for: self).map(HealthWorkoutRecord.init)
+    }
+
     func latestSample(of type: HKQuantityType) async throws -> HKQuantitySample? {
         let descriptor = HKSampleQueryDescriptor(
             predicates: [.quantitySample(type: type)],
@@ -133,6 +214,23 @@ struct HealthSampleMapper {
         )
     }
 
+    /// The workout with the offset at its start: the server names its day by the start.
+    func dto(_ workout: HealthWorkoutRecord) -> HealthWorkoutDTO {
+        HealthWorkoutDTO(
+            uuid: workout.uuid.uuidString,
+            activityType: HealthWorkoutActivity.name(of: workout.activityType),
+            start: Self.wireInstant(workout.start),
+            end: Self.wireInstant(workout.end),
+            utcOffsetMinutes: zone(named: workout.timeZoneName).secondsFromGMT(for: workout.start)
+                / Self.secondsPerMinute,
+            durationSeconds: workout.duration,
+            energyKcal: workout.energyKcal,
+            distanceM: workout.distanceM,
+            avgHeartRate: workout.avgHeartRate,
+            maxHeartRate: workout.maxHeartRate
+        )
+    }
+
     /// Nil for an empty hour: absent data is not sent as a zero.
     func dto(_ hour: HealthHourSum, metric: HealthMetricDefinition) -> HealthSampleDTO? {
         guard let sum = hour.sum else {
@@ -157,8 +255,11 @@ struct HealthSampleMapper {
     }
 
     private func zone(of sample: HKSample) -> TimeZone {
-        if let name = sample.metadata?[HKMetadataKeyTimeZone] as? String,
-           let recorded = TimeZone(identifier: name) {
+        zone(named: sample.metadata?[HKMetadataKeyTimeZone] as? String)
+    }
+
+    private func zone(named name: String?) -> TimeZone {
+        if let name, let recorded = TimeZone(identifier: name) {
             return recorded
         }
         return timeZone

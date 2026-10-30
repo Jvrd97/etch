@@ -2998,3 +2998,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/health/aggregate.py` — mod: единицы `mg`, `mcg`, `L` и одноединичные измерения (скорость, мощность, температура, давление, поток, глюкоза, инсулин, звук, проводимость, нагрузка, оценка усилия).
 - `app/crud/health.py` — mod: ветка `cumulative` в `ingest_category_samples` зовёт `category_hours` (строка в журнале доски для #68).
 - Тесты: `tests/test_health_catalog_all_types.py` (new: исключение цикла, миграции вместе равны каталогу, upgrade/downgrade только своих строк), `tests/test_health_category_hours.py` (new: дедуп минут iPhone+часы, счёт, «не было», то же через API), `test_health.py`, `test_health_catalog_migration.py`, `test_health_sleep_api.py`, `tests/fixtures/health/metric_catalog.json` — mod.
+
+## 2026-10-30 — PHASE-02/70: тренировки HealthKit как события
+
+Тронуто 8 файлов бэкенда (4 `new`, 4 `mod`) и миграция `c3d5e7f9a1b4` от головы `b55c9394752b`.
+
+- `alembic/versions/2026_10_30_1400-c3d5e7f9a1b4_health_workouts.py` — new: таблица `health_workouts` (ключ — UUID тренировки HealthKit), downgrade её удаляет.
+- `app/health/workouts.py` — new: `local_date` по началу, русские названия типов, границы значений.
+- `app/models/health.py`, `app/models/__init__.py` — mod: модель `HealthWorkout`.
+- `app/schemas/health.py`, `app/crud/health.py`, `app/api/health.py` — mod: секция `workouts` в `POST /health/samples`, upsert по UUID, `GET /health/workouts` (добавлением).
+- `tests/test_health_workouts.py` — new: повтор окна не дублирует, исправленная тренировка перезаписывается, тренировка через полночь в день старта, `null` вместо нуля, нет часовых корзин, отказ на плохие значения, соответствие полей телефону.

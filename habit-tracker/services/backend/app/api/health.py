@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68
-# summary: POST /health/samples (raw intake of quantity and category samples, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) and GET /health/sleep (nights by wake date)
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/238, PHASE-02/68, PHASE-02/70
+# summary: POST /health/samples (raw intake of quantity, category samples and workouts, server-side aggregation, one transaction per chunk, sync-run journal), POST /health/sync-runs/{id}/fail, GET /health/sync-status, GET /health/metrics (daily values), GET /health/metrics/{identifier}/days and /hours (one metric's series and the hours of one day) GET /health/sleep (nights by wake date) and GET /health/workouts (workouts by start date)
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -15,7 +15,13 @@ from app.health.aggregate import (
     aggregate_samples,
 )
 from app.health.sleep import SleepValueError
-from app.models.health import HealthMetric, HealthSleepNight, HealthSyncRun
+from app.health.workouts import activity_label
+from app.models.health import (
+    HealthMetric,
+    HealthSleepNight,
+    HealthSyncRun,
+    HealthWorkout,
+)
 from app.schemas.health import (
     HealthDayValue,
     HealthHourValue,
@@ -30,6 +36,8 @@ from app.schemas.health import (
     HealthSyncFailureIn,
     HealthSyncRunOut,
     HealthSyncStatusResponse,
+    HealthWorkoutOut,
+    HealthWorkoutsResponse,
     SyncFailureKind,
 )
 
@@ -100,6 +108,7 @@ async def ingest_samples(
         buckets_written += await health_crud.ingest_category_samples(
             db, catalog, payload.category_samples
         )
+        buckets_written += await health_crud.upsert_workouts(db, payload.workouts)
     except (UnitError, SleepValueError) as error:
         await _fail_run(db, payload, "unit")
         raise HTTPException(
@@ -402,4 +411,45 @@ def _night_out(night: HealthSleepNight) -> HealthSleepNightOut:
         deep_min=night.deep_min,
         rem_min=night.rem_min,
         unspecified_min=night.unspecified_min,
+    )
+
+
+@router.get("/workouts", response_model=HealthWorkoutsResponse)
+async def get_workouts(
+    date_from: date = Query(
+        ..., description="First start date, inclusive (YYYY-MM-DD)"
+    ),
+    date_to: date = Query(..., description="Last start date, inclusive (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+) -> HealthWorkoutsResponse:
+    """
+    Тренировки за период по дате начала.
+
+    Тренировка через полночь — одна запись на день старта. Начало и конец отдаются
+    со смещением, в котором жило устройство. Число, которого у HealthKit не было
+    (нет часов, нет доступа к пульсу), приходит `null`, а не нулём.
+    """
+    _check_range(date_from, date_to)
+    return HealthWorkoutsResponse(
+        workouts=[
+            _workout_out(workout)
+            for workout in await health_crud.workouts_between(db, date_from, date_to)
+        ]
+    )
+
+
+def _workout_out(workout: HealthWorkout) -> HealthWorkoutOut:
+    lived = timezone(timedelta(minutes=workout.utc_offset_minutes))
+    return HealthWorkoutOut(
+        id=workout.workout_uuid,
+        activity_type=workout.activity_type,
+        activity_label=activity_label(workout.activity_type),
+        date=workout.local_date,
+        start=workout.started_at.astimezone(lived),
+        end=workout.ended_at.astimezone(lived),
+        duration_min=workout.duration_min,
+        energy_kcal=workout.energy_kcal,
+        distance_m=workout.distance_m,
+        avg_heart_rate=workout.avg_heart_rate,
+        max_heart_rate=workout.max_heart_rate,
     )

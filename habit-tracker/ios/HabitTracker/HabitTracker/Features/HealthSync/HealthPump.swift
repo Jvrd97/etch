@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272
-// summary: HealthKit pump — reads the last 7 days of the whole catalogue off the main thread (cumulative types as HealthKit's deduplicated hourly sums anchored at local midnight, discrete types as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole, other category types as intervals clipped to the window; a type with no data or no read access is skipped, not a failed run; an hourly interval ending at or before the window start is not sent), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch reads only the types the permission sheet was already answered for, leaves out by identifier a metric too large for one chunk (journaled) while the rest still go, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
+// [review:need-review] PHASE-03/131, PHASE-03/234, PHASE-03/233, PHASE-03/254, PHASE-03/132, PHASE-03/238, PHASE-03/272, PHASE-02/70
+// summary: HealthKit pump — reads the last 7 days of the whole catalogue plus the workouts that started in them off the main thread (workouts as events under their HealthKit UUID, asked in the same sheet and checked by the same launch status rule, one record per workout packed as a unit of its own; cumulative types as HealthKit's deduplicated hourly sums anchored at local midnight, discrete types as samples, sleep as raw stage intervals from 18:00 the evening before the window so its first night is whole, other category types as intervals clipped to the window; a type with no data or no read access is skipped, not a failed run; an hourly interval ending at or before the window start is not sent), asks read access for all of them in one sheet, packs whole metrics into chunks of at most 50 000 records, posts them with retries on transient failures only, names a failed permission request and an unencodable body, joins concurrent callers into one run, on launch reads only the types the permission sheet was already answered for, leaves out by identifier a metric too large for one chunk (journaled) while the rest still go, and tags every chunk with a run id, kind, device id and position so the server journal sees one run — a run that dies on a chunk is reported by class (kept in UserDefaults until the server has it) and never shown as a success
 import Foundation
 import HealthKit
 import os
@@ -161,6 +161,7 @@ final class HealthPump: HealthSyncing {
         }
         var metrics = self.metrics
         var categories = self.categories
+        var readsWorkouts = true
         do {
             if asking {
                 try await store.requestReadAuthorization(for: Self.types(metrics, categories))
@@ -169,7 +170,10 @@ final class HealthPump: HealthSyncing {
                 // were already asked about; the Health screen asks for the rest.
                 metrics = try await answered(metrics, type: { HKQuantityType($0.typeIdentifier) })
                 categories = try await answered(categories, type: { HKCategoryType($0.typeIdentifier) })
-                guard !metrics.isEmpty || !categories.isEmpty else {
+                readsWorkouts = try await store.readAuthorizationRequestStatus(
+                    for: [HealthWorkoutCatalog.objectType]
+                ) == .unnecessary
+                guard !metrics.isEmpty || !categories.isEmpty || readsWorkouts else {
                     return HealthRunResult(.skipped)
                 }
             }
@@ -187,8 +191,8 @@ final class HealthPump: HealthSyncing {
         let perMetric: [HealthChunk]
         do {
             perMetric = try await Self.readWindow(
-                store: store, metrics: metrics, categories: categories, mapper: mapper,
-                calendar: calendar, end: now()
+                store: store, metrics: metrics, categories: categories, workouts: readsWorkouts,
+                mapper: mapper, calendar: calendar, end: now()
             )
         } catch {
             return HealthRunResult(.failed(.readFailed))
@@ -207,7 +211,7 @@ final class HealthPump: HealthSyncing {
         var answers: [HealthSamplesResponseDTO] = []
         for (index, chunk) in chunks.enumerated() {
             let request = HealthSamplesRequestDTO(
-                samples: chunk.samples, categorySamples: chunk.categorySamples,
+                samples: chunk.samples, categorySamples: chunk.categorySamples, workouts: chunk.workouts,
                 syncRunId: runId, kind: kind, deviceId: device,
                 chunkIndex: index, chunksTotal: chunks.count
             )
@@ -227,7 +231,13 @@ final class HealthPump: HealthSyncing {
     ) -> Set<HKObjectType> {
         let quantityTypes: [HKObjectType] = metrics.map { HKQuantityType($0.typeIdentifier) }
         let categoryTypes: [HKObjectType] = categories.map { HKCategoryType($0.typeIdentifier) }
-        return Set(quantityTypes + categoryTypes)
+        return Set(quantityTypes + categoryTypes + [HealthWorkoutCatalog.objectType])
+    }
+
+    /// Every type the pump reads, workouts included: what a background observer (#133)
+    /// registers on, so a type added to the pump is observed without a second list.
+    nonisolated static var pumpedObjectTypes: Set<HKObjectType> {
+        types(pumpedMetrics, pumpedCategories)
     }
 
     /// The definitions whose type the person has already answered the sheet for, one
@@ -255,6 +265,7 @@ final class HealthPump: HealthSyncing {
         store: HealthStoreQuerying,
         metrics: [HealthMetricDefinition],
         categories: [HealthCategoryDefinition],
+        workouts readsWorkouts: Bool,
         mapper: HealthSampleMapper,
         calendar: Calendar,
         end: Date
@@ -288,6 +299,10 @@ final class HealthPump: HealthSyncing {
             perMetric.append(HealthChunk(categorySamples: inWindow.map {
                 mapper.dto($0, category: category, notBefore: notBefore)
             }))
+        }
+        if readsWorkouts {
+            let workouts = try await Self.readable { try await store.workouts(from: start, to: end) }
+            perMetric.append(HealthChunk(workouts: workouts.map { mapper.dto($0) }))
         }
         return perMetric
     }
@@ -432,15 +447,20 @@ final class HealthPump: HealthSyncing {
 struct HealthChunk: Equatable {
     var samples: [HealthSampleDTO] = []
     var categorySamples: [HealthCategorySampleDTO] = []
+    var workouts: [HealthWorkoutDTO] = []
 
-    var count: Int { samples.count + categorySamples.count }
+    var count: Int { samples.count + categorySamples.count + workouts.count }
     /// The type of one metric's records, before packing.
-    var identifier: String? { samples.first?.identifier ?? categorySamples.first?.identifier }
+    var identifier: String? {
+        samples.first?.identifier ?? categorySamples.first?.identifier
+            ?? (workouts.isEmpty ? nil : HealthWorkoutCatalog.identifier)
+    }
     var isEmpty: Bool { count == 0 }
 
     mutating func append(_ other: HealthChunk) {
         samples += other.samples
         categorySamples += other.categorySamples
+        workouts += other.workouts
     }
 }
 

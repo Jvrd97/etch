@@ -42,6 +42,7 @@ from app.models.health import (
     HealthMetric,
     HealthSleepNight,
     HealthSyncRun,
+    HealthWorkout,
 )
 from app.models.import_source import ImportSource
 from app.models.inbox import (
@@ -116,6 +117,7 @@ __all__ = [
     "HealthHourBucket",
     "HealthMetric",
     "HealthSleepNight",
+    "HealthWorkout",
     "HealthSyncRun",
     "ImportSource",
     "JournalEntry",

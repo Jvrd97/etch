@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238
+// [review:need-review] PHASE-02/65, PHASE-01/208, PHASE-03/131, PHASE-03/233, PHASE-03/254, PHASE-03/238, PHASE-02/70
 // summary: Health section that requests access on first entry (sleep in the same sheet), shows four groups with honest empty values, and sends the last 7 days to the server with the result in words, including a joined launch run and a failed permission request
 
 import SwiftUI
@@ -90,7 +90,9 @@ final class HealthSyncViewModel: ObservableObject {
         do {
             let metrics = HealthMetricCatalog.metrics
             let categories = HealthCategoryCatalog.categories.map(\.identifier)
-            try await reader.requestReadAuthorization(for: Set(metrics.map(\.identifier) + categories))
+            try await reader.requestReadAuthorization(
+                for: Set(metrics.map(\.identifier) + categories + [HealthWorkoutCatalog.identifier])
+            )
             let values = try await reader.readLatestValues(for: metrics)
             rows = metrics.map { HealthMetricRow(metric: $0, value: values[$0.identifier]) }
         } catch {

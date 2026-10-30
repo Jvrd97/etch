@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/233, PHASE-03/238, PHASE-03/272
-// summary: read-only HealthKit authorization (the whole quantity and category catalogue, cycle tracking never, in one sheet) and latest-sample reads for every catalog type, a type without read access left empty, over the same HealthStoreQuerying seam the pump uses
+// [review:need-review] PHASE-02/65, PHASE-03/233, PHASE-03/238, PHASE-03/272, PHASE-02/70
+// summary: read-only HealthKit authorization (the whole quantity and category catalogue and the workout type, cycle tracking never, in one sheet) and latest-sample reads for every catalog type, a type without read access left empty, over the same HealthStoreQuerying seam the pump uses
 
 import Foundation
 import HealthKit
@@ -33,10 +33,12 @@ final class HealthKitDataReader: HealthDataReading {
         let categories: [HKObjectType] = HealthCategoryCatalog.categories
             .filter { identifiers.contains($0.identifier) }
             .map { HKCategoryType($0.typeIdentifier) }
-        guard quantities.count + categories.count == identifiers.count else {
+        let workouts: [HKObjectType] = identifiers.contains(HealthWorkoutCatalog.identifier)
+            ? [HealthWorkoutCatalog.objectType] : []
+        guard quantities.count + categories.count + workouts.count == identifiers.count else {
             throw HealthDataReaderError.unknownIdentifiers
         }
-        try await store.requestReadAuthorization(for: Set(quantities + categories))
+        try await store.requestReadAuthorization(for: Set(quantities + categories + workouts))
     }
 
     /// A type the person did not allow (or was never asked about) has no value; the rest

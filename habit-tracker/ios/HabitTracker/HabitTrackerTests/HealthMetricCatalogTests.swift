@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/272
+// [review:need-review] PHASE-03/272, PHASE-02/70
 // summary: the whole-catalogue contract on the phone — no cycle-tracking type in the catalogue or in either permission sheet (pump, Health screen), every type asked in one sheet, a type without read access skipped while the others still go (pump and latest values), an hourly category type clipped to the window and a night not, an hourly interval ending at the window start not sent, a metric too large for a chunk journaled while steps and sleep go, a launch after the catalogue grew sending the types already allowed
 import HealthKit
 import XCTest
@@ -31,6 +31,11 @@ final class HealthMetricCatalogTests: XCTestCase {
 
     private static var catalogue: Set<String> {
         Set(HealthMetricCatalog.metrics.map(\.identifier) + HealthCategoryCatalog.categories.map(\.identifier))
+    }
+
+    /// What the permission sheet lists: the catalogue and the workout type.
+    private static var asked: Set<String> {
+        catalogue.union([HealthWorkoutCatalog.identifier])
     }
 
     /// Tuesday 2026-10-20, 14:00 in Berlin; the window opens at local midnight six days earlier.
@@ -72,7 +77,7 @@ final class HealthMetricCatalogTests: XCTestCase {
 
         _ = await makePump(store: store, api: FakeHealthAPI()).sync()
 
-        XCTAssertEqual(store.authorizationRequests, [Self.catalogue])
+        XCTAssertEqual(store.authorizationRequests, [Self.asked])
         XCTAssertTrue(store.authorizationRequests.allSatisfy { $0.isDisjoint(with: Self.cycleTracking) })
     }
 
@@ -84,7 +89,7 @@ final class HealthMetricCatalogTests: XCTestCase {
 
         await viewModel.enterSection()
 
-        XCTAssertEqual(store.authorizationRequests, [Self.catalogue])
+        XCTAssertEqual(store.authorizationRequests, [Self.asked])
         let reader = HealthKitDataReader(store: store)
         do {
             try await reader.requestReadAuthorization(for: ["HKCategoryTypeIdentifierMenstrualFlow"])

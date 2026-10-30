@@ -29,19 +29,23 @@ from app.health.aggregate import (
 )
 from app.health.catalog import SEED_METRICS
 from app.health.categories import CategoryInterval, category_hours
+from app.health.workouts import local_date_of_start
 from app.health.sleep import SleepInterval, SleepNight, fold_nights, stage_of
 from app.models.health import (
     HealthHourBucket,
     HealthMetric,
     HealthSleepNight,
     HealthSyncRun,
+    HealthWorkout,
 )
-from app.schemas.health import HealthCategorySampleIn
+from app.schemas.health import HealthCategorySampleIn, HealthWorkoutIn
 
 
 # Знаков после запятой в среднем за день: шаги и минуты читаются целыми, но
 # сон в часах, переведённый из минут, без округления тащил бы хвост из десятков.
 AVERAGE_DIGITS = 1
+
+SECONDS_PER_MINUTE = 60
 
 
 @dataclass(frozen=True)
@@ -293,6 +297,66 @@ async def sleep_nights(
             HealthSleepNight.wake_date <= date_to,
         )
         .order_by(HealthSleepNight.wake_date)
+    )
+    return list(result.scalars().all())
+
+
+async def upsert_workouts(db: AsyncSession, workouts: Sequence[HealthWorkoutIn]) -> int:
+    """
+    Write workouts on their HealthKit UUID, overwriting what was there.
+
+    The phone re-reads its window on every sync, so the same workout arrives again;
+    the newer answer wins. A UUID repeated inside one chunk keeps its last copy (the
+    statement cannot touch one row twice).
+    """
+    latest = {workout.uuid: workout for workout in workouts}
+    if not latest:
+        return 0
+    rows = [
+        {
+            "workout_uuid": workout.uuid,
+            "activity_type": workout.activity_type,
+            "started_at": workout.start,
+            "ended_at": workout.end,
+            "utc_offset_minutes": workout.utc_offset_minutes,
+            "local_date": local_date_of_start(
+                workout.start, workout.utc_offset_minutes
+            ),
+            "duration_min": workout.duration_seconds / SECONDS_PER_MINUTE,
+            "energy_kcal": workout.energy_kcal,
+            "distance_m": workout.distance_m,
+            "avg_heart_rate": workout.avg_heart_rate,
+            "max_heart_rate": workout.max_heart_rate,
+        }
+        for workout in latest.values()
+    ]
+    statement = pg_insert(HealthWorkout).values(rows)
+    statement = statement.on_conflict_do_update(
+        index_elements=[HealthWorkout.workout_uuid],
+        set_={
+            **{
+                column: statement.excluded[column]
+                for column in rows[0]
+                if column != "workout_uuid"
+            },
+            "updated_at": func.now(),
+        },
+    )
+    await db.execute(statement)
+    return len(rows)
+
+
+async def workouts_between(
+    db: AsyncSession, date_from: date, date_to: date
+) -> list[HealthWorkout]:
+    """Workouts whose start date falls in the inclusive range, oldest first."""
+    result = await db.execute(
+        select(HealthWorkout)
+        .where(
+            HealthWorkout.local_date >= date_from,
+            HealthWorkout.local_date <= date_to,
+        )
+        .order_by(HealthWorkout.started_at)
     )
     return list(result.scalars().all())
 
