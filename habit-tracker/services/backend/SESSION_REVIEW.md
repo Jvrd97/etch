@@ -715,7 +715,7 @@ Feedback loops: pytest 351/351 green, `ruff check` clean, `ruff format --check` 
 - `app/main.py` — **mod**: роутер дня в `API_ROUTERS`, `_publish_day_boundary()` на старте.
 - `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: реэкспорт.
 - `tests/conftest.py` — **mod**: autouse-фикстура сбрасывает опубликованную границу между тестами — она процессная по замыслу, и вставленное одним тестом правило иначе решало бы, какой сегодня день, для всех следующих.
-- `tests/test_day_rules.py` — **new**: 27 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
+- `tests/test_day_rules.py` — **new**: 26 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
 - `tests/test_day.py` — **new**: 11 тестов ручки; вид дня, legacy-правило на 14 августа, `opened_at = null`, «плана нет» вместо 404, `X-API-Key`, неизменность `kind` после новой строки расписания.
 - Фронтенд — **new**: `lib/day-format.ts` (+тест), `hooks/useDay.ts` (+тест), `components/DayScreen.tsx` (+тест), `components/mobile/MobileDayScreen.tsx`, страницы `app/day/page.tsx`, `app/day/[date]/page.tsx`, `app/m/day/page.tsx`, `app/m/day/[date]/page.tsx`; **mod**: `lib/api.ts` (`dayAPI`, типы), `lib/routes.ts` + `lib/routes.test.ts` (экран Day в реестре), `components/route-icons.ts`.
 - `habit-tracker/docs/day-boundary.md` — **mod**: раздел «Откуда берётся правило» переписан — источник теперь таблица, настройки стали запасным.
@@ -3100,5 +3100,5 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/crud/dashboard_summary.py` — new: сборка сводки в 9 запросах; серии из `crud/streak`, среднее против нормы из `crud/health.compare_windows`, пороги из `health/baseline`.
 - `app/api/dashboard_summary.py` — new: ручка `GET /dashboard/summary?period=week|month`.
 - `app/main.py` — mod: регистрация роутера добавлением.
-- `tests/test_dashboard_summary.py` — new: 27 тестов, включая «число SQL не растёт с категориями и днями» и «настоящая модель не вызывается».
+- `tests/test_dashboard_summary.py` — new: 32 теста, включая «число SQL не растёт с категориями и днями» и «настоящая модель не вызывается».
 - `docs/PHASE-03/design/296-dashboard-summary.md` — new: контракт и формулы одной страницей.

@@ -35,7 +35,7 @@ from app.crud import streak as streak_crud
 from app.health.aggregate import MetricKind
 from app.health.baseline import BASELINE_DAYS, MIN_BASELINE_DAYS
 from app.health.catalog import SLEEP_IDENTIFIER
-from app.models import Category, Entry
+from app.models import Category
 from app.models.challenge import (
     STATUS_ACTIVE,
     STATUS_FAILED,
@@ -43,7 +43,7 @@ from app.models.challenge import (
     Challenge,
 )
 from app.models.health import HealthMetric
-from app.models.summary import DaySummary
+from app.models.summary import STAGE_CLOSED, DaySummary
 from app.schemas.dashboard_summary import (
     BestMetric,
     ChallengesScore,
@@ -114,24 +114,6 @@ def _pct(part: int | float, whole: int | float) -> int:
 # --- streaks -----------------------------------------------------------------
 
 
-async def _build_entry_days(db: AsyncSession, today: date) -> dict[int, set[date]]:
-    """Дни с записью у активных категорий «строить», одним запросом."""
-    result = await db.execute(
-        select(Entry.category_id, Entry.entry_date)
-        .join(Category, Category.id == Entry.category_id)
-        .where(
-            Category.is_active.is_(True),
-            Category.streak_mode == "build",
-            Entry.entry_date <= today,
-        )
-        .distinct()
-    )
-    days: dict[int, set[date]] = {}
-    for category_id, entry_date in result.all():
-        days.setdefault(category_id, set()).add(entry_date)
-    return days
-
-
 def _avoid_item(
     category_id: int,
     name: str,
@@ -161,7 +143,11 @@ def _build_item(
     today: date,
 ) -> StreakItem | None:
     """
-    Серия «строить»: подряд идущие дни с записью.
+    Серия «строить»: подряд идущие дни с отметкой «сделано».
+
+    День выполнен, если `app.crud.streak` назвал его днём с положительной отметкой
+    (`is_relapse_entry`: галка `true`, число или длительность больше нуля, запись
+    без значений). Снятая галка пишется как `false` и днём не считается.
 
     Сегодня без записи ещё не пропуск — день не кончился, — поэтому серия
     считается до вчера, а в полоске сегодня остаётся `null`. Расчёт — тот же
@@ -199,7 +185,14 @@ async def _streaks(
         )
     ).all()
     avoid = dict(await streak_crud.get_category_streaks(db, "avoid", today=today))
-    build = await _build_entry_days(db, today)
+    # Для «строить» положительный день, который `app.crud.streak` называет
+    # «срывом» у «избегать», и есть выполненный день.
+    build = {
+        category_id: {day for day in stats.relapse_dates if day <= today}
+        for category_id, stats in await streak_crud.get_category_streaks(
+            db, "build", today=today
+        )
+    }
     items: list[StreakItem | None] = []
     for category_id, name, mode in categories:
         if mode == "avoid" and category_id in avoid:
@@ -222,11 +215,19 @@ async def _streaks(
 async def _plan_days(
     db: AsyncSession, start: date, today: date
 ) -> dict[date, tuple[int, int]]:
-    """Выполнено и запланировано по дням окна — из итогов дней."""
+    """
+    Выполнено и запланировано по дням окна — из итогов закрытых дней.
+
+    Касание «ревью» в 15:40 тоже пишет строку (`stage='reviewed'`) с числами на
+    этот момент; незакрытый день в кольцо и в инсайт не входит.
+    """
     result = await db.execute(
         select(
             DaySummary.day_date, DaySummary.tasks_done, DaySummary.tasks_total
-        ).where(DaySummary.day_date.between(start, today))
+        ).where(
+            DaySummary.day_date.between(start, today),
+            DaySummary.stage == STAGE_CLOSED,
+        )
     )
     return {day: (done, total) for day, done, total in result.all()}
 
@@ -293,7 +294,7 @@ async def _health(db: AsyncSession, window: list[date], today: date) -> _Health:
     daily = await health_crud.daily_values(
         db,
         [metric for _, metric in key],
-        today - timedelta(days=RECORD_LOOKBACK_DAYS),
+        today - timedelta(days=RECORD_LOOKBACK_DAYS - 1),
         today,
     )
     earlier = [start - timedelta(days=i) for i in range(1, BASELINE_DAYS + 1)]
@@ -313,7 +314,6 @@ async def _health(db: AsyncSession, window: list[date], today: date) -> _Health:
         compared = health_crud.compare_windows(by_day, counted, earlier)
         if compared.avg_per_day is None:
             continue
-        basis.update(day for day in counted if day in by_day)
         has_norm = compared.previous_days_with_data >= MIN_BASELINE_DAYS
         if has_norm and compared.previous_avg_per_day is not None:
             share = _closeness(
@@ -323,6 +323,8 @@ async def _health(db: AsyncSession, window: list[date], today: date) -> _Health:
             )
             if share is not None:
                 shares.append(share)
+                # Дни метрики без нормы в кольцо не идут, значит, и в основание.
+                basis.update(day for day in counted if day in by_day)
         states.append(
             HealthState(
                 identifier=metric.identifier,

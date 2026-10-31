@@ -29,6 +29,7 @@ from app.crud import health as health_crud
 from app.llm import client as llm_client
 from app.models.challenge import Challenge
 from app.models.field import FieldType
+from app.models.summary import DaySummary
 from app.schemas.health import HealthWorkoutIn
 from tests.conftest import test_engine
 from tests.test_week_review import (
@@ -51,9 +52,9 @@ STEPS = "HKQuantityTypeIdentifierStepCount"
 RESTING_HR = "HKQuantityTypeIdentifierRestingHeartRate"
 HRV = "HKQuantityTypeIdentifierHeartRateVariabilitySDNN"
 
-# What the dashboard costs today is nine statements; the ceiling leaves room for one
-# more source without letting the count become a per-category or per-day loop.
-MAX_QUERIES = 12
+# The dashboard costs nine statements, whatever it holds; a tenth is a new source
+# on purpose, not a loop.
+MAX_QUERIES = 9
 
 
 @pytest.fixture(autouse=True)
@@ -394,7 +395,7 @@ async def test_without_a_norm_the_metric_is_shown_but_not_scored(
 
     body = await summary(client)
 
-    assert body["scores"]["health"] == {"value": None, "label": None, "basis_days": 5}
+    assert body["scores"]["health"] == {"value": None, "label": None, "basis_days": 0}
     assert body["health"][0]["baseline_delta"] is None
 
 
@@ -655,3 +656,81 @@ async def test_health_gives_all_five_key_metrics_with_the_direction_of_better(
         "Шаги",
         "Активная энергия",
     ]
+
+
+async def add_reviewed_day(db: AsyncSession, on: date, done: int, total: int) -> None:
+    """The 15:40 touch: a row on stage `reviewed` with the numbers of that moment."""
+    day = await day_crud.ensure_day(db, on)
+    db.add(
+        DaySummary(
+            day_date=on,
+            rule_set_id=day.rule_set_id,
+            verdict=None,
+            tasks_done=done,
+            tasks_total=total,
+            stage="reviewed",
+        )
+    )
+    await db.commit()
+
+
+async def test_a_day_that_is_not_closed_is_left_out_of_the_habits_ring_and_the_insight(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await close_day(db_session, date(2026, 10, 30), "won", done=4, total=4)
+    await add_reviewed_day(db_session, TODAY, 1, 4)
+
+    scores = (await summary(client))["scores"]
+
+    assert scores["habits"] == {"value": 100, "done": 4, "total": 4}
+
+
+async def test_an_unchecked_box_is_not_a_done_day(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Unticking writes `false` and keeps the row: the day was not done."""
+    category, flag = await add_category(db_session, "Зарядка", FieldType.BOOLEAN)
+    await add_entry(db_session, category, flag, date(2026, 10, 29), "true")
+    await add_entry(db_session, category, flag, date(2026, 10, 30), "false")
+
+    [streak] = (await summary(client))["streaks"]
+
+    assert streak["days"] == [None, None, None, None, True, False, None]
+    assert (streak["current"], streak["best"]) == (0, 1)
+
+
+async def test_a_category_with_only_unchecked_boxes_is_not_a_streak(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    category, flag = await add_category(db_session, "Зарядка", FieldType.BOOLEAN)
+    await add_entry(db_session, category, flag, date(2026, 10, 30), "false")
+
+    assert (await summary(client))["streaks"] == []
+
+
+async def test_days_of_a_metric_without_a_norm_are_not_the_basis_of_the_ring(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Six days of steps with no history and one day of pulse with a norm: one day."""
+    await fill_metric(db_session, STEPS, WEEK_FROM, date(2026, 10, 30), 8000)
+    await fill_metric(db_session, RESTING_HR, date(2026, 10, 1), date(2026, 10, 24), 60)
+    await add_health(db_session, RESTING_HR, date(2026, 10, 29), 60)
+
+    health = (await summary(client))["scores"]["health"]
+
+    assert health == {"value": None, "label": None, "basis_days": 1}
+
+
+async def test_the_record_window_is_exactly_ninety_days(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_metric(db_session, STEPS, date(2026, 10, 1), date(2026, 10, 24), 10000)
+    await fill_metric(db_session, STEPS, WEEK_FROM, date(2026, 10, 30), 11000)
+    await add_health(db_session, STEPS, date(2026, 10, 28), 14220)
+    # 90 days ending today start on 3 August; 2 August is the 91st day back.
+    await add_health(db_session, STEPS, date(2026, 8, 2), 20000)
+    [outside] = (await summary(client))["bests"]
+    await add_health(db_session, STEPS, date(2026, 8, 3), 20000)
+    [inside] = (await summary(client))["bests"]
+
+    assert (outside["is_record"], inside["is_record"]) == (True, False)
