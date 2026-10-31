@@ -3020,3 +3020,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/models/health.py`, `app/models/__init__.py` — mod: модель `HealthWorkout`.
 - `app/schemas/health.py`, `app/crud/health.py`, `app/api/health.py` — mod: секция `workouts` в `POST /health/samples`, upsert по UUID, `GET /health/workouts` (добавлением).
 - `tests/test_health_workouts.py` — new: повтор окна не дублирует, исправленная тренировка перезаписывается, тренировка через полночь в день старта, `null` вместо нуля, нет часовых корзин, отказ на плохие значения, соответствие полей телефону.
+
+## 2026-10-31 — PHASE-03/259: момент нажатия у отметки приёма и идемпотентное создание добавки
+
+Тронуто 7 файлов бэкенда (2 `new`, 5 `mod`), миграция `a2c4e6f8b0d3` от головы `c3d5e7f9a1b4`.
+
+- `alembic/versions/2026_10_31_1000-a2c4e6f8b0d3_supplement_create_idempotency_key.py` — new: `supplements.idempotency_key` (nullable, уникальный), downgrade снимает ограничение и колонку; старые строки остаются `NULL`.
+- `app/models/supplement.py` — mod: колонка и `uq_supplements_idempotency_key`.
+- `app/schemas/supplement.py` — mod: `IntakeRequest.occurred_at` (`AwareDatetime`, необязательное).
+- `app/crud/supplement.py` — mod: `create_supplement(..., idempotency_key=)` и `supplement_by_idempotency_key`.
+- `app/api/supplements.py` — mod: день отметки считается по `occurred_at` (окно +5 минут / 7 дней берётся у быстрых отметок: `_moment_of_press` из `app/api/quick_marks.py`), `POST /supplements` отвечает 200 первой добавкой на повтор ключа и после проигранной гонки.
+- `tests/test_supplement_occurred_at.py` — new: 23 теста (сутки до 04:00, граница окна, повтор после выхода из окна, число SQL, гонка создания).

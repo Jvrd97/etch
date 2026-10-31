@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/246
-# summary: database access for supplements — create/list/edit/archive/restore, and the intake mark that is idempotent on the key and on (supplement, logical day); the list answers taken_today in one extra query
+# [review:need-review] PHASE-03/246, PHASE-03/259
+# summary: PHASE-03/259 — create takes the Idempotency-Key and a lookup finds the supplement it made first; database access for supplements — create/list/edit/archive/restore, and the intake mark that is idempotent on the key and on (supplement, logical day); the list answers taken_today in one extra query
 """
 Database access for the supplement directory and the intake mark (`#223`).
 
@@ -32,18 +32,35 @@ __all__ = [
     "list_supplements",
     "record_intake",
     "restore_supplement",
+    "supplement_by_idempotency_key",
     "taken_on",
     "update_supplement",
 ]
 
 
 async def create_supplement(
-    db: AsyncSession, payload: SupplementCreate, now: datetime
+    db: AsyncSession,
+    payload: SupplementCreate,
+    now: datetime,
+    *,
+    idempotency_key: str | None = None,
 ) -> Supplement:
-    supplement = Supplement(**payload.model_dump(), created_at=now)
+    """Insert; a unique violation on the key (a concurrent twin) is the caller's."""
+    supplement = Supplement(
+        **payload.model_dump(), created_at=now, idempotency_key=idempotency_key
+    )
     db.add(supplement)
     await db.commit()
     return supplement
+
+
+async def supplement_by_idempotency_key(
+    db: AsyncSession, idempotency_key: str
+) -> Supplement | None:
+    result = await db.execute(
+        select(Supplement).where(Supplement.idempotency_key == idempotency_key)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_supplement(db: AsyncSession, supplement_id: int) -> Supplement | None:

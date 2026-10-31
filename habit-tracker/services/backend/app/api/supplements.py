@@ -1,11 +1,12 @@
-# [review:need-review] PHASE-03/246, PHASE-03/251
-# summary: /supplements — add, list (with taken_today), edit, archive, restore, and POST /{id}/intakes, the idempotent «принял» mark on the logical day; no name or dose in any log line
+# [review:need-review] PHASE-03/246, PHASE-03/251, PHASE-03/259
+# summary: PHASE-03/259 — the mark's day follows `occurred_at` (window of the quick marks), POST /supplements is idempotent on the Idempotency-Key; /supplements — add, list (with taken_today), edit, archive, restore, and POST /{id}/intakes, the idempotent «принял» mark on the logical day; no name or dose in any log line
 from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.quick_marks import _moment_of_press
 from app.core import daytime
 from app.core.database import get_db
 from app.crud import supplement as supplement_crud
@@ -36,12 +37,55 @@ async def _existing(db: AsyncSession, supplement_id: int) -> Supplement:
     return supplement
 
 
+_IDEMPOTENCY_KEY_HEADER = Header(
+    default=None,
+    alias="Idempotency-Key",
+    min_length=1,
+    max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
+)
+
+
 @router.post("", response_model=SupplementResponse, status_code=status.HTTP_201_CREATED)
 async def create_supplement(
-    payload: SupplementCreate, db: AsyncSession = Depends(get_db)
+    payload: SupplementCreate,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = _IDEMPOTENCY_KEY_HEADER,
 ) -> Supplement:
-    """Завести добавку: название, доза, единица и необязательное время приёма."""
-    return await supplement_crud.create_supplement(db, payload, daytime.now_utc())
+    """
+    Завести добавку: название, доза, единица и необязательное время приёма.
+
+    - **201** — добавка заведена; **200** — повтор того же `Idempotency-Key`:
+      отвечает первой добавкой, тело повтора не сверяется (клиент повторяет тот же
+      запрос после потерянного ответа)
+    - **422** — ключ пустой или длиннее 255 знаков
+    """
+    if idempotency_key is not None:
+        replay = await supplement_crud.supplement_by_idempotency_key(
+            db, idempotency_key
+        )
+        if replay is not None:
+            response.status_code = status.HTTP_200_OK
+            return replay
+    try:
+        return await supplement_crud.create_supplement(
+            db, payload, daytime.now_utc(), idempotency_key=idempotency_key
+        )
+    except IntegrityError:
+        # A concurrent twin won the race between the lookup and the insert; the
+        # unique key is the backstop. Answer with the winner.
+        await db.rollback()
+        winner = (
+            None
+            if idempotency_key is None
+            else await supplement_crud.supplement_by_idempotency_key(
+                db, idempotency_key
+            )
+        )
+        if winner is None:
+            raise
+        response.status_code = status.HTTP_200_OK
+        return winner
 
 
 @router.get("", response_model=list[SupplementListItem])
@@ -149,18 +193,16 @@ async def mark_intake(
     response: Response,
     payload: IntakeRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    idempotency_key: str | None = Header(
-        default=None,
-        alias="Idempotency-Key",
-        min_length=1,
-        max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
-    ),
+    idempotency_key: str | None = _IDEMPOTENCY_KEY_HEADER,
 ) -> SupplementIntake:
     """
-    Отметка «принял» за текущие логические сутки сервера.
+    Отметка «принял» за логические сутки момента нажатия.
 
-    День решает сервер (`app.core.daytime`): отметка в 03:30 — вчерашняя. Клиент
-    может прислать `intake_date` как сверку часов; расхождение — 409.
+    День решает сервер (`app.core.daytime`) по `occurred_at`, а без него по
+    моменту запроса: отметка в 03:30 — вчерашняя, и нажатие в 03:30, доставленное
+    из очереди в 04:10, тоже. `occurred_at` — не позже +5 минут от часов сервера и
+    не старше 7 дней. Клиент может прислать `intake_date` как сверку часов;
+    расхождение с днём нажатия — 409.
 
     - **201** — отметка записана; **200** — повтор: тот же `Idempotency-Key`
       (отвечает записанной отметкой раньше всех проверок, даже после смены дня
@@ -169,7 +211,7 @@ async def mark_intake(
       вернёт её, а не заведёт новую
     - **404** — добавки нет; **409** — добавка в архиве, день клиента не совпал
       либо ключ уже стоит за отметкой другой добавки; **422** — ключ пустой или
-      длиннее 255 знаков
+      длиннее 255 знаков, `occurred_at` без смещения, в будущем или старше 7 дней
     """
     supplement = await _existing(db, supplement_id)
 
@@ -185,7 +227,9 @@ async def mark_intake(
             detail=f"Supplement {supplement_id} is archived",
         )
 
-    taken_at = daytime.now_utc()
+    taken_at = _moment_of_press(
+        payload.occurred_at if payload else None, daytime.now_utc()
+    )
     day = daytime.local_date(taken_at)
     client_day: date | None = payload.intake_date if payload else None
     if client_day is not None and client_day != day:
