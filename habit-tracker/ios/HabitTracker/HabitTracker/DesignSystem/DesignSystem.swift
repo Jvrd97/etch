@@ -98,10 +98,10 @@ extension View {
 // MARK: - Card
 
 /// Matte elevated surface used for every content block in the app.
-/// Lifts 3 px on touch for the "alive" feel from the reference.
+/// It carries no gesture of its own: a zero-distance drag on a card swallowed the
+/// vertical pan of the enclosing ScrollView, so a swipe starting on a card did not scroll.
 struct Card<Content: View>: View {
     private let content: Content
-    @State private var isPressed = false
 
     init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -117,21 +117,6 @@ struct Card<Content: View>: View {
                 RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                     .stroke(DS.Palette.cardStroke, lineWidth: 1)
             )
-            .offset(y: isPressed ? -3 : 0)
-            .animation(DS.Motion.cardLift, value: isPressed)
-            ._onPressGesture { isPressed = $0 }
-    }
-}
-
-private extension View {
-    /// Reports raw press-down / press-up without consuming taps, so cards can lift
-    /// while still letting an inner `Button` fire.
-    func _onPressGesture(_ handler: @escaping (Bool) -> Void) -> some View {
-        simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in handler(true) }
-                .onEnded { _ in handler(false) }
-        )
     }
 }
 
