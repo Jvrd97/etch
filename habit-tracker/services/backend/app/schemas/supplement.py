@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/223
-# summary: wire types of the supplement directory and the intake mark — create/patch bodies with trimmed names and a positive dose, list items with taken_today, the intake request (optional client day for the clock check) and response
+# [review:need-review] PHASE-03/223, PHASE-03/259
+# summary: PHASE-03/259 — the intake request carries an optional offset-aware `occurred_at`; wire types of the supplement directory and the intake mark — create/patch bodies with trimmed names and a positive dose, list items with taken_today, the intake request (optional client day for the clock check) and response
 """
 Wire types of supplements (`#223`).
 
@@ -7,6 +7,9 @@ Wire types of supplements (`#223`).
 сверка часов, а не адрес записи: расхождение с днём сервера — 409 (так же, как у
 быстрых отметок). Тихая запись во вчера из-за уехавших часов телефона портила
 бы соблюдение.
+
+**Момент нажатия — поле запроса.** Офлайн-очередь доставляет нажатие позже: день
+такой отметки считается по `occurred_at`, как у быстрых отметок (`#236`).
 """
 
 from __future__ import annotations
@@ -14,7 +17,14 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from app.models.supplement import NAME_MAX_LENGTH, UNIT_MAX_LENGTH
 
@@ -81,6 +91,14 @@ class IntakeRequest(BaseModel):
         None,
         description=(
             "День по часам клиента. Не адрес записи: не совпал с днём сервера — 409"
+        ),
+    )
+    occurred_at: AwareDatetime | None = Field(
+        None,
+        description=(
+            "Когда нажали, со смещением (телефон шлёт UTC). Нажатие, доставленное "
+            "позже, ложится в свой день: `local_date(occurred_at)`. Без поля — "
+            "момент запроса. Позже +5 минут или старше 7 дней — 422"
         ),
     )
 

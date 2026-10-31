@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/223
-# summary: the tables of supplements — the directory (name, dose, unit, planned time, archived_at), the intake mark unique per supplement per logical day, and the Idempotency-Keys that point at a mark
+# [review:need-review] PHASE-03/223, PHASE-03/259
+# summary: PHASE-03/259 adds the unique create-time `Idempotency-Key` to a supplement; the tables of supplements — the directory (name, dose, unit, planned time, archived_at), the intake mark unique per supplement per logical day, and the Idempotency-Keys that point at a mark
 """
 Supplements the owner takes (`#223`).
 
@@ -16,6 +16,10 @@ Supplements the owner takes (`#223`).
 **Один приём — одна строка на добавку в сутки.** `(supplement_id, intake_date)`
 уникален: второе нажатие в тот же логический день ничего не создаёт. День
 отметки решает `app.core.daytime`, а не клиент.
+
+**Создание под ключом.** `Supplement.idempotency_key` уникален: повтор создания с тем
+же ключом (ответ потерян по таймауту) находит первую добавку, а не заводит вторую.
+Без ключа поле `NULL`, а в уникальном индексе PostgreSQL `NULL` друг другу не равны.
 
 **Ключ повтора — алиас отметки.** Каждый `Idempotency-Key`, приходивший с
 отметкой, лежит строкой `SupplementIntakeKey` и ведёт на отметку дня, даже если
@@ -50,6 +54,9 @@ class Supplement(Base):
     """One thing the owner takes: «магний, 200 мг, вечером»."""
 
     __tablename__ = "supplements"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_supplements_idempotency_key"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
@@ -64,6 +71,9 @@ class Supplement(Base):
     )
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(IDEMPOTENCY_KEY_MAX_LENGTH), nullable=True
     )
 
     @property
