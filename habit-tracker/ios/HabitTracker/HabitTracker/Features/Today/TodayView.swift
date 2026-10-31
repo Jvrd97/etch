@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263, PHASE-03/294
+// summary: PHASE-03/294 round 3 — the plus is never disabled (a switched-off button hands its touch to the card and the second tap of a quick double press opened the form), a ticked box shows «сделано» and a second tap writes nothing, the row body is one VoiceOver button
 // summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, ticks the box, or opens the one-field sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
 // summary: PHASE-03/263 — the empty screen shows the refresh failure line
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
@@ -339,26 +340,31 @@ struct TodayView: View {
                     if hasPendingEntry(category) {
                         PendingRowTag()
                     }
-                    Text(todaySummary(for: category))
-                        .font(DS.Typography.card)
-                        .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
+                    // A ticked box says «сделано» beside the plus; its raw «true» would only crowd the name.
+                    if !viewModel.isTicked(categoryID: category.id) {
+                        Text(todaySummary(for: category))
+                            .font(DS.Typography.card)
+                            .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
+                    }
                 }
                 .frame(minHeight: Self.quickAddHitSize)
+                // One element for VoiceOver that opens the form; the plus beside it is another one.
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { selectedCategory = category }
+                .accessibilityIdentifier("today.card.\(category.id)")
                 quickAddButton(category)
             }
         }
         .contentShape(Rectangle())
         .onTapGesture { selectedCategory = category }
-        // A container of its own: an identifier on the bare card would overwrite the plus button's.
-        .accessibilityElement(children: .contain)
-        .accessibilityAction(named: "Открыть \(category.name)") { selectedCategory = category }
-        .accessibilityIdentifier("today.card.\(category.id)")
     }
 
     /// What the plus does is `TodayQuickAdd`'s call: add the step, ask for the amount, or open the form.
     private func quickAddButton(_ category: CategoryDTO) -> some View {
         let plan = TodayQuickAdd.plan(for: category)
         let isAdding = viewModel.quickAddingCategoryIDs.contains(category.id)
+        let isTicked = viewModel.isTicked(categoryID: category.id)
         return Button {
             switch plan {
             case .step, .check:
@@ -375,7 +381,12 @@ struct TodayView: View {
                         .font(DS.Typography.caption)
                         .foregroundStyle(DS.Palette.lime)
                 }
-                Image(systemName: "plus.circle.fill")
+                if isTicked {
+                    Text("сделано")
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.lime)
+                }
+                Image(systemName: isTicked ? "checkmark.circle.fill" : "plus.circle.fill")
                     .font(.system(size: Self.quickAddIconSize))
                     .foregroundStyle(DS.Palette.lime)
                     .frame(width: Self.quickAddHitSize, height: Self.quickAddHitSize)
@@ -383,8 +394,10 @@ struct TodayView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isAdding)
-        .accessibilityLabel("Добавить: \(category.name)")
+        // Never `.disabled`: a switched-off button hands its touch to the card behind it, and the second
+        // tap of a quick double press would open the form. The model drops that tap instead.
+        .opacity(isAdding ? 0.5 : 1)
+        .accessibilityLabel(isTicked ? "Сделано: \(category.name)" : "Добавить: \(category.name)")
         .accessibilityIdentifier("today.quickadd.\(category.id)")
     }
 

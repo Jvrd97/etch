@@ -341,14 +341,16 @@ final class TodayViewModel: ObservableObject {
         }
         let limit = usageReadLimit
         // Not a task group: a group waits for its children, and the table read is not cancelled by the timer.
+        var timer: Task<Void, Never>?
         let read: UsageRead = await withCheckedContinuation { continuation in
             let race = UsageRace(continuation)
             Task { race.finish(.answered(await fetch.value)) }
-            Task {
+            timer = Task {
                 try? await Task.sleep(for: limit)
                 race.finish(.timedOut)
             }
         }
+        timer?.cancel()
         switch read {
         case .answered(let usage):
             return usage ?? previousUsage()
@@ -632,6 +634,8 @@ final class TodayViewModel: ObservableObject {
         case .step(let id, let amount):
             (fieldID, value) = (id, TodayQuickAdd.formatAmount(amount))
         case .check(let id):
+            // Today already holds the tick (a queued one too): a second tap writes nothing.
+            if isTicked(categoryID: categoryID) { return false }
             (fieldID, value) = (id, "true")
         case .amountSheet, .textSheet, .fullForm:
             return false
@@ -641,6 +645,15 @@ final class TodayViewModel: ObservableObject {
         var values = TodayQuickAdd.defaultValues(for: category, except: fieldID)
         values[fieldID] = value
         return await saveEntry(categoryID: categoryID, values: values)
+    }
+
+    /// True when the category is a one-tap tick and today already holds it, saved or still queued.
+    func isTicked(categoryID: Int) -> Bool {
+        guard let category = categories.first(where: { $0.id == categoryID }),
+              case .check(let fieldID) = TodayQuickAdd.plan(for: category) else { return false }
+        return entries(forCategory: categoryID).contains { entry in
+            entry.values.contains { $0.fieldId == fieldID && $0.value == "true" }
+        }
     }
 
     /// Saves today's values for the category. Form categories create a new entry

@@ -24,11 +24,8 @@ enum TodayQuickAdd: Equatable {
         }
         if let number = fields.first(where: { $0.fieldType == .number }) {
             // A required field the plus cannot fill from a default would be sent empty.
-            let others = fields.filter { $0.id != number.id }
-            guard others.allSatisfy({ !$0.isRequired || $0.defaultValue != nil || $0.fieldType == .boolean }) else {
-                return .fullForm
-            }
-            if others.isEmpty, let step = number.quickSteps?.first(where: { $0 > 0 }) {
+            guard leavesOthersToDefaults(fields, except: number) else { return .fullForm }
+            if fields.count == 1, let step = number.quickSteps?.first(where: { $0 > 0 }) {
                 return .step(fieldID: number.id, amount: step)
             }
             return .amountSheet(fieldID: number.id)

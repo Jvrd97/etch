@@ -42,7 +42,7 @@ final class TodayQuickAddTests: XCTestCase {
         let withNote = category(fields: [
             field(id: 10, steps: [5]),
             field(id: 11, type: .text, required: false, order: 1),
-            field(id: 12, type: .boolean, order: 2),
+            field(id: 12, type: .boolean, required: false, order: 2),
             field(id: 13, type: .select, defaultValue: "good", order: 3),
         ])
 
@@ -51,6 +51,12 @@ final class TodayQuickAddTests: XCTestCase {
         XCTAssertEqual(
             TodayQuickAdd.defaultValues(for: withNote, except: 10), [12: "false", 13: "good"]
         )
+    }
+
+    func testARequiredBoxWithNoDefaultBesideTheNumberIsNotLeftToChance() {
+        let withRequiredBox = category(fields: [field(id: 10, steps: [5]), field(id: 11, type: .boolean, order: 1)])
+
+        XCTAssertEqual(TodayQuickAdd.plan(for: withRequiredBox), .fullForm, "the same rule for every kind of field")
     }
 
     func testARequiredFieldWithNoDefaultLeavesTheFullForm() {

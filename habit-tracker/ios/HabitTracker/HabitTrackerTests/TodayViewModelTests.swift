@@ -1425,22 +1425,28 @@ final class TodayViewModelTests: XCTestCase {
         let api = MockTodayAPI()
         api.categoriesResult = .success(threeCategories())
         api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
-        api.duringFetchTable = { try? await Task.sleep(for: .milliseconds(400)) }
+        // The table answers only when the test lets it: no wall clock, the load either waits or it does not.
+        var gate: CheckedContinuation<Void, Never>?
+        var tableAnswered = false
+        api.duringFetchTable = {
+            await withCheckedContinuation { gate = $0 }
+            tableAnswered = true
+        }
         let fixed = makeFixedDate()
         let viewModel = TodayViewModel(
             api: api, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed },
             usageReadLimit: .milliseconds(20)
         )
 
-        let started = ContinuousClock.now
         await viewModel.load()
-        let took = ContinuousClock.now - started
 
-        XCTAssertLessThan(took, .milliseconds(300), "the screen does not wait for the table")
+        XCTAssertFalse(tableAnswered, "the load returned while the table was still unanswered")
         XCTAssertEqual(viewModel.state, .loaded)
         XCTAssertEqual(viewModel.categories.map(\.id), [1, 2, 3], "no previous snapshot: the server's order")
 
         // The late answer is kept: a start that cannot reach the server shows the order it brought.
+        await spinUntil { gate != nil }
+        gate?.resume()
         await spinUntil { cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage != nil }
         let offline = MockTodayAPI()
         offline.categoriesResult = .failure(APIClientError.transport(code: -1009))
@@ -1471,5 +1477,56 @@ final class TodayViewModelTests: XCTestCase {
             cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage?.keys.sorted(), [2, 3],
             "the cache keeps the usage"
         )
+    }
+
+    func testAShownTickIsNotTickedAgainAndAQueuedOneCountsToo() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        XCTAssertFalse(viewModel.isTicked(categoryID: 1))
+
+        await viewModel.quickAdd(categoryID: 1)
+        let again = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(viewModel.isTicked(categoryID: 1))
+        XCTAssertFalse(again)
+        XCTAssertEqual(api.createdEntries.count, 1, "a second tap after the answer writes nothing")
+    }
+
+    func testAnOfflineTickIsNotQueuedTwice() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .failure(APIClientError.transport(code: -1009))
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 1)
+        await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(viewModel.isTicked(categoryID: 1), "the pending tick reads as done")
+        XCTAssertEqual(outbox.pendingCount, 1)
+        XCTAssertEqual(api.createdEntries.count, 1)
+    }
+
+    func testAnUntickedDayCanBeTickedAfterAFalseEntry() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.entriesResult = .success([
+            EntryDTO(id: 90, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "false")])
+        ])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.createdEntries.count, 1)
     }
 }
