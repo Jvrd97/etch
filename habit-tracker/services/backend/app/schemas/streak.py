@@ -1,6 +1,5 @@
 # [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/207, PHASE-03/294
 # summary: PHASE-03/294 — RelapseRecordRequest, the optional day a Happened is recorded on
-# summary: PHASE-03/294 — RelapseRecordRequest, the optional day a Happened is recorded on
 # summary: StreakResponse DTO (current/best streak, last relapse date, streak mode); RelapseHistoryResponse — the same numbers plus every relapse day, the first tracked day and the server's today; RelapseRecordedResponse — the entry a Happened tap landed on and whether that tap wrote it
 from datetime import date
 
