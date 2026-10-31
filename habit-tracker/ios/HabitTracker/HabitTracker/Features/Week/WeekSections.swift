@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/244
+// summary: PHASE-03/244 adds the supplements block (taken of planned, «данных мало») and the «Совет» block (a button, states, the disclaimer visible before anything is asked)
 // summary: the blocks of the Week screen — header with the period, the note under an unfinished week and the neighbour-week buttons, totals against the previous week, the seven days with the best and the worst named in words, role and category time, avoid streaks, health with "Метрика не подключена", and the AI narrative; every change is printed with its sign so colour never carries meaning alone
 import SwiftUI
 
@@ -576,6 +577,103 @@ struct WeekNarrativeView: View {
                 .disabled(!viewModel.canWriteNarrative)
                 .opacity(viewModel.canWriteNarrative ? 1 : Layout.disabledOpacity)
             }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+// MARK: Supplements (#244)
+
+struct WeekSupplementsView: View {
+    let adherence: WeekAdherenceDTO
+
+    var body: some View {
+        WeekSection(title: "Добавки") {
+            Card {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                    HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.md) {
+                        Text("\(adherence.taken) из \(adherence.planned)")
+                            .font(.system(size: Layout.statValueSize, weight: .bold))
+                            .foregroundStyle(DS.Palette.textPrimary)
+                        if adherence.enoughData, let pct = adherence.pct {
+                            Text("\(pct)%")
+                                .font(DS.Typography.body)
+                                .foregroundStyle(DS.Palette.textSecondary)
+                        }
+                    }
+                    if !adherence.enoughData {
+                        HintText(text: WeekFormat.supplementsFewDays)
+                    }
+                    ForEach(adherence.supplements) { item in
+                        HStack {
+                            Text(item.name)
+                                .font(DS.Typography.body)
+                                .foregroundStyle(DS.Palette.textPrimary)
+                            Spacer(minLength: DS.Spacing.md)
+                            Text("\(item.takenDays) из \(item.plannedDays) дн.")
+                                .font(DS.Typography.caption)
+                                .foregroundStyle(DS.Palette.textSecondary)
+                        }
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+// MARK: Advice (#244)
+
+struct WeekAdviceView: View {
+    @ObservedObject var viewModel: WeekViewModel
+
+    private var buttonTitle: String {
+        switch viewModel.advice {
+        case .writing: return "Пишу совет…"
+        case .ready: return "Написать заново"
+        case .idle, .notEnoughData, .failure: return "Написать совет"
+        }
+    }
+
+    var body: some View {
+        WeekSection(title: "Совет") {
+            HintText(text: "Сон, спорт и добавки за последние 7 дней против 7 дней до них.")
+            Text(WeekFormat.adviceDisclaimer)
+                .font(DS.Typography.body.weight(.medium))
+                .foregroundStyle(DS.Palette.textPrimary)
+            switch viewModel.advice {
+            case .ready(let advice):
+                Card {
+                    VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                        Text(advice.text)
+                            .font(DS.Typography.body)
+                            .foregroundStyle(DS.Palette.textPrimary)
+                            .textSelection(.enabled)
+                        Text("За \(WeekFormat.shortDate(advice.startsOn)) — \(WeekFormat.shortDate(advice.endsOn)) "
+                            + "(\(advice.days) дн.). Текст написан моделью по цифрам и не сохраняется.")
+                            .font(DS.Typography.caption)
+                            .foregroundStyle(DS.Palette.textDisabled)
+                    }
+                }
+            case .notEnoughData:
+                HintText(text: WeekFormat.adviceNotEnoughData)
+            case .failure(let message):
+                Text(message)
+                    .font(DS.Typography.body)
+                    .foregroundStyle(DS.Palette.danger)
+            case .writing:
+                NeonLoader(label: "Пишу совет…").frame(height: Layout.narrativeLoaderHeight)
+            case .idle:
+                EmptyView()
+            }
+            Button {
+                Task { await viewModel.writeAdvice() }
+            } label: {
+                Text(buttonTitle)
+            }
+            .buttonStyle(LimeButtonStyle())
+            .disabled(!viewModel.canWriteAdvice)
+            .opacity(viewModel.canWriteAdvice ? 1 : Layout.disabledOpacity)
         }
         .accessibilityElement(children: .contain)
     }

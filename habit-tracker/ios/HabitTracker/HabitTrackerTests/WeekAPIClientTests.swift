@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229
+// [review:need-review] PHASE-03/229, PHASE-03/244
 // summary: wire tests of the Week endpoints — the server-shaped answer decodes (nulls stay nil, sleep is "not connected"), the bare and the named path, the POST of the narrative without a body, its 422/502/503 as statuses, and the cache round trip that keeps the answer whole
 import XCTest
 @testable import HabitTracker
@@ -140,5 +140,47 @@ final class WeekAPIClientTests: XCTestCase {
         store.save(week, forKey: "week", updatedAt: Date(timeIntervalSince1970: 0))
 
         XCTAssertEqual(store.load(WeekReviewDTO.self, forKey: "week")?.value, week)
+    }
+
+    func testTheAdviceIsAPostWithTheWindowOfSevenDays() async throws {
+        respond(WeekFixtures.adviceJSON)
+
+        let advice = try await client.writeHealthAdvice()
+
+        XCTAssertEqual(captured?.httpMethod, "POST")
+        XCTAssertEqual(captured?.url?.path, "/api/v1/health-advice")
+        let body = try XCTUnwrap(captured?.httpBody ?? captured?.httpBodyStream.map(Self.read))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: Int], ["days": 7])
+        XCTAssertEqual(advice.days, 7)
+        XCTAssertEqual(advice.startsOn, "2026-10-24")
+        XCTAssertTrue(advice.text.hasSuffix("Это не медицинская рекомендация."))
+    }
+
+    func testTheAdviceRefusalsArriveAsStatuses() async {
+        for status in [422, 502, 503] {
+            respond(#"{"detail": "x"}"#, status: status)
+            do {
+                _ = try await client.writeHealthAdvice()
+                XCTFail("status \(status) must throw")
+            } catch let error as APIClientError {
+                XCTAssertEqual(error, .unexpectedStatus(status))
+            } catch {
+                XCTFail("unexpected \(error)")
+            }
+        }
+    }
+
+    /// `httpBody` is moved into `httpBodyStream` by URLSession before a URLProtocol sees it.
+    private static func read(_ stream: InputStream) -> Data {
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
     }
 }

@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/270
-// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262, PHASE-03/244
+// summary: PHASE-03/244 — the advice on sleep, sport and supplements is written on request (any week, even an empty one), 422 is «данных мало» and not a failure, each refusal has its words, one request at a time
 // summary: Week screen state tests (return to the screen reads in place, pull to refresh offline and overtaken by a step, the running week opened by its code kept as «current», a cached week that ended loses its note, no «Текущая» on the running week, one narrative request per week, 422 and a slow model in words) — load of the running week through the read cache (fresh, offline with "обновлено", nothing to show), not-configured and server errors in words, stepping between weeks with a late answer dropped, in-place refresh that keeps the screen, and the narrative on request (statuses, no network, empty week, a week change drops it)
 import XCTest
 @testable import HabitTracker
@@ -9,6 +10,8 @@ final class MockWeekAPI: WeekAPI {
     var narrativeHandler: (String) async throws -> WeekNarrativeDTO = { _ in throw APIClientError.invalidResponse }
     private(set) var fetched: [String?] = []
     private(set) var narrated: [String] = []
+    var adviceHandler: () async throws -> HealthAdviceDTO = { throw APIClientError.invalidResponse }
+    private(set) var adviceAsked = 0
 
     func fetchWeekReview(iso: String?) async throws -> WeekReviewDTO {
         fetched.append(iso)
@@ -18,6 +21,11 @@ final class MockWeekAPI: WeekAPI {
     func writeWeekNarrative(iso: String) async throws -> WeekNarrativeDTO {
         narrated.append(iso)
         return try await narrativeHandler(iso)
+    }
+
+    func writeHealthAdvice() async throws -> HealthAdviceDTO {
+        adviceAsked += 1
+        return try await adviceHandler()
     }
 }
 
@@ -682,6 +690,109 @@ final class WeekViewModelTests: XCTestCase {
         model.prepare(iso: "2026-W34")
         await model.load()
         XCTAssertEqual(api.fetched, ["2026-W34"])
+    }
+
+    // MARK: Advice (#244)
+
+    func testTheAdviceIsWrittenOnlyWhenAsked() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.review() }
+        api.adviceHandler = { try WeekFixtures.advice() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.advice, .idle)
+        XCTAssertEqual(api.adviceAsked, 0)
+
+        await viewModel.writeAdvice()
+
+        XCTAssertEqual(api.adviceAsked, 1)
+        XCTAssertEqual(viewModel.advice, .ready(try WeekFixtures.advice()))
+    }
+
+    func testAnEmptyWeekStillOffersTheAdviceBecauseItIsAboutTheLastSevenDays() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.emptyWeek() }
+        api.adviceHandler = { try WeekFixtures.advice() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+
+        XCTAssertTrue(viewModel.canWriteAdvice)
+        await viewModel.writeAdvice()
+
+        XCTAssertEqual(viewModel.advice, .ready(try WeekFixtures.advice()))
+    }
+
+    func testTooLittleDataIsSaidInWordsAndIsNotAFailure() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.review() }
+        api.adviceHandler = { throw APIClientError.unexpectedStatus(422) }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+
+        await viewModel.writeAdvice()
+
+        XCTAssertEqual(viewModel.advice, .notEnoughData)
+        XCTAssertTrue(viewModel.canWriteAdvice, "more data may arrive; the button stays")
+    }
+
+    func testEachRefusalOfTheAdviceHasItsWords() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.review() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+
+        let expected: [(APIClientError, String)] = [
+            (.unexpectedStatus(503), "Совет от ИИ выключен: на сервере не настроена модель."),
+            (.unexpectedStatus(502), WeekFormat.adviceModelFailed),
+            (.timeout, WeekFormat.narrativeSlow),
+            (.transport(code: -1009), WeekFormat.adviceNeedsNetwork),
+        ]
+        for (error, message) in expected {
+            api.adviceHandler = { throw error }
+            await viewModel.writeAdvice()
+            XCTAssertEqual(viewModel.advice, .failure(message))
+        }
+    }
+
+    func testASecondTapWhileTheModelWritesAsksNothing() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { _ in try WeekFixtures.review() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        api.adviceHandler = {
+            await viewModel.writeAdvice()
+            return try WeekFixtures.advice()
+        }
+
+        await viewModel.writeAdvice()
+
+        XCTAssertEqual(api.adviceAsked, 1)
+        XCTAssertEqual(viewModel.advice, .ready(try WeekFixtures.advice()))
+    }
+
+    func testTheAdviceSurvivesSteppingToAnotherWeek() async throws {
+        let api = MockWeekAPI()
+        api.fetchHandler = { try self.neighbours($0 ?? "2026-W35") }
+        api.adviceHandler = { try WeekFixtures.advice() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        await viewModel.writeAdvice()
+
+        await viewModel.showPrevious()
+
+        XCTAssertEqual(viewModel.advice, .ready(try WeekFixtures.advice()))
+    }
+
+    func testAWeekWithoutSupplementsKeepsNoSupplementsAndAWeekWithThemKeepsTheServerNumbers() throws {
+        XCTAssertNil(try WeekFixtures.review().supplements)
+
+        let supplements = try XCTUnwrap(try WeekFixtures.reviewWithSupplements().supplements)
+
+        XCTAssertEqual(supplements.taken, 3)
+        XCTAssertEqual(supplements.planned, 7)
+        XCTAssertEqual(supplements.pct, 43)
+        XCTAssertEqual(supplements.supplements.first?.name, "Магний цитрат")
+        XCTAssertEqual(supplements.days.map(\.taken), [1, 1, 1, 0, 0, 0, 0])
     }
 }
 

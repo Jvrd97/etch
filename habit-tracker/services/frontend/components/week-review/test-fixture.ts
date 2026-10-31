@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-03/221, PHASE-03/255
+// [review:need-review] PHASE-03/221, PHASE-03/255, PHASE-03/244
 // summary: a finished week with three judged days, two roles, one category, one avoid streak and three health figures — the answer the screen and vocabulary tests start from, each test overriding only what it is about
 
-import type { WeekReview } from '@/lib/api';
+import type { HealthAdherence, WeekReview } from '@/lib/api';
 
 export function weekReviewFixture(): WeekReview {
   return {
@@ -138,6 +138,23 @@ export function weekReviewFixture(): WeekReview {
         daily: [null, null, null, null, null, null, 45],
       },
     ],
+    supplements: null,
+  };
+}
+
+/** Magnesium taken on 3 of 7 planned days; the same shape `adherence_for_days` answers. */
+export function adherenceFixture(): HealthAdherence {
+  return {
+    planned: 7,
+    taken: 3,
+    pct: 43,
+    enough_data: true,
+    days: [1, 1, 1, 0, 0, 0, 0].map((taken, index) => ({
+      date: `2026-08-${24 + index}`,
+      planned: 1,
+      taken,
+    })),
+    supplements: [{ supplement_id: 1, name: 'Магний цитрат', planned_days: 7, taken_days: 3 }],
   };
 }
 

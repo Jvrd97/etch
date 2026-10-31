@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255, PHASE-03/244
 # summary: the week review in a fixed number of statements — day summaries, role minutes, duration entries, avoid histories and health buckets of both weeks are read as 14-day ranges and folded in python, so the count does not move with days or habits
 """
 Database access for the week review (`#221`).
@@ -47,6 +47,7 @@ from app.crud import day_profile as profile_crud
 from app.crud import health as health_crud
 from app.crud import role as role_crud
 from app.crud import streak as streak_crud
+from app.crud import supplement_advice as advice_crud
 from app.crud.values import parse_number
 from app.day.debt import week_is_won, week_verdict_line
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
@@ -67,6 +68,7 @@ from app.schemas.week_review import (
     WeekTotals,
     WeekWindow,
 )
+from app.schemas.supplement_advice import Adherence
 
 __all__ = ["build_week_review", "week_has_data"]
 
@@ -442,6 +444,19 @@ async def _health(
     return metrics
 
 
+async def _supplements(db: AsyncSession, now: _Span) -> Adherence | None:
+    """
+    Приём добавок за учтённые дни — расчёт совета (`advice_crud`), а не второй.
+
+    Добавок на этих днях не планировалось — `None`: у недели без добавок ответ
+    остаётся таким, каким был, и экран не рисует пустой блок.
+    """
+    if now.days == 0:
+        return None
+    adherence = await advice_crud.adherence_for_days(db, _dates(now))
+    return adherence if adherence.planned else None
+
+
 async def build_week_review(
     db: AsyncSession, iso: str, today: date
 ) -> WeekReviewResponse:
@@ -510,6 +525,7 @@ async def build_week_review(
         categories=await _categories(db, now, before, window_start, window_end),
         habit_streaks=await _habit_streaks(db, now),
         health=await _health(db, now, before, starts_on, window_start, window_end),
+        supplements=await _supplements(db, now),
     )
 
 

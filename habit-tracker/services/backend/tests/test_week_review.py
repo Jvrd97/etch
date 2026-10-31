@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/255, PHASE-03/238
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/255, PHASE-03/238, PHASE-03/244
+# summary: PHASE-03/244 adds supplement adherence to the week review — the same numbers as the health summary, null without supplements, in the narrative prompt without a dose, behind the dose net, and a flat statement count
 # summary: tests for the week review — totals, deltas against the same days of the previous week, best/worst day, role/category time, avoid streaks at the end of the counted window, health with sleep read from nights by wake date, the 04:00 boundary picking the current week, a read that writes nothing, a flat SQL statement count, the window counting today only once it is closed, the week verdict handed to the model ready-made, year-edge weeks, and the AI narrative through a fake client
 """
 Weekly review: one answer for the whole week, cut on the day boundary.
@@ -25,6 +26,7 @@ from app.core import daytime
 from app.crud import day as day_crud
 from app.crud import health as health_crud
 from app.crud import role as role_crud
+from app.crud import supplement_advice as advice_crud
 from app.day.debt import week_verdict_line
 from app.health.aggregate import HourBucket
 from app.health.sleep import SleepNight
@@ -36,6 +38,7 @@ from app.models.role import ROLE_CODE_CTO, ROLE_CODE_TECHLEAD
 from app.models.summary import DaySummary
 from app.models.week import Week
 from tests.conftest import test_engine
+from tests.test_health_advice import add_supplement, take
 
 URL = "/api/v1/week-review"
 
@@ -46,9 +49,10 @@ MONDAY = date(2026, 8, 24)
 SUNDAY = date(2026, 8, 30)
 PREVIOUS_MONDAY = date(2026, 8, 17)
 
-# What the review costs today is twelve statements; the ceiling leaves room for two
-# more sources without letting the count become a per-day or per-habit loop.
-MAX_QUERIES = 14
+# What the review costs today is fifteen statements (two of them the supplements,
+# #244); the ceiling leaves room for one more source without letting the count
+# become a per-day or per-habit loop.
+MAX_QUERIES = 16
 
 STEPS = "HKQuantityTypeIdentifierStepCount"
 EXERCISE = "HKQuantityTypeIdentifierAppleExerciseTime"
@@ -966,3 +970,128 @@ async def test_a_week_with_only_a_habit_streak_still_has_something_to_say(
 
     assert response.status_code == 200
     assert "Курение" in llm.prompts[0]
+
+
+# --- supplements and sport in the week (#244) ------------------------------------
+
+SUPPLEMENT_START = MONDAY - timedelta(days=30)
+WEEK_DAYS = [MONDAY + timedelta(days=offset) for offset in range(7)]
+
+
+async def add_magnesium(db: AsyncSession, taken_days: int) -> None:
+    supplement = await add_supplement(db, "Магний цитрат", SUPPLEMENT_START)
+    await take(db, supplement, *WEEK_DAYS[:taken_days])
+
+
+async def test_a_week_without_supplements_is_the_week_it_was(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    await fill_two_weeks(db_session)
+
+    body = await get_week(client)
+    await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert body["supplements"] is None
+    assert "Добавки" not in llm.prompts[0]
+
+
+async def test_the_week_carries_what_was_taken_of_what_was_planned(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await add_magnesium(db_session, taken_days=3)
+
+    body = await get_week(client)
+
+    supplements = body["supplements"]
+    assert (supplements["planned"], supplements["taken"], supplements["pct"]) == (
+        7,
+        3,
+        43,
+    )
+    assert [day["taken"] for day in supplements["days"]] == [1, 1, 1, 0, 0, 0, 0]
+    assert supplements["supplements"] == [
+        {
+            "supplement_id": supplements["supplements"][0]["supplement_id"],
+            "name": "Магний цитрат",
+            "planned_days": 7,
+            "taken_days": 3,
+        }
+    ]
+
+
+async def test_the_week_counts_adherence_by_the_one_calculation_of_the_advice(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The week 24-30 August is the window of seven days on 31 August."""
+    await add_magnesium(db_session, taken_days=5)
+    monday_after = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: monday_after)
+
+    body = await get_week(client)
+    summary = await advice_crud.build_health_summary(db_session, 7, date(2026, 8, 31))
+
+    assert body["supplements"] == summary.adherence.model_dump(mode="json")
+
+
+async def test_a_running_week_counts_adherence_over_the_counted_days_only(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await add_magnesium(db_session, taken_days=2)
+    wednesday = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(daytime, "now_utc", lambda: wednesday)
+
+    body = await get_week(client)
+
+    assert body["window"]["counted_days"] == 2
+    assert (body["supplements"]["planned"], body["supplements"]["taken"]) == (2, 2)
+
+
+async def test_the_narrative_is_told_adherence_by_name_and_never_a_dose(
+    client: AsyncClient, db_session: AsyncSession, llm: FakeLLM
+) -> None:
+    await fill_two_weeks(db_session)
+    await add_magnesium(db_session, taken_days=3)
+
+    response = await client.post(f"{URL}/{WEEK}/narrative")
+
+    assert response.status_code == 200
+    (prompt,) = llm.prompts
+    assert "Добавки: принято 3 из 7 запланированных приёмов (43%)." in prompt
+    assert "«Магний цитрат»: 3 из 7 дн." in prompt
+    assert "777" not in prompt
+
+
+async def test_a_narrative_that_names_a_dose_is_dropped(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_two_weeks(db_session)
+    await add_magnesium(db_session, taken_days=3)
+    app.dependency_overrides[get_llm_client] = lambda: FakeLLM(
+        "Неделя ровная. Магний по 400 мг продолжай."
+    )
+    try:
+        response = await client.post(f"{URL}/{WEEK}/narrative")
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Совет отклонён защитой."
+    assert "400" not in response.text
+
+
+async def test_reading_the_week_costs_the_same_with_one_supplement_or_eight(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await close_day(db_session, MONDAY, "won", done=1, total=1)
+    await add_magnesium(db_session, taken_days=1)
+    small = await count_statements(client)
+
+    for index in range(7):
+        supplement = await add_supplement(
+            db_session, f"Добавка {index}", SUPPLEMENT_START
+        )
+        await take(db_session, supplement, *WEEK_DAYS[index % 3 :])
+    large = await count_statements(client)
+
+    assert large == small
+    assert large <= MAX_QUERIES

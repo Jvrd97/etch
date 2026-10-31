@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/261, PHASE-03/262
+// [review:need-review] PHASE-03/229, PHASE-03/244, PHASE-03/261, PHASE-03/262
 // summary: wire types of GET /week-review[/{iso}] and POST /week-review/{iso}/narrative — the week in one answer (window, totals against the previous week, days, roles, categories, avoid streaks, health) and the AI text; Codable so the read cache can keep the last answer
 import Foundation
 
@@ -122,6 +122,35 @@ struct WeekHealthMetricDTO: Codable, Equatable, Identifiable {
     var id: String { key }
 }
 
+/// One day of the supplements' plan: how many were planned and how many were taken.
+struct WeekAdherenceDayDTO: Codable, Equatable {
+    let date: String
+    let planned: Int
+    let taken: Int
+}
+
+struct WeekSupplementItemDTO: Codable, Equatable, Identifiable {
+    let supplementId: Int
+    let name: String
+    let plannedDays: Int
+    let takenDays: Int
+
+    var id: Int { supplementId }
+}
+
+/// Supplements taken of planned over the counted days (the very calculation behind the advice).
+/// `nil` in `WeekReviewDTO.supplements` means none was planned that week.
+struct WeekAdherenceDTO: Codable, Equatable {
+    let planned: Int
+    let taken: Int
+    /// `nil` when there was nothing to plan.
+    let pct: Int?
+    /// Too few planned days make the percentage meaningless.
+    let enoughData: Bool
+    let days: [WeekAdherenceDayDTO]
+    let supplements: [WeekSupplementItemDTO]
+}
+
 /// The whole week in one answer.
 struct WeekReviewDTO: Codable, Equatable {
     let window: WeekWindowDTO
@@ -140,6 +169,8 @@ struct WeekReviewDTO: Codable, Equatable {
     let health: [WeekHealthMetricDTO]
     /// The verdict in the server's own words, the same on the web; absent in an older server's answer.
     let verdictLine: String?
+    /// `nil` when no supplement was planned on the counted days (and in an older server's answer).
+    let supplements: WeekAdherenceDTO?
 }
 
 /// The AI text of a week. The server does not store it.
@@ -147,4 +178,13 @@ struct WeekNarrativeDTO: Decodable, Equatable {
     let isoCode: String
     let text: String
     let model: String
+}
+
+/// The advice on sleep, sport and supplements for the last seven closed days. The server does not store it.
+struct HealthAdviceDTO: Decodable, Equatable {
+    let text: String
+    let model: String
+    let startsOn: String
+    let endsOn: String
+    let days: Int
 }

@@ -1,5 +1,6 @@
-# [review:need-review] PHASE-03/113, PHASE-03/187, PHASE-03/196
+# [review:need-review] PHASE-03/113, PHASE-03/187, PHASE-03/196, PHASE-03/244
 # summary: build_day_card — the bounded day card that goes into the chat system prompt: a registry of sections with priorities, an explicit "записей нет" instead of a silent gap, and a ceiling held by eating the tail of the least important section rather than by slicing the string
+# summary: PHASE-03/244 adds the advice section — the summary of sleep, sport and supplements the health advice is written from, printed through the advice prompt's own lines, absent when there is too little data
 # summary: PHASE-03/187 prints the code, the rigidity and the done criterion of every plan line, without which a rewrite of the day cannot keep a single mark
 # summary: PHASE-03/196 puts the canon of the day into the card as numbers — the edges, the free evening, the relationship evening, the work ceiling and the task caps — because the prompt names those rules in words while check_all judges them by figures the model could not see
 """
@@ -40,8 +41,11 @@ from app.crud import health as health_crud
 from app.crud import journal as journal_crud
 from app.crud import mark as mark_crud
 from app.crud import plan as plan_crud
+from app.crud import supplement_advice as advice_crud
 from app.crud import table as table_crud
 from app.day.rules import DayMap, Interval, NoRuleForDate, day_map
+from app.llm.health_advice import summary_lines
+from app.schemas.supplement_advice import MIN_WINDOW_DAYS
 
 # Заголовок карточки. Модель по нему отличает данные дня от инструкции над ними.
 CARD_TITLE = "# Карточка дня"
@@ -259,6 +263,19 @@ async def _health_section(db: AsyncSession, on: date) -> list[str] | None:
     return lines
 
 
+async def _advice_section(db: AsyncSession, on: date) -> list[str] | None:
+    """
+    Сон, спорт и добавки за неделю до дня карточки — исходные цифры совета.
+
+    Строки печатает та же `summary_lines`, из которой пишется `POST /health-advice`:
+    «сколько добавок я принял» не может иметь двух ответов — в чате и в совете.
+    Дозы сюда не попадают (их нет в сводке). Данных мало — пустая секция, а не
+    строки «данных нет» по каждому блоку: «записей нет» честнее.
+    """
+    summary = await advice_crud.build_health_summary(db, MIN_WINDOW_DAYS, on)
+    return summary_lines(summary) if summary.enough_data else []
+
+
 async def _entries_section(db: AsyncSession, on: date) -> list[str] | None:
     """Записи трекера за день, свёрнутые по полю тем же путём, что и таблица."""
     categories = await category_crud.get_categories(db, limit=None, active_only=True)
@@ -310,6 +327,7 @@ DAY_CARD_SECTIONS: tuple[SectionSpec, ...] = (
     SectionSpec("rules", "Правила дня", priority=5, build=_rules_section),
     SectionSpec("plan", "План дня и отметки", priority=10, build=_plan_section),
     SectionSpec("health", "Здоровье за день", priority=20, build=_health_section),
+    SectionSpec("advice", "Сон, спорт и добавки", priority=25, build=_advice_section),
     SectionSpec("entries", "Записи трекера", priority=30, build=_entries_section),
     SectionSpec("journal", "Дневник", priority=40, build=_journal_section),
 )

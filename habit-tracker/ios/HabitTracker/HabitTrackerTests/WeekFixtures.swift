@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/251, PHASE-03/255, PHASE-03/261
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/251, PHASE-03/255, PHASE-03/261, PHASE-03/244
 // summary: a server-shaped answer of GET /week-review for a finished week (three judged days, two roles, one category, one avoid streak, sleep not connected) as JSON, with the server's today_counted, verdict_line and previous_days_with_data (#255), with helpers to patch it into a running or an empty week
 import Foundation
 @testable import HabitTracker
@@ -51,9 +51,43 @@ enum WeekFixtures {
         {"key": "sleep", "name": "Сон", "unit": null, "available": false, "total": null, "avg_per_day": null, "days_with_data": 0, "previous_days_with_data": 0, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, null]},
         {"key": "steps", "name": "Шаги", "unit": "count", "available": true, "total": 12000, "avg_per_day": 6000, "days_with_data": 2, "previous_days_with_data": 1, "previous_avg_per_day": 3000, "delta_avg_per_day": 3000, "daily": [8000, 4000, null, null, null, null, null]},
         {"key": "workouts", "name": "Минуты тренировки", "unit": "min", "available": true, "total": 45, "avg_per_day": 45, "days_with_data": 1, "previous_days_with_data": 0, "previous_avg_per_day": null, "delta_avg_per_day": null, "daily": [null, null, null, null, null, null, 45]}
-      ]
+      ],
+      "supplements": null
     }
     """
+
+    /// What `adherence_for_days` answers for a magnesium taken on the first 3 of 7 days (the server's own shape).
+    static let adherenceJSON = """
+    {
+      "planned": 7, "taken": 3, "pct": 43, "enough_data": true,
+      "days": [
+        {"date": "2026-08-24", "planned": 1, "taken": 1}, {"date": "2026-08-25", "planned": 1, "taken": 1},
+        {"date": "2026-08-26", "planned": 1, "taken": 1}, {"date": "2026-08-27", "planned": 1, "taken": 0},
+        {"date": "2026-08-28", "planned": 1, "taken": 0}, {"date": "2026-08-29", "planned": 1, "taken": 0},
+        {"date": "2026-08-30", "planned": 1, "taken": 0}
+      ],
+      "supplements": [{"supplement_id": 1, "name": "Магний цитрат", "planned_days": 7, "taken_days": 3}]
+    }
+    """
+
+    /// The answer of `POST /health-advice`.
+    static let adviceJSON = """
+    {
+      "text": "За неделю в среднем 8000 шагов.\\n\\nЭто не медицинская рекомендация.",
+      "model": "m", "starts_on": "2026-10-24", "ends_on": "2026-10-30", "days": 7
+    }
+    """
+
+    /// The week with its supplements: taken 3 of 7.
+    static func reviewWithSupplements() throws -> WeekReviewDTO {
+        try review { object in
+            object["supplements"] = try? XCTUnwrapJSON(Data(adherenceJSON.utf8))
+        }
+    }
+
+    static func advice() throws -> HealthAdviceDTO {
+        try APIJSONCoding.makeDecoder().decode(HealthAdviceDTO.self, from: Data(adviceJSON.utf8))
+    }
 
     static func review(patch: (inout [String: Any]) -> Void = { _ in }) throws -> WeekReviewDTO {
         var object = try XCTUnwrapJSON(Data(reviewJSON.utf8))

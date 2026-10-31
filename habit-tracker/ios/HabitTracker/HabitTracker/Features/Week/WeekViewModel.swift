@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/270 — prepare(iso:)
-// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262, PHASE-03/244
+// summary: PHASE-03/244 adds the advice on sleep, sport and supplements — written on request for the last seven days (not for the week on screen), 422 kept apart from a failure, one request at a time
 // summary: Week screen state — the running or a named week through the read cache (each week under its own key, the week running by the calendar also under `current` whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
 import Foundation
 
@@ -19,6 +20,16 @@ final class WeekViewModel: ObservableObject {
         case failure(String)
     }
 
+    /// The advice is about the last seven closed days, so it does not follow the week on screen.
+    enum AdviceState: Equatable {
+        case idle
+        case writing
+        case ready(HealthAdviceDTO)
+        /// 422: the server has too little to go on. Not a failure.
+        case notEnoughData
+        case failure(String)
+    }
+
     @Published private(set) var state: LoadState = .idle
     @Published private(set) var review: WeekReviewDTO?
     /// Set while the screen shows a cached answer because the server was out of reach: when it was fetched.
@@ -26,6 +37,7 @@ final class WeekViewModel: ObservableObject {
     /// Why the last in-place refresh failed; the screen keeps what it had.
     @Published private(set) var refreshError: String?
     @Published private(set) var narrative: NarrativeState = .idle
+    @Published private(set) var advice: AdviceState = .idle
 
     /// The week asked for; `nil` is the server's running week.
     private(set) var requestedIso: String?
@@ -238,5 +250,33 @@ final class WeekViewModel: ObservableObject {
         // The person may have stepped to another week while the model wrote.
         guard review?.window.isoCode == iso else { return }
         narrative = result
+    }
+
+    // MARK: Advice
+
+    /// One request at a time; more data may arrive after «данных мало», so the button stays then.
+    var canWriteAdvice: Bool {
+        advice != .writing
+    }
+
+    /// Writes the advice for the last seven closed days. It needs the network; the text is not kept anywhere.
+    func writeAdvice() async {
+        guard canWriteAdvice else { return }
+        guard let api = narrativeAPIProvider() else {
+            advice = .failure(WeekFormat.notConfiguredMessage)
+            return
+        }
+        advice = .writing
+        do {
+            advice = .ready(try await api.writeHealthAdvice())
+        } catch let error as APIClientError {
+            if case .unexpectedStatus(422) = error {
+                advice = .notEnoughData
+            } else {
+                advice = .failure(WeekFormat.adviceMessage(for: error))
+            }
+        } catch {
+            advice = .failure(WeekFormat.adviceFallback)
+        }
     }
 }

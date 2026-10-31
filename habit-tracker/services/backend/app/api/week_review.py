@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221
+# [review:need-review] PHASE-03/221, PHASE-03/244
 # summary: GET /week-review[/{iso}] answers a whole week in one response (read-only, current week named by the day boundary) and POST /week-review/{iso}/narrative writes the AI text through the orchestration layer
 import logging
 
@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_llm_client
 from app.core.database import get_db
 from app.core.daytime import today_local
+from app.api.supplement_advice import DOSE_GUARD_DETAIL
 from app.crud import week_review as review_crud
 from app.day.week import BadWeekCode, iso_code
 from app.llm.client import LLMClient, LLMError
+from app.llm.health_advice import DoseGuardTripped
 from app.llm.week_review import write_week_review
 from app.schemas.week_review import WeekNarrativeResponse, WeekReviewResponse
 
@@ -86,6 +88,11 @@ async def write_week_narrative(
         )
     try:
         text = await write_week_review(llm, review)
+    except DoseGuardTripped as error:
+        logger.warning("dose guard tripped")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=DOSE_GUARD_DETAIL
+        ) from error
     except LLMError as error:
         logger.warning("week narrative LLM backend failed")
         raise HTTPException(

@@ -1,11 +1,11 @@
-// [review:need-review] PHASE-03/221, PHASE-03/239, PHASE-03/255
+// [review:need-review] PHASE-03/221, PHASE-03/239, PHASE-03/255, PHASE-03/244
 // summary: component tests for the week review screen — totals with their signed changes, the best and worst day named in words, an unfinished week announced and compared by days, a missing sleep metric said as missing, an empty week without the narrative button, and the narrative written on request and refused with its own message
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { WeekNarrative, WeekReview } from '@/lib/api';
 import type { WeekReviewClient } from '@/hooks/useWeekReview';
-import { weekReviewFixture } from '@/components/week-review/test-fixture';
+import { adherenceFixture, weekReviewFixture } from '@/components/week-review/test-fixture';
 
 const { default: WeekReviewScreen, NARRATIVE_BUTTON } = await import('./WeekReviewScreen');
 const { ROLES_RUNNING_WEEK_NOTE } = await import('@/lib/week-review');
@@ -216,5 +216,49 @@ describe('WeekReviewScreen', () => {
     fireEvent.click(screen.getByLabelText('Dismiss error'));
 
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps the advice block with its disclaimer on a week without supplements, and no supplements block', async () => {
+    await ready(weekReviewFixture());
+
+    expect(screen.getByText('Это не медицинская рекомендация.')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Написать совет' })).toBeDefined();
+    expect(screen.queryByText('Добавки')).toBeNull();
+  });
+
+  it('shows taken of planned supplements when the week has them', async () => {
+    const review = weekReviewFixture();
+    review.supplements = adherenceFixture();
+    await ready(review);
+
+    expect(screen.getByText('Добавки')).toBeDefined();
+    expect(screen.getByText('3 из 7')).toBeDefined();
+    expect(screen.getByText('Магний цитрат')).toBeDefined();
+  });
+
+  it('writes the advice only on the tap', async () => {
+    const write = mock(() =>
+      Promise.resolve({
+        text: 'Ходи больше.',
+        model: 'm',
+        starts_on: '2026-10-24',
+        ends_on: '2026-10-30',
+        days: 7,
+      })
+    );
+    render(
+      <WeekReviewScreen
+        iso="2026-W35"
+        client={clientOf(weekReviewFixture())}
+        adviceClient={{ write }}
+      />
+    );
+    await waitFor(() => expect(screen.getByText('Итог недели')).toBeDefined());
+    expect(write).toHaveBeenCalledTimes(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Написать совет' }));
+
+    await waitFor(() => expect(screen.getByText('Ходи больше.')).toBeDefined());
+    expect(write).toHaveBeenCalledTimes(1);
   });
 });

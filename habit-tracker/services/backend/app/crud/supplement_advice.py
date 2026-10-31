@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/238
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/238, PHASE-03/244
 # summary: the health summary behind the advice — steps, workout minutes and resting heart rate over a window of 7-14 closed days against the window before it, sleep as minutes asleep of the night by wake date, supplement adherence per day; four statements whatever the window and the number of supplements
 """
 The summary of sleep, sport and supplements (`#223`).
@@ -42,7 +42,7 @@ from app.schemas.supplement_advice import (
     SupplementAdherenceItem,
 )
 
-__all__ = ["MIN_DAYS_WITH_DATA", "build_health_summary"]
+__all__ = ["MIN_DAYS_WITH_DATA", "adherence_for_days", "build_health_summary"]
 
 # Меньше стольких дней среднее ничего не доказывает: блок «данных мало».
 MIN_DAYS_WITH_DATA = 3
@@ -83,7 +83,12 @@ async def _figures(
     return [_figure(item, current, earlier) for item in items]
 
 
-async def _adherence(db: AsyncSession, current: list[date]) -> Adherence:
+async def adherence_for_days(db: AsyncSession, current: list[date]) -> Adherence:
+    """
+    Adherence over the given consecutive days, in two statements whatever their
+    number: the week review and the advice both count it here, so «принято 4 из 7»
+    is one number wherever it is printed.
+    """
     supplements = (
         await db.execute(
             select(
@@ -169,7 +174,7 @@ async def build_health_summary(
     current = _dates(starts_on, days)
 
     figures = await _figures(db, current, _dates(previous_starts_on, days))
-    adherence = await _adherence(db, current)
+    adherence = await adherence_for_days(db, current)
     return HealthSummaryResponse(
         window=SummaryWindow(
             starts_on=starts_on,
