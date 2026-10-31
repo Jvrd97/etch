@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-01/216
-// summary: the Goals screen under More, drawn as /m/goals draws it — levels 0-5 with the «⚠ подтверди» lines apart from the prose, milestones with status, close date, a Закрыть/Открыть button and «Открывается чем» chips, and the goals of the current quarter; offline banner over a cached board
+// [review:need-review] PHASE-01/216, PHASE-03/295
+// summary: the Goals screen under More, drawn as /m/goals draws it — levels 0-5 with the «⚠ подтверди» lines apart from the prose, milestones with status, close date, a Закрыть/Открыть button and «Открывается чем» chips, and the goals of the current quarter; offline banner over a cached board; the quarter card is always there and carries «Добавить цель» (a sheet with one text field) up to five goals
 import SwiftUI
 
 struct GoalsView: View {
     @StateObject private var viewModel: GoalsViewModel
+    @State private var isAddingGoal = false
 
     init() {
         _viewModel = StateObject(wrappedValue: .live())
@@ -18,6 +19,7 @@ struct GoalsView: View {
             .navigationTitle(MoreDestination.goals.title)
             .dsScreenBackground()
             .task { await viewModel.load() }
+            .sheet(isPresented: $isAddingGoal) { AddGoalSheet(viewModel: viewModel) }
     }
 
     @ViewBuilder
@@ -38,16 +40,10 @@ struct GoalsView: View {
                             .font(DS.Typography.caption)
                             .foregroundStyle(DS.Palette.danger)
                     }
-                    if let board = viewModel.board, !viewModel.isEmpty {
-                        levels(board.levels)
-                        milestones(board.milestones)
+                    if let board = viewModel.board {
+                        if !board.levels.isEmpty { levels(board.levels) }
+                        if !board.milestones.isEmpty { milestones(board.milestones) }
                         quarter(board)
-                    } else {
-                        Card {
-                            Text(GoalsFormat.emptyText)
-                                .font(DS.Typography.body)
-                                .foregroundStyle(DS.Palette.textSecondary)
-                        }
                     }
                 }
                 .padding(DS.Spacing.lg)
@@ -149,6 +145,9 @@ struct GoalsView: View {
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                 sectionTitle("Квартал \(board.quarter)")
+                if board.goals.isEmpty {
+                    secondary(GoalsFormat.emptyText)
+                }
                 ForEach(board.goals) { goal in
                     HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.xs) {
                         Text("\(goal.ord). \(GoalsFormat.plain(goal.textMd))")
@@ -159,7 +158,25 @@ struct GoalsView: View {
                         }
                     }
                 }
+                addButton
             }
+        }
+    }
+
+    @ViewBuilder
+    private var addButton: some View {
+        if viewModel.canAddGoal {
+            Button {
+                viewModel.clearFormError()
+                isAddingGoal = true
+            } label: {
+                Label("Добавить цель", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(DS.Palette.lime)
+            .accessibilityIdentifier("goals.add")
+        } else {
+            secondary("В квартале пять целей — больше не бывает.")
         }
     }
 
@@ -173,5 +190,48 @@ struct GoalsView: View {
         Text(text)
             .font(DS.Typography.caption)
             .foregroundStyle(DS.Palette.textSecondary)
+    }
+}
+
+/// A sheet with the one thing a goal of the quarter needs: its words.
+private struct AddGoalSheet: View {
+    @ObservedObject var viewModel: GoalsViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Цель квартала") {
+                    TextField("Например: пробежать 10 км", text: $text, axis: .vertical)
+                        .lineLimit(2...5)
+                        .accessibilityIdentifier("goals.form.text")
+                }
+                .listRowBackground(DS.Palette.card)
+                if let message = viewModel.formError {
+                    Section {
+                        Text(message)
+                            .foregroundStyle(DS.Palette.danger)
+                            .accessibilityIdentifier("goals.form.error")
+                    }
+                    .listRowBackground(DS.Palette.card)
+                }
+            }
+            .dsScreenBackground()
+            .navigationTitle("Новая цель")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Добавить") {
+                        Task { if await viewModel.addGoal(text: text) { dismiss() } }
+                    }
+                    .disabled(viewModel.isAdding)
+                    .accessibilityIdentifier("goals.form.save")
+                }
+            }
+        }
     }
 }

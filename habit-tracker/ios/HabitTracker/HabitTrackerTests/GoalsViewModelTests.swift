@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/216
-// summary: GoalsViewModel tests mirroring GoalsBoard.test.tsx — six levels, ten milestones and five goals; the «⚠ подтверди» line kept apart; M10's chip for M9 changes once M9 is closed; the close date beside the status; the goal.md hint on an empty board — plus the toggle (done ↔ open, board re-read, failure keeps the board), the read cache offline and the not-configured state
+// [review:need-review] PHASE-01/216, PHASE-03/295
+// summary: GoalsViewModel tests mirroring GoalsBoard.test.tsx — six levels, ten milestones and five goals; the «⚠ подтверди» line kept apart; M10's chip for M9 changes once M9 is closed; the close date beside the status; the goal.md hint on an empty board — plus the toggle (done ↔ open, board re-read, failure keeps the board), the read cache offline and the not-configured state; adding a goal (empty quarter, existing goals kept, empty text, sixth goal, network failure, server reason) and the Russian words of every failure
 import XCTest
 @testable import HabitTracker
 
@@ -7,6 +7,10 @@ import XCTest
 final class MockGoalsAPI: GoalsAPI {
     var boards: [Result<GoalsBoardDTO, Error>] = []
     var patchError: Error?
+    var putError: Error?
+    /// What the server answers a PUT with; defaults to the goals sent, laid over an empty 2026-Q4 board.
+    var putBoard: GoalsBoardDTO?
+    private(set) var puts: [(quarter: String, goals: [QuarterGoalInDTO])] = []
     private(set) var patches: [(code: String, status: MilestoneStatus)] = []
     private(set) var fetchCount = 0
 
@@ -20,6 +24,21 @@ final class MockGoalsAPI: GoalsAPI {
         patches.append((code, status))
         if let patchError { throw patchError }
         return GoalsFixtures.milestone(code, status: status)
+    }
+
+    func putQuarterGoals(quarter: String, goals: [QuarterGoalInDTO]) async throws -> GoalsBoardDTO {
+        puts.append((quarter, goals))
+        if let putError { throw putError }
+        if let putBoard { return putBoard }
+        return GoalsBoardDTO(
+            levels: [], milestones: [], quarter: quarter,
+            goals: goals.map {
+                QuarterGoalDTO(
+                    id: $0.ord, quarter: quarter, ord: $0.ord, textMd: $0.textMd,
+                    milestoneCode: $0.milestoneCode, status: $0.status
+                )
+            }
+        )
     }
 }
 
@@ -141,7 +160,7 @@ final class GoalsViewModelTests: XCTestCase {
         XCTAssertEqual(GoalsFormat.plain("без разметки"), "без разметки")
     }
 
-    func testEmptyBoardSaysToImportGoalMd() async {
+    func testEmptyBoardInvitesToAddAGoal() async {
         let api = MockGoalsAPI()
         api.boards = [.success(GoalsFixtures.empty)]
         let model = GoalsViewModel(api: api)
@@ -150,7 +169,9 @@ final class GoalsViewModelTests: XCTestCase {
 
         XCTAssertEqual(model.state, .loaded)
         XCTAssertTrue(model.isEmpty)
-        XCTAssertTrue(GoalsFormat.emptyText.contains("goal.md"))
+        XCTAssertTrue(GoalsFormat.emptyText.contains("Добавьте"))
+        XCTAssertFalse(GoalsFormat.emptyText.contains("goal.md"))
+        XCTAssertTrue(model.canAddGoal)
     }
 
     func testFailedToggleKeepsTheBoardAndSaysWhy() async {
@@ -163,7 +184,7 @@ final class GoalsViewModelTests: XCTestCase {
         await model.toggle("M9")
 
         XCTAssertEqual(model.board, GoalsFixtures.board())
-        XCTAssertEqual(model.errorMessage, "Server returned status 404")
+        XCTAssertEqual(model.errorMessage, "Сервер ответил ошибкой 404.")
         XCTAssertTrue(model.saving.isEmpty)
         XCTAssertEqual(api.fetchCount, 1)
     }
@@ -191,7 +212,10 @@ final class GoalsViewModelTests: XCTestCase {
 
         await model.load()
 
-        XCTAssertEqual(model.state, .failure(offline.userMessage))
+        XCTAssertEqual(model.state, .failure(GoalsFormat.message(for: offline)))
+        XCTAssertEqual(
+            GoalsFormat.message(for: offline), "Нет связи с сервером. Проверьте интернет и адрес в Настройках."
+        )
         XCTAssertNil(model.board)
     }
 
@@ -206,5 +230,127 @@ final class GoalsViewModelTests: XCTestCase {
     func testGoalsRowSitsUnderMore() {
         XCTAssertTrue(MoreDestination.allCases.contains(.goals))
         XCTAssertEqual(MoreDestination.goals.title, "Цели")
+    }
+
+    // MARK: Adding a goal
+
+    private func loaded(_ board: GoalsBoardDTO, api: MockGoalsAPI = MockGoalsAPI()) async -> (GoalsViewModel, MockGoalsAPI) {
+        api.boards = [.success(board)]
+        let model = GoalsViewModel(api: api)
+        await model.load()
+        return (model, api)
+    }
+
+    func testAddingAGoalToAnEmptyQuarterSendsItAsTheFirst() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+
+        let added = await model.addGoal(text: "  Пробежать 10 км  ")
+
+        XCTAssertTrue(added)
+        XCTAssertEqual(api.puts.count, 1)
+        XCTAssertEqual(api.puts.first?.quarter, "2026-Q4")
+        XCTAssertEqual(api.puts.first?.goals, [QuarterGoalInDTO(ord: 1, textMd: "Пробежать 10 км", milestoneCode: nil, status: "open")])
+        XCTAssertEqual(model.board?.goals.map(\.textMd), ["Пробежать 10 км"])
+        XCTAssertNil(model.formError)
+        XCTAssertFalse(model.isAdding)
+        XCTAssertFalse(model.isEmpty)
+    }
+
+    func testAddingKeepsTheGoalsAlreadyThereWithTheirLinksAndStatus() async {
+        var board = GoalsFixtures.empty
+        board = GoalsBoardDTO(
+            levels: [], milestones: [], quarter: "2026-Q4",
+            goals: [
+                QuarterGoalDTO(id: 1, quarter: "2026-Q4", ord: 1, textMd: "Первая", milestoneCode: "M9", status: "done"),
+                QuarterGoalDTO(id: 3, quarter: "2026-Q4", ord: 3, textMd: "Третья", milestoneCode: nil, status: "open"),
+            ]
+        )
+        let (model, api) = await loaded(board)
+
+        _ = await model.addGoal(text: "Новая")
+
+        XCTAssertEqual(api.puts.first?.goals, [
+            QuarterGoalInDTO(ord: 1, textMd: "Первая", milestoneCode: "M9", status: "done"),
+            QuarterGoalInDTO(ord: 3, textMd: "Третья", milestoneCode: nil, status: "open"),
+            QuarterGoalInDTO(ord: 2, textMd: "Новая", milestoneCode: nil, status: "open"),
+        ])
+    }
+
+    func testEmptyTextIsRefusedWithoutAnyRequest() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+
+        let added = await model.addGoal(text: "  \n ")
+
+        XCTAssertFalse(added)
+        XCTAssertEqual(model.formError, "Напишите, какая это цель.")
+        XCTAssertTrue(api.puts.isEmpty)
+    }
+
+    func testSixthGoalIsRefusedAndTheButtonGoesAway() async {
+        let (model, api) = await loaded(GoalsFixtures.board())
+
+        XCTAssertFalse(model.canAddGoal)
+        let added = await model.addGoal(text: "Шестая")
+
+        XCTAssertFalse(added)
+        XCTAssertEqual(model.formError, "В квартале не больше пяти целей: уберите или замените одну из них.")
+        XCTAssertTrue(api.puts.isEmpty)
+    }
+
+    func testNetworkFailureKeepsTheBoardAndSaysSoInRussian() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+        api.putError = offline
+
+        let added = await model.addGoal(text: "Цель")
+
+        XCTAssertFalse(added)
+        XCTAssertEqual(
+            model.formError, "Нет связи с сервером. Проверьте интернет и адрес в Настройках."
+        )
+        XCTAssertEqual(model.board, GoalsFixtures.empty)
+        XCTAssertFalse(model.isAdding)
+        XCTAssertFalse(model.formError?.contains("Network error") ?? true)
+    }
+
+    func testServerRefusalShowsItsRussianReason() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+        api.putError = GoalsWriteError.rejected(
+            status: 422, detail: "Квартал 2026-Q4 не записан: место 1 занято дважды."
+        )
+
+        _ = await model.addGoal(text: "Цель")
+
+        XCTAssertEqual(model.formError, "Квартал 2026-Q4 не записан: место 1 занято дважды.")
+    }
+
+    func testRefusalWithoutAReasonFallsBackToTheStatus() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+        api.putError = APIClientError.unexpectedStatus(500)
+
+        _ = await model.addGoal(text: "Цель")
+
+        XCTAssertEqual(model.formError, "Сервер ответил ошибкой 500.")
+    }
+
+    func testStatusWordsAreRussian() {
+        XCTAssertEqual(GoalsFormat.message(for: APIClientError.timeout), "Сервер не ответил вовремя. Попробуйте ещё раз.")
+        XCTAssertEqual(GoalsFormat.message(for: APIClientError.unauthorized), "Сервер не принял ключ (401). Проверьте ключ в Настройках.")
+        XCTAssertEqual(GoalsFormat.message(for: APIClientError.invalidResponse), "Сервер ответил непонятно. Попробуйте ещё раз.")
+        XCTAssertEqual(GoalsFormat.message(for: APIClientError.invalidBaseURL), "Адрес сервера неверный. Исправьте его в Настройках.")
+        XCTAssertEqual(GoalsFormat.message(for: CancellationError()), "Не получилось выполнить действие. Попробуйте ещё раз.")
+        XCTAssertEqual(GoalsFormat.notConfiguredMessage, "Укажите адрес сервера в Настройках.")
+    }
+
+    func testFormErrorClearsOnANewAttempt() async {
+        let (model, api) = await loaded(GoalsFixtures.empty)
+        api.putError = offline
+        _ = await model.addGoal(text: "Цель")
+        XCTAssertNotNil(model.formError)
+
+        api.putError = nil
+        let added = await model.addGoal(text: "Цель")
+
+        XCTAssertTrue(added)
+        XCTAssertNil(model.formError)
     }
 }

@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/216
-// summary: wire tests of the goal endpoints against the server's schemas — GET /goals decodes levels, milestones with their dependency codes and «in-progress», the quarter and its goals; PATCH /goals/milestones/{code} sends the status alone; 404 arrives as a status
+// [review:need-review] PHASE-01/216, PHASE-03/295
+// summary: wire tests of the goal endpoints against the server's schemas — GET /goals decodes levels, milestones with their dependency codes and «in-progress», the quarter and its goals; PATCH /goals/milestones/{code} sends the status alone; 404 arrives as a status; PUT /goals/quarter/{quarter} sends the whole set in snake_case, 422 carries the server's Russian reason, a non-string detail and 401 stay plain statuses
 import XCTest
 @testable import HabitTracker
 
@@ -104,6 +104,67 @@ final class GoalsAPIClientTests: XCTestCase {
             XCTFail("expected 404")
         } catch {
             XCTAssertEqual(error as? APIClientError, .unexpectedStatus(404))
+        }
+    }
+
+    func testPutQuarterSendsTheWholeSetInSnakeCase() async throws {
+        respond("""
+        {"levels": [], "milestones": [], "quarter": "2026-Q4",
+         "goals": [{"id": 1, "quarter": "2026-Q4", "ord": 1, "text_md": "Цель",
+                    "milestone_code": null, "status": "open"}]}
+        """)
+
+        let board = try await client.putQuarterGoals(
+            quarter: "2026-Q4",
+            goals: [QuarterGoalInDTO(ord: 1, textMd: "Цель", milestoneCode: nil, status: "open")]
+        )
+
+        XCTAssertEqual(captured?.url?.path, "/api/v1/goals/quarter/2026-Q4")
+        XCTAssertEqual(captured?.httpMethod, "PUT")
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "X-API-Key"), "secret")
+        let body = try XCTUnwrap(capturedBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: [[String: Any]]])
+        let goal = try XCTUnwrap(json["goals"]?.first)
+        XCTAssertEqual(goal["ord"] as? Int, 1)
+        XCTAssertEqual(goal["text_md"] as? String, "Цель")
+        XCTAssertEqual(goal["status"] as? String, "open")
+        XCTAssertEqual(board.goals.first?.textMd, "Цель")
+    }
+
+    func testPutQuarterRefusalCarriesTheServersRussianReason() async {
+        respond(#"{"detail": "Квартал 2026-Q4 не записан: место 1 занято дважды."}"#, status: 422)
+
+        do {
+            _ = try await client.putQuarterGoals(quarter: "2026-Q4", goals: [])
+            XCTFail("expected 422")
+        } catch {
+            XCTAssertEqual(
+                error as? GoalsWriteError,
+                .rejected(status: 422, detail: "Квартал 2026-Q4 не записан: место 1 занято дважды.")
+            )
+        }
+    }
+
+    func testPutQuarterRefusalWithAnEnglishOrMissingReasonIsAPlainStatus() async {
+        respond(#"{"detail": [{"msg": "field required"}]}"#, status: 422)
+
+        do {
+            _ = try await client.putQuarterGoals(quarter: "2026-Q4", goals: [])
+            XCTFail("expected 422")
+        } catch {
+            XCTAssertEqual(error as? APIClientError, .unexpectedStatus(422))
+        }
+    }
+
+    func testPutQuarterUnauthorizedStaysUnauthorized() async {
+        respond(#"{"detail": "no"}"#, status: 401)
+
+        do {
+            _ = try await client.putQuarterGoals(quarter: "2026-Q4", goals: [])
+            XCTFail("expected 401")
+        } catch {
+            XCTAssertEqual(error as? APIClientError, .unauthorized)
         }
     }
 }

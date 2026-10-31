@@ -1,11 +1,39 @@
-// [review:need-review] PHASE-01/216
-// summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows
+// [review:need-review] PHASE-01/216, PHASE-03/295
+// summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows; adding a goal of the quarter (the whole set goes in one PUT, at most five) and every failure said in Russian
 import Foundation
 
 /// Words and small rules of the goal board, the same as the web's `GoalsBoard.tsx`.
 enum GoalsFormat {
-    static let emptyText = "Целей пока нет: импортируйте goal.md — уровни, милстоны и квартал живут в нём."
-    static let notConfiguredMessage = "Set the server address in Settings"
+    static let emptyText = "Целей на этот квартал пока нет. Добавьте первую."
+    static let notConfiguredMessage = "Укажите адрес сервера в Настройках."
+    /// The server keeps at most five goals in a quarter («больше пяти — цель размазана»).
+    static let maxQuarterGoals = 5
+    static let emptyTextRefusal = "Напишите, какая это цель."
+    static let tooManyGoalsRefusal = "В квартале не больше пяти целей: уберите или замените одну из них."
+    static let unknownFailure = "Не получилось выполнить действие. Попробуйте ещё раз."
+
+    /// A failure in words a person reads: never the English of `APIClientError.userMessage`, and the
+    /// server's own reason when it gave one.
+    static func message(for error: Error) -> String {
+        switch error {
+        case GoalsWriteError.rejected(_, let detail):
+            return detail
+        case APIClientError.transport:
+            return "Нет связи с сервером. Проверьте интернет и адрес в Настройках."
+        case APIClientError.timeout:
+            return "Сервер не ответил вовремя. Попробуйте ещё раз."
+        case APIClientError.unauthorized:
+            return "Сервер не принял ключ (401). Проверьте ключ в Настройках."
+        case APIClientError.unexpectedStatus(let status):
+            return "Сервер ответил ошибкой \(status)."
+        case APIClientError.invalidResponse:
+            return "Сервер ответил непонятно. Попробуйте ещё раз."
+        case APIClientError.invalidBaseURL:
+            return "Адрес сервера неверный. Исправьте его в Настройках."
+        default:
+            return unknownFailure
+        }
+    }
     static let unblockedText = "ничем не заблокирован"
     /// Beside a dependency that is not closed yet.
     static let waitingLabel = "ждёт"
@@ -74,6 +102,9 @@ final class GoalsViewModel: ObservableObject {
     @Published private(set) var offlineAsOf: Date?
     /// Why the last toggle was refused, in words; the screen shows it above the board.
     @Published var errorMessage: String?
+    /// Why the last attempt to add a goal failed; the add form shows it, the board does not.
+    @Published private(set) var formError: String?
+    @Published private(set) var isAdding = false
 
     private let apiProvider: () -> GoalsAPI?
     private let cache: ReadThroughCache
@@ -127,10 +158,9 @@ final class GoalsViewModel: ObservableObject {
                 offlineAsOf = updatedAt
             }
             state = .loaded
-        } catch let error as APIClientError {
-            if board == nil { state = .failure(error.userMessage) } else { errorMessage = error.userMessage }
         } catch {
-            if board == nil { state = .failure("Unexpected error") } else { errorMessage = "Unexpected error" }
+            let message = GoalsFormat.message(for: error)
+            if board == nil { state = .failure(message) } else { errorMessage = message }
         }
     }
 
@@ -145,14 +175,60 @@ final class GoalsViewModel: ObservableObject {
         defer { saving.remove(code) }
         do {
             _ = try await api.patchMilestone(code: code, status: GoalsFormat.toggled(milestone.status))
-        } catch let error as APIClientError {
-            errorMessage = error.userMessage
-            return
         } catch {
-            errorMessage = "Unexpected error"
+            errorMessage = GoalsFormat.message(for: error)
             return
         }
         await load()
+    }
+
+    /// The board is loaded and the quarter has a free place.
+    var canAddGoal: Bool {
+        guard let board else { return false }
+        return board.goals.count < GoalsFormat.maxQuarterGoals
+    }
+
+    func clearFormError() {
+        formError = nil
+    }
+
+    /// Adds one goal to the quarter on screen. The server takes the quarter as one set, so the goals
+    /// already there go with it — same text, link and status — and the new one takes the first free
+    /// place. The answer is the whole board, shown as it is. True when the server accepted it.
+    func addGoal(text: String) async -> Bool {
+        guard !isAdding, let board else { return false }
+        formError = nil
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            formError = GoalsFormat.emptyTextRefusal
+            return false
+        }
+        let taken = Set(board.goals.map(\.ord))
+        guard let ord = (1...GoalsFormat.maxQuarterGoals).first(where: { !taken.contains($0) }) else {
+            formError = GoalsFormat.tooManyGoalsRefusal
+            return false
+        }
+        guard let api = apiProvider() else {
+            formError = GoalsFormat.notConfiguredMessage
+            return false
+        }
+        let set = board.goals.map {
+            QuarterGoalInDTO(ord: $0.ord, textMd: $0.textMd, milestoneCode: $0.milestoneCode, status: $0.status)
+        } + [QuarterGoalInDTO(ord: ord, textMd: trimmed, milestoneCode: nil, status: "open")]
+        isAdding = true
+        defer { isAdding = false }
+        do {
+            let saved = try await api.putQuarterGoals(quarter: board.quarter, goals: set)
+            // The PUT answer is the board after the write; a read in flight from before it must not win.
+            readShown = readsSent
+            self.board = saved
+            offlineAsOf = nil
+            errorMessage = nil
+            return true
+        } catch {
+            formError = GoalsFormat.message(for: error)
+            return false
+        }
     }
 
     /// «Открывается чем» of one milestone, read against the statuses of the board on screen.

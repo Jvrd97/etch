@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/216
-// summary: wire types of the goal board — levels with their «⚠ подтверди» lines, milestones with «Открывается чем» as codes, the quarter and its goals as GET /goals answers them, and the body of PATCH /goals/milestones/{code}
+// [review:need-review] PHASE-03/295
+// summary: wire types of the goal board — levels with their «⚠ подтверди» lines, milestones with «Открывается чем» as codes, the quarter and its goals as GET /goals answers them, the body of PATCH /goals/milestones/{code}, and the body of PUT /goals/quarter/{quarter} (the whole set of the quarter's goals) with the refusal that carries the server's reason
 import Foundation
 
 /// One `## Уровень N` block of `goal.md`.
@@ -56,4 +57,23 @@ struct GoalsBoardDTO: Codable, Equatable {
 
 struct MilestonePatchDTO: Encodable, Equatable {
     let status: MilestoneStatus
+}
+
+/// One goal of a quarter as `PUT /goals/quarter/{quarter}` takes it: the server writes the quarter as one set.
+struct QuarterGoalInDTO: Encodable, Equatable {
+    /// Place in the list, 1...5.
+    let ord: Int
+    let textMd: String
+    let milestoneCode: String?
+    let status: String
+}
+
+struct QuarterGoalsPutDTO: Encodable, Equatable {
+    let goals: [QuarterGoalInDTO]
+}
+
+/// A refusal of a write whose body names the reason in the server's own (Russian) words:
+/// 422 for a set the quarter cannot be built from, 409 for a goal a lived day points at.
+enum GoalsWriteError: Error, Equatable {
+    case rejected(status: Int, detail: String)
 }
