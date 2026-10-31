@@ -10,11 +10,13 @@ afterEach(() => {
   cleanup();
 });
 
-function body(date: string, minutes = 0): TaskTimeDay {
+function body(date: string, minutes = 0, today = date): TaskTimeDay {
   return {
     date,
+    today,
     tasks: [{ plan_item_id: 'a', title: 'A', minutes }],
     untasked_minutes: 0,
+    other_linked_minutes: 0,
     long_untasked: [],
     done_without_traces: [],
     commits_checked: false,
@@ -22,8 +24,8 @@ function body(date: string, minutes = 0): TaskTimeDay {
   };
 }
 
-function source(read: TaskTimeSource['read']): TaskTimeSource {
-  return { read, refreshMs: 3_600_000 };
+function source(read: TaskTimeSource['read'], refreshMs = 3_600_000): TaskTimeSource {
+  return { read, refreshMs };
 }
 
 describe('useTaskTime', () => {
@@ -63,5 +65,41 @@ describe('useTaskTime', () => {
     const { result } = renderHook(() => useTaskTime('2026-10-31', '', src));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(result.current).toBeNull();
+  });
+
+  it('does not read again while a mark is being written, only once after', async () => {
+    const reads: string[] = [];
+    const src = source(async (date) => {
+      reads.push(date);
+      return body(date);
+    });
+    const { rerender } = renderHook(({ key }) => useTaskTime('2026-10-31', key, src), {
+      initialProps: { key: '' as string | null },
+    });
+    await waitFor(() => expect(reads.length).toBe(1));
+    rerender({ key: null });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(reads.length).toBe(1);
+    rerender({ key: 'a' });
+    await waitFor(() => expect(reads.length).toBe(2));
+  });
+
+  it('keeps polling on the server today and stops on a past day', async () => {
+    let todayReads = 0;
+    const live = source(async (date) => {
+      todayReads += 1;
+      return body(date, 0, date);
+    }, 10);
+    renderHook(() => useTaskTime('2026-10-31', '', live));
+    await waitFor(() => expect(todayReads).toBeGreaterThan(2));
+
+    let pastReads = 0;
+    const past = source(async (date) => {
+      pastReads += 1;
+      return body(date, 0, '2026-11-02');
+    }, 10);
+    renderHook(() => useTaskTime('2026-10-31', '', past));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(pastReads).toBe(1);
   });
 });

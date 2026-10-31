@@ -6,6 +6,9 @@ import { countable } from '@/lib/plural';
 export const DONE_NO_TRACE_TITLE = 'Отмечено сделанным, следов нет';
 export const LONG_UNTASKED_TITLE = 'Работа вне плана';
 export const SHARE_TITLE = 'Интервалы без задачи';
+export const OTHER_LINKED_TITLE = 'Привязано не к задаче плана';
+export const OTHER_LINKED_NOTE =
+  'Интервалы с номером задачи или ClickUp-задачей: это не пункт плана и не «без задачи».';
 
 const PERCENT = 100;
 
@@ -46,17 +49,22 @@ export function hasTaskTimeSummary(taskTime: TaskTimeDay | null): boolean {
   return (
     taskTime.done_without_traces.length > 0 ||
     taskTime.long_untasked.length > 0 ||
+    taskTime.other_linked_minutes > 0 ||
     taskTime.untasked_share.intervals > 0
   );
 }
 
 /**
- * A string that changes when the set of done marks does, and while a mark is
- * being written. The list of «done, no trace» is read again on each change; the
- * read waits for the write to finish so it does not see the tick before the server does.
+ * A string that changes when the set of done marks does, or null while a mark is
+ * being written. The list of «done, no trace» is read again on each change;
+ * `useTaskTime` keeps the last settled key through a null, so the read happens
+ * once after the write and not in parallel with it.
  */
-export function doneMarksKey(marks: Map<string, { state: string | null }>, saving: Set<string>): string {
-  if (saving.size > 0) return 'saving';
+export function doneMarksKey(
+  marks: Map<string, { state: string | null }>,
+  saving: Set<string>
+): string | null {
+  if (saving.size > 0) return null;
   return [...marks.entries()]
     .filter(([, mark]) => mark.state === 'done')
     .map(([id]) => id)

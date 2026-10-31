@@ -3059,3 +3059,5 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_task_time.py` — new: 15 тестов, включая «число SQL не растёт с числом задач».
 - `frontend/components/agent/TaskTimeBadge.tsx`, `TaskTimeSummary.tsx`, `hooks/useTaskTime.ts`, `lib/task-time.ts` — new; `lib/api.ts`, `components/day/PlanSections.tsx`, `DayScreen.tsx`, `mobile/MobileDayScreen.tsx` — mod (бейдж времени у задачи, блок под Claude Code).
 - Mac (`PanelView.swift`) не тронут: см. тикет.
+
+Круг 2 (PHASE-03/166): интервал через границу суток режется по дню (`crud/task_time.py`, `crud/activity.py::task_time_seconds`); время по задаче считается одним запросом с группировкой по `plan_item_id`; интервалы, привязанные только по `plan_task_id`/`clickup_task_id`, дают поле `other_linked_minutes`; `commits_checked` и `today` в ответе; `MANUAL_APP_NAME` переехал в `crud/activity.py`. Новые тесты в `tests/test_task_time.py` (22 теста). Веб: `useTaskTime` опрашивает только пока день — сегодня и читает один раз после записи отметки; `TaskTimeSummary` показывает `other_linked_minutes`.

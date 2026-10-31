@@ -1,8 +1,8 @@
 'use client';
 // [review:need-review] PHASE-03/166
-// summary: reads the measured time of the day on screen against its plan — once per day and again whenever the set of done marks changes, then every minute while the day is today; an answer for another day is never returned and a failed read leaves the blocks out instead of breaking the day
+// summary: reads the measured time of the day on screen against its plan — once per day and again once a write of a done mark has settled, then every minute only while the day is the server's today; an answer for another day is never returned and a failed read leaves the blocks out instead of breaking the day
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 // A namespace import read at call time, as in `useClaudeUsage`: suites that mock
 // `@/lib/api` with a fixed list of names must still link every screen of the day.
 import * as api from '@/lib/api';
@@ -26,38 +26,49 @@ const API_SOURCE: TaskTimeSource = {
  * The task time of `date`, or null before the first answer, without a date, and
  * after a failed first read.
  *
- * `marksKey` is anything that changes when a task is ticked or unticked: the list
- * of «done without a trace» depends on the marks, and a block that waits a minute
- * to notice a tick looks broken.
+ * `marksKey` changes when a task is ticked or unticked: the list of «done without
+ * a trace» depends on the marks, and a block that waits a minute to notice a tick
+ * looks broken. `null` means a mark is being written; the last settled key stays
+ * in force, so the read comes once after the write.
  */
 export function useTaskTime(
   date: string | null,
-  marksKey: string,
+  marksKey: string | null,
   source: TaskTimeSource = API_SOURCE
 ): TaskTimeDay | null {
   const [taskTime, setTaskTime] = useState<TaskTimeDay | null>(null);
+  const settledKey = useRef(marksKey ?? '');
+  if (marksKey !== null) settledKey.current = marksKey;
+  const key = settledKey.current;
 
   useEffect(() => {
     if (date === null) return;
     let alive = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
     const load = () => {
       // `then`, not a bare call: a source that throws before it returns a promise is caught too.
       Promise.resolve()
         .then(() => source.read(date))
         .then((body) => {
-          if (alive) setTaskTime(body);
+          if (!alive) return;
+          setTaskTime(body);
+          // Only the server's today still grows; the time of a past day is final.
+          if (body.date !== body.today && timer !== null) {
+            clearInterval(timer);
+            timer = null;
+          }
         })
         .catch(() => {
           // Keep what was shown: one lost read is not news about the day.
         });
     };
     load();
-    const timer = setInterval(load, source.refreshMs);
+    timer = setInterval(load, source.refreshMs);
     return () => {
       alive = false;
-      clearInterval(timer);
+      if (timer !== null) clearInterval(timer);
     };
-  }, [date, marksKey, source]);
+  }, [date, key, source]);
 
   return taskTime !== null && taskTime.date === date ? taskTime : null;
 }

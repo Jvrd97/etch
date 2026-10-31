@@ -4447,8 +4447,12 @@ export interface UntaskedShare {
 /** The measured time of one day read against its plan (#166). */
 export interface TaskTimeDay {
   date: string;
+  /** The day the server is in; only that day still grows. */
+  today: string;
   tasks: TaskMinutes[];
   untasked_minutes: number;
+  /** Time tied by `plan_task_id` or a ClickUp id rather than to a plan item; not «без задачи». */
+  other_linked_minutes: number;
   long_untasked: LongUntaskedInterval[];
   done_without_traces: TracelessTask[];
   /** False when no commit list was sent: «следов нет» then means «нет интервалов». */

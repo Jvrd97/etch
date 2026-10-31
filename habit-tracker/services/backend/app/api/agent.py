@@ -1,6 +1,5 @@
 # [review:need-review] PHASE-03/135, PHASE-03/158, PHASE-03/159, PHASE-03/160, PHASE-03/164, PHASE-03/166
-# summary: PHASE-03/166 — the day's constants (`SECONDS_PER_MINUTE`, `MANUAL_APP_NAME`) come from `app.crud.task_time`, the one place both routers read them
-# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges; since #159 the config also names the task the day is on right now and the path of the day page, and answers 304 to a poll whose ETag still matches; since #164 the agent reports itself on POST /agent/heartbeat and the web reads every known agent, with the silent ones marked, on GET /agent/status
+# summary: the agent's HTTP surface — POST /agent/activity takes a batch of intervals (capped at 500, 422 naming the bundle the catalogue does not carry) and runs the role markup for every day it touched so the roles screen does not wait for a manual run, GET /agent/activity/{date} rolls the day up per application, GET /agent/day-mode/{date} says which kind of day it is and who decided, and (since #158) the title rules are read, written, reordered and counted, the kill switch of window titles is flipped, GET /agent/config hands the whole lot to the agent, and (since #160) one interval is corrected in place, a record is typed by hand under an Idempotency-Key, and the day answers with time per task counted as the union of ranges; since #159 the config also names the task the day is on right now and the path of the day page, and answers 304 to a poll whose ETag still matches; since #164 the agent reports itself on POST /agent/heartbeat and the web reads every known agent, with the silent ones marked, on GET /agent/status (since #166 the day constants come from `app.crud.task_time` and `app.crud.activity`, shared with the day router)
 # [review:need-review] PHASE-03/165, PHASE-03/220
 # summary: since #165 POST /agent/claude-sessions takes the session aggregates of Claude Code (counters only, no message text) and GET /agent/claude-sessions lists a range of days; since #220 GET /agent/claude-usage/{date} answers the day's totals for the block on the day screen
 """
@@ -37,9 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.daytime import local_date, now_utc, today_local
 from app.crud import activity as activity_crud
-from app.crud.task_time import MANUAL_APP_NAME, SECONDS_PER_MINUTE
 from app.crud import agent_heartbeat as heartbeat_crud
 from app.crud import claude_session as claude_session_crud
+from app.crud.task_time import SECONDS_PER_MINUTE
 from app.models.activity import ACTIVITY_SOURCE_MANUAL, ActivityInterval
 from app.roles import classify
 from app.schemas import claude_session as claude_session_schemas
@@ -203,7 +202,11 @@ async def get_activity(
         ActivityAppSlice(
             app_id=app_id,
             bundle_id=bundles.get(app_id) if app_id else None,
-            app_name=names.get(app_id, MANUAL_APP_NAME) if app_id else MANUAL_APP_NAME,
+            app_name=(
+                names.get(app_id, activity_crud.MANUAL_APP_NAME)
+                if app_id
+                else activity_crud.MANUAL_APP_NAME
+            ),
             minutes=total // SECONDS_PER_MINUTE,
         )
         for app_id, total in seconds.items()

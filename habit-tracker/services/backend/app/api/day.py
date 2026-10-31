@@ -1557,6 +1557,10 @@ async def get_task_time(
         default=[],
         description="Пункты плана, по которым найдены коммиты; их «сделано» не считается пустым",
     ),
+    commits_checked: bool = Query(
+        default=False,
+        description="Коммиты смотрели, даже если ни одного не нашли: пустой список — не «не смотрели»",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> TaskTimeResponse:
     """
@@ -1565,24 +1569,31 @@ async def get_task_time(
     Время по задаче — длина объединения диапазонов, а не сумма длительностей.
     `done_without_traces` — задачи с отметкой «сделано», у которых нет ни одного
     интервала и (если `commits_checked`) ни одного коммита. Коммиты сервер не
-    видит: список пунктов с коммитами приносит вызывающий, например `/day-close`.
+    видит: список пунктов с коммитами приносит вызывающий, например `/day-close`,
+    и `commits_checked=true` говорит, что он смотрел, даже когда список пуст.
+    Интервал через границу суток считается в каждом дне своей частью.
+    `untasked_share` — всегда последние 30 дней до сегодняшнего дня сервера,
+    а не до `{date}`.
     Читает и не пишет: дня, которого нет, эта ручка не заводит.
     """
+    today = today_local()
     report = await task_time_crud.task_time_report(
-        db, on, today_local(), set(committed_item_id)
+        db, on, today, set(committed_item_id)
     )
     share = report.untasked_share
     return TaskTimeResponse(
         date=on,
         tasks=[TaskMinutes(**vars(row)) for row in report.tasks],
+        today=today,
         untasked_minutes=report.untasked_seconds // SECONDS_PER_MINUTE,
+        other_linked_minutes=report.other_linked_seconds // SECONDS_PER_MINUTE,
         long_untasked=[
             LongUntaskedInterval(**vars(row)) for row in report.long_untasked
         ],
         done_without_traces=[
             TracelessTask(**vars(row)) for row in report.done_without_traces
         ],
-        commits_checked=bool(committed_item_id),
+        commits_checked=commits_checked or bool(committed_item_id),
         untasked_share=UntaskedShareResponse(
             window_days=share.window_days,
             observed_days=share.observed_days,

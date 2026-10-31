@@ -15,8 +15,10 @@ afterEach(() => {
 function day(overrides: Partial<TaskTimeDay> = {}): TaskTimeDay {
   return {
     date: '2026-10-31',
+    today: '2026-10-31',
     tasks: [],
     untasked_minutes: 0,
+    other_linked_minutes: 0,
     long_untasked: [],
     done_without_traces: [],
     commits_checked: false,
@@ -90,6 +92,13 @@ describe('TaskTimeSummary', () => {
     expect(screen.getByText(/45 мин · Safari/)).toBeTruthy();
   });
 
+  it('shows the time tied by another id and says it is neither a plan task nor a gap', () => {
+    render(<TaskTimeSummary taskTime={day({ other_linked_minutes: 90 })} />);
+    expect(screen.getByText('Привязано не к задаче плана')).toBeTruthy();
+    expect(screen.getByText('1 ч 30 мин')).toBeTruthy();
+    expect(screen.getByText(/не пункт плана и не «без задачи»/)).toBeTruthy();
+  });
+
   it('captions a short window with the days it really covers', () => {
     render(
       <TaskTimeSummary
@@ -118,7 +127,7 @@ describe('minutesByItem', () => {
 });
 
 describe('doneMarksKey', () => {
-  it('changes with the done marks only and waits while a mark is being written', () => {
+  it('changes with the done marks only and is null while a mark is being written', () => {
     const marks = new Map([
       ['b', { state: 'done' }],
       ['a', { state: 'done' }],
@@ -126,6 +135,6 @@ describe('doneMarksKey', () => {
       ['d', { state: null }],
     ]);
     expect(doneMarksKey(marks, new Set())).toBe('a,b');
-    expect(doneMarksKey(marks, new Set(['a']))).toBe('saving');
+    expect(doneMarksKey(marks, new Set(['a']))).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/166
-// summary: the day's blocks that read measured time against the plan — tasks ticked done with no interval, untasked stretches of half an hour or more («работа вне плана» in the same hour), and the share of untasked intervals with the days it was really measured over; nothing is drawn when there is nothing to say
+// summary: the day's blocks that read measured time against the plan — tasks ticked done with no interval, untasked stretches of half an hour or more («работа вне плана» in the same hour), time tied by another id than a plan item, and the share of untasked intervals with the days it was really measured over; nothing is drawn when there is nothing to say
 
 import type { TaskTimeDay } from '@/lib/api';
 import { clockRange } from '@/lib/time';
@@ -7,6 +7,8 @@ import { formatMinutes } from '@/lib/day-format';
 import {
   DONE_NO_TRACE_TITLE,
   LONG_UNTASKED_TITLE,
+  OTHER_LINKED_NOTE,
+  OTHER_LINKED_TITLE,
   SHARE_TITLE,
   doneNoTraceNote,
   hasTaskTimeSummary,
@@ -55,6 +57,16 @@ export default function TaskTimeSummary({ taskTime, compact = false }: TaskTimeS
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {taskTime.other_linked_minutes > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-text-primary">{OTHER_LINKED_TITLE}</h3>
+          <p className="mt-1 text-sm text-text-secondary tabular-nums">
+            {formatMinutes(taskTime.other_linked_minutes)}
+          </p>
+          <p className="mt-1 text-xs text-text-secondary">{OTHER_LINKED_NOTE}</p>
         </div>
       )}
 

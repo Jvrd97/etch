@@ -21,7 +21,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.daytime import today_local
+from app.core.daytime import day_bounds, local_date, today_local
 from app.crud import activity as activity_crud
 from app.crud import day as day_crud
 from app.crud import role as role_crud
@@ -114,14 +114,40 @@ async def mark(client: AsyncClient, item: str, state: str | None) -> None:
 
 
 async def task_time(
-    client: AsyncClient, committed: list[str] | None = None
+    client: AsyncClient,
+    committed: list[str] | None = None,
+    *,
+    on: date | None = None,
+    commits_checked: bool | None = None,
 ) -> dict[str, Any]:
+    params: dict[str, Any] = {"committed_item_id": committed or []}
+    if commits_checked is not None:
+        params["commits_checked"] = commits_checked
     response = await client.get(
-        f"{DAY_URL}/{TODAY.isoformat()}/task-time",
-        params={"committed_item_id": committed or []},
+        f"{DAY_URL}/{(on or TODAY).isoformat()}/task-time", params=params
     )
     assert response.status_code == 200, response.text
     return dict(response.json())
+
+
+def row_of(
+    start: datetime,
+    end: datetime,
+    *,
+    item: uuid.UUID | None = None,
+    plan_task_id: int | None = None,
+    clickup_task_id: str | None = None,
+) -> ActivityInterval:
+    """An interval written straight to the table, for the shapes the API refuses to make."""
+    return ActivityInterval(
+        source="manual",
+        started_at=start,
+        ended_at=end,
+        local_date=local_date(start),
+        plan_item_id=item,
+        plan_task_id=plan_task_id,
+        clickup_task_id=clickup_task_id,
+    )
 
 
 def traceless_ids(body: dict[str, Any]) -> set[str]:
@@ -179,6 +205,17 @@ class TestDoneWithoutTraces:
         assert body["done_without_traces"] == []
         assert body["commits_checked"] is True
 
+    async def test_checked_commits_with_none_found_is_not_the_same_as_not_looking(
+        self, client: AsyncClient
+    ) -> None:
+        items = await store_plan(client, "A")
+        await mark(client, items["A"], "done")
+
+        body = await task_time(client, commits_checked=True)
+
+        assert body["commits_checked"] is True
+        assert traceless_ids(body) == {items["A"]}
+
     async def test_without_a_commit_list_the_answer_says_commits_were_not_looked_at(
         self, client: AsyncClient
     ) -> None:
@@ -209,6 +246,118 @@ class TestDoneWithoutTraces:
         await mark(client, items["A"], None)
 
         assert (await task_time(client))["done_without_traces"] == []
+
+
+class TestDayBoundary:
+    async def test_an_interval_across_midnight_is_split_between_the_two_days(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """One hour before the boundary and one after are 60 and 60, never 120 and 120."""
+        boundary = day_bounds(TODAY)[0]
+        db_session.add(
+            row_of(boundary - timedelta(hours=1), boundary + timedelta(hours=1))
+        )
+        await db_session.commit()
+
+        today = await task_time(client)
+        yesterday = await task_time(client, on=TODAY - timedelta(days=1))
+
+        assert today["untasked_minutes"] == 60
+        assert yesterday["untasked_minutes"] == 60
+        assert [row["minutes"] for row in today["long_untasked"]] == [60]
+        assert [row["minutes"] for row in yesterday["long_untasked"]] == [60]
+
+    async def test_a_piece_under_half_an_hour_after_the_cut_is_not_work_outside_the_plan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        boundary = day_bounds(TODAY)[0]
+        db_session.add(
+            row_of(boundary - timedelta(hours=1), boundary + timedelta(minutes=10))
+        )
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert body["untasked_minutes"] == 10
+        assert body["long_untasked"] == []
+
+    async def test_the_agent_day_roll_up_cuts_the_same_way(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        boundary = day_bounds(TODAY)[0]
+        db_session.add(
+            row_of(boundary - timedelta(hours=1), boundary + timedelta(hours=1))
+        )
+        await db_session.commit()
+
+        response = await client.get(f"{AGENT_URL}/activity/{TODAY.isoformat()}")
+
+        assert response.json()["untasked_minutes"] == 60
+
+
+class TestOneTaskInManyGroups:
+    async def test_the_same_task_with_and_without_a_clickup_id_is_one_row(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """10:00-11:00 on X and 10:30-11:30 on X with a ClickUp id are 90 minutes of X."""
+        items = await store_plan(client, "A")
+        item = uuid.UUID(items["A"])
+        db_session.add(row_of(at(10), at(11), item=item))
+        db_session.add(
+            row_of(at(10, 30), at(11, 30), item=item, clickup_task_id="86abc")
+        )
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert [(row["plan_item_id"], row["minutes"]) for row in body["tasks"]] == [
+            (items["A"], 90)
+        ]
+        assert body["other_linked_minutes"] == 0
+
+
+class TestOtherLinks:
+    async def test_time_tied_only_by_a_numeric_or_clickup_id_is_not_lost(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The editor of `#160` writes `plan_task_id`; that hour belongs to no plan item and no gap."""
+        items = await store_plan(client, "A")
+        db_session.add(row_of(at(9), at(10), item=uuid.UUID(items["A"])))
+        db_session.add(row_of(at(11), at(12), plan_task_id=5))
+        db_session.add(row_of(at(13), at(13, 30), clickup_task_id="86abc"))
+        db_session.add(row_of(at(15), at(15, 20)))
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert body["other_linked_minutes"] == 90
+        assert body["untasked_minutes"] == 20
+        assert [row["minutes"] for row in body["tasks"]] == [60]
+        assert body["long_untasked"] == []
+
+    async def test_the_three_figures_add_up_to_the_time_measured(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        items = await store_plan(client, "A", "B")
+        boundary = day_bounds(TODAY)[0]
+        db_session.add(row_of(at(9), at(10), item=uuid.UUID(items["A"])))
+        db_session.add(row_of(at(10, 30), at(11), item=uuid.UUID(items["B"])))
+        db_session.add(row_of(at(12), at(12, 45), plan_task_id=7))
+        db_session.add(row_of(at(14), at(14, 40)))
+        db_session.add(
+            row_of(boundary - timedelta(minutes=30), boundary + timedelta(minutes=30))
+        )
+        await db_session.commit()
+        body = await task_time(client)
+
+        total = (
+            sum(row["minutes"] for row in body["tasks"])
+            + body["untasked_minutes"]
+            + body["other_linked_minutes"]
+        )
+        # 60 + 30 on the two tasks, 45 on a numeric id, 40 on nothing, and the
+        # 30 minutes of the overnight record that fall after the cut.
+        assert total == 60 + 30 + 45 + 40 + 30
 
 
 class TestWorkOutsideThePlan:

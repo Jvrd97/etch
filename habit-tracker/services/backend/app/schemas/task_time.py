@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date as date_type
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -52,9 +53,19 @@ class UntaskedShareResponse(BaseModel):
 
 
 class TaskTimeResponse(BaseModel):
-    date: date
+    date: date_type
     tasks: list[TaskMinutes]
+    today: date_type = Field(
+        description="День сервера: только он ещё растёт, и только его экран перечитывает"
+    )
     untasked_minutes: int
+    other_linked_minutes: int = Field(
+        description=(
+            "Время интервалов, привязанных не к пункту плана, а по `plan_task_id` или "
+            "`clickup_task_id` (так пишет редактор интервала). Не «без задачи» и не "
+            "«задача дня»; вместе с `tasks` и `untasked_minutes` даёт замеренное время дня"
+        )
+    )
     long_untasked: list[LongUntaskedInterval]
     done_without_traces: list[TracelessTask]
     commits_checked: bool = Field(
