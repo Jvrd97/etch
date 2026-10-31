@@ -3056,3 +3056,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `tests/test_health_sleep.py`, `tests/test_health_sleep_api.py` — mod: сессия через 18:00, обрезанная ночь, замена обрезанной целой, рост запросов от числа ночей, отбой на часах подъёма в ночь перевода часов.
 - `frontend/components/health/useSleepNights.ts` и `SleepSection.test.tsx` — mod: ошибка чтения сна логируется через `console.warn`.
 - iOS-часть (запас чтения в насосе) не сделана, вынесена в #282.
+
+## 2026-10-31 — PHASE-03/285: бэкенд-гейт на всех ядрах (pytest-xdist)
+
+Тронуто 7 файлов (3 `new`/`mod` кода, 4 прочих), миграций нет.
+
+- `tests/conftest.py` — mod: `worker_database_url` даёт воркеру xdist базу `<имя>_gwN`; `pytest_sessionstart` создаёт её (без права `CREATE DATABASE` — `pytest.exit` с понятным текстом), `pytest_sessionfinish` удаляет. Без xdist (`-p no:xdist`, один процесс, контроллер) URL не меняется. Схему создавать не нужно: `db_session` и так делает `drop_all`/`create_all` перед каждым тестом.
+- `tests/test_xdist_databases.py` — new: имя базы воркера, прежний URL без воркера, пароль со спецсимволами, движок процесса совпадает с воркером.
+- `Makefile` — mod: цель `test-fast` (`pytest -n auto`), `make test` остался последовательным.
+- `pyproject.toml`, `uv.lock` — mod: `pytest-xdist==3.6.1` (и `execnet`) в dev.
+- `../../README.md` — mod: строка про `make test-fast`.

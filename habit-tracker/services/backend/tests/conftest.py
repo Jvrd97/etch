@@ -2,16 +2,18 @@
 Test configuration and fixtures.
 """
 
-# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120, PHASE-03/218
-# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of today's quarter (computed, not frozen as `2026-Q3` — `#218`) in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons
+# [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120, PHASE-03/218, PHASE-03/285
+# summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of today's quarter (computed, not frozen as `2026-Q3` — `#218`) in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons; under pytest-xdist each worker gets its own database (`<name>_gw0`, ...) created at session start and dropped at its end (PHASE-03/285)
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
 from datetime import date
 from typing import Any
 
+import asyncpg
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -31,6 +33,25 @@ TEST_DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://habit_user:habit_pass@postgres:5432/habit_tracker_test",
 )
 
+# xdist sets this in every worker process before conftest is imported; it is
+# absent in a single-process run, with `-p no:xdist` and in the xdist controller.
+XDIST_WORKER_ENV = "PYTEST_XDIST_WORKER"
+MAINTENANCE_DATABASE = "postgres"
+
+
+def worker_database_url(base_url: str, worker: str | None) -> str:
+    """Give each xdist worker its own database: `<name>_<worker>`; no worker, no change."""
+    if not worker:
+        return base_url
+    url = make_url(base_url)
+    return url.set(database=f"{url.database}_{worker}").render_as_string(
+        hide_password=False
+    )
+
+
+WORKER = os.environ.get(XDIST_WORKER_ENV)
+TEST_DATABASE_URL = worker_database_url(TEST_DATABASE_URL, WORKER)
+
 # API key used by all tests; injected into settings and client headers
 TEST_API_KEY = "test-api-key-for-tests-only"
 
@@ -45,6 +66,56 @@ TestSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+async def _run_database_statement(url: str, statement: str) -> None:
+    """Run one DDL statement on the server's maintenance database."""
+    parsed = make_url(url)
+    connection = await asyncpg.connect(
+        host=parsed.host,
+        port=parsed.port,
+        user=parsed.username,
+        password=parsed.password,
+        database=MAINTENANCE_DATABASE,
+    )
+    try:
+        await connection.execute(statement)
+    finally:
+        await connection.close()
+
+
+def _database_statement(statement: str) -> None:
+    # A private loop: the session loop of pytest-asyncio does not exist yet here.
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run_database_statement(TEST_DATABASE_URL, statement))
+    finally:
+        loop.close()
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Create this xdist worker's database; fail loudly instead of sharing one."""
+    if not WORKER:
+        return
+    name = make_url(TEST_DATABASE_URL).database
+    try:
+        _database_statement(f'CREATE DATABASE "{name}"')
+    except asyncpg.DuplicateDatabaseError:
+        pass  # left by an interrupted run; the schema is rebuilt before every test
+    except asyncpg.InsufficientPrivilegeError as error:
+        pytest.exit(
+            f"xdist worker {WORKER} needs CREATE DATABASE for its own database "
+            f"{name!r}: grant it to the test role or run without -n ({error})",
+            returncode=3,
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Drop this xdist worker's database."""
+    if not WORKER:
+        return
+    name = make_url(TEST_DATABASE_URL).database
+    _database_statement(f'DROP DATABASE IF EXISTS "{name}"')
 
 
 @pytest.fixture(scope="session")

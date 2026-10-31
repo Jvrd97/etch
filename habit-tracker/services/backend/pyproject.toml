@@ -48,6 +48,7 @@ dev = [
     "ruff>=0.4",
     "asyncpg-stubs>=0.29",
     "types-PyYAML>=6.0",
+    "pytest-xdist==3.6.1",
 ]
 
 [tool.uv]
