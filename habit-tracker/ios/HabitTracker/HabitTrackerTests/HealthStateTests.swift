@@ -57,6 +57,14 @@ private final class MockHealthStateAPI: HealthStateAPI {
     func fetchHealthState() async throws -> HealthStateResponseDTO { try await handler() }
 }
 
+private final class AskedCounter {
+    private(set) var provided = 0
+    func provide() -> HealthStateAPI? {
+        provided += 1
+        return nil
+    }
+}
+
 @MainActor
 final class HealthStateModelTests: XCTestCase {
     /// 2026-10-29 12:00 UTC.
@@ -89,6 +97,39 @@ final class HealthStateModelTests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.state, .loaded)
         XCTAssertNil(model.healthState)
+    }
+
+    func testACachedIndexCarriesItsMomentAndAFreshOneDoesNot() async {
+        let store = InMemoryCacheStore()
+        let score = HealthScoreDTO(value: 70, label: "good", basisDays: 7)
+        let online = HealthMetricsViewModel(
+            apiProvider: { MockHealthMetricsAPI() }, stateAPIProvider: { MockHealthStateAPI { self.answer(score) } },
+            cacheStore: store, now: { self.moment }, calendar: calendar
+        )
+        await online.load()
+        XCTAssertNil(online.healthStateAsOf)
+
+        let later = moment.addingTimeInterval(3600)
+        let offline = HealthMetricsViewModel(
+            apiProvider: { MockHealthMetricsAPI() },
+            stateAPIProvider: { MockHealthStateAPI { throw APIClientError.transport(code: -1009) } },
+            cacheStore: store, now: { later }, calendar: calendar
+        )
+        await offline.load()
+        XCTAssertEqual(offline.healthState, score)
+        XCTAssertEqual(offline.healthStateAsOf, moment, "shown as of the moment it was read, not as today's")
+    }
+
+    func testWithoutAStateSourceNothingIsAsked() async {
+        let asked = AskedCounter()
+        let model = HealthMetricsViewModel(
+            apiProvider: { MockHealthMetricsAPI() }, stateAPIProvider: { asked.provide() },
+            cacheStore: InMemoryCacheStore(), now: { self.moment }, calendar: calendar
+        )
+        await model.load()
+        XCTAssertEqual(asked.provided, 1)
+        XCTAssertNil(model.healthState)
+        XCTAssertNil(model.healthStateAsOf)
     }
 
     func testWithoutAStateSourceTheCardIsAbsent() async {

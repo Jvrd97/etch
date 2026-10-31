@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/305
-// summary: the five cards of the Health tab on `Card` — «Состояние сегодня» (server index in a two-arc ring), steps and energy tiles with a mini sparkline, «Сон по ночам», «Отклонение от вашей нормы», «Тренировки» for 30 days; every card has its own empty line, colours never carry a meaning alone, layouts fall back to one column at accessibility sizes
+// summary: the five cards of the Health tab on `Card` — «Состояние сегодня» (the server index in a ring, cached one marked as not updated), steps and energy tiles with a mini sparkline, «Сон по ночам», «Отклонение от вашей нормы», «Тренировки» for 30 days; every card has its own empty line, colours never carry a meaning alone, layouts fall back to one column at accessibility sizes
 import SwiftUI
 
 private extension View {
@@ -12,13 +12,17 @@ private extension View {
     }
 }
 
+private enum LegendMetrics {
+    static let dot: CGFloat = 8
+}
+
 private struct LegendDot: View {
     let color: Color
     let text: String
 
     var body: some View {
         HStack(spacing: DS.Spacing.xs) {
-            Circle().fill(color).frame(width: 8, height: 8)
+            Circle().fill(color).frame(width: LegendMetrics.dot, height: LegendMetrics.dot)
             Text(text).font(.caption).foregroundStyle(DS.Palette.textSecondary)
         }
         .accessibilityElement(children: .combine)
@@ -29,11 +33,11 @@ private struct LegendDot: View {
 
 struct HealthStateCard: View {
     let score: HealthScoreDTO
-    let metrics: [HealthMetricSeriesDTO]
+    /// Set when the index is the cached one: it is then marked as not updated.
+    let staleSince: Date?
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        let share = HealthOverview.normShare(metrics)
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 Text(HealthOverview.stateTitle).cardTitle()
@@ -43,7 +47,6 @@ struct HealthStateCard: View {
                 layout {
                     HealthStateRing(
                         index: score.value.map { Double($0) / Double(HealthOverview.indexScale) },
-                        norm: share.fraction,
                         centerText: score.value.map(String.init) ?? "—"
                     )
                     VStack(alignment: .leading, spacing: DS.Spacing.xs) {
@@ -58,28 +61,27 @@ struct HealthStateCard: View {
                                 .foregroundStyle(HealthPalette.lime)
                             Text(HealthOverview.basisText(score.basisDays)).secondaryNote()
                         } else {
-                            Text(HealthOverview.stateTooLittleText).secondaryNote()
+                            Text(HealthOverview.stateEmptyText(basisDays: score.basisDays)).secondaryNote()
                         }
-                        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                            LegendDot(color: HealthPalette.lime, text: "Индекс состояния")
-                            if share.judged > 0 {
-                                LegendDot(color: HealthPalette.sky, text: "В норме: \(share.inNorm) из \(share.judged) метрик")
-                            }
+                        if let staleSince {
+                            Text(HealthOverview.staleStateText(staleSince))
+                                .font(.caption).foregroundStyle(HealthPalette.amber)
                         }
-                        .padding(.top, DS.Spacing.xs)
                     }
                 }
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.spoken(score, share: share))
+        .accessibilityLabel(Self.spoken(score, staleSince: staleSince))
     }
 
-    static func spoken(_ score: HealthScoreDTO, share: HealthOverview.NormShare) -> String {
-        guard let value = score.value else { return "\(HealthOverview.stateTitle). \(HealthOverview.stateTooLittleText)" }
+    static func spoken(_ score: HealthScoreDTO, staleSince: Date?) -> String {
+        let stale = staleSince.map { ". \(HealthOverview.staleStateText($0))" } ?? ""
+        guard let value = score.value else {
+            return "\(HealthOverview.stateTitle). \(HealthOverview.stateEmptyText(basisDays: score.basisDays))\(stale)"
+        }
         let word = HealthOverview.stateWord(score.label).map { "\($0). " } ?? ""
-        let norm = share.judged > 0 ? ". В норме \(share.inNorm) из \(share.judged) метрик" : ""
-        return "\(HealthOverview.stateTitle). \(word)\(HealthOverview.indexText(value)), \(HealthOverview.basisText(score.basisDays))\(norm)"
+        return "\(HealthOverview.stateTitle). \(word)\(HealthOverview.indexText(value)), \(HealthOverview.basisText(score.basisDays))\(stale)"
     }
 }
 
@@ -210,27 +212,20 @@ private struct FlowLegend<Content: View>: View {
 
 struct HealthDeviationCard: View {
     let metrics: [HealthMetricSeriesDTO]
-
-    private static func toneWord(_ tone: HealthTone) -> String {
-        switch tone {
-        case .better: return "лучше нормы"
-        case .worse: return "хуже нормы"
-        case .same: return "как обычно"
-        }
-    }
+    let today: String
 
     var body: some View {
-        let bars = HealthOverview.deviationBars(metrics)
+        let bars = HealthOverview.deviationBars(metrics, today: today)
         Card {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 Text("Отклонение от вашей нормы").cardTitle()
                 if bars.isEmpty {
-                    Text("Личная норма считается, когда накопилось хотя бы 7 дней данных.").secondaryNote()
+                    Text(HealthOverview.normEmptyText).secondaryNote()
                 } else {
                     ForEach(bars) { bar in
                         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                             Text(bar.title).font(.subheadline.weight(.medium)).foregroundStyle(DS.Palette.textPrimary)
-                            Text("\(bar.text) · \(Self.toneWord(bar.tone))")
+                            Text(bar.caption)
                                 .font(.caption).foregroundStyle(HealthPalette.color(bar.tone))
                             HealthDeviationBar(share: bar.share, tone: bar.tone)
                         }
@@ -239,6 +234,7 @@ struct HealthDeviationCard: View {
                     FlowLegend {
                         LegendDot(color: HealthPalette.lime, text: "Лучше нормы")
                         LegendDot(color: HealthPalette.amber, text: "Хуже нормы")
+                        LegendDot(color: DS.Palette.textSecondary, text: "В пределах нормы")
                     }
                     Text("Полоса — до \(Int(HealthOverview.deviationAxis * 100)) % от вашей обычной величины в каждую сторону.").secondaryNote()
                 }

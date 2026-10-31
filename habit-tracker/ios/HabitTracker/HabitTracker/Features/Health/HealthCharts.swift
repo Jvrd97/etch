@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/305
-// summary: the drawing of the Health screen in SwiftUI shapes without a chart library — the two-arc ring, the mini sparkline with an area (a day without data breaks the line), the seven-night sleep columns, and the bar around zero for a deviation; sizes scale with Dynamic Type, every chart is read aloud as words
+// summary: the drawing of the Health screen in SwiftUI shapes without a chart library — the server-index ring, the mini sparkline with an area (a day without data breaks the line), the seven-night sleep columns, and the bar around zero for a deviation; sizes scale with Dynamic Type, every chart is read aloud as words
 import SwiftUI
 
 /// Colours of the Health screen. The owner's mock-up fixed these three; the app's own lime in `DS.Palette` is a shade apart.
@@ -19,44 +19,63 @@ enum HealthPalette {
     }
 }
 
-/// Two concentric arcs from twelve o'clock: the outer is the server's index, the inner is the share of key metrics not worse than their norm.
+/// Sizes and strengths the charts share, named once.
+private enum Drawing {
+    static let sparklineInset: CGFloat = 3
+    static let sparklineLine: CGFloat = 2
+    static let sparklineLoneDot: CGFloat = 4
+    static let sparklineLastDot: CGFloat = 6
+    static let areaTopOpacity = 0.35
+    /// A column never grows taller than this, however large the text is set.
+    static let sleepChartMaxHeight: CGFloat = 180
+    static let sleepBarRadius: CGFloat = 6
+    static let sleepStageGap: CGFloat = 1
+    static let sleepGapMarkHeight: CGFloat = 3
+    static let deviationBarHeight: CGFloat = 10
+    static let deviationAxisWidth: CGFloat = 2
+    static let deviationAxisOverhang: CGFloat = 8
+    static let deviationAxisOpacity = 0.7
+}
+
+/// The server's index as one ring from twelve o'clock. The lime-to-sky run along the arc is only decoration: it carries no second number.
 struct HealthStateRing: View {
     /// 0...1; `nil` draws an empty track.
     let index: Double?
-    let norm: Double?
     let centerText: String
 
     @ScaledMetric(relativeTo: .title) private var side: CGFloat = 112
-    private let outerWidth: CGFloat = 12
-    private let innerWidth: CGFloat = 8
-    private let gap: CGFloat = 6
+    private let ringWidth: CGFloat = 14
 
     var body: some View {
         ZStack {
-            arc(share: index, color: HealthPalette.lime, width: outerWidth)
-            arc(share: norm, color: HealthPalette.sky, width: innerWidth)
-                .padding(outerWidth / 2 + gap + innerWidth / 2)
+            Circle().stroke(HealthPalette.track, lineWidth: ringWidth)
+            if let index, index > 0 {
+                let share = min(index, 1)
+                Circle()
+                    .trim(from: 0, to: share)
+                    .stroke(
+                        AngularGradient(
+                            // Lime at both ends of the circle keeps the round caps of the arc one colour with their neighbours.
+                            stops: [
+                                .init(color: HealthPalette.lime, location: 0),
+                                .init(color: HealthPalette.sky, location: share),
+                                .init(color: HealthPalette.lime, location: 1),
+                            ],
+                            center: .center
+                        ),
+                        style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+            }
             Text(centerText)
                 .font(.system(.title, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(DS.Palette.textPrimary)
                 .minimumScaleFactor(0.5)
         }
-        .padding(outerWidth / 2)
+        .padding(ringWidth / 2)
         .frame(width: side, height: side)
         .accessibilityHidden(true)
-    }
-
-    private func arc(share: Double?, color: Color, width: CGFloat) -> some View {
-        ZStack {
-            Circle().stroke(HealthPalette.track, lineWidth: width)
-            if let share, share > 0 {
-                Circle()
-                    .trim(from: 0, to: min(share, 1))
-                    .stroke(color, style: StrokeStyle(lineWidth: width, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-        }
     }
 }
 
@@ -72,7 +91,7 @@ struct HealthMiniSparkline: View {
             guard let low = values.min(), let high = values.max(), points.count > 1 else { return }
             let span = high - low
             let step = size.width / CGFloat(points.count - 1)
-            let inset: CGFloat = 3
+            let inset = Drawing.sparklineInset
             func location(_ index: Int, _ value: Double) -> CGPoint {
                 // A flat line sits in the middle rather than on the floor.
                 let share = span == 0 ? 0.5 : (value - low) / span
@@ -83,7 +102,8 @@ struct HealthMiniSparkline: View {
                 defer { run.removeAll() }
                 guard let first = run.first, let last = run.last else { return }
                 if run.count == 1 {
-                    context.fill(Path(ellipseIn: CGRect(x: first.x - 2, y: first.y - 2, width: 4, height: 4)), with: .color(color))
+                    let dot = Drawing.sparklineLoneDot
+                    context.fill(Path(ellipseIn: CGRect(x: first.x - dot / 2, y: first.y - dot / 2, width: dot, height: dot)), with: .color(color))
                     return
                 }
                 var line = Path()
@@ -93,10 +113,10 @@ struct HealthMiniSparkline: View {
                 area.addLine(to: CGPoint(x: first.x, y: size.height))
                 area.closeSubpath()
                 context.fill(area, with: .linearGradient(
-                    Gradient(colors: [color.opacity(0.35), color.opacity(0)]),
+                    Gradient(colors: [color.opacity(Drawing.areaTopOpacity), color.opacity(0)]),
                     startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)
                 ))
-                context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: Drawing.sparklineLine, lineCap: .round, lineJoin: .round))
             }
             for (index, point) in points.enumerated() {
                 if let value = point { run.append(location(index, value)) } else { flush() }
@@ -104,7 +124,8 @@ struct HealthMiniSparkline: View {
             flush()
             if let lastIndex = points.lastIndex(where: { $0 != nil }), let value = points[lastIndex] {
                 let spot = location(lastIndex, value)
-                context.fill(Path(ellipseIn: CGRect(x: spot.x - 3, y: spot.y - 3, width: 6, height: 6)), with: .color(color))
+                let dot = Drawing.sparklineLastDot
+                context.fill(Path(ellipseIn: CGRect(x: spot.x - dot / 2, y: spot.y - dot / 2, width: dot, height: dot)), with: .color(color))
             }
         }
         .frame(height: height)
@@ -115,10 +136,11 @@ struct HealthMiniSparkline: View {
 /// Seven columns, one per night: deep + REM in blue over light sleep in grey, the best night in lime alone.
 struct HealthSleepColumns: View {
     let bars: [HealthOverview.SleepBar]
-    @ScaledMetric(relativeTo: .body) private var chartHeight: CGFloat = 120
+    @ScaledMetric(relativeTo: .body) private var scaledHeight: CGFloat = 120
+    private var chartHeight: CGFloat { min(scaledHeight, Drawing.sleepChartMaxHeight) }
     /// The axis never drops under eight hours, so a short week does not look like a full one.
     private static let minimumAxisMinutes = 480.0
-    private let radius: CGFloat = 6
+    private let radius = Drawing.sleepBarRadius
 
     var body: some View {
         let axis = max(Self.minimumAxisMinutes, bars.map(\.totalMin).max() ?? 0)
@@ -148,7 +170,7 @@ struct HealthSleepColumns: View {
                         .fill(HealthPalette.lime)
                         .frame(height: chartHeight * bar.totalMin / axis)
                 } else {
-                    VStack(spacing: 1) {
+                    VStack(spacing: Drawing.sleepStageGap) {
                         if bar.deepRemMin > 0 {
                             Rectangle().fill(HealthPalette.sky).frame(height: chartHeight * bar.deepRemMin / axis)
                         }
@@ -160,7 +182,7 @@ struct HealthSleepColumns: View {
         } else {
             VStack {
                 Spacer(minLength: 0)
-                Capsule().fill(HealthPalette.track).frame(height: 3)
+                Capsule().fill(HealthPalette.track).frame(height: Drawing.sleepGapMarkHeight)
             }
         }
     }
@@ -177,7 +199,7 @@ struct HealthSleepColumns: View {
 struct HealthDeviationBar: View {
     let share: Double
     let tone: HealthTone
-    private let barHeight: CGFloat = 10
+    private let barHeight = Drawing.deviationBarHeight
 
     var body: some View {
         GeometryReader { proxy in
@@ -190,9 +212,9 @@ struct HealthDeviationBar: View {
                     .frame(width: max(length, tone == .same ? 0 : barHeight / 2))
                     .offset(x: share >= 0 ? half : half - length)
                 Rectangle()
-                    .fill(DS.Palette.textPrimary.opacity(0.7))
-                    .frame(width: 2, height: barHeight + 8)
-                    .offset(x: half - 1)
+                    .fill(DS.Palette.textPrimary.opacity(Drawing.deviationAxisOpacity))
+                    .frame(width: Drawing.deviationAxisWidth, height: barHeight + Drawing.deviationAxisOverhang)
+                    .offset(x: half - Drawing.deviationAxisWidth / 2)
             }
             .frame(height: proxy.size.height)
         }

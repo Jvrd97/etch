@@ -94,13 +94,13 @@ extension HealthMetricsView {
     fileprivate var overview: some View {
         VStack(spacing: DS.Spacing.md) {
             if let score = viewModel.healthState {
-                HealthStateCard(score: score, metrics: viewModel.metrics)
+                HealthStateCard(score: score, staleSince: viewModel.healthStateAsOf)
             }
             HealthTilesRow(metrics: viewModel.metrics, today: viewModel.today)
             if let nights = viewModel.nights {
                 HealthSleepChartCard(nights: nights, today: viewModel.today, onAllNights: { showsAllNights = true })
             }
-            HealthDeviationCard(metrics: viewModel.metrics)
+            HealthDeviationCard(metrics: viewModel.metrics, today: viewModel.today)
             if let workouts = viewModel.workouts {
                 HealthWorkoutsCard(workouts: workouts)
             }

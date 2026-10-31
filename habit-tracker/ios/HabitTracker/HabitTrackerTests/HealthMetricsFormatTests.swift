@@ -78,12 +78,6 @@ final class HealthMetricsFormatTests: XCTestCase {
         XCTAssertEqual(HealthMetricsFormat.wallClock("2026-10-29T23:40:00-04:00"), "23:40")
         XCTAssertEqual(HealthMetricsFormat.workoutDistance(7200), "7,2 км")
         XCTAssertEqual(HealthMetricsFormat.workoutDistance(850), "850 м")
-        let workout = HealthWorkoutRecordDTO(
-            id: "w", activityType: "running", activityLabel: "Бег", date: "2026-10-29",
-            start: "2026-10-29T18:00:00+03:00", end: "2026-10-29T18:40:00+03:00", durationMin: 40,
-            energyKcal: 320.4, distanceM: 7200, avgHeartRate: nil, maxHeartRate: 171
-        )
-        XCTAssertEqual(HealthMetricsFormat.workoutDetails(workout), ["7,2 км", "320 ккал", "макс. 171"])
     }
 
     func testSleepStagesLeaveZeroRowsOut() {

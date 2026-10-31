@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/305
-// summary: what the Health screen draws out of data it already holds — the words of the server's index, tone of a deviation by the direction of «better», the share of key metrics not worse than the metric's own norm, deviation bars around zero, seven-night sleep bars (a missing night stays a gap) with the best night, tiles with a gap-keeping line, workouts grouped by type with only the numbers HealthKit held; no formula of the index lives here
+// summary: what the Health screen draws out of data it already holds — the words of the server's index, tone of a deviation by the direction of «better» and only outside the metric's usual range (the server's outsideTypical), deviation bars around zero, seven-night sleep bars (a missing night stays a gap) with the best night, tiles with a gap-keeping line, workouts grouped by type with only the numbers HealthKit held; no formula of the index lives here
 import Foundation
 
 /// Whether a value against the norm is good news; drives the colour and never stands alone: a word always goes beside it.
@@ -25,11 +25,25 @@ enum HealthOverview {
 
     static func isHigherBetter(_ identifier: String) -> Bool? { higherIsBetter[identifier] }
 
-    /// A deviation that prints as «как обычно» is neither good nor bad.
-    static func tone(deviation: Double, higherIsBetter: Bool) -> HealthTone {
-        let rounded = (deviation * 10).rounded() / 10
-        if rounded == 0 { return .same }
-        return (rounded > 0) == higherIsBetter ? .better : .worse
+    /// Good news or bad only outside the metric's usual range (the server's `outsideTypical`); inside it the day is simply normal.
+    /// Outside, the side the value left to decides: a lower resting pulse is better, a higher one worse.
+    static func tone(_ baseline: HealthBaselineDTO, higherIsBetter: Bool) -> HealthTone {
+        guard baseline.outsideTypical, baseline.deviation != 0 else { return .same }
+        return (baseline.deviation > 0) == higherIsBetter ? .better : .worse
+    }
+
+    static func toneWord(_ tone: HealthTone) -> String {
+        switch tone {
+        case .better: return "лучше нормы"
+        case .worse: return "хуже нормы"
+        case .same: return "в пределах нормы"
+        }
+    }
+
+    /// The deviation of a metric, with the day it is about when that is not `shownDay` (a cumulative metric's norm is read for the last full day).
+    private static func deviationText(_ metric: HealthMetricSeriesDTO, _ baseline: HealthBaselineDTO, shownDay: String) -> String {
+        let text = HealthMetricsFormat.deviationText(baseline, identifier: metric.identifier, unit: metric.canonicalUnit)
+        return baseline.day == shownDay ? text : "\(HealthMetricsFormat.dayLabel(baseline.day)): \(text)"
     }
 
     // MARK: State card
@@ -48,8 +62,20 @@ enum HealthOverview {
     static func indexText(_ value: Int) -> String { "\(value) из \(indexScale)" }
 
     static let stateTitle = "Состояние сегодня"
-    /// The server holds the index back under three days of data.
-    static let stateTooLittleText = "Данных мало: индекс считается, когда набралось хотя бы три дня."
+    /// The server holds the index back under this many days of data.
+    static let minimumIndexDays = 3
+
+    /// Why there is no index: too few days synced, or enough days but no personal norm yet.
+    static func stateEmptyText(basisDays: Int) -> String {
+        basisDays < minimumIndexDays
+            ? "Данных пока мало: синхронизируйте телефон"
+            : "Личная норма ещё не набралась: нужно больше дней данных"
+    }
+
+    /// The index came from the read cache because the server did not answer.
+    static func staleStateText(_ date: Date, timeZone: TimeZone = .current) -> String {
+        "Не обновлено · по данным на \(HealthMetricsFormat.asOfText(date, timeZone: timeZone))"
+    }
 
     /// «по 7 дням» — the days the server counted the index on.
     static func basisText(_ days: Int) -> String {
@@ -57,41 +83,34 @@ enum HealthOverview {
         return "по \(days) \(one ? "дню" : "дням")"
     }
 
-    struct NormShare: Equatable {
-        let inNorm: Int
-        let judged: Int
-        var fraction: Double? { judged == 0 ? nil : Double(inNorm) / Double(judged) }
-    }
-
-    /// Of the key metrics that have a norm of their own: how many are not worse than it today.
-    static func normShare(_ metrics: [HealthMetricSeriesDTO]) -> NormShare {
-        var inNorm = 0
-        var judged = 0
-        for metric in metrics {
-            guard let better = higherIsBetter[metric.identifier], let baseline = metric.baseline else { continue }
-            judged += 1
-            if tone(deviation: baseline.deviation, higherIsBetter: better) != .worse { inNorm += 1 }
-        }
-        return NormShare(inNorm: inNorm, judged: judged)
-    }
-
     // MARK: Deviation bars
 
     /// Half of the bar axis, as a share of the metric's own norm: a bar that long is a fifth above or below it.
     static let deviationAxis = 0.2
 
+    /// Days of data a personal norm needs on the server (`app.health.baseline`).
+    static let normMinimumDays = 7
+    static let normEmptyText = "Личная норма считается, когда накопилось хотя бы \(normMinimumDays) дней данных."
+
     struct DeviationBar: Equatable, Identifiable {
         let id: String
         let title: String
         let text: String
+        /// The day the deviation is about, when it is not today.
+        let dateNote: String?
         /// -1...1 around zero; the sign is the side, the tone is whether that side is good.
         let share: Double
         let tone: HealthTone
+
+        /// «29 окт.: +3 уд/мин к обычному · хуже нормы»; the word is always there, the colour is only a second cue.
+        var caption: String {
+            (dateNote.map { "\($0): " } ?? "") + "\(text) · \(HealthOverview.toneWord(tone))"
+        }
     }
 
     private static let barMetrics = [restingHeartRate, variability, respiratoryRate]
 
-    static func deviationBars(_ metrics: [HealthMetricSeriesDTO]) -> [DeviationBar] {
+    static func deviationBars(_ metrics: [HealthMetricSeriesDTO], today: String) -> [DeviationBar] {
         barMetrics.compactMap { identifier in
             guard let metric = metrics.first(where: { $0.identifier == identifier }),
                   let baseline = metric.baseline, baseline.mean != 0, let better = higherIsBetter[identifier]
@@ -100,7 +119,8 @@ enum HealthOverview {
             return DeviationBar(
                 id: identifier, title: metric.displayName,
                 text: HealthMetricsFormat.deviationText(baseline, identifier: identifier, unit: metric.canonicalUnit),
-                share: share, tone: tone(deviation: baseline.deviation, higherIsBetter: better)
+                dateNote: baseline.day == today ? nil : HealthMetricsFormat.dayLabel(baseline.day),
+                share: share, tone: tone(baseline, higherIsBetter: better)
             )
         }
     }
@@ -117,6 +137,12 @@ enum HealthOverview {
         let points: [Double?]
     }
 
+    private static func tileNote(_ metric: HealthMetricSeriesDTO, _ baseline: HealthBaselineDTO, shownDay: String, higherIsBetter: Bool) -> String {
+        let text = deviationText(metric, baseline, shownDay: shownDay)
+        let verdict = tone(baseline, higherIsBetter: higherIsBetter)
+        return verdict == .same ? text : "\(text) · \(toneWord(verdict))"
+    }
+
     /// `nil` for a metric the phone never filled.
     static func tile(_ metric: HealthMetricSeriesDTO, today: String, higherIsBetter: Bool) -> Tile? {
         guard let latest = metric.days.last else { return nil }
@@ -125,8 +151,8 @@ enum HealthOverview {
             title: metric.displayName,
             value: HealthMetricsFormat.formatQuantity(identifier: metric.identifier, value: latest.value, unit: metric.canonicalUnit),
             dateNote: latest.date == today ? nil : HealthMetricsFormat.dayLabel(latest.date),
-            note: baseline.map { HealthMetricsFormat.deviationText($0, identifier: metric.identifier, unit: metric.canonicalUnit) },
-            tone: baseline.map { tone(deviation: $0.deviation, higherIsBetter: higherIsBetter) } ?? .same,
+            note: baseline.map { tileNote(metric, $0, shownDay: latest.date, higherIsBetter: higherIsBetter) },
+            tone: baseline.map { tone($0, higherIsBetter: higherIsBetter) } ?? .same,
             points: HealthMetricsFormat.sparklinePoints(metric.days, endDate: latest.date)
         )
     }

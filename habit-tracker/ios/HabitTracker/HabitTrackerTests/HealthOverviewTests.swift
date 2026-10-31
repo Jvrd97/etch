@@ -12,13 +12,13 @@ final class HealthOverviewTests: XCTestCase {
 
     private func metric(
         _ id: String, name: String = "M", unit: String = "count", mean: Double = 100, deviation: Double?,
-        days: [(String, Double)] = [("2026-10-29", 1)]
+        outside: Bool = false, baselineDay: String = "2026-10-29", days: [(String, Double)] = [("2026-10-29", 1)]
     ) -> HealthMetricSeriesDTO {
         HealthMetricSeriesDTO(
             identifier: id, displayName: name, group: "heart", kind: "discrete", canonicalUnit: unit,
             days: days.map { HealthDayValueDTO(date: $0.0, value: $0.1) },
             baseline: deviation.map {
-                HealthBaselineDTO(mean: mean, stddev: 1, days: 20, day: "2026-10-29", deviation: $0, outsideTypical: false)
+                HealthBaselineDTO(mean: mean, stddev: 1, days: 20, day: baselineDay, deviation: $0, outsideTypical: outside)
             }
         )
     }
@@ -42,50 +42,78 @@ final class HealthOverviewTests: XCTestCase {
         XCTAssertEqual(HealthOverview.basisText(21), "по 21 дню")
     }
 
-    // MARK: Tone and share in the norm
-
-    func testToneFollowsTheDirectionOfBetter() {
-        XCTAssertEqual(HealthOverview.tone(deviation: -2, higherIsBetter: false), .better, "a lower resting pulse is better")
-        XCTAssertEqual(HealthOverview.tone(deviation: 2, higherIsBetter: false), .worse)
-        XCTAssertEqual(HealthOverview.tone(deviation: 5, higherIsBetter: true), .better)
-        XCTAssertEqual(HealthOverview.tone(deviation: -5, higherIsBetter: true), .worse)
-        XCTAssertEqual(HealthOverview.tone(deviation: 0.04, higherIsBetter: true), .same, "it prints as «как обычно»")
+    func testAnEmptyIndexSaysWhyByTheDaysItWasCountedOn() {
+        XCTAssertEqual(HealthOverview.stateEmptyText(basisDays: 0), "Данных пока мало: синхронизируйте телефон")
+        XCTAssertEqual(HealthOverview.stateEmptyText(basisDays: 2), "Данных пока мало: синхронизируйте телефон")
+        XCTAssertEqual(HealthOverview.stateEmptyText(basisDays: 3), "Личная норма ещё не набралась: нужно больше дней данных")
+        XCTAssertEqual(HealthOverview.stateEmptyText(basisDays: 7), "Личная норма ещё не набралась: нужно больше дней данных")
     }
 
-    func testTheShareInTheNormCountsOnlyMetricsWithABaselineAndNotWorse() {
-        let metrics = [
-            metric(rhr, deviation: -2),                 // better
-            metric(hrv, deviation: -6),                 // worse
-            metric(steps, deviation: 0),                // same: not worse
-            metric(energy, deviation: nil),             // no baseline: not judged
-            metric("HKQuantityTypeIdentifierBodyMass", deviation: 3), // not a key metric
-        ]
-        let share = HealthOverview.normShare(metrics)
-        XCTAssertEqual(share.inNorm, 2)
-        XCTAssertEqual(share.judged, 3)
+    func testACachedIndexIsMarkedNotUpdatedWithItsMoment() {
+        let moment = Date(timeIntervalSince1970: 1_793_275_200) // 2026-10-29 12:00 UTC
+        let text = HealthOverview.staleStateText(moment, timeZone: TimeZone(identifier: "UTC")!)
+        XCTAssertTrue(text.hasPrefix("Не обновлено · по данным на "))
+        XCTAssertTrue(text.contains("29") && text.contains("12:00"), text)
     }
 
-    func testNoJudgedMetricsMeansNoShare() {
-        let share = HealthOverview.normShare([metric(rhr, deviation: nil)])
-        XCTAssertEqual(share.judged, 0)
-        XCTAssertNil(share.fraction)
+    // MARK: Tone
+
+    private func baseline(_ deviation: Double, outside: Bool) -> HealthBaselineDTO {
+        HealthBaselineDTO(mean: 100, stddev: 1, days: 20, day: "2026-10-29", deviation: deviation, outsideTypical: outside)
+    }
+
+    func testInsideTheUsualRangeTheDayIsNormalOnBothSides() {
+        XCTAssertEqual(HealthOverview.tone(baseline(0.3, outside: false), higherIsBetter: false), .same, "a pulse +0,3 inside its range is not «хуже»")
+        XCTAssertEqual(HealthOverview.tone(baseline(-0.3, outside: false), higherIsBetter: false), .same)
+        XCTAssertEqual(HealthOverview.tone(baseline(900, outside: false), higherIsBetter: true), .same)
+        XCTAssertEqual(HealthOverview.tone(baseline(-900, outside: false), higherIsBetter: true), .same)
+    }
+
+    func testOutsideTheRangeTheSideAndTheDirectionOfBetterDecide() {
+        XCTAssertEqual(HealthOverview.tone(baseline(-4, outside: true), higherIsBetter: false), .better, "a lower resting pulse is better")
+        XCTAssertEqual(HealthOverview.tone(baseline(4, outside: true), higherIsBetter: false), .worse)
+        XCTAssertEqual(HealthOverview.tone(baseline(6, outside: true), higherIsBetter: true), .better)
+        XCTAssertEqual(HealthOverview.tone(baseline(-6, outside: true), higherIsBetter: true), .worse)
+        XCTAssertEqual(HealthOverview.tone(baseline(0, outside: true), higherIsBetter: true), .same)
+    }
+
+    func testEveryToneHasItsWord() {
+        XCTAssertEqual(HealthOverview.toneWord(.better), "лучше нормы")
+        XCTAssertEqual(HealthOverview.toneWord(.worse), "хуже нормы")
+        XCTAssertEqual(HealthOverview.toneWord(.same), "в пределах нормы")
     }
 
     // MARK: Deviation bars
 
     func testDeviationBarsAreFixedMetricsInOrderWithTheirTone() {
         let metrics = [
-            metric(hrv, name: "ВСР", unit: "ms", mean: 50, deviation: 5),
-            metric(rhr, name: "Пульс покоя", unit: "count/min", mean: 60, deviation: 3),
-            metric(breathing, name: "Дыхание", mean: 15, deviation: -0.5),
-            metric(steps, deviation: 100),
+            metric(hrv, name: "ВСР", unit: "ms", mean: 50, deviation: 5, outside: true),
+            metric(rhr, name: "Пульс покоя", unit: "count/min", mean: 60, deviation: 3, outside: true),
+            metric(breathing, name: "Дыхание", mean: 15, deviation: -0.5, outside: true),
+            metric(steps, deviation: 100, outside: true),
         ]
-        let bars = HealthOverview.deviationBars(metrics)
+        let bars = HealthOverview.deviationBars(metrics, today: "2026-10-29")
         XCTAssertEqual(bars.map(\.title), ["Пульс покоя", "ВСР", "Дыхание"])
         XCTAssertEqual(bars.map(\.tone), [.worse, .better, .better])
         XCTAssertEqual(bars[0].text, "+3 уд/мин к обычному")
+        XCTAssertEqual(bars[0].caption, "+3 уд/мин к обычному · хуже нормы")
         XCTAssertEqual(bars[1].share, 0.1 / HealthOverview.deviationAxis, accuracy: 1e-9, "5 on a norm of 50 is 10 %")
         XCTAssertLessThan(bars[2].share, 0)
+    }
+
+    func testABarInsideTheUsualRangeIsDrawnButNeitherGoodNorBad() {
+        let bars = HealthOverview.deviationBars([metric(rhr, name: "Пульс покоя", unit: "count/min", mean: 60, deviation: 0.3)], today: "2026-10-29")
+        XCTAssertEqual(bars[0].tone, .same)
+        XCTAssertGreaterThan(bars[0].share, 0)
+        XCTAssertTrue(bars[0].caption.hasSuffix("в пределах нормы"))
+    }
+
+    func testABarNamesTheDayItIsAboutWhenThatIsNotToday() {
+        let metrics = [metric(rhr, name: "Пульс покоя", unit: "count/min", mean: 60, deviation: 3, outside: true, baselineDay: "2026-10-28")]
+        let bars = HealthOverview.deviationBars(metrics, today: "2026-10-29")
+        XCTAssertEqual(bars[0].dateNote, "28 окт.")
+        XCTAssertTrue(bars[0].caption.hasPrefix("28 окт.: +3"))
+        XCTAssertNil(HealthOverview.deviationBars(metrics, today: "2026-10-28")[0].dateNote)
     }
 
     func testABarNeverLeavesTheAxisAndSkipsAMetricWithoutANorm() {
@@ -94,7 +122,7 @@ final class HealthOverviewTests: XCTestCase {
             metric(hrv, deviation: nil),
             metric(breathing, mean: 0, deviation: 1),
         ]
-        let bars = HealthOverview.deviationBars(metrics)
+        let bars = HealthOverview.deviationBars(metrics, today: "2026-10-29")
         XCTAssertEqual(bars.count, 1)
         XCTAssertEqual(bars[0].share, 1)
     }
@@ -140,17 +168,34 @@ final class HealthOverviewTests: XCTestCase {
 
     func testATileHoldsTheLatestValueTheNormNoteAndAGapKeepingLine() {
         let steps = metric(
-            steps, name: "Шаги", mean: 8000, deviation: 1200,
+            steps, name: "Шаги", mean: 8000, deviation: 1200, outside: true,
             days: [("2026-10-27", 7000), ("2026-10-29", 9200)]
         )
         let tile = HealthOverview.tile(steps, today: "2026-10-29", higherIsBetter: true)
         XCTAssertEqual(tile?.title, "Шаги")
         XCTAssertEqual(tile?.value, "9200 шагов")
-        XCTAssertEqual(tile?.note, "+1200 шагов к обычному")
+        XCTAssertEqual(tile?.note, "+1200 шагов к обычному · лучше нормы")
         XCTAssertEqual(tile?.tone, .better)
         XCTAssertEqual(tile?.points.count, HealthMetricsFormat.sparklineDays)
         XCTAssertNil(tile?.points[tile!.points.count - 2], "the day nothing arrived for is a gap, not zero")
         XCTAssertEqual(tile?.points.last ?? nil, 9200)
+    }
+
+    func testATileInsideTheUsualRangeStaysUncolouredAndWithoutAVerdictWord() {
+        let steps = metric(steps, name: "Шаги", mean: 8000, deviation: 300, days: [("2026-10-29", 8300)])
+        let tile = HealthOverview.tile(steps, today: "2026-10-29", higherIsBetter: true)
+        XCTAssertEqual(tile?.tone, .same)
+        XCTAssertEqual(tile?.note, "+300 шагов к обычному")
+    }
+
+    func testATileNamesTheDayOfTheNormWhenItIsNotTheShownDay() {
+        let steps = metric(
+            steps, name: "Шаги", mean: 8000, deviation: 1640, outside: true, baselineDay: "2026-10-28",
+            days: [("2026-10-28", 9640), ("2026-10-29", 3100)]
+        )
+        let tile = HealthOverview.tile(steps, today: "2026-10-29", higherIsBetter: true)
+        XCTAssertEqual(tile?.value, "3100 шагов")
+        XCTAssertEqual(tile?.note, "28 окт.: +1640 шагов к обычному · лучше нормы")
     }
 
     func testATileWithoutDaysIsNotShown() {

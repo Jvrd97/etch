@@ -18,6 +18,8 @@ final class HealthMetricsViewModel: ObservableObject {
     @Published private(set) var workouts: [HealthWorkoutRecordDTO]?
     /// The server's index for «Состояние сегодня»; `nil` while the endpoint is missing or its read failed, and the card is then absent.
     @Published private(set) var healthState: HealthScoreDTO?
+    /// Set while the index on screen is the cached one: when it was fetched. It is then shown as not updated, never as today's.
+    @Published private(set) var healthStateAsOf: Date?
     /// Set while the catalogue on screen is the cached one: when it was fetched.
     @Published private(set) var offlineAsOf: Date?
     /// Why the last in-place refresh failed; the screen keeps what it had.
@@ -99,10 +101,8 @@ final class HealthMetricsViewModel: ObservableObject {
         async let statusAnswer = settle { try await api.fetchHealthSyncStatus() }
         async let sleepAnswer = settle { try await api.fetchHealthSleep(dateFrom: weekStart, dateTo: moment) }
         async let workoutsAnswer = settle { try await api.fetchHealthWorkouts(dateFrom: monthStart, dateTo: moment) }
-        async let stateAnswer = settle { () -> HealthStateResponseDTO in
-            guard let stateAPI else { throw APIClientError.invalidResponse }
-            return try await stateAPI.fetchHealthState()
-        }
+        // No source of the index means no request at all.
+        async let stateAnswer = readState(stateAPI)
         let (metricsResult, statusResult, sleepResult, workoutsResult, stateResult) =
             await (metricsAnswer, statusAnswer, sleepAnswer, workoutsAnswer, stateAnswer)
         guard mine == generation else { return }
@@ -111,7 +111,8 @@ final class HealthMetricsViewModel: ObservableObject {
             let syncOutcome = await sideRead(key: Self.syncStatusKey, statusResult)
             let sleepOutcome = await sideRead(key: Self.nightsKey, sleepResult)
             let workoutsOutcome = await sideRead(key: Self.workoutsKey, workoutsResult)
-            let stateOutcome = await sideRead(key: Self.stateKey, stateResult)
+            var stateOutcome: CacheOutcome<HealthStateResponseDTO>?
+            if let stateResult { stateOutcome = await sideRead(key: Self.stateKey, stateResult) }
             guard mine == generation else { return }
             today = moment
             switch catalogue {
@@ -127,6 +128,7 @@ final class HealthMetricsViewModel: ObservableObject {
             nights = sleepOutcome.map { $0.value.nights }
             workouts = workoutsOutcome.map { $0.value.workouts }
             healthState = stateOutcome?.value.scores.health
+            if case .stale(_, let updatedAt)? = stateOutcome { healthStateAsOf = updatedAt } else { healthStateAsOf = nil }
             state = .loaded
         } catch let error as APIClientError {
             guard mine == generation else { return }
@@ -140,6 +142,12 @@ final class HealthMetricsViewModel: ObservableObject {
     /// A read that only adds a block to the screen: its failure leaves the block out, it never fails the screen.
     private func sideRead<T: Codable>(key: String, _ result: Result<T, Error>) async -> CacheOutcome<T>? {
         try? await cache.load(key: key) { try result.get() }
+    }
+
+    /// `nil` without a source of the index: nothing is asked.
+    private func readState(_ api: HealthStateAPI?) async -> Result<HealthStateResponseDTO, Error>? {
+        guard let api else { return nil }
+        return await settle { try await api.fetchHealthState() }
     }
 
     private func settle<T>(_ work: () async throws -> T) async -> Result<T, Error> {
