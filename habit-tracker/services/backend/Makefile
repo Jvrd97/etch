@@ -1,7 +1,8 @@
-# [review:need-review] PHASE-01/adhoc-makefile, PHASE-03/85-phase-03-bookkeeping, PHASE-03/120, PHASE-03/182
+# [review:need-review] PHASE-01/adhoc-makefile, PHASE-03/85-phase-03-bookkeeping, PHASE-03/120, PHASE-03/182, PHASE-03/285
 # summary: containerless backend run — gunicorn with uvicorn workers, db in docker;
 # summary: `check` also guards the migration chain against a second alembic head;
 # summary: `smoke` runs with -s -rs so the first-turn token count and any skip reason reach the output (PHASE-03/182);
+# summary: `test-fast` runs the same suite under pytest-xdist, one database per worker (PHASE-03/285);
 # summary: `preflight` = `check` plus the live-CLI isolation smoke, the run made before a deploy
 
 # Postgres runs in docker published on host 5433 (5432 is taken by another dev instance)
@@ -13,7 +14,7 @@ WORKERS ?= 4
 PORT ?= 8000
 PID_FILE = .gunicorn.pid
 
-.PHONY: db migrate run dev test lint type heads check smoke preflight stop
+.PHONY: db migrate run dev test test-fast lint type heads check smoke preflight stop
 
 ## start postgres container (the only docker piece)
 db:
@@ -41,6 +42,11 @@ dev: migrate
 
 test: db
 	$(TEST_DB_ENV) uv run pytest tests/ -q
+
+## same suite on every core: pytest-xdist gives each worker its own database
+## (<TEST_DATABASE_URL name>_gw0, _gw1, ...), so the test role needs CREATE DATABASE
+test-fast: db
+	$(TEST_DB_ENV) uv run pytest tests/ -q -n auto
 
 lint:
 	uv run ruff check app tests && uv run ruff format --check app tests

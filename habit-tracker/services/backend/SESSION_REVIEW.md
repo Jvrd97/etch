@@ -3035,3 +3035,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 **Когда смоук гоняется снова:** перед каждым выкатом (`make preflight`) и после каждого обновления бинарника `claude`.
 
 **Если смоук упал:** `claude вышел с кодом N` — сломан флаг изоляции, чинить `ISOLATION_FLAGS`; число токенов выше порога на десятки тысяч — изоляция отвалилась, чинить флаги; превышение на сотни токенов при целых флагах — вырос префикс CLI или `ONESHOT_SYSTEM_PROMPT`, порог пересматривается в `test_cli_isolation_smoke.py` вместе с датой замера и версией CLI.
+
+## 2026-10-31 — PHASE-03/285: бэкенд-гейт на всех ядрах (pytest-xdist)
+
+Тронуто 7 файлов (3 `new`/`mod` кода, 4 прочих), миграций нет.
+
+- `tests/conftest.py` — mod: `worker_database_url` даёт воркеру xdist базу `<имя>_gwN`; `pytest_sessionstart` создаёт её (без права `CREATE DATABASE` — `pytest.exit` с понятным текстом), `pytest_sessionfinish` удаляет. Без xdist (`-p no:xdist`, один процесс, контроллер) URL не меняется. Схему создавать не нужно: `db_session` и так делает `drop_all`/`create_all` перед каждым тестом.
+- `tests/test_xdist_databases.py` — new: имя базы воркера, прежний URL без воркера, пароль со спецсимволами, движок процесса совпадает с воркером.
+- `Makefile` — mod: цель `test-fast` (`pytest -n auto`), `make test` остался последовательным.
+- `pyproject.toml`, `uv.lock` — mod: `pytest-xdist==3.6.1` (и `execnet`) в dev.
+- `../../README.md` — mod: строка про `make test-fast`.

@@ -232,6 +232,9 @@ docker-compose exec backend pytest tests/test_categories.py -v
 
 # Run with coverage
 docker-compose exec backend pytest tests/ --cov=app
+
+# Run on every core (from services/backend): each pytest-xdist worker gets its own database, the DB role needs CREATE DATABASE
+make test-fast
 ```
 
 All tests passing: ✅ 49/49
