@@ -545,7 +545,7 @@ describe('mobile entry point', () => {
     const source = await Bun.file(
       new URL('../app/dashboard/page.tsx', import.meta.url)
     ).text();
-    expect(source).toContain('useDashboard');
+    expect(source).toContain('useDashboardSummary');
     expect(APP_ROUTES.find((route) => route.id === 'dashboard')?.href).toBe('/dashboard');
   });
 
@@ -562,7 +562,7 @@ describe('mobile entry point', () => {
     const source = await Bun.file(
       new URL('../app/m/dashboard/page.tsx', import.meta.url)
     ).text();
-    expect(source).toContain('useDashboard');
+    expect(source).toContain('useDashboardSummary');
   });
 
   it('agrees with the path helper for the home screen', () => {
