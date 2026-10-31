@@ -1,10 +1,13 @@
 'use client';
-// [review:need-review] PHASE-03/221
+// [review:need-review] PHASE-03/221, PHASE-03/244
+// summary: PHASE-03/244 adds the supplements block and the «Совет» block under the health figures
 // summary: the «Неделя» review screen on both shells — title with the period and an explicit note while the week is unfinished, neighbour-week links, the blocks of the week, and the AI narrative written on request; a week with nothing in it says so and does not offer the narrative
 
 import Link from 'next/link';
 import ErrorAlert from '@/components/ErrorAlert';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import HealthAdviceBlock from '@/components/week/HealthAdviceBlock';
+import SupplementsBlock from '@/components/week/SupplementsBlock';
 import {
   CategoriesBlock,
   DaysBlock,
@@ -13,6 +16,7 @@ import {
   StreaksBlock,
   TotalsBlock,
 } from '@/components/week-review/WeekReviewSections';
+import type { HealthAdviceClient } from '@/hooks/useHealthAdvice';
 import {
   useWeekReview,
   type NarrativeState,
@@ -37,6 +41,8 @@ export interface WeekReviewScreenProps {
   compact?: boolean;
   /** Replaces the network client in tests. */
   client?: WeekReviewClient;
+  /** Replaces the network client of the advice block in tests. */
+  adviceClient?: HealthAdviceClient;
 }
 
 const LINK = 'inline-flex min-h-11 items-center text-sm font-medium text-lime hover:underline';
@@ -77,7 +83,12 @@ function Narrative({
   );
 }
 
-export default function WeekReviewScreen({ iso, compact = false, client }: WeekReviewScreenProps) {
+export default function WeekReviewScreen({
+  iso,
+  compact = false,
+  client,
+  adviceClient,
+}: WeekReviewScreenProps) {
   const { state, narrative, reload, writeNarrative } = useWeekReview(iso, client);
 
   if (state.status === 'loading') return <LoadingSpinner size="lg" />;
@@ -133,10 +144,12 @@ export default function WeekReviewScreen({ iso, compact = false, client }: WeekR
           <CategoriesBlock review={review} />
           <StreaksBlock review={review} />
           <HealthBlock review={review} />
+          <SupplementsBlock adherence={review.supplements} />
         </>
       )}
 
       <Narrative state={narrative} onWrite={writeNarrative} disabled={empty} />
+      <HealthAdviceBlock client={adviceClient} />
     </div>
   );
 }

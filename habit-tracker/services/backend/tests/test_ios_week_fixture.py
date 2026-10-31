@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/243, PHASE-03/261
+# [review:need-review] PHASE-03/243, PHASE-03/261, PHASE-03/244
+# summary: PHASE-03/244 holds the supplements and the advice of the Swift side to the server schema too — the adherence and advice JSON of the fixtures and the new DTO structs
 # summary: the answer the iOS Week tests decode (`WeekFixtures.reviewJSON`) is checked against the server's `WeekReviewResponse` on every run — same field names at every level, values the schema accepts — so a field renamed on the server turns this test red instead of leaving the app decoding a stale fixture
 """
 The iOS fixture against the server schema (`#243`).
@@ -27,7 +28,7 @@ from typing import Any, Union, get_args, get_origin
 import pytest
 from pydantic import BaseModel
 
-from app.schemas import week_review
+from app.schemas import supplement_advice, week_review
 from app.schemas.week_review import WeekReviewResponse
 
 REPO_HABIT_TRACKER = Path(__file__).resolve().parents[3]
@@ -59,6 +60,10 @@ DTO_MODELS = {
     "WeekHealthMetricDTO": "WeekHealthMetric",
     "WeekReviewDTO": "WeekReviewResponse",
     "WeekNarrativeDTO": "WeekNarrativeResponse",
+    "WeekAdherenceDTO": "Adherence",
+    "WeekAdherenceDayDTO": "AdherenceDay",
+    "WeekSupplementItemDTO": "SupplementAdherenceItem",
+    "HealthAdviceDTO": "HealthAdviceResponse",
 }
 STRUCT_PATTERN = re.compile(
     r"^struct (?P<name>\w+): [^{]*\{(?P<body>.*?)^\}", re.DOTALL | re.MULTILINE
@@ -67,6 +72,12 @@ PROPERTY_PATTERN = re.compile(r"^    let (?P<name>\w+): ", re.MULTILINE)
 SNAKE_PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
 RAW_JSON_PATTERN = re.compile(
     r'static let reviewJSON = """\n(?P<json>.*?)\n\s*"""', re.DOTALL
+)
+ADHERENCE_JSON_PATTERN = re.compile(
+    r'static let adherenceJSON = """\n(?P<json>.*?)\n\s*"""', re.DOTALL
+)
+ADVICE_JSON_PATTERN = re.compile(
+    r'static let adviceJSON = """\n(?P<json>.*?)\n\s*"""', re.DOTALL
 )
 
 
@@ -94,6 +105,25 @@ def _fixture() -> dict[str, Any]:
     _require_sources(FIXTURE_FILE)
     match = RAW_JSON_PATTERN.search(FIXTURE_FILE.read_text(encoding="utf-8"))
     assert match, "WeekFixtures.reviewJSON was not found: did the fixture move?"
+    parsed = json.loads(match.group("json"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def _schema_model(name: str) -> type[BaseModel]:
+    """A model by name from the week-review or the supplement-advice schemas."""
+    for module in (week_review, supplement_advice):
+        found = getattr(module, name, None)
+        if found is not None:
+            assert isinstance(found, type) and issubclass(found, BaseModel)
+            return found
+    raise AssertionError(f"{name} is in no schema module")
+
+
+def _json_of(pattern: re.Pattern[str]) -> dict[str, Any]:
+    _require_sources(FIXTURE_FILE)
+    match = pattern.search(FIXTURE_FILE.read_text(encoding="utf-8"))
+    assert match, f"{pattern.pattern[:30]} was not found: did the fixture move?"
     parsed = json.loads(match.group("json"))
     assert isinstance(parsed, dict)
     return parsed
@@ -148,7 +178,7 @@ def test_every_swift_dto_property_is_a_field_the_server_sends() -> None:
     problems: list[str] = []
     for struct, model_name in DTO_MODELS.items():
         assert struct in swift, f"{struct} was not found in DTOs+Week.swift"
-        model: type[BaseModel] = getattr(week_review, model_name)
+        model = _schema_model(model_name)
         allowed = set(model.model_fields)
         problems += [
             f"{struct}.{name}: the server has no such field"
@@ -161,9 +191,20 @@ def test_a_swift_dto_misses_no_field_the_server_sends() -> None:
     swift = _swift_properties()
     problems: list[str] = []
     for struct, model_name in DTO_MODELS.items():
-        model: type[BaseModel] = getattr(week_review, model_name)
+        model = _schema_model(model_name)
         problems += [
             f"{struct}.{name}: the server sends it, the DTO lacks it"
             for name in sorted(set(model.model_fields) - swift[struct])
         ]
     assert problems == []
+
+
+def test_the_ios_supplements_and_advice_fixtures_are_what_the_server_sends() -> None:
+    adherence = _json_of(ADHERENCE_JSON_PATTERN)
+    advice = _json_of(ADVICE_JSON_PATTERN)
+    problems: list[str] = []
+    _compare(supplement_advice.Adherence, adherence, "supplements", problems)
+    _compare(supplement_advice.HealthAdviceResponse, advice, "advice", problems)
+    assert problems == []
+    supplement_advice.Adherence.model_validate(adherence)
+    supplement_advice.HealthAdviceResponse.model_validate(advice)

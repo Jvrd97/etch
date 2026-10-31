@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251
+# [review:need-review] PHASE-03/223, PHASE-03/245, PHASE-03/246, PHASE-03/251, PHASE-03/244
 # summary: orchestration of the health advice — the prompt is rendered from the finished summary (no database, no recomputation), carries supplement names but never doses, forbids diagnoses and doses, and the not-medical-advice disclaimer is appended in code when the model omits it
 """
 The words of the health advice (`#223`).
@@ -24,7 +24,7 @@ import re
 from app.llm.client import LLMClient, LLMError
 from app.llm.dose_guard import names_a_dose
 from app.llm.health_format import average_basis, comparison_text, health_value
-from app.schemas.supplement_advice import HealthFigure, HealthSummaryResponse
+from app.schemas.supplement_advice import Adherence, HealthFigure, HealthSummaryResponse
 
 
 class DoseGuardTripped(LLMError):
@@ -80,13 +80,13 @@ def _one_line(text: str) -> str:
     return " ".join(text.split())
 
 
-def _adherence_lines(summary: HealthSummaryResponse) -> list[str]:
-    adherence = summary.adherence
+def adherence_lines(adherence: Adherence, window_days: int) -> list[str]:
+    """The supplements as plain lines: names and counts, never a dose."""
     if not adherence.planned:
         return ["Добавки: данных нет."]
     if not adherence.enough_data:
         planned_days = sum(1 for day in adherence.days if day.planned)
-        return [f"Добавки: данных мало ({planned_days} дн. из {summary.window.days})."]
+        return [f"Добавки: данных мало ({planned_days} дн. из {window_days})."]
     lines = [
         f"Добавки: принято {adherence.taken} из {adherence.planned} "
         f"запланированных приёмов ({adherence.pct}%)."
@@ -98,8 +98,14 @@ def _adherence_lines(summary: HealthSummaryResponse) -> list[str]:
     return lines
 
 
-def build_health_advice_prompt(summary: HealthSummaryResponse) -> str:
-    """The instruction plus the window as plain lines of numbers."""
+def summary_lines(summary: HealthSummaryResponse) -> list[str]:
+    """
+    The window and every figure of the summary as plain lines of numbers.
+
+    The advice prompt and the chat card both print the summary through this one
+    function, so a number the model is told in chat is the number the advice is
+    written from.
+    """
     window = summary.window
     lines = [
         f"Окно: {window.starts_on} - {window.ends_on}, {window.days} дн. "
@@ -107,8 +113,17 @@ def build_health_advice_prompt(summary: HealthSummaryResponse) -> str:
         f"{window.previous_ends_on}.",
     ]
     lines += [_figure_line(figure, window.days) for figure in summary.figures]
-    lines += _adherence_lines(summary)
-    return HEALTH_ADVICE_SYSTEM_PROMPT + "\n\nДанные:\n" + "\n".join(lines)
+    lines += adherence_lines(summary.adherence, window.days)
+    return lines
+
+
+def build_health_advice_prompt(summary: HealthSummaryResponse) -> str:
+    """The instruction plus the window as plain lines of numbers."""
+    return (
+        HEALTH_ADVICE_SYSTEM_PROMPT
+        + "\n\nДанные:\n"
+        + "\n".join(summary_lines(summary))
+    )
 
 
 def with_disclaimer(text: str) -> str:

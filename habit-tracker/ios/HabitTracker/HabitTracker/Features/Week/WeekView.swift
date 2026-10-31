@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/270 — startIso
-// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/222
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/222, PHASE-03/244
 // summary: Week screen (More → Неделя) — the numbers of a week against the previous one, best and worst day, health, and the AI text on a button; states: loading, error with retry (and a way back to the running week), empty week, unfinished week marked, last cached answer marked "обновлено …" offline; pull to refresh in place; no navigation stack of its own; a button opens the animated overview sheet (#222)
 import SwiftUI
 
@@ -67,8 +67,12 @@ struct WeekView: View {
                     WeekCategoriesView(review: review)
                     WeekStreaksView(review: review)
                     WeekHealthView(review: review)
+                    if let supplements = review.supplements {
+                        WeekSupplementsView(adherence: supplements)
+                    }
                 }
                 WeekNarrativeView(viewModel: viewModel, review: review)
+                WeekAdviceView(viewModel: viewModel)
             }
             .padding(DS.Spacing.lg)
         }

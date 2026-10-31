@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262
+// [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262, PHASE-03/244
 // summary: pure vocabulary of the Week screen — minutes as hours, signed changes with a real minus, Russian plurals, dates cut by hand, the note under an unfinished week (which week runs now, decided by the calendar and not by the server's «as of», and whether a cached answer's week has since ended), the outcome of a day by the server's flags, health values by unit, the emptiness test mirrored from the server, and error texts by HTTP status (a slow model is not a missing network)
 import Foundation
 
@@ -299,6 +299,29 @@ enum WeekFormat {
     static let narrativeNeedsNetwork = "Итог пишется на сервере: нужна сеть. Проверьте соединение и повторите."
     static let narrativeFallback = "Не удалось написать итог недели."
     static let narrativeSlow = "Модель отвечает долго. Повторите чуть позже."
+
+    // MARK: Advice (#244)
+
+    static let adviceDisclaimer = "Это не медицинская рекомендация."
+    static let adviceNotEnoughData =
+        "Данных мало: совет появится, когда накопится хотя бы несколько дней шагов, тренировок, пульса или приёма добавок."
+    static let adviceNeedsNetwork = "Совет пишется на сервере: нужна сеть. Проверьте соединение и повторите."
+    static let adviceFallback = "Не удалось написать совет."
+    static let adviceModelFailed = "Модель не ответила или совет не прошёл проверку. Повторите позже."
+    static let adviceModelOff = "Совет от ИИ выключен: на сервере не настроена модель."
+    static let supplementsFewDays = "Данных мало: добавки планировались меньше трёх дней."
+
+    /// The advice's refusals by HTTP status; 422 is not here — it is «данных мало», not a failure.
+    static func adviceMessage(for error: APIClientError) -> String {
+        if case .timeout = error { return narrativeSlow }
+        if error.isConnectivity { return adviceNeedsNetwork }
+        switch error {
+        case .unexpectedStatus(502): return adviceModelFailed
+        case .unexpectedStatus(503): return adviceModelOff
+        case .unauthorized, .invalidBaseURL: return message(for: error)
+        case .timeout, .transport, .unexpectedStatus, .invalidResponse: return adviceFallback
+        }
+    }
     static let loadFailedMessage = "Не удалось загрузить неделю"
 
     static func message(for error: APIClientError) -> String {

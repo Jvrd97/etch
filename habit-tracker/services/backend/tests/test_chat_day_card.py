@@ -11,15 +11,18 @@
 """
 
 # [review:need-review] PHASE-03/113
+# [review:need-review] PHASE-03/244
+# summary: PHASE-03/244 adds the advice section — the chat card carries the very lines the health advice is written from, no dose, a flat statement count, absent when there is too little data
 # summary: tests for build_day_card — the explicit "записей нет" of an empty day, the health fold that matches GET /health/metrics, hourly buckets staying out, the ceiling eating the least important section first, a section without a source missing entirely, and GET /chat/conversations/{id}/context returning the very text the prompt carried
 import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_chat_llm_client, get_session_factory
@@ -35,9 +38,13 @@ from app.llm.chat.context import (
     build_day_card,
 )
 from app.llm.chat.prompt import CHAT_CONTEXT_VERSION, compose_system_prompt
+from app.crud import supplement_advice as advice_crud
+from app.llm.health_advice import build_health_advice_prompt
 from app.main import app
 from app.models.journal import JournalEntry
+from tests.conftest import test_engine
 from tests.test_chat_stream import FakeChatClient
+from tests.test_health_advice import add_supplement, take
 
 CARD_DAY = today_local()
 
@@ -578,3 +585,93 @@ class TestPlanSection:
         assert "код W1" in card.text
         assert "[task/soft]" in card.text
         assert "тест зелёный" in card.text
+
+
+@pytest.mark.asyncio
+class TestAdviceSection:
+    """Сводка, из которой пишется совет, — в карточке тем же текстом."""
+
+    @staticmethod
+    def advice_spec() -> SectionSpec:
+        (spec,) = [one for one in DAY_CARD_SECTIONS if one.name == "advice"]
+        return spec
+
+    async def test_the_card_carries_the_lines_the_advice_is_written_from(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Цифры совета и цифры чата — один расчёт и одни строки."""
+        window = [CARD_DAY - timedelta(days=offset) for offset in range(7, 0, -1)]
+        magnesium = await add_supplement(
+            db_session, "Магний цитрат", CARD_DAY - timedelta(days=30)
+        )
+        await take(db_session, magnesium, *window[:4])
+
+        card = await build_day_card(db_session, CARD_DAY)
+
+        assert "## Сон, спорт и добавки" in card.text
+        assert "Добавки: принято 4 из 7 запланированных приёмов (57%)." in card.text
+        assert "«Магний цитрат»: 4 из 7 дн." in card.text
+        summary = await advice_crud.build_health_summary(db_session, 7, CARD_DAY)
+        prompt = build_health_advice_prompt(summary)
+        section = next(
+            text for text in card.text.split("\n\n") if "Сон, спорт и добавки" in text
+        )
+        for line in section.splitlines()[1:]:
+            assert line in prompt
+        assert "777" not in card.text
+
+    async def test_too_little_data_says_no_records(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Два дня приёма — не картина: секция молчит словами, цифр не выдумывает."""
+        magnesium = await add_supplement(
+            db_session, "Магний цитрат", CARD_DAY - timedelta(days=1)
+        )
+        await take(db_session, magnesium, CARD_DAY - timedelta(days=1))
+
+        lines = await self.advice_spec().build(db_session, CARD_DAY)
+
+        assert lines == []
+
+    async def test_the_statement_count_does_not_grow_with_supplements(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Класс ошибки: запрос на добавку или на день окна."""
+
+        async def count() -> int:
+            statements: list[str] = []
+
+            def record(*args: Any) -> None:
+                statements.append(str(args[2]))
+
+            event.listen(test_engine.sync_engine, "before_cursor_execute", record)
+            try:
+                await self.advice_spec().build(db_session, CARD_DAY)
+            finally:
+                event.remove(test_engine.sync_engine, "before_cursor_execute", record)
+            return len(statements)
+
+        window = [CARD_DAY - timedelta(days=offset) for offset in range(7, 0, -1)]
+        first = await add_supplement(db_session, "Один", CARD_DAY - timedelta(days=30))
+        await take(db_session, first, *window)
+        small = await count()
+
+        for index in range(6):
+            more = await add_supplement(
+                db_session, f"Добавка {index}", CARD_DAY - timedelta(days=30)
+            )
+            await take(db_session, more, *window[index % 3 :])
+        large = await count()
+
+        assert large == small
+
+    async def test_the_prompt_forbids_doses_and_diagnoses_next_to_the_section(
+        self, db_session: AsyncSession
+    ) -> None:
+        card = await build_day_card(db_session, CARD_DAY)
+
+        prompt = compose_system_prompt(card.text)
+
+        assert "Сон, спорт и добавки" in prompt
+        assert "доз не называй" in prompt
+        assert "не медицинская рекомендация" in prompt

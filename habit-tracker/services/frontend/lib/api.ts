@@ -4390,6 +4390,8 @@ export interface WeekReview {
   categories: WeekReviewCategory[];
   habit_streaks: WeekReviewHabitStreak[];
   health: WeekReviewHealth[];
+  /** Supplements taken of planned over the counted days; null when none was planned (#244). */
+  supplements: HealthAdherence | null;
 }
 
 export interface WeekNarrative {
@@ -4410,6 +4412,53 @@ export const weekReviewAPI = {
   narrative: async (iso: string) => {
     return fetcher<WeekNarrative>(`/week-review/${encodeURIComponent(iso)}/narrative`, {
       method: 'POST',
+    });
+  },
+};
+
+// ============ Health advice (#244) ============
+// [review:need-review] PHASE-03/244
+// summary: the supplement adherence of a week (the same numbers as the advice) and healthAdviceAPI.write — the advice for the last seven closed days, written on request and not stored
+
+export interface HealthAdherenceDay {
+  date: string;
+  planned: number;
+  taken: number;
+}
+
+export interface HealthAdherenceItem {
+  supplement_id: number;
+  name: string;
+  planned_days: number;
+  taken_days: number;
+}
+
+/** Taken of planned supplement intakes; an intake outside the plan counts on both sides. */
+export interface HealthAdherence {
+  planned: number;
+  taken: number;
+  /** Null when there was nothing to plan. */
+  pct: number | null;
+  /** Too few planned days make the percentage meaningless. */
+  enough_data: boolean;
+  days: HealthAdherenceDay[];
+  supplements: HealthAdherenceItem[];
+}
+
+export interface HealthAdvice {
+  text: string;
+  model: string;
+  starts_on: string;
+  ends_on: string;
+  days: number;
+}
+
+export const healthAdviceAPI = {
+  /** The advice for the seven closed days before today; 422 means too little data. */
+  write: async () => {
+    return fetcher<HealthAdvice>('/health-advice', {
+      method: 'POST',
+      body: JSON.stringify({ days: 7 }),
     });
   },
 };

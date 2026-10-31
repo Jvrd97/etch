@@ -3066,3 +3066,12 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `Makefile` — mod: цель `test-fast` (`pytest -n auto`), `make test` остался последовательным.
 - `pyproject.toml`, `uv.lock` — mod: `pytest-xdist==3.6.1` (и `execnet`) в dev.
 - `../../README.md` — mod: строка про `make test-fast`.
+
+## 2026-10-31 — PHASE-03/244: советы по сну, спорту и добавкам видны в приложении
+
+Тронуто 29 файлов кода (9 `new`, 20 `mod`), миграций нет. Число запросов недельного обзора: +2 фиксированных (добавки), от числа добавок и дней не зависит.
+
+- Бэкенд `app/`: `crud/supplement_advice.py` (`adherence_for_days` открыт — один расчёт для совета, обзора и чата), `crud/week_review.py` и `schemas/week_review.py` (поле `supplements`, `null` без добавок), `llm/week_review.py` (строки добавок в промпте, проверка доз), `llm/health_advice.py` (`summary_lines`, `adherence_lines`), `llm/chat/context.py` (секция `advice`), `llm/chat/prompt.py` (правило и `CHAT_CONTEXT_VERSION = 7`), `api/week_review.py` (502 «Совет отклонён защитой.») — все `mod`.
+- Тесты бэкенда: `test_week_review.py`, `test_chat_day_card.py`, `test_ios_week_fixture.py` — mod.
+- Веб: `hooks/useHealthAdvice.ts` + тест, `components/week/HealthAdviceBlock.tsx` + тест, `components/week/SupplementsBlock.tsx` — new; `components/week-review/WeekReviewScreen.tsx` + тест, `test-fixture.ts`, `lib/api.ts` — mod.
+- iOS: `API/APIClient+Week.swift`, `API/DTOs+Week.swift`, `Features/Week/{WeekFormat,WeekViewModel,WeekSections,WeekView}.swift`, тесты `WeekViewModelTests`, `WeekAPIClientTests`, `WeekFixtures` — mod.

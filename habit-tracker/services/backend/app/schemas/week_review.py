@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/255
+# [review:need-review] PHASE-03/221, PHASE-03/255, PHASE-03/244
 # summary: wire types of the week review — one answer carrying the window of the week, totals against the previous week, days, role and category time, habit streaks and health, plus the AI narrative response
 """
 Wire types of the week review (`#221`).
@@ -20,6 +20,8 @@ from __future__ import annotations
 from datetime import date
 
 from pydantic import BaseModel, Field
+
+from app.schemas.supplement_advice import Adherence
 
 
 class WeekWindow(BaseModel):
@@ -215,6 +217,13 @@ class WeekReviewResponse(BaseModel):
     categories: list[WeekCategorySlice]
     habit_streaks: list[WeekHabitStreak]
     health: list[WeekHealthMetric]
+    supplements: Adherence | None = Field(
+        None,
+        description=(
+            "Принято из запланированного за учтённые дни недели — тем же расчётом, "
+            "что `/health-advice/summary`. null — добавок на этих днях не планировалось"
+        ),
+    )
 
 
 class WeekNarrativeResponse(BaseModel):

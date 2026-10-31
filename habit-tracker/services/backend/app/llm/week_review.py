@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255
+# [review:need-review] PHASE-03/221, PHASE-03/245, PHASE-03/239, PHASE-03/255, PHASE-03/244
 # summary: orchestration of the week narrative — the prompt is built from the already computed review (no recomputation, no database), and the model is reached only through LLMClient.generate
 """
 The words of the week review (`#221`).
@@ -20,6 +20,8 @@ from datetime import date
 from app.core.humanize import hours_and_minutes
 from app.day.debt import week_verdict_line
 from app.llm.client import LLMClient
+from app.llm.dose_guard import names_a_dose
+from app.llm.health_advice import DoseGuardTripped, adherence_lines
 from app.llm.health_format import average_basis, comparison_text, health_value
 from app.schemas.week_review import WeekReviewResponse
 
@@ -133,9 +135,20 @@ def build_week_review_prompt(review: WeekReviewResponse) -> str:
             f"{average_basis(metric.days_with_data, window.counted_days)} "
             f"({change})."
         )
+    if review.supplements is not None:
+        lines += adherence_lines(review.supplements, window.counted_days)
     return WEEK_REVIEW_SYSTEM_PROMPT + "\n\nДанные:\n" + "\n".join(lines)
 
 
 async def write_week_review(llm: LLMClient, review: WeekReviewResponse) -> str:
-    """The narrative of the week; `LLMError` from the client is left to the caller."""
-    return (await llm.generate(build_week_review_prompt(review))).strip()
+    """
+    The narrative of the week; `LLMError` from the client is left to the caller.
+
+    A week that carries supplements puts their names into the prompt, so its
+    answer passes the dose net like the health advice does: `DoseGuardTripped`
+    (an `LLMError`) when the text names a dose, and nothing of the text with it.
+    """
+    text = (await llm.generate(build_week_review_prompt(review))).strip()
+    if review.supplements is not None and names_a_dose(text):
+        raise DoseGuardTripped("the model named a dose")
+    return text
