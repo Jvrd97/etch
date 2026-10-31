@@ -36,18 +36,34 @@ export function fullSummary(period: DashboardPeriod = 'week'): DashboardSummary 
       },
     ],
     health: [
-      { identifier: 'sleep_duration', label: 'Сон', value: 432, unit: 'min', baseline_delta: 20 },
       {
-        identifier: 'resting_heart_rate',
+        identifier: 'HKCategoryTypeIdentifierSleepAnalysis',
+        label: 'Сон',
+        value: 432,
+        unit: 'min',
+        baseline_delta: 20,
+        higher_is_better: true,
+      },
+      {
+        identifier: 'HKQuantityTypeIdentifierRestingHeartRate',
         label: 'Пульс покоя',
         value: 58,
         unit: 'count/min',
         baseline_delta: -2,
+        higher_is_better: false,
+      },
+      {
+        identifier: 'HKQuantityTypeIdentifierHeartRateVariabilitySDNN',
+        label: 'Вариабельность пульса',
+        value: 61.5,
+        unit: 'ms',
+        baseline_delta: 0,
+        higher_is_better: true,
       },
     ],
     bests: [
       {
-        identifier: 'steps',
+        identifier: 'HKQuantityTypeIdentifierStepCount',
         label: 'Шаги',
         value: 14220,
         unit: 'count',
@@ -55,7 +71,7 @@ export function fullSummary(period: DashboardPeriod = 'week'): DashboardSummary 
         is_record: true,
       },
       {
-        identifier: 'sleep_duration',
+        identifier: 'HKCategoryTypeIdentifierSleepAnalysis',
         label: 'Сон',
         value: 495,
         unit: 'min',

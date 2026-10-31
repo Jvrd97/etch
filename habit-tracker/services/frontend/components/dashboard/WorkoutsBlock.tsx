@@ -3,7 +3,7 @@
 
 import { Dumbbell } from 'lucide-react';
 import type { DashboardWorkouts } from '@/lib/api';
-import { formatDayShort, formatMinutes, workoutBarFractions } from '@/lib/dashboard-summary';
+import { MINUS, formatDayShort, formatMinutes, workoutBarFractions } from '@/lib/dashboard-summary';
 import { countable } from '@/lib/plural';
 import { DashboardCard, EmptyLine } from './DashboardCard';
 
@@ -13,7 +13,7 @@ const MIN_BAR_PX = 3;
 function deltaText(delta: number | null): string | null {
   if (delta === null) return null;
   if (delta === 0) return 'столько же, сколько в прошлом периоде';
-  return `${delta > 0 ? '+' : '−'}${Math.abs(delta)} к прошлому периоду`;
+  return `${delta > 0 ? '+' : MINUS}${Math.abs(delta)} к прошлому периоду`;
 }
 
 interface WorkoutsBlockProps {

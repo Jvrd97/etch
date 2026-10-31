@@ -126,6 +126,33 @@ describe('useDashboardSummary', () => {
     expect(result.current.state.status).toBe('loading');
   });
 
+  it('re-reads when the tab comes back and clears the failure flag on a good answer', async () => {
+    const { source, pending } = manualSource();
+    const { result } = renderHook(() => useDashboardSummary(source));
+    await waitFor(() => expect(pending.length).toBe(1));
+    act(() => pending[0].resolve(fullSummary('week')));
+    await waitFor(() => expect(result.current.state.status).toBe('ready'));
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(pending.length).toBe(2));
+    expect(pending[1].period).toBe('week');
+    act(() => pending[1].reject(new TypeError('Failed to fetch')));
+    await waitFor(() => {
+      const state = result.current.state;
+      expect(state.status === 'ready' && state.refreshFailed).toBe(true);
+    });
+
+    act(() => result.current.reload());
+    await waitFor(() => expect(pending.length).toBe(3));
+    act(() => pending[2].resolve(fullSummary('week')));
+    await waitFor(() => {
+      const state = result.current.state;
+      expect(state.status === 'ready' && !state.refreshFailed).toBe(true);
+    });
+  });
+
   it('keeps the numbers when a re-read of the same period fails', async () => {
     const { source, pending } = manualSource();
     const { result } = renderHook(() => useDashboardSummary(source));

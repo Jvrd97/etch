@@ -86,22 +86,31 @@ describe('formatDelta', () => {
 });
 
 describe('deltaTone', () => {
-  it('counts more sleep as good and a lower resting pulse as good', () => {
-    expect(deltaTone('sleep_duration', 20)).toBe('good');
-    expect(deltaTone('sleep_duration', -20)).toBe('bad');
-    expect(deltaTone('resting_heart_rate', -2)).toBe('good');
-    expect(deltaTone('resting_heart_rate', 4)).toBe('bad');
+  it('trusts the direction the server sends', () => {
+    expect(deltaTone('anything', 5, true)).toBe('good');
+    expect(deltaTone('anything', 5, false)).toBe('bad');
+    expect(deltaTone('anything', -5, false)).toBe('good');
+    // The server's word beats the table.
+    expect(deltaTone('HKQuantityTypeIdentifierRestingHeartRate', -3, true)).toBe('bad');
   });
 
-  it('reads the long catalog names the same way', () => {
+  it('falls back to the table of full catalog names when the server sends nothing', () => {
     expect(deltaTone('HKQuantityTypeIdentifierRestingHeartRate', -3)).toBe('good');
+    expect(deltaTone('HKQuantityTypeIdentifierRestingHeartRate', 4)).toBe('bad');
     expect(deltaTone('HKCategoryTypeIdentifierSleepAnalysis', -30)).toBe('bad');
+    expect(deltaTone('HKQuantityTypeIdentifierHeartRateVariabilitySDNN', 6)).toBe('good');
+    expect(deltaTone('HKQuantityTypeIdentifierStepCount', 900)).toBe('good');
   });
 
-  it('judges nothing it does not know and nothing at zero', () => {
-    expect(deltaTone('steps', 100)).toBe('neutral');
-    expect(deltaTone('sleep_duration', 0)).toBe('neutral');
-    expect(deltaTone('sleep_duration', null)).toBe('neutral');
+  it('does not guess from a part of the name', () => {
+    expect(deltaTone('sleep_duration', 20)).toBe('neutral');
+    expect(deltaTone('MyRestingHeartRateCopy', -2)).toBe('neutral');
+  });
+
+  it('judges nothing at zero or without a distance', () => {
+    expect(deltaTone('HKCategoryTypeIdentifierSleepAnalysis', 0)).toBe('neutral');
+    expect(deltaTone('HKCategoryTypeIdentifierSleepAnalysis', null)).toBe('neutral');
+    expect(deltaTone('anything', 0, true)).toBe('neutral');
   });
 });
 

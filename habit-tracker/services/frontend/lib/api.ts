@@ -4564,6 +4564,8 @@ export interface DashboardHealthMetric {
   unit: string;
   /** Distance from the personal norm in the metric's own unit; null while there is no norm. */
   baseline_delta: number | null;
+  /** Which way is better, as the server's key-metric list knows it; absent in an older answer. */
+  higher_is_better?: boolean;
 }
 
 export interface DashboardBest {

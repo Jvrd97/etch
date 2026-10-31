@@ -14,7 +14,7 @@ export const DEFAULT_DASHBOARD_PERIOD: DashboardPeriod = 'week';
 export const HEALTH_SCORE_MIN_DAYS = 3;
 
 const MINUTES_PER_HOUR = 60;
-const MINUS = '−';
+export const MINUS = '\u2212';
 const NO_VALUE = '—';
 const THIN_NBSP = ' ';
 
@@ -107,30 +107,36 @@ export function formatDelta(delta: number | null, unit: string): string {
 export type DeltaTone = 'good' | 'bad' | 'neutral';
 
 /**
- * Which way is better, by a fragment of the metric's identifier. A fragment and
- * not the whole name because the catalog spells one metric two ways
- * (`sleep_duration`, `HKCategoryTypeIdentifierSleepAnalysis`). A metric that
- * matches nothing is described, not judged.
+ * Which way is better for the key metrics, by their full Health catalog name.
+ * Only a fallback for an answer without `higher_is_better`: the server knows the
+ * direction, and a guess from a part of the name is how a new metric gets the
+ * wrong colour.
  */
-const BETTER_DIRECTION: ReadonlyArray<readonly [fragment: string, direction: 1 | -1]> = [
-  ['restingheartrate', -1],
-  ['sleep', 1],
-  ['variability', 1],
-  ['hrv', 1],
-];
+const HIGHER_IS_BETTER: Readonly<Record<string, boolean>> = {
+  HKQuantityTypeIdentifierRestingHeartRate: false,
+  HKQuantityTypeIdentifierHeartRateVariabilitySDNN: true,
+  HKCategoryTypeIdentifierSleepAnalysis: true,
+  HKQuantityTypeIdentifierStepCount: true,
+  HKQuantityTypeIdentifierActiveEnergyBurned: true,
+};
 
-function betterDirection(identifier: string): 1 | -1 | null {
-  const squashed = identifier.toLowerCase().replace(/[^a-z]/g, '');
-  const found = BETTER_DIRECTION.find(([fragment]) => squashed.includes(fragment));
-  return found === undefined ? null : found[1];
-}
-
-export function deltaTone(identifier: string, delta: number | null): DeltaTone {
+/** `higherIsBetter` from the server wins; a metric the table does not list is described, not judged. */
+export function deltaTone(
+  identifier: string,
+  delta: number | null,
+  higherIsBetter?: boolean
+): DeltaTone {
   if (delta === null || delta === 0) return 'neutral';
-  const direction = betterDirection(identifier);
-  if (direction === null) return 'neutral';
-  return delta * direction > 0 ? 'good' : 'bad';
+  const better = higherIsBetter ?? HIGHER_IS_BETTER[identifier];
+  if (better === undefined) return 'neutral';
+  return delta > 0 === better ? 'good' : 'bad';
 }
+
+export const TONE_WORDS: Readonly<Record<DeltaTone, string | null>> = {
+  good: 'лучше нормы',
+  bad: 'хуже нормы',
+  neutral: null,
+};
 
 const HEALTH_LABELS: Readonly<Record<string, string>> = {
   excellent: 'Отлично',

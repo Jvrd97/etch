@@ -10,6 +10,12 @@ const RING_STROKE = 9;
 const RING_SIZE_DESKTOP = 120;
 const RING_SIZE_MOBILE = 92;
 const TRACK_COLOR = 'rgba(255,255,255,0.08)';
+/** `--color-lime`, `--color-green-secondary` and `--color-info` of `app/globals.css`; an SVG stroke cannot read a Tailwind token. */
+const HEALTH_RING_COLOR = '#b8ff36';
+const HABITS_RING_COLOR = '#69e76a';
+const CHALLENGES_RING_COLOR = '#60a5fa';
+/** Gap and dash of the empty track, in SVG units. */
+const EMPTY_TRACK_DASH = '3 6';
 const PERCENT = 100;
 
 interface RingView {
@@ -32,16 +38,20 @@ export function ringViews(scores: DashboardScores): RingView[] {
   const { health, habits, challenges } = scores;
 
   const healthView: RingView = (() => {
-    const base = { key: 'health', title: 'Здоровье', color: '#b8ff36' };
+    const base = { key: 'health', title: 'Здоровье', color: HEALTH_RING_COLOR };
     if (health === null) {
       return { ...base, fraction: null, centre: '—', caption: 'Нет данных' };
     }
     if (health.value === null) {
+      // Three days are there but the server still gave no score: the personal norm has not formed.
+      const enoughDays = health.basis_days >= HEALTH_SCORE_MIN_DAYS;
       return {
         ...base,
         fraction: null,
         centre: '—',
-        caption: `Мало данных: ${health.basis_days} из ${HEALTH_SCORE_MIN_DAYS} дн.`,
+        caption: enoughDays
+          ? 'Нормы пока нет'
+          : `Мало данных: ${health.basis_days} из ${HEALTH_SCORE_MIN_DAYS} дн.`,
       };
     }
     const label = healthLabelText(health.label);
@@ -55,7 +65,7 @@ export function ringViews(scores: DashboardScores): RingView[] {
   })();
 
   const habitsView: RingView = (() => {
-    const base = { key: 'habits', title: 'Привычки', color: '#69e76a' };
+    const base = { key: 'habits', title: 'Привычки', color: HABITS_RING_COLOR };
     if (habits === null || habits.value === null || habits.total === 0) {
       return {
         ...base,
@@ -73,7 +83,7 @@ export function ringViews(scores: DashboardScores): RingView[] {
   })();
 
   const challengesView: RingView = (() => {
-    const base = { key: 'challenges', title: 'Челленджи', color: '#60a5fa' };
+    const base = { key: 'challenges', title: 'Челленджи', color: CHALLENGES_RING_COLOR };
     if (challenges === null || challenges.total === 0) {
       return { ...base, fraction: null, centre: '—', caption: 'Челленджей нет' };
     }
@@ -109,7 +119,7 @@ function Ring({ view, size, mobile }: { view: RingView; size: number; mobile: bo
             fill="none"
             stroke={TRACK_COLOR}
             strokeWidth={RING_STROKE}
-            strokeDasharray={view.fraction === null ? '3 6' : undefined}
+            strokeDasharray={view.fraction === null ? EMPTY_TRACK_DASH : undefined}
           />
           {view.fraction !== null && view.fraction > 0 && (
             <circle

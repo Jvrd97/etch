@@ -28,7 +28,7 @@ afterEach(() => {
 
 const BLOCK_TITLES = [
   'Общий показатель',
-  'Сон и пульс покоя',
+  'Состояние здоровья',
   'Серии',
   'Лучшее за неделю',
   'Динамика тренировок',
@@ -37,6 +37,10 @@ const BLOCK_TITLES = [
 ];
 
 describe('DashboardView', () => {
+  afterEach(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  });
+
   it('shows a skeleton while the first answer is on its way', async () => {
     const source = () => new Promise<DashboardSummary>(() => {});
     render(<DashboardScreen source={source} />);
@@ -109,7 +113,7 @@ describe('DashboardView', () => {
 
     await waitFor(() => expect(screen.getByRole('region', { name: 'Серии' })).toBeTruthy());
     expect(screen.getByText(/Серий пока нет/)).toBeTruthy();
-    expect(screen.getByText(/Данных мало: сон и пульс/)).toBeTruthy();
+    expect(screen.getByText(/Данных мало: показатели здоровья/)).toBeTruthy();
     expect(screen.getByText(/Данных мало: лучшие значения/)).toBeTruthy();
     expect(screen.getByText(/тренировок в этом окне не записано/)).toBeTruthy();
     expect(screen.getByText(/инсайт появится/)).toBeTruthy();
@@ -129,11 +133,37 @@ describe('DashboardView', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('проверьте соединение');
     expect(alert.textContent).not.toContain('Something went wrong');
+    // The header does not go on announcing a wait that is over.
+    expect(screen.queryByText('Собираем сводку…')).toBeNull();
+    expect(screen.getByText('Сводка недоступна')).toBeTruthy();
 
     fireEvent.click(within(alert).getByRole('button', { name: 'Повторить' }));
     await waitFor(() => expect(screen.getByRole('region', { name: 'Серии' })).toBeTruthy());
     expect(screen.queryByRole('alert')).toBeNull();
     expect(calls).toBe(2);
+  });
+
+  it('asks again when the reader comes back to the tab and says so when that read is lost', async () => {
+    let calls = 0;
+    const source = async (period: DashboardPeriod) => {
+      calls += 1;
+      if (calls === 1) return fullSummary(period);
+      throw new TypeError('Failed to fetch');
+    };
+    render(<DashboardScreen source={source} />);
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Серии' })).toBeTruthy());
+    expect(screen.queryByText(/Не удалось обновить сводку/)).toBeNull();
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    await waitFor(() => expect(calls).toBe(2));
+    await waitFor(() =>
+      expect(screen.getByText('Не удалось обновить сводку, показаны прежние данные.')).toBeTruthy()
+    );
+    // The numbers of the earlier read stay on screen.
+    expect(screen.getByRole('region', { name: 'Серии' })).toBeTruthy();
   });
 
   it('renders the mobile shell with 44 px targets, mobile links and a screen-reader title', async () => {

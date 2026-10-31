@@ -38,6 +38,21 @@ describe('ScoreRings', () => {
     expect(screen.getAllByText('—')).toHaveLength(3);
   });
 
+  it('says the norm has not formed when three days are there and the score is still missing', () => {
+    render(
+      <ScoreRings
+        scores={{
+          health: { value: null, label: null, basis_days: 4 },
+          habits: null,
+          challenges: null,
+        }}
+      />
+    );
+
+    expect(screen.getByText('Нормы пока нет')).toBeTruthy();
+    expect(screen.queryByText(/из 3 дн\./)).toBeNull();
+  });
+
   it('names a missing plan and missing challenges', () => {
     render(
       <ScoreRings
@@ -113,40 +128,93 @@ describe('StreaksBlock', () => {
 });
 
 describe('HealthNormBlock', () => {
-  it('shows sleep and resting pulse with the distance from the personal norm', () => {
+  it('is titled «Состояние здоровья» and lists every metric that came', () => {
     render(<HealthNormBlock metrics={fullSummary().health} />);
 
+    expect(screen.getByRole('region', { name: 'Состояние здоровья' })).toBeTruthy();
     expect(screen.getByText('7 ч 12 мин')).toBeTruthy();
     expect(screen.getByText('+20 мин от вашей нормы')).toBeTruthy();
     expect(screen.getByText('58 уд/мин')).toBeTruthy();
     expect(screen.getByText('−2 уд/мин от вашей нормы')).toBeTruthy();
+    expect(screen.getByText('61,5 мс')).toBeTruthy();
+    expect(screen.getByText('на уровне нормы')).toBeTruthy();
   });
 
-  it('colours a lower resting pulse as better and shorter sleep as worse', () => {
+  it('cuts a list longer than five', () => {
+    const metric = fullSummary().health[0];
+    const six = Array.from({ length: 6 }, (_, index) => ({
+      ...metric,
+      identifier: `m${index}`,
+      label: `Метрика ${index}`,
+    }));
+    render(<HealthNormBlock metrics={six} />);
+    expect(screen.getAllByRole('listitem')).toHaveLength(5);
+  });
+
+  it('says better or worse in words, not only in colour, by the direction the server sent', () => {
     render(
       <HealthNormBlock
         metrics={[
-          { identifier: 'sleep_duration', label: 'Сон', value: 400, unit: 'min', baseline_delta: -30 },
           {
-            identifier: 'resting_heart_rate',
+            identifier: 'a',
+            label: 'Сон',
+            value: 400,
+            unit: 'min',
+            baseline_delta: -30,
+            higher_is_better: true,
+          },
+          {
+            identifier: 'b',
             label: 'Пульс покоя',
             value: 56,
             unit: 'count/min',
             baseline_delta: -3,
+            higher_is_better: false,
           },
         ]}
       />
     );
 
-    expect(screen.getByText('−30 мин от вашей нормы').className).toContain('text-danger');
-    expect(screen.getByText('−3 уд/мин от вашей нормы').className).toContain('text-success');
+    const items = screen.getAllByRole('listitem');
+    expect(within(items[0]).getByText('хуже нормы').parentElement?.className).toContain('text-danger');
+    expect(within(items[1]).getByText('лучше нормы').parentElement?.className).toContain('text-success');
+  });
+
+  it('judges nothing for a metric without a known direction', () => {
+    render(
+      <HealthNormBlock
+        metrics={[
+          { identifier: 'mystery', label: 'Нечто', value: 5, unit: 'zz', baseline_delta: 2 },
+        ]}
+      />
+    );
+
+    expect(screen.queryByText('лучше нормы')).toBeNull();
+    expect(screen.queryByText('хуже нормы')).toBeNull();
+  });
+
+  it('falls back to the table of full catalog names when the field is absent', () => {
+    render(
+      <HealthNormBlock
+        metrics={[
+          {
+            identifier: 'HKQuantityTypeIdentifierRestingHeartRate',
+            label: 'Пульс покоя',
+            value: 60,
+            unit: 'count/min',
+            baseline_delta: 4,
+          },
+        ]}
+      />
+    );
+    expect(screen.getByText('хуже нормы')).toBeTruthy();
   });
 
   it('says the norm is not known yet and does not invent a value', () => {
     render(
       <HealthNormBlock
         metrics={[
-          { identifier: 'sleep_duration', label: 'Сон', value: null, unit: 'min', baseline_delta: null },
+          { identifier: 'x', label: 'Сон', value: null, unit: 'min', baseline_delta: null },
         ]}
       />
     );
@@ -155,9 +223,9 @@ describe('HealthNormBlock', () => {
     expect(screen.getByText('нормы пока нет')).toBeTruthy();
   });
 
-  it('is a line of words when nothing came from Health', () => {
+  it('is a line of words about health in general when nothing came from Health', () => {
     render(<HealthNormBlock metrics={[]} />);
-    expect(screen.getByText(/Данных мало: сон и пульс/)).toBeTruthy();
+    expect(screen.getByText(/Данных мало: показатели здоровья/)).toBeTruthy();
   });
 });
 
@@ -204,28 +272,36 @@ describe('WorkoutsBlock', () => {
 });
 
 describe('InsightBlock', () => {
-  it('shows the text, the server time it was made and the way to the history', () => {
-    render(<InsightBlock insight={fullSummary().insight} />);
+  it('shows the text, the server time it was made and the way to /insights', () => {
+    render(<InsightBlock insight={fullSummary().insight} period="week" />);
 
     expect(screen.getByRole('region', { name: 'Инсайт недели' })).toBeTruthy();
     expect(screen.getByText(/Сон дольше 7 часов/)).toBeTruthy();
     expect(screen.getByText('Сформирован 31 окт, 09:00')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /История разборов/ }).getAttribute('href')).toBe(
+    expect(screen.getByRole('link', { name: /Разборы и запуск нового/ }).getAttribute('href')).toBe(
       '/insights'
     );
   });
 
-  it('links to the mobile history in the mobile shell', () => {
-    render(<InsightBlock insight={fullSummary().insight} mobile />);
-    expect(screen.getByRole('link', { name: /История разборов/ }).getAttribute('href')).toBe(
+  it('is «Инсайт периода» over a month', () => {
+    render(<InsightBlock insight={fullSummary('month').insight} period="month" />);
+    expect(screen.getByRole('region', { name: 'Инсайт периода' })).toBeTruthy();
+  });
+
+  it('links to the mobile page in the mobile shell', () => {
+    render(<InsightBlock insight={fullSummary().insight} period="week" mobile />);
+    expect(screen.getByRole('link', { name: /Разборы и запуск нового/ }).getAttribute('href')).toBe(
       '/m/insights'
     );
   });
 
-  it('is a line of words without an insight', () => {
-    render(<InsightBlock insight={null} />);
+  it('is a line of words without an insight, and the way to start an analysis stays', () => {
+    render(<InsightBlock insight={null} period="week" />);
     expect(screen.getByText(/инсайт появится/)).toBeTruthy();
-    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getByRole('link', { name: /Разборы и запуск нового/ }).getAttribute('href')).toBe(
+      '/insights'
+    );
+    expect(screen.queryByText(/Сформирован/)).toBeNull();
   });
 });
 

@@ -88,12 +88,20 @@ export function DashboardView({
           </h1>
           <p className="mt-1 text-text-secondary" aria-live="polite">
             {summary === null
-              ? 'Собираем сводку…'
+              ? state.status === 'error'
+                ? 'Сводка недоступна'
+                : 'Собираем сводку…'
               : `${formatRange(summary.from, summary.to)} · сегодня ${formatDayShort(summary.today)}`}
           </p>
         </div>
         <PeriodSwitch period={period} onChange={onPeriodChange} mobile={mobile} />
       </header>
+
+      {state.status === 'ready' && state.refreshFailed && !state.refreshing && (
+        <p role="status" className="text-[13px] text-warning">
+          Не удалось обновить сводку, показаны прежние данные.
+        </p>
+      )}
 
       {state.status === 'loading' && <Skeleton mobile={mobile} />}
       {state.status === 'error' && (
@@ -111,7 +119,7 @@ export function DashboardView({
           <StreaksBlock streaks={summary.streaks} mobile={mobile} />
           <BestsBlock bests={summary.bests} period={summary.period} mobile={mobile} />
           <WorkoutsBlock workouts={summary.workouts} mobile={mobile} />
-          <InsightBlock insight={summary.insight} mobile={mobile} />
+          <InsightBlock insight={summary.insight} period={summary.period} mobile={mobile} />
           <NutritionSoonBlock mobile={mobile} />
         </div>
       )}

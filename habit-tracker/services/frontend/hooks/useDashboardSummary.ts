@@ -12,7 +12,8 @@ import { DEFAULT_DASHBOARD_PERIOD, dashboardErrorMessage } from '@/lib/dashboard
 
 export type DashboardSummaryState =
   | { status: 'loading' }
-  | { status: 'ready'; summary: DashboardSummary; refreshing: boolean }
+  /** `refreshing`: the other period is on its way; `refreshFailed`: the last re-read of this period was lost and these numbers are the earlier ones. */
+  | { status: 'ready'; summary: DashboardSummary; refreshing: boolean; refreshFailed: boolean }
   | { status: 'error'; message: string };
 
 /** The read, as a parameter so tests need no module mock. Keep the function stable between renders. */
@@ -31,7 +32,7 @@ export interface DashboardSummaryHandle {
 /** What the last answer was and for which period; the state shown is derived from it. */
 type Answer =
   | { kind: 'none' }
-  | { kind: 'summary'; summary: DashboardSummary }
+  | { kind: 'summary'; summary: DashboardSummary; refreshFailed: boolean }
   | { kind: 'error'; message: string; period: DashboardPeriod };
 
 export function useDashboardSummary(
@@ -50,14 +51,14 @@ export function useDashboardSummary(
         .then(() => source(target))
         .then(
           (summary) => {
-            if (mine === launched.current) setAnswer({ kind: 'summary', summary });
+            if (mine === launched.current) setAnswer({ kind: 'summary', summary, refreshFailed: false });
           },
           (error: unknown) => {
             if (mine !== launched.current) return;
-            // A lost re-read of the period already on screen is not news: keep its numbers.
+            // A lost re-read of the period already on screen keeps its numbers and says so.
             setAnswer((previous) =>
               previous.kind === 'summary' && previous.summary.period === target
-                ? previous
+                ? { ...previous, refreshFailed: true }
                 : { kind: 'error', message: dashboardErrorMessage(error), period: target }
             );
           }
@@ -86,7 +87,12 @@ export function useDashboardSummary(
 
 function deriveState(answer: Answer, period: DashboardPeriod): DashboardSummaryState {
   if (answer.kind === 'summary') {
-    return { status: 'ready', summary: answer.summary, refreshing: answer.summary.period !== period };
+    return {
+      status: 'ready',
+      summary: answer.summary,
+      refreshing: answer.summary.period !== period,
+      refreshFailed: answer.refreshFailed,
+    };
   }
   if (answer.kind === 'error' && answer.period === period) {
     return { status: 'error', message: answer.message };
