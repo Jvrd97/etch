@@ -1,6 +1,7 @@
-# [review:need-review] PHASE-01/adhoc-makefile, PHASE-03/85-phase-03-bookkeeping, PHASE-03/120
+# [review:need-review] PHASE-01/adhoc-makefile, PHASE-03/85-phase-03-bookkeeping, PHASE-03/120, PHASE-03/182
 # summary: containerless backend run — gunicorn with uvicorn workers, db in docker;
 # summary: `check` also guards the migration chain against a second alembic head;
+# summary: `smoke` runs with -s -rs so the first-turn token count and any skip reason reach the output (PHASE-03/182);
 # summary: `preflight` = `check` plus the live-CLI isolation smoke, the run made before a deploy
 
 # Postgres runs in docker published on host 5433 (5432 is taken by another dev instance)
@@ -77,7 +78,7 @@ smoke:
 	LLM_CLI_SMOKE=1 \
 	CHAT_CLAUDE_CONFIG_DIR=$(SMOKE_CONFIG_DIR) \
 	CHAT_CLI_CWD=$(SMOKE_CWD) \
-	uv run pytest tests/test_cli_isolation_smoke.py -q
+	uv run pytest tests/test_cli_isolation_smoke.py -q -s -rs
 
 ## the run made before a deploy: everything `check` does plus the live smoke
 preflight: check smoke

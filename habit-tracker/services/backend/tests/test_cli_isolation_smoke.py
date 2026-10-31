@@ -23,12 +23,13 @@ preflight` перед выкатом), а без него пропускаетс
 нашёл бы сам, — то же предусловие деплоя, что у чата (`#119`).
 """
 
-# [review:need-review] PHASE-03/120
-# summary: live-CLI smoke — one real isolated `claude -p` call whose first-turn input_tokens + cache_creation_input_tokens must stay under the ceiling and whose answer must carry no trace of the host's personal skills and hooks; skipped with a reason when the binary, the subscription or the pre-deploy flag is absent
+# [review:need-review] PHASE-03/120, PHASE-03/182
+# summary: live-CLI smoke — prints the first-turn token count, the ceiling and the CLI version of every live run; — one real isolated `claude -p` call whose first-turn input_tokens + cache_creation_input_tokens must stay under the ceiling and whose answer must carry no trace of the host's personal skills and hooks; skipped with a reason when the binary, the subscription or the pre-deploy flag is absent
 import asyncio
 import json
 import os
 import shutil
+import subprocess
 from typing import Any
 
 import pytest
@@ -151,6 +152,7 @@ async def run_isolated_probe() -> dict[str, Any]:
             f"claude вышел с кодом {process.returncode}: запуск сломан — "
             "чужой или неизвестный этой версии CLI флаг в наборе изоляции"
         )
+    print(smoke_report(payload, cli_version=installed_cli_version()))
     return payload
 
 
@@ -172,8 +174,43 @@ def first_turn_input_tokens(payload: dict[str, Any]) -> int:
     )
 
 
+def smoke_report(payload: dict[str, Any], *, cli_version: str) -> str:
+    """
+    Строка для вывода прогона: цифра первого хода, порог, версия CLI.
+
+    Без цифры «passed» не говорит, насколько близко прогон к порогу, и два
+    прогона разных дней нечем сравнить. Печатается с `-s` (`make smoke`).
+    """
+    usage = payload["usage"]
+    return (
+        f"[smoke] CLI {cli_version}: первый ход "
+        f"{first_turn_input_tokens(payload)} входных токенов "
+        f"(input_tokens={usage.get('input_tokens')}, "
+        f"cache_creation_input_tokens={usage.get('cache_creation_input_tokens')}) "
+        f"при пороге {MAX_FIRST_TURN_INPUT_TOKENS}"
+    )
+
+
+def installed_cli_version() -> str:
+    """Версия бинарника `claude`, под которым снята цифра."""
+    result = subprocess.run(
+        [CLI_BINARY, "--version"], capture_output=True, text=True, timeout=30
+    )
+    return result.stdout.strip() or "unknown"
+
+
 class TestSmokeMeasuresTheRealCall:
     """Смоук меряет тот запуск, которым ходят инсайты, а не свою копию."""
+
+    def test_report_names_the_number_and_the_ceiling(self) -> None:
+        """Прогон печатает цифру и порог: без числа прогоны нечем сравнить."""
+        payload = {"usage": {"input_tokens": 3, "cache_creation_input_tokens": 280}}
+
+        report = smoke_report(payload, cli_version="2.1.309 (Claude Code)")
+
+        assert "283" in report
+        assert str(MAX_FIRST_TURN_INPUT_TOKENS) in report
+        assert "2.1.309" in report
 
     def test_probe_runs_the_full_isolation_set(self) -> None:
         """
