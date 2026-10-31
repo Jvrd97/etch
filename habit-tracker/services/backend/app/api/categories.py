@@ -1,4 +1,5 @@
-# [review:need-review] 175, PHASE-01/207, PHASE-01/178
+# [review:need-review] 175, PHASE-01/207, PHASE-01/178, PHASE-03/294
+# summary: PHASE-03/294 — POST /{id}/relapses takes an optional entry_date, a day after today is 422
 # summary: category update maps invalid explicit primary fields to HTTP 422; POST /{id}/relapses records a one-tap relapse of an avoid category and GET /{id}/relapses returns its relapse days; GET /templates and POST /templates/apply expose the built-in category catalog
 from typing import cast, get_args
 
@@ -36,7 +37,11 @@ from app.schemas.category_template import (
     CategoryTemplateResponse,
 )
 from app.schemas.entry import EntryResponse
-from app.schemas.streak import RelapseHistoryResponse, RelapseRecordedResponse
+from app.schemas.streak import (
+    RelapseHistoryResponse,
+    RelapseRecordedResponse,
+    RelapseRecordRequest,
+)
 from app.core.daytime import today_local
 
 router = APIRouter(prefix="/categories", tags=["categories"])
@@ -397,6 +402,7 @@ async def get_category_relapses(
 async def record_category_relapse(
     category_id: int,
     response: Response,
+    payload: RelapseRecordRequest | None = None,
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> RelapseRecordedResponse:
@@ -406,6 +412,11 @@ async def record_category_relapse(
     Сервер сам выбирает, что записать: галочку в основное или первое
     boolean-поле, иначе 1 в первое число, иначе запись без значений.
     Сколько и заметку клиент дописывает потом через `PATCH /entries/{id}`.
+
+    Тело необязательно. `entry_date` — день, когда это случилось («пил в
+    четверг»): без него срыв ставится на сегодня по действующей границе суток,
+    день позже сегодняшнего — 422. Окно повтора считается внутри одного дня.
+    Записанный срыв переносится на другой день через `PATCH /entries/{id}`.
 
     Повтор с тем же `Idempotency-Key` и повторное нажатие в течение минуты
     возвращают уже записанный срыв (HTTP 200) вместо второго. Первое создание
@@ -425,7 +436,14 @@ async def record_category_relapse(
             detail=f"Category {category_id} is not an avoid category",
         )
 
-    entry, outcome = await streak_crud.record_relapse(db, category, idempotency_key)
+    on = payload.entry_date if payload else None
+    if on is not None and on > today_local():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A relapse cannot be recorded for a day that has not come yet",
+        )
+
+    entry, outcome = await streak_crud.record_relapse(db, category, idempotency_key, on)
     if outcome != "created":
         response.status_code = status.HTTP_200_OK
     recorded = EntryResponse.model_validate(entry)

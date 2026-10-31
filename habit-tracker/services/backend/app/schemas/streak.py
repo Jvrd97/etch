@@ -1,4 +1,6 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/207
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-01/207, PHASE-03/294
+# summary: PHASE-03/294 — RelapseRecordRequest, the optional day a Happened is recorded on
+# summary: PHASE-03/294 — RelapseRecordRequest, the optional day a Happened is recorded on
 # summary: StreakResponse DTO (current/best streak, last relapse date, streak mode); RelapseHistoryResponse — the same numbers plus every relapse day, the first tracked day and the server's today; RelapseRecordedResponse — the entry a Happened tap landed on and whether that tap wrote it
 from datetime import date
 
@@ -35,6 +37,17 @@ class RelapseHistoryResponse(StreakResponse):
     # midnight), so the page counts its week and month from the same day the
     # streak was counted to, not from the browser's calendar.
     today: date
+
+
+class RelapseRecordRequest(BaseModel):
+    """
+    Optional body of a Happened: the day the relapse happened on.
+
+    No body, or no `entry_date`, is today by the day rule in force. A day after
+    that today is refused: a relapse cannot be recorded ahead of time.
+    """
+
+    entry_date: date | None = None
 
 
 class RelapseRecordedResponse(EntryResponse):

@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127, PHASE-01/207
+# [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127, PHASE-01/207, PHASE-03/294
+# summary: PHASE-03/294 — record_relapse takes the day the relapse happened on, the repeat window is per day
 # summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has (an entry with no values always is), the relapse days of a window for an `abstain` challenge, and the one-tap relapse writer that a repeated tap within a minute cannot double and that says whether this tap wrote the entry
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -366,10 +367,13 @@ RelapseOutcome = Literal["created", "replayed", "repeated"]
 
 
 async def record_relapse(
-    db: AsyncSession, category: Category, idempotency_key: str | None = None
+    db: AsyncSession,
+    category: Category,
+    idempotency_key: str | None = None,
+    on: date | None = None,
 ) -> tuple[Entry, RelapseOutcome]:
     """
-    Record that the avoided thing happened today; return the entry and how.
+    Record that the avoided thing happened on `on` (today by default); return the entry and how.
 
     One rule for every avoid category, whatever its fields: the value goes into
     `relapse_field` (a ticked box, or one of a count), and a category without
@@ -378,7 +382,7 @@ async def record_relapse(
     to the returned entry afterwards.
 
     Nothing is written for a replayed key or for a tap within
-    `RELAPSE_REPEAT_WINDOW` of a relapse already recorded today. Only the first
+    `RELAPSE_REPEAT_WINDOW` of a relapse already recorded on that day. Only the first
     two outcomes make the entry this tap's own: a `repeated` entry belongs to
     whoever wrote it, and taking this tap back must not delete it.
     """
@@ -387,13 +391,13 @@ async def record_relapse(
         if replayed is not None:
             return replayed, "replayed"
 
-    today = today_local()
-    recent = await _recent_relapse(db, category, today)
+    day = on or today_local()
+    recent = await _recent_relapse(db, category, day)
     if recent is not None:
         return recent, "repeated"
 
     try:
-        return await _write_relapse(db, category, today, idempotency_key), "created"
+        return await _write_relapse(db, category, day, idempotency_key), "created"
     except IntegrityError:
         # A concurrent replay of the same key won the race between the lookup
         # and the insert; the unique constraint is the backstop.
