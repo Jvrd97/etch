@@ -360,6 +360,69 @@ class TestOtherLinks:
         assert total == 60 + 30 + 45 + 40 + 30
 
 
+class TestOverlappingKinds:
+    async def test_the_three_figures_add_up_when_records_of_different_kinds_overlap(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """
+        Task X 10:00-11:30, a numeric id 11:00-12:00, ClickUp 11:30-12:30 and
+        nothing 12:00-12:40: 160 minutes measured, not 220.
+        """
+        items = await store_plan(client, "A")
+        db_session.add(row_of(at(10), at(11, 30), item=uuid.UUID(items["A"])))
+        db_session.add(row_of(at(11), at(12), plan_task_id=5))
+        db_session.add(row_of(at(11, 30), at(12, 30), clickup_task_id="86abc"))
+        db_session.add(row_of(at(12), at(12, 40)))
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert [row["minutes"] for row in body["tasks"]] == [90]
+        assert (
+            body["other_linked_minutes"] == 60
+        )  # 11:30-12:30 minus nothing; 11:00-11:30 is X's
+        assert body["untasked_minutes"] == 10  # 12:30-12:40 only
+        assert (
+            sum(row["minutes"] for row in body["tasks"])
+            + body["untasked_minutes"]
+            + body["other_linked_minutes"]
+        ) == 160
+
+    async def test_an_agent_interval_under_a_task_timer_is_the_tasks_time_not_work_outside_the_plan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The panel's timer links 10:00-11:00 to A; the agent measured Safari 10:00-10:50 unlinked."""
+        items = await store_plan(client, "A")
+        db_session.add(row_of(at(10), at(11), item=uuid.UUID(items["A"])))
+        db_session.add(row_of(at(10), at(10, 50)))
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert [row["minutes"] for row in body["tasks"]] == [60]
+        assert body["untasked_minutes"] == 0
+        assert body["long_untasked"] == []
+
+    async def test_work_outside_the_plan_is_only_the_part_no_task_covers(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """An agent interval 10:00-11:30 with a timer on 10:00-10:40 leaves 10:40-11:30 outside the plan."""
+        items = await store_plan(client, "A")
+        db_session.add(row_of(at(10), at(10, 40), item=uuid.UUID(items["A"])))
+        agent = row_of(at(10), at(11, 30))
+        db_session.add(agent)
+        await db_session.commit()
+
+        body = await task_time(client)
+
+        assert body["untasked_minutes"] == 50
+        assert [
+            (row["interval_id"], row["minutes"]) for row in body["long_untasked"]
+        ] == [(agent.id, 50)]
+        piece_start = body["long_untasked"][0]["started_at"].replace("Z", "+00:00")
+        assert datetime.fromisoformat(piece_start) == at(10, 40)
+
+
 class TestWorkOutsideThePlan:
     async def test_an_untasked_interval_over_half_an_hour_is_listed(
         self, client: AsyncClient

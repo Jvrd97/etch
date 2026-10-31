@@ -2,7 +2,7 @@
 // [review:need-review] PHASE-03/166
 // summary: reads the measured time of the day on screen against its plan — once per day and again once a write of a done mark has settled, then every minute only while the day is the server's today; an answer for another day is never returned and a failed read leaves the blocks out instead of breaking the day
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 // A namespace import read at call time, as in `useClaudeUsage`: suites that mock
 // `@/lib/api` with a fixed list of names must still link every screen of the day.
 import * as api from '@/lib/api';
@@ -37,9 +37,10 @@ export function useTaskTime(
   source: TaskTimeSource = API_SOURCE
 ): TaskTimeDay | null {
   const [taskTime, setTaskTime] = useState<TaskTimeDay | null>(null);
-  const settledKey = useRef(marksKey ?? '');
-  if (marksKey !== null) settledKey.current = marksKey;
-  const key = settledKey.current;
+  // Adjusting state while rendering: a null key (a write in flight) leaves the
+  // last settled one in force, so the effect below does not run until the write is done.
+  const [key, setKey] = useState(marksKey ?? '');
+  if (marksKey !== null && marksKey !== key) setKey(marksKey);
 
   useEffect(() => {
     if (date === null) return;

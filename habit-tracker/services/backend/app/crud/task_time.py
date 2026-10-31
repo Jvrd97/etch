@@ -35,7 +35,6 @@ from app.models.plan import DayPlan, PlanItem, PlanSection
 
 SECONDS_PER_MINUTE = 60
 
-
 # An untasked stretch this long is work outside the plan worth showing in the
 # same hour; shorter ones are the noise of a day and only feed the share.
 LONG_UNTASKED_SECONDS = 30 * 60
@@ -142,8 +141,127 @@ async def _done_without_traces(
     ]
 
 
-async def _long_untasked(db: AsyncSession, on: date) -> list[LongUntasked]:
-    """Untasked stretches of half an hour or more, cut to the day they are shown on."""
+# One interval of the day cut to the day, with the three kinds of link it can
+# carry. `plan_item_id` is the strongest: an interval that has it is a task's,
+# whatever ids it also carries.
+_INSIDE_THE_DAY = """
+    WITH inside AS (
+        SELECT
+            plan_item_id,
+            plan_task_id,
+            clickup_task_id,
+            tstzrange(started_at, ended_at) * tstzrange(:day_start, :day_end) AS r
+        FROM activity_interval
+        WHERE started_at < :day_end AND ended_at > :day_start
+    )
+"""
+
+# Seconds of each plan item: the union of the ranges that name it, so a task is
+# one row however many ClickUp ids its records carry.
+_SECONDS_PER_ITEM = text(
+    _INSIDE_THE_DAY
+    + """
+    SELECT
+        plan_item_id,
+        (
+            SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (upper(piece) - lower(piece)))), 0)
+            FROM unnest(range_agg(r)) AS piece
+        )::bigint AS seconds
+    FROM inside
+    WHERE plan_item_id IS NOT NULL AND NOT isempty(r)
+    GROUP BY plan_item_id
+    """
+)
+
+# What is left of the day once the stronger kind is taken away: time tied only
+# by another id is what the plan items do not already cover, and time tied to
+# nothing is what no link of any kind covers. So a timer on a task over the
+# minutes the agent measured in Safari leaves those minutes to the task, not to
+# «работа вне плана». The pieces come back as ranges and are added up in python.
+_UNCOVERED_PIECES = text(
+    _INSIDE_THE_DAY
+    + """
+    , kinds AS (
+        SELECT
+            COALESCE(
+                range_agg(r) FILTER (WHERE plan_item_id IS NOT NULL),
+                '{}'::tstzmultirange
+            ) AS by_item,
+            COALESCE(
+                range_agg(r) FILTER (
+                    WHERE plan_item_id IS NULL
+                    AND (plan_task_id IS NOT NULL OR clickup_task_id IS NOT NULL)
+                ),
+                '{}'::tstzmultirange
+            ) AS by_other_id,
+            COALESCE(
+                range_agg(r) FILTER (
+                    WHERE plan_item_id IS NULL
+                    AND plan_task_id IS NULL
+                    AND clickup_task_id IS NULL
+                ),
+                '{}'::tstzmultirange
+            ) AS by_nothing
+        FROM inside
+        WHERE NOT isempty(r)
+    )
+    SELECT 'other' AS kind, lower(piece) AS started_at, upper(piece) AS ended_at
+    FROM kinds, unnest(by_other_id - by_item) AS piece
+    UNION ALL
+    SELECT 'nothing', lower(piece), upper(piece)
+    FROM kinds, unnest(by_nothing - by_item - by_other_id) AS piece
+    ORDER BY 2
+    """
+)
+
+
+@dataclass(frozen=True)
+class MeasuredDay:
+    """The measured time of one day split by the strongest link each minute has."""
+
+    per_item: dict[uuid.UUID, int]
+    other_linked_seconds: int
+    untasked_seconds: int
+    untasked_pieces: list[tuple[datetime, datetime]]
+
+
+async def _measured_day(db: AsyncSession, on: date) -> MeasuredDay:
+    start, end = day_bounds(on)
+    bounds = {"day_start": start, "day_end": end}
+    per_item = {
+        row.plan_item_id: int(row.seconds)
+        for row in await db.execute(_SECONDS_PER_ITEM, bounds)
+    }
+    other_linked = 0
+    untasked = 0
+    pieces: list[tuple[datetime, datetime]] = []
+    for row in await db.execute(_UNCOVERED_PIECES, bounds):
+        seconds = int((row.ended_at - row.started_at).total_seconds())
+        if row.kind == "other":
+            other_linked += seconds
+        else:
+            untasked += seconds
+            pieces.append((row.started_at, row.ended_at))
+    return MeasuredDay(per_item, other_linked, untasked, pieces)
+
+
+async def _long_untasked(
+    db: AsyncSession, on: date, pieces: list[tuple[datetime, datetime]]
+) -> list[LongUntasked]:
+    """
+    The pieces of untasked time of half an hour or more, each named by the first
+    untasked interval that lies under it.
+
+    A piece is what remains after linked time is taken away, so it can be a part
+    of an interval, and the interval is only there to say which application it was.
+    """
+    long_pieces = [
+        piece
+        for piece in pieces
+        if (piece[1] - piece[0]).total_seconds() >= LONG_UNTASKED_SECONDS
+    ]
+    # Read even when there is nothing long to name: a fixed number of queries
+    # is what the statement-count test holds, and a branch would move it.
     start, end = day_bounds(on)
     names = await activity_crud.app_names(db)
     rows = await db.execute(
@@ -155,76 +273,26 @@ async def _long_untasked(db: AsyncSession, on: date) -> list[LongUntasked]:
         )
         .order_by(ActivityInterval.started_at, ActivityInterval.id)
     )
+    candidates = list(rows.scalars())
     found: list[LongUntasked] = []
-    for row in rows.scalars():
-        inside_from = max(row.started_at, start)
-        inside_to = min(row.ended_at, end)
-        seconds = int((inside_to - inside_from).total_seconds())
-        if seconds < LONG_UNTASKED_SECONDS:
-            continue
+    for from_at, to_at in long_pieces:
+        under = next(
+            row
+            for row in candidates
+            if row.started_at < to_at and row.ended_at > from_at
+        )
         found.append(
             LongUntasked(
-                interval_id=row.id,
-                started_at=inside_from,
-                ended_at=inside_to,
-                minutes=seconds // SECONDS_PER_MINUTE,
-                app_name=names.get(row.app_id, activity_crud.MANUAL_APP_NAME)
-                if row.app_id
+                interval_id=under.id,
+                started_at=from_at,
+                ended_at=to_at,
+                minutes=int((to_at - from_at).total_seconds()) // SECONDS_PER_MINUTE,
+                app_name=names.get(under.app_id, activity_crud.MANUAL_APP_NAME)
+                if under.app_id
                 else activity_crud.MANUAL_APP_NAME,
             )
         )
     return found
-
-
-# The measured time of one day in one pass: every interval cut to the day, then
-# the union of the ranges per plan item, per «tied by another id» and per
-# «tied to nothing». `plan_item_id` wins over the other two ids, so one task
-# is one row however many ClickUp ids its records carry. The three kinds do not
-# overlap, which is what lets them be added up to the time measured.
-_SECONDS_BY_LINK = text(
-    """
-    WITH inside AS (
-        SELECT
-            plan_item_id,
-            (
-                plan_item_id IS NULL
-                AND (plan_task_id IS NOT NULL OR clickup_task_id IS NOT NULL)
-            ) AS other_linked,
-            tstzrange(started_at, ended_at) * tstzrange(:day_start, :day_end) AS r
-        FROM activity_interval
-        WHERE started_at < :day_end AND ended_at > :day_start
-    )
-    SELECT
-        plan_item_id,
-        other_linked,
-        (
-            SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (upper(piece) - lower(piece)))), 0)
-            FROM unnest(range_agg(r)) AS piece
-        )::bigint AS seconds
-    FROM inside
-    WHERE NOT isempty(r)
-    GROUP BY plan_item_id, other_linked
-    """
-)
-
-
-async def _seconds_by_link(
-    db: AsyncSession, on: date
-) -> tuple[dict[uuid.UUID, int], int, int]:
-    """Seconds per plan item, on other ids, and on nothing, for the day `on`."""
-    start, end = day_bounds(on)
-    rows = await db.execute(_SECONDS_BY_LINK, {"day_start": start, "day_end": end})
-    per_item: dict[uuid.UUID, int] = {}
-    other_linked = 0
-    untasked = 0
-    for row in rows:
-        if row.plan_item_id is not None:
-            per_item[row.plan_item_id] = int(row.seconds)
-        elif row.other_linked:
-            other_linked += int(row.seconds)
-        else:
-            untasked += int(row.seconds)
-    return per_item, other_linked, untasked
 
 
 async def untasked_share(db: AsyncSession, today: date) -> UntaskedShare:
@@ -264,9 +332,9 @@ async def task_time_report(
     db: AsyncSession, on: date, today: date, committed: set[uuid.UUID]
 ) -> TaskTimeReport:
     """Everything the day's closing needs about measured time, in a fixed number of queries."""
-    per_item, other_linked, untasked = await _seconds_by_link(db, on)
-    titles = await _titles(db, set(per_item))
-    ranked = sorted(per_item.items(), key=lambda pair: -pair[1])
+    measured = await _measured_day(db, on)
+    titles = await _titles(db, set(measured.per_item))
+    ranked = sorted(measured.per_item.items(), key=lambda pair: (-pair[1], pair[0]))
     return TaskTimeReport(
         tasks=[
             TaskMinutes(
@@ -276,9 +344,9 @@ async def task_time_report(
             )
             for item_id, seconds in ranked
         ],
-        untasked_seconds=untasked,
-        other_linked_seconds=other_linked,
-        long_untasked=await _long_untasked(db, on),
+        untasked_seconds=measured.untasked_seconds,
+        other_linked_seconds=measured.other_linked_seconds,
+        long_untasked=await _long_untasked(db, on, measured.untasked_pieces),
         done_without_traces=await _done_without_traces(db, on, committed),
         untasked_share=await untasked_share(db, today),
     )

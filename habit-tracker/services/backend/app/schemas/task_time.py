@@ -58,12 +58,19 @@ class TaskTimeResponse(BaseModel):
     today: date_type = Field(
         description="День сервера: только он ещё растёт, и только его экран перечитывает"
     )
-    untasked_minutes: int
+    untasked_minutes: int = Field(
+        description=(
+            "Минуты без привязки любого вида, за вычетом минут, покрытых привязанными "
+            "интервалами: таймер на задаче поверх замера агента оставляет их задаче. "
+            "`tasks` + `untasked_minutes` + `other_linked_minutes` равно объединению "
+            "всех интервалов дня, кроме минут, в которых идут две разные задачи сразу"
+        )
+    )
     other_linked_minutes: int = Field(
         description=(
             "Время интервалов, привязанных не к пункту плана, а по `plan_task_id` или "
-            "`clickup_task_id` (так пишет редактор интервала). Не «без задачи» и не "
-            "«задача дня»; вместе с `tasks` и `untasked_minutes` даёт замеренное время дня"
+            "`clickup_task_id` (так пишет редактор интервала), за вычетом минут, которые "
+            "уже учтены в `tasks`. Не «без задачи» и не «задача дня»"
         )
     )
     long_untasked: list[LongUntaskedInterval]
