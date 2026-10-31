@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/238, PHASE-02/68
-// summary: mobile Health screen tests for server grouping, values, the Apple settings link, the whole-catalog sync hint and a failed load — all through the shared useHealthMetrics/HealthMetricGroups now behind this page; the sleep section above the catalog and the catalog surviving a failed sleep read
+// [review:need-review] PHASE-02/65, PHASE-03/209, PHASE-03/238, PHASE-02/68, PHASE-03/303
+// summary: the state card of the day (index from the summary endpoint, hidden when it is missing); mobile Health screen tests for server grouping, values, the Apple settings link, the whole-catalog sync hint and a failed load — all through the shared useHealthMetrics/HealthMetricGroups now behind this page; the sleep section above the catalog and the catalog surviving a failed sleep read
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -68,11 +68,16 @@ const NIGHT: HealthSleepNight = {
 
 const getSleep = mock(() => Promise.resolve({ nights: [NIGHT] }));
 
+const getScore = mock(() =>
+  Promise.resolve({ scores: { health: { value: 78, label: 'good', basis_days: 7 } } })
+);
+
 mock.module('@/lib/api', () => ({
   healthAPI: {
     getMetrics: (...args: [string, string]) => getMetrics(...args),
     getSleep: () => getSleep(),
   },
+  healthScoreAPI: { today: () => getScore() },
 }));
 
 const { default: HealthPage } = await import('./page');
@@ -81,6 +86,7 @@ afterEach(() => {
   cleanup();
   getMetrics.mockClear();
   getSleep.mockClear();
+  getScore.mockClear();
 });
 
 describe('/m/health', () => {
@@ -130,7 +136,7 @@ describe('/m/health', () => {
   it('shows last night above the catalog, on the phone clock', async () => {
     render(<HealthPage />);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Сон' })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Сон по ночам' })).toBeDefined());
     expect(screen.getAllByText('7 ч 10 мин').length).toBeGreaterThan(0);
     expect(screen.getByText(/отбой 23:40, подъём 07:10/)).toBeDefined();
     expect(getSleep).toHaveBeenCalledTimes(1);
@@ -141,7 +147,7 @@ describe('/m/health', () => {
     render(<HealthPage />);
 
     await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
-    expect(screen.queryByRole('heading', { name: 'Сон' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Сон по ночам' })).toBeNull();
   });
 
   it('links every catalog row to its detail screen', async () => {
@@ -149,5 +155,21 @@ describe('/m/health', () => {
 
     await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
     expect(screen.getByRole('link', { name: /Шаги/ }).getAttribute('href')).toBe('/m/health/steps');
+  });
+  it('shows the index of the day the server computed, with its word', async () => {
+    render(<HealthPage />);
+
+    await waitFor(() => expect(screen.getByText('Хорошее')).toBeDefined());
+    expect(screen.getByRole('heading', { name: 'Состояние сегодня' })).toBeDefined();
+    expect(screen.getByText('78')).toBeDefined();
+    expect(getScore).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the state card out while the summary endpoint is missing', async () => {
+    getScore.mockImplementationOnce(() => Promise.reject(new Error('404')));
+    render(<HealthPage />);
+
+    await waitFor(() => expect(screen.getByText('4321')).toBeDefined());
+    expect(screen.queryByRole('heading', { name: 'Состояние сегодня' })).toBeNull();
   });
 });

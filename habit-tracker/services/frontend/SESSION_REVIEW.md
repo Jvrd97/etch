@@ -2409,3 +2409,21 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 Проверено вживую: реальный бэкенд (uvicorn :8264) на копии `habit_live_264` (миграции применены, `day_start_hour` = 15 при местных 13:45, поэтому день сервера 2026-10-30, день браузера 2026-10-31 — то же, что около 04:00), `next dev` :3264, Chrome 157 headless по сырому CDP. Шапка Today, запись «300 ml» (а не 999 за день браузера), дата новой записи в `/journal` и `/m/journal`, таблица (14 дней кончаются 2026-10-30), график категории, тренды дашборда (avg 200 ml за 30 дней, без 31-го). Бэкенд остановлен на 3 минуты: баннер «День не подтверждён сервером» и бейдж «Не удалось прочитать режим дня» (select `aria-disabled`); после старта бэкенда следующий минутный опрос снял баннер и разблокировал бейдж сам, без нажатия «Повторить».
 
 Не проверено: история `/chat` вживую (разговоров в базе не было, группировка проверена тестом), Safari и Firefox, светлая тема, реальный переход через 04:00 (имитирован сдвигом границы дня), второй пункт тикета про бэкенд (`GET /entries` без дат) — роль backend.
+
+## 2026-10-31 — PHASE-03/303: веб-Health по макету
+
+Тронуто 18 файлов кода (7 new, 6 mod) и тестов (2 new, 3 mod), плюс `SESSION_REVIEW.md`; `lib/api.ts` — добавлением в конец.
+
+- new: `lib/health-visual.ts` (слово и сегменты кольца, ряды плиток, отклонение от нормы, столбики сна, итоги тренировок), `hooks/useHealthScore.ts`, `components/health/{HealthStateCard,HealthTiles,SleepNightsChart,DeviationBars,HealthVisuals}.tsx`.
+- mod: `components/health/WorkoutsSection.tsx` (30 дней по видам плюс пять последних), `components/health/useWorkouts.ts` (окно 30 дней), `app/health/page.tsx`, `app/m/health/page.tsx` (один `HealthVisuals` над каталогом), `lib/api.ts` (`HealthScore`, `healthScoreAPI.today` в конце).
+- Тесты: `lib/health-visual.test.ts`, `components/health/HealthVisuals.test.tsx` (new); `WorkoutsSection.test.tsx`, оба `page.test.tsx` (mod).
+- `SleepSection.tsx` не тронут: его по-прежнему рисует экран метрики сна (`MetricDetail`).
+- Индекс «Состояние сегодня» берётся только из `GET /dashboard/summary` (`scores.health`); нет ручки или ошибка — карточка скрыта, формулы на клиенте нет.
+
+Проверено в Chrome 157 (headless, сырой CDP) на 1440 и 390 px, `next dev` :3303 и заглушке API :8303 (реального бэкенда и базы не было: миграцию `habit_live_303` не запускал, см. память роя). Горизонтальной прокрутки нет, четыре режима заглушки: полный набор, индекс без данных (менее трёх дней), ручки summary нет, каталог пуст.
+
+Не проверено: настоящий бэкенд и ручка #296, Safari и Firefox, светлая тема, экранный диктор, 768 px.
+
+### PHASE-03/303, круг 2
+
+Правки по ревью: `lib/health-visual.ts` — у `DEVIATION_METRICS` поле `higherIsBetter` (пульс покоя и дыхание — ниже лучше, ВСР — выше), `deviationVerdict`, тон янтарный только для «хуже нормы»; `deviationRatio` не раздувает полосу на шуме (эпсилон); `DeviationBars` пишет «лучше нормы» / «хуже нормы». `HealthStateCard`: подпись «За 7 дней» (и «по N дням данных», если меньше 7), два текста для пустого индекса по `basis_days`. Плитка энергии — голубая, окно тренировок берётся из `WORKOUT_WINDOW_DAYS`, защита от `NaN%` у полосы, в сне одно слово «самая долгая ночь». Тесты: `lib/health-visual.test.ts` (четыре случая направления, ноль, `stddev = 0`, шум), `HealthVisuals.test.tsx`, `WorkoutsSection.test.tsx`. Вживую круг 2 не открывал (правки текста и цвета, покрыты тестами).

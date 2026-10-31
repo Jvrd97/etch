@@ -1,17 +1,17 @@
 'use client';
-// [review:need-review] PHASE-03/209, PHASE-03/132, PHASE-03/238, PHASE-02/68, PHASE-02/70, PHASE-02/69
-// summary: the workouts section (week of workouts as events) sits under the sleep section; the sleep section (last night, stages, week of nights) sits under the sync block; the sync-lag block sits under the title, above the metrics; desktop /health screen — same catalog, same numbers as /m/health, through the shared useHealthMetrics hook and HealthMetricGroups body; only the page frame (title, loading, error) is drawn twice, as every other desktop/mobile pair in this app does
+// [review:need-review] PHASE-03/209, PHASE-03/132, PHASE-03/238, PHASE-02/68, PHASE-02/70, PHASE-02/69, PHASE-03/303
+// summary: the visual blocks (state of the day, steps and energy tiles, sleep by night, deviation bars, 30-day workouts) sit under the sync block and above the full catalog; the sync-lag block sits under the title; desktop /health screen — same catalog, same numbers as /m/health, through the shared useHealthMetrics hook and HealthMetricGroups body; only the page frame (title, loading, error) is drawn twice, as every other desktop/mobile pair in this app does
 
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import HealthMetricGroups from '@/components/health/HealthMetricGroups';
 import HealthSyncStatus from '@/components/HealthSyncStatus';
-import SleepSection from '@/components/health/SleepSection';
+import HealthVisuals from '@/components/health/HealthVisuals';
 import { useSleepNights } from '@/components/health/useSleepNights';
 import { SLEEP_IDENTIFIER, metricHref } from '@/lib/health';
-import WorkoutsSection from '@/components/health/WorkoutsSection';
 import { useWorkouts } from '@/components/health/useWorkouts';
 import { useHealthMetrics } from '@/hooks/useHealthMetrics';
+import { useHealthScore } from '@/hooks/useHealthScore';
 import { useHealthSyncStatus } from '@/hooks/useHealthSyncStatus';
 
 export default function HealthPage() {
@@ -19,6 +19,7 @@ export default function HealthPage() {
   const syncStatus = useHealthSyncStatus();
   const sleepNights = useSleepNights();
   const workouts = useWorkouts();
+  const score = useHealthScore();
 
   return (
     <div className="space-y-8 animate-fade-rise">
@@ -28,13 +29,19 @@ export default function HealthPage() {
           <span className="text-lime">.</span>
         </h1>
         <p className="mt-2 text-text-secondary">
-          Каталог метрик с телефона: сегодняшние числа по группам.
+          Состояние, сон и тренировки с телефона, ниже — все метрики по группам.
         </p>
       </div>
 
       <HealthSyncStatus status={syncStatus} />
-      <SleepSection nights={sleepNights} detailHref={metricHref('/health', SLEEP_IDENTIFIER)} />
-      <WorkoutsSection workouts={workouts} />
+      <HealthVisuals
+        score={score}
+        metrics={state.status === 'ready' ? state.metrics : null}
+        nights={sleepNights}
+        workouts={workouts}
+        basePath="/health"
+        sleepDetailHref={metricHref('/health', SLEEP_IDENTIFIER)}
+      />
 
       {state.status === 'loading' && <LoadingSpinner size="lg" />}
       {state.status === 'error' && <ErrorAlert message={state.message} />}

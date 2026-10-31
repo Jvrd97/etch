@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-02/70
-// summary: render tests of the workouts section — a list of events newest first with type, day and the phone's own start time, active time and only the numbers HealthKit held (a missing one left out, not zero), no chart, the honest empty line, nothing before the answer — and the read of the seven-day window that a failure leaves out
+// [review:need-review] PHASE-02/70, PHASE-03/303
+// summary: render tests of the workouts section — the 30-day totals per kind (time, energy and distance only where HealthKit held them), the newest workouts as events with the phone's own start time and only the numbers HealthKit held (a missing one left out, not zero), the honest empty line, nothing before the answer — and the read of the 30-day window that a failure leaves out
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
@@ -8,9 +8,13 @@ import { localDate } from '@/lib/health-metrics';
 import { nightLabel } from './SleepSection';
 import WorkoutsSection, {
   WORKOUTS_EMPTY_TEXT,
+  activeTime,
+  totalDetails,
   workoutDetails,
   workoutDistance,
+  workoutsCount,
 } from './WorkoutsSection';
+import { workoutTotals } from '@/lib/health-visual';
 import { shiftDate } from './useSleepNights';
 import { useWorkouts } from './useWorkouts';
 
@@ -57,6 +61,37 @@ describe('workout wording', () => {
   });
 });
 
+describe('workout totals', () => {
+  it('keeps a number HealthKit never held as null, not zero', () => {
+    expect(workoutTotals([YOGA])).toEqual([
+      { key: 'yoga', label: 'Йога', count: 1, minutes: 30, energyKcal: null, distanceM: null },
+    ]);
+    expect(totalDetails(workoutTotals([YOGA])[0])).toEqual(['30 мин']);
+  });
+
+  it('puts the longest-trained kind first and sums what was held', () => {
+    const totals = workoutTotals([YOGA, RUN, RUN]);
+    expect(totals.map((total) => total.key)).toEqual(['running', 'yoga']);
+    expect(totals[0]).toMatchObject({ count: 2, minutes: 90, energyKcal: 821, distanceM: 14400 });
+  });
+
+  it('says minutes up to two hours and hours after it', () => {
+    expect(activeTime(62)).toBe('62 мин');
+    expect(activeTime(200)).toBe('3 ч 20 мин');
+  });
+
+  it('declines the count of workouts', () => {
+    expect([1, 2, 5, 11, 21, 24].map(workoutsCount)).toEqual([
+      '1 тренировка',
+      '2 тренировки',
+      '5 тренировок',
+      '11 тренировок',
+      '21 тренировка',
+      '24 тренировки',
+    ]);
+  });
+});
+
 describe('WorkoutsSection', () => {
   it('renders nothing before the first answer', () => {
     const { container } = render(<WorkoutsSection workouts={null} />);
@@ -69,16 +104,41 @@ describe('WorkoutsSection', () => {
     expect(screen.queryByRole('list')).toBeNull();
   });
 
-  it('lists the workouts newest first as events, not as a chart', () => {
+  it('lists the workouts newest first as events', () => {
     render(<WorkoutsSection workouts={[YOGA, RUN]} />);
 
     expect(screen.getByRole('heading', { name: 'Тренировки' })).toBeDefined();
-    const rows = screen.getByRole('list', { name: 'Тренировки недели' }).querySelectorAll('li');
+    const rows = screen.getByRole('list', { name: 'Последние тренировки' }).querySelectorAll('li');
     expect([...rows].map((row) => row.textContent)).toEqual([
       `Бег45 мин${nightLabel('2026-10-20')}, 18:00 · 7,2 км · 411 ккал · пульс 152 уд/мин · макс. 178`,
       `Йога30 мин${nightLabel('2026-10-19')}, 07:30`,
     ]);
-    expect(document.querySelector('svg')).toBeNull();
+  });
+
+  it('sums the 30 days per kind and prints energy and distance only where they were held', () => {
+    render(<WorkoutsSection workouts={[YOGA, RUN, { ...RUN, id: 'second-run' }]} />);
+
+    expect(screen.getByText('За 30 дней: 3 тренировки · 2 ч')).toBeDefined();
+    const rows = screen.getByRole('list', { name: 'Тренировки по видам' }).querySelectorAll('li');
+    expect([...rows].map((row) => row.textContent)).toEqual([
+      'Бег× 290 мин · 821 ккал · 14,4 км',
+      'Йога× 130 мин',
+    ]);
+  });
+
+  it('does not draw a NaN bar when every workout has zero minutes', () => {
+    const { container } = render(<WorkoutsSection workouts={[{ ...YOGA, duration_min: 0 }]} />);
+
+    expect(container.innerHTML).not.toContain('NaN');
+  });
+
+  it('shows only the five newest workouts in the list', () => {
+    const many = Array.from({ length: 8 }, (_, index) => ({ ...RUN, id: `run-${index}` }));
+    render(<WorkoutsSection workouts={many} />);
+
+    expect(
+      screen.getByRole('list', { name: 'Последние тренировки' }).querySelectorAll('li')
+    ).toHaveLength(5);
   });
 
   it('reads the start time on the phone clock, not the reader one', () => {
@@ -88,7 +148,7 @@ describe('WorkoutsSection', () => {
 });
 
 describe('useWorkouts', () => {
-  it('asks for today and the six days before it', async () => {
+  it('asks for today and the 29 days before it', async () => {
     const asked: Array<[string, string]> = [];
     const read = (dateFrom: string, dateTo: string) => {
       asked.push([dateFrom, dateTo]);
@@ -99,7 +159,7 @@ describe('useWorkouts', () => {
 
     await waitFor(() => expect(result.current).toEqual([RUN]));
     const today = localDate();
-    expect(asked).toEqual([[shiftDate(today, -6), today]]);
+    expect(asked).toEqual([[shiftDate(today, -29), today]]);
   });
 
   it('stays out after a failed read', async () => {
