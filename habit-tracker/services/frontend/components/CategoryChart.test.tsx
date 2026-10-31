@@ -1,4 +1,4 @@
-// [review:need-review] #78, PHASE-03/252
+// [review:need-review] #78, PHASE-03/252, PHASE-03/264
 // summary: #252 — the streak badge of a checklist category counts to the server's day (a run ending on it and a run ending the day before it)
 // summary: tests for the category chart's daily averages - one per number field for the selected period, the period a trend link opens on, and equality with the dashboard Trends row for the same days
 
@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Category, Field, TableDay } from '@/lib/api';
-import { todayISO } from '@/lib/date';
+import { toISODate } from '@/lib/date';
 import { buildDashboardTrends, formatTrendAverage, type TrendPeriod } from '@/lib/trends';
 
 let searchParams: URLSearchParams;
@@ -44,9 +44,9 @@ const TIMESTAMP = '2026-09-01T00:00:00Z';
 const NOW = new Date(2026, 8, 30, 12, 0, 0);
 /**
  * Today as the dashboard code reads it. Other suites pin `todayISO` for the
- * whole run, so the days are anchored here instead of on a literal date.
+ * whole run, so the days are anchored here on `toISODate(NOW)`, which they leave alone.
  */
-const TODAY = todayISO(NOW);
+const TODAY = toISODate(NOW);
 const YEAR_OF_DAYS = 365;
 
 function field(id: number, overrides: Partial<Field> = {}): Field {

@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117, PHASE-03/120, PHASE-03/197
+// [review:need-review] PHASE-03/111, PHASE-03/112, PHASE-03/113, PHASE-03/117, PHASE-03/120, PHASE-03/197, PHASE-03/264
 // summary: /chat screen — the latest conversation is loaded (or started), its stored messages drawn in `seq` order so a restart changes nothing, one turn read through fetch + ReadableStream so the answer appears in pieces instead of all at once at the end, and a badge saying whether the next turn continues the CLI session or rebuilds the dialogue
 // summary: PHASE-03/117 puts the spend of the dialogue and of every single turn on the screen, and hangs the delete on the header; since PHASE-03/197 that delete goes the same way as the history rows' (see the 197 summary below)
 // summary: PHASE-03/113 puts the "что чат видит" disclosure under the header, so the day card that went into the prompt can be read back verbatim
 // summary: PHASE-03/120 gives the wide screen the same live turn as the phone — the model's thought collapsed above the answer, a sign of life before the first word, a caret while it arrives, and a copy button on every message
 // summary: PHASE-03/197 lets every history row delete in place and sends the header's delete down the same path — the open conversation going leaves the screen on «nothing selected» with its address cleared and no new conversation made, a refusal keeps the conversation and offers a retry, and a running answer is explained instead of offered for deletion; `askedWhileRunning` is cleared the moment that very turn's `answerRunning` flips back to false, so the notice does not return on the next turn of the same conversation
+// summary: PHASE-03/264 groups the history by the server's day («Сегодня», «Вчера»), not the browser's calendar day
 // summary: PHASE-03/111 puts the history of conversations beside the feed — the one named in `?conversation` is the one that opens, «Новый разговор» starts one and goes there, and the list is re-read after every turn because the title is written from the first question
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -31,7 +32,7 @@ import {
 import { carriesPlan, visibleAnswer } from '@/lib/chat-answer';
 import { chatHrefFor, chatPathFor, conversationIdFrom } from '@/lib/chat-nav';
 import { lastCacheRead, resumeMode } from '@/lib/chat-resume';
-import { todayISO } from '@/lib/date';
+import { useDisplayDay } from '@/hooks/useServerDay';
 import { useDeletedConversation } from '@/hooks/useDeletedConversation';
 import {
   REMOVE_RUNNING_ANSWER_WITHOUT_RESET,
@@ -147,6 +148,8 @@ function ChatScreen() {
     markDeleted,
   } = useDeletedConversation(conversationIdFrom(useSearchParams()));
   const history = useChatHistory({ runningAnswerMessage: REMOVE_RUNNING_ANSWER_WITHOUT_RESET });
+  // «Сегодня» и «Вчера» в истории считаются от дня сервера, а не от календаря браузера.
+  const today = useDisplayDay();
   const [loaded, setScreen] = useState<Screen>({ status: 'loading' });
   const screen = stayEmpty ? EMPTY_SCREEN : loaded;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -409,7 +412,7 @@ function ChatScreen() {
     <ChatHistory
       conversations={history.conversations}
       activeId={screen.status === 'ready' ? screen.conversationId : null}
-      today={todayISO()}
+      today={today}
       hrefFor={(id) => chatHrefFor(pathname, id)}
       onStart={() => void startConversation()}
       starting={history.starting}

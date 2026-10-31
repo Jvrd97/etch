@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76, #78, PHASE-03/252
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, PHASE-01/174, #176, #76, #78, PHASE-03/252, PHASE-03/264
 // summary: Dashboard state exposes loaded categories, Continue tracking, the merged recent-activity feed and the Trends block, which loads its own GET /table per period and fails on its own
+// summary: #264 — the trends range ends on the server's day (the one the hero counts by), not on the browser's calendar day, which is a day ahead between midnight and the boundary hour
 // summary: #252 — the hero counts today and yesterday by the server's day (GET /day-mode, read beside the other reads), the two-day window being read for the days around the browser's and cut to those two; a server that cannot name its day leaves the browser's
 
 import { useCallback, useEffect, useState } from 'react';
@@ -22,7 +23,7 @@ import {
   type DashboardStats,
 } from '@/lib/dashboard-stats';
 import { todayISO } from '@/lib/date';
-import { shiftDay } from '@/lib/server-day';
+import { localNoonOf, shiftDay } from '@/lib/server-day';
 import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 import { partitionTodayCategories } from '@/lib/today-categories';
 import {
@@ -141,6 +142,8 @@ export function useDashboard(): UseDashboardResult {
   const [continueEntries, setContinueEntries] = useState<Entry[]>([]);
   const [recentActivity, setRecentActivity] = useState<ActivityFeedItem[]>([]);
   const [trendState, setTrendState] = useState<TrendState>({ status: 'loading' });
+  // The day the server runs (the browser's when it could not be asked), set together with `loading`: the trends count their range back from it.
+  const [serverDay, setServerDay] = useState('');
   const [trendPeriod, setTrendPeriodState] = useState<TrendPeriod>(DEFAULT_TREND_PERIOD);
 
   // No onReady handler: the panel renders the fresh report inline, so the run
@@ -227,6 +230,7 @@ export function useDashboard(): UseDashboardResult {
         continueCategoryIds.map(loadLatestCategoryEntry)
       );
 
+      setServerDay(today);
       setStats(computeDashboardStats(categories.length, entries, journal.total));
       setCategories(categories);
       setContinueEntries(latestCategoryEntries.flat());
@@ -260,11 +264,13 @@ export function useDashboard(): UseDashboardResult {
   const noCategories = !loading && categories.length === 0;
 
   useEffect(() => {
-    if (loading || noCategories) return;
+    if (loading || noCategories || serverDay === '') return;
     // The answer of a period the user has already left must not overwrite the
     // current one, so each run owns a flag its cleanup flips.
     let cancelled = false;
-    const now = new Date();
+    // The range ends on the server's day: between midnight and the 04:00 boundary
+    // the browser's calendar day is one ahead of it.
+    const now = localNoonOf(serverDay);
     const { dateFrom, dateTo } = trendDateRange(trendPeriod, now);
     tableAPI.get(dateFrom, dateTo).then(
       (table) => {
@@ -285,7 +291,7 @@ export function useDashboard(): UseDashboardResult {
     return () => {
       cancelled = true;
     };
-  }, [loading, noCategories, categories, trendPeriod]);
+  }, [loading, noCategories, categories, trendPeriod, serverDay]);
 
   const setTrendPeriod = useCallback(
     (period: TrendPeriod) => {

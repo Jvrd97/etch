@@ -1,12 +1,12 @@
 'use client';
-// [review:need-review] PHASE-01/44-mobile-journal
-// summary: desktop /journal page — entries, loading, error and reload now come from useJournal, shared with /m/journal; markup unchanged
+// [review:need-review] PHASE-01/44-mobile-journal, PHASE-03/264
+// summary: desktop /journal page — entries, loading, error and reload now come from useJournal, shared with /m/journal; markup unchanged; #264 — a new entry is dated by the server's day, not the browser's calendar
 
 import { useState } from 'react';
 import { journalAPI, JournalEntry, JournalEntryCreate } from '@/lib/api';
 import { useJournal } from '@/hooks/useJournal';
 import Markdown from '@/components/Markdown';
-import { todayISO } from '@/lib/date';
+import { useDisplayDay } from '@/hooks/useServerDay';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorAlert from '@/components/ErrorAlert';
 import { Plus, BookOpen, X, Pencil, Trash2 } from 'lucide-react';
@@ -171,9 +171,10 @@ interface JournalFormProps {
 function JournalForm({ entry, onClose, onSuccess }: JournalFormProps) {
   const [title, setTitle] = useState(entry?.title || '');
   const [content, setContent] = useState(entry?.content || '');
-  const [entryDate, setEntryDate] = useState(
-    entry?.entry_date || todayISO()
-  );
+  // A new entry is dated by the server's day (the browser's until the server has named it); a date the reader picked wins.
+  const serverDay = useDisplayDay(entry === null);
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
+  const entryDate = pickedDate ?? (entry?.entry_date || serverDay);
   const [mood, setMood] = useState(entry?.mood || '');
   const [tags, setTags] = useState(entry?.tags || '');
   const [saving, setSaving] = useState(false);
@@ -247,7 +248,7 @@ function JournalForm({ entry, onClose, onSuccess }: JournalFormProps) {
             <input
               type="date"
               value={entryDate}
-              onChange={(e) => setEntryDate(e.target.value)}
+              onChange={(e) => setPickedDate(e.target.value)}
               required
               className={inputClass}
             />

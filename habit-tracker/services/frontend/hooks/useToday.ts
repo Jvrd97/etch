@@ -3,6 +3,7 @@
 // summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the first-round snapshot whose four reads run side by side (categories, the server's day, the records of a window around it, cut to that day, and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 // summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it; the day is read again with the snapshot when the tab returns and on a one-minute timer for a tab that stays in front across the boundary; only the newest snapshot is applied, a tick saved for a finished day is not shown in the new one, and increments of a finished day are dropped; a day that cannot be read leaves date empty and the screen without data
 // summary: #247/#253 — one read of the day per moment shared by the snapshot, the minute timer and the day-mode badge (dayModeClient); the records no longer wait for the day; a day not confirmed (last snapshot read failed, or three minute reads in a row did) refuses ticks and increments and is said in the banner once; a failed tick rolls back only on the day it was written for; the timer's answer after unmount is dropped and its retry of a failed first load does not raise the banner again
+// summary: #264 — the exact one-day read keeps the window's page size (ENTRIES_WINDOW_LIMIT, exported); a minute or badge read that finds a new day starts a snapshot unless it joined the snapshot's own day read (a snapshot hung on its records no longer holds the screen on the old day); a badge read of the day the screen is on confirms it and withdraws «day not confirmed»; the screen is kept in step with the badge by `useTodayDayModeSync`, and a day read that hangs counts as a failed minute read
 // summary: #257 — the badge's day read takes `{ fresh: true }` after a lost read, so its retry starts a new request instead of joining a hung one
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -67,9 +68,10 @@ const ENTRIES_WINDOW_SPREAD_DAYS = 1;
 /**
  * The explicit page size of the records window, as the dashboard asks its own.
  * The server's default (100) fills up at about 35 records a day over three days,
- * and a full page may have lost its tail: it is then read again for the day alone.
+ * and a full page may have lost its tail: it is then read again for the day alone,
+ * with the same page size.
  */
-const ENTRIES_WINDOW_LIMIT = 1000;
+export const ENTRIES_WINDOW_LIMIT = 1000;
 
 /**
  * What the streak section says when its own round failed.
@@ -218,8 +220,11 @@ export function useToday(): UseTodayResult {
   // the day-mode badge join it instead of each asking and possibly hearing a
   // different day around the boundary.
   const inflightDay = useRef<Promise<DayMode> | null>(null);
-  // Snapshots started and not yet finished: the badge must not start another one.
-  const loadsInFlight = useRef(0);
+  // The day read of the newest snapshot. A minute read or a badge read that joined
+  // it hears the same answer, and the snapshot moves the screen; a read that is
+  // another request and finds a new day starts a snapshot itself, because the one
+  // on its way may be hung on its records and would hold the screen on the old day.
+  const snapshotDayRead = useRef<Promise<DayMode> | null>(null);
   // The newest snapshot read; an older one still in flight is stale and must not
   // put the day back or wipe what the new day has already collected.
   const loadSeq = useRef(0);
@@ -321,14 +326,15 @@ export function useToday(): UseTodayResult {
    */
   const loadData = useCallback(async ({ showSpinner = false, quiet = false } = {}) => {
     loadSeq.current += 1;
-    loadsInFlight.current += 1;
     const mine = loadSeq.current;
     try {
       if (showSpinner) setLoading(true);
       const hint = dayRef.current !== '' ? dayRef.current : todayISO();
       const windowStart = shiftDay(hint, -ENTRIES_WINDOW_SPREAD_DAYS);
       const windowEnd = shiftDay(hint, ENTRIES_WINDOW_SPREAD_DAYS);
-      const dayRead = readDay(true).then(
+      const snapshotRead = readDay(true);
+      snapshotDayRead.current = snapshotRead;
+      const dayRead = snapshotRead.then(
         ({ date }) => {
           pollFailures.current = 0;
           if (mine === loadSeq.current) setStale(false);
@@ -350,7 +356,7 @@ export function useToday(): UseTodayResult {
         date >= windowStart && date <= windowEnd && windowEntries.length < ENTRIES_WINDOW_LIMIT;
       const entriesData = windowFits
         ? windowEntries.filter((entry) => entry.entry_date === date)
-        : await entriesAPI.getAll({ startDate: date, endDate: date });
+        : await entriesAPI.getAll({ startDate: date, endDate: date, limit: ENTRIES_WINDOW_LIMIT });
       if (mine !== loadSeq.current) return;
       // Increments of a day that has ended are not part of the new one.
       if (dayRef.current !== '' && dayRef.current !== date) setOptimisticEntries([]);
@@ -380,7 +386,6 @@ export function useToday(): UseTodayResult {
         setError(err instanceof Error ? err.message : 'Failed to load today data');
       }
     } finally {
-      loadsInFlight.current -= 1;
       // A newer snapshot owns the spinner too.
       if (mine === loadSeq.current) setLoading(false);
     }
@@ -498,14 +503,17 @@ export function useToday(): UseTodayResult {
       pollSeq += 1;
       const mine = pollSeq;
       pollPending = true;
-      readDay(hung).then(
+      const read = readDay(hung);
+      read.then(
         ({ date }) => {
           if (mine === pollSeq) pollPending = false;
           if (!mounted.current) return;
+          // An answer of a read that a newer one replaced long ago still counts: the
+          // server did answer, and a date other than ours starts a snapshot below.
           pollFailures.current = 0;
           setStale(false);
-          // A snapshot on its way is already moving the screen to this day.
-          if (date !== dayRef.current && loadsInFlight.current === 0) void loadData();
+          // The snapshot this read joined is already moving the screen to this day.
+          if (date !== dayRef.current && read !== snapshotDayRead.current) void loadData();
         },
         () => {
           if (mine !== pollSeq) return;
@@ -523,27 +531,29 @@ export function useToday(): UseTodayResult {
     return () => clearInterval(timer);
   }, [loadData, readDay, setStale]);
 
-  // The badge reads the day through the same promise; if its answer is a day this
-  // screen has not moved to and no snapshot is on the way, the screen moves.
+  // The badge reads the day through the same promise. Its answer is the server's:
+  // the day this screen is on confirms it, a day the screen has not moved to moves
+  // it unless the snapshot the badge joined is already doing so.
   const dayModeClient = useMemo<DayModeClient>(
     () => ({
       // `fresh`: the badge's retry after a lost read must not join the request that is still hanging.
       read: async (options) => {
-        const mode = await readDay(options?.fresh === true);
-        if (
-          mounted.current &&
-          loadsInFlight.current === 0 &&
-          dayRef.current !== '' &&
-          mode.date !== dayRef.current
-        ) {
-          void loadData();
+        const read = readDay(options?.fresh === true);
+        const mode = await read;
+        if (mounted.current && dayRef.current !== '') {
+          if (mode.date === dayRef.current) {
+            pollFailures.current = 0;
+            setStale(false);
+          } else if (read !== snapshotDayRead.current) {
+            void loadData();
+          }
         }
         return mode;
       },
       set: (date, draft) => api.agentAPI.setDayMode(date, draft),
       clear: (date) => api.agentAPI.clearDayMode(date),
     }),
-    [readDay, loadData]
+    [readDay, loadData, setStale]
   );
 
   const toggleField = useCallback(

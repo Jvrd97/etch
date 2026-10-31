@@ -23,8 +23,6 @@ const TODAY = '2026-07-24';
 // any read of the browser clock shows up as a different date in a request.
 const BROWSER_DAY = '2026-07-23';
 const DAY_BEFORE_BROWSER = '2026-07-22';
-// The explicit page size of the records window: a full page may have lost its tail.
-const WINDOW_LIMIT = 1000;
 
 const GLASSES_FIELD: Field = {
   id: 7,
@@ -304,8 +302,15 @@ mock.module('@/lib/api', () => ({
 const realDate = { ...(await import('@/lib/date')) };
 mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => BROWSER_DAY }));
 
-const { useToday, STREAKS_FAILED, DAY_RECHECK_MS, DAY_POLL_FAILURES_LIMIT, DAY_UNCONFIRMED } =
-  await import('./useToday');
+const {
+  useToday,
+  STREAKS_FAILED,
+  DAY_RECHECK_MS,
+  DAY_POLL_FAILURES_LIMIT,
+  DAY_UNCONFIRMED,
+  // The explicit page size of the records window: a full page may have lost its tail.
+  ENTRIES_WINDOW_LIMIT: WINDOW_LIMIT,
+} = await import('./useToday');
 const { useDayMode } = await import('./useDayMode');
 const { useTodayDayModeSync } = await import('./useTodayDayModeSync');
 const { entriesAPI } = await import('@/lib/api');
@@ -509,7 +514,11 @@ describe('useToday takes the day from the server', () => {
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(getAllEntries).toHaveBeenLastCalledWith({ startDate: '2026-08-30', endDate: '2026-08-30' });
+    expect(getAllEntries).toHaveBeenLastCalledWith({
+      startDate: '2026-08-30',
+      endDate: '2026-08-30',
+      limit: WINDOW_LIMIT,
+    });
     expect(result.current.entries).toEqual([{ ...ENTRY, entry_date: '2026-08-30' }]);
   });
 
@@ -1648,14 +1657,198 @@ describe('round 2: a full page of the records window is read exactly (#247)', ()
       id: 1000 + index,
       entry_date: TODAY,
     }));
-    getAllEntries = mock((params: { limit?: number }) =>
-      Promise.resolve(params.limit === WINDOW_LIMIT ? full : [ENTRY])
+    // The window spans three days; the exact read spans one.
+    getAllEntries = mock((params: { startDate?: string; endDate?: string }) =>
+      Promise.resolve(params.startDate === params.endDate ? [ENTRY] : full)
     );
     const { result } = renderHook(() => useToday());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(getAllEntries).toHaveBeenCalledTimes(2);
-    expect(getAllEntries).toHaveBeenLastCalledWith({ startDate: TODAY, endDate: TODAY });
+    expect(getAllEntries).toHaveBeenLastCalledWith({ startDate: TODAY, endDate: TODAY, limit: WINDOW_LIMIT });
     expect(result.current.entries).toEqual([ENTRY]);
+  });
+});
+
+describe('round 3: a snapshot hung on its records does not hold the screen on the old day (#264)', () => {
+  const NEXT_DAY = '2026-07-25';
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function tick(times: number) {
+    for (let i = 0; i < times; i += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(DAY_RECHECK_MS);
+      });
+    }
+  }
+
+  it('starts a new snapshot when the minute read finds the new day while the records of the old one hang', async () => {
+    jest.useFakeTimers();
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllCategories.mockClear();
+
+    // The snapshot hears the new day at once, but its records never come.
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => new Promise(() => {}));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getAllCategories).toHaveBeenCalledTimes(1);
+
+    // The minute read is a request of its own: it hears the new day and does not trust the stuck snapshot.
+    getAllEntries = mock(() => Promise.resolve([]));
+    await tick(1);
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllCategories).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts a new snapshot when the badge read finds the new day while the records of the old one hang', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllCategories.mockClear();
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    getAllEntries = mock(() => new Promise(() => {}));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(readDayMode).toHaveBeenCalledTimes(1));
+    expect(getAllCategories).toHaveBeenCalledTimes(1);
+
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.dayModeClient.read();
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(getAllCategories).toHaveBeenCalledTimes(2);
+  });
+
+  it('still joins the day read of the snapshot on its way: one snapshot, not two', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    getAllCategories.mockClear();
+
+    const pendingDay = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => pendingDay.promise);
+    getAllEntries = mock(() => Promise.resolve([]));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    const badgeRead = result.current.dayModeClient.read();
+    await act(async () => {
+      pendingDay.resolve(dayModeOf(NEXT_DAY));
+      await badgeRead;
+    });
+    await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
+
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+    expect(getAllCategories).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('round 3: the badge and the «day not confirmed» state recover together (#264)', () => {
+  const NEXT_DAY = '2026-07-25';
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function tick(times: number) {
+    for (let i = 0; i < times; i += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(DAY_RECHECK_MS);
+      });
+    }
+  }
+
+  function renderBoth(readTimeoutMs?: number) {
+    return renderHook(() => {
+      const today = useToday();
+      const badge = useDayMode(today.dayModeClient, readTimeoutMs);
+      useTodayDayModeSync(today, badge);
+      return { today, badge };
+    });
+  }
+
+  it('reads the badge again when the minute timer confirms the day after an outage', async () => {
+    jest.useFakeTimers();
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    await tick(DAY_POLL_FAILURES_LIMIT);
+    await waitFor(() => expect(result.current.badge.loadFailed).toBe(true));
+    expect(result.current.today.dayStale).toBe(true);
+
+    // The minute read goes through; the badge, which failed with it, must read again by itself.
+    readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+    await tick(1);
+    await waitFor(() => expect(result.current.today.dayStale).toBe(false));
+    await waitFor(() => expect(result.current.badge.loadFailed).toBe(false));
+    expect(result.current.badge.mode?.date).toBe(TODAY);
+  });
+
+  it('retires the badge lock after a badge read that hangs, once the day is confirmed again', async () => {
+    jest.useFakeTimers();
+    const { result } = renderBoth(DAY_RECHECK_MS / 2);
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    // Every read hangs: the minute timer counts them as lost, the badge times out.
+    readDayMode = mock(() => new Promise(() => {}));
+    await tick(DAY_POLL_FAILURES_LIMIT + 1);
+    expect(result.current.today.dayStale).toBe(true);
+    // The badge's own read joined a hung one and is given up at its timeout.
+    await act(async () => {
+      jest.advanceTimersByTime(DAY_RECHECK_MS / 2);
+    });
+    expect(result.current.badge.loadFailed).toBe(true);
+
+    readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+    await tick(1);
+    await waitFor(() => expect(result.current.today.dayStale).toBe(false));
+    await waitFor(() => expect(result.current.badge.loadFailed).toBe(false));
+  });
+
+  it('withdraws «day not confirmed» when the badge confirms the day the screen is on after one failed snapshot read', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    // One lost snapshot read: the screen cannot confirm the day it knew. The badge
+    // re-reads on its own (the day went unconfirmed) and this time the server answers.
+    readDayMode = mock(() => Promise.resolve(dayModeOf(TODAY)));
+    readDayMode.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    await act(async () => {
+      await result.current.today.reload();
+    });
+    await waitFor(() => expect(result.current.today.dayStale).toBe(false));
+    await waitFor(() => expect(result.current.badge.loadFailed).toBe(false));
+    // The failed snapshot's own message stays: the records were not read again, only the day was confirmed.
+    expect(result.current.today.error).not.toBe(DAY_UNCONFIRMED);
+    expect(result.current.today.date).toBe(TODAY);
+  });
+
+  it('follows the next day the badge hears after a lost snapshot read, and confirms it with the snapshot', async () => {
+    const { result } = renderBoth();
+    await waitFor(() => expect(result.current.badge.mode?.date).toBe(TODAY));
+
+    // The snapshot's read is lost; the badge's re-read hears the next day.
+    readDayMode = mock(() => Promise.resolve(dayModeOf(NEXT_DAY)));
+    readDayMode.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    getAllEntries = mock(() => Promise.resolve([]));
+    await act(async () => {
+      await result.current.today.reload();
+    });
+    // The screen follows the badge with a snapshot of the new day, which confirms it.
+    await waitFor(() => expect(result.current.today.date).toBe(NEXT_DAY));
+    await waitFor(() => expect(result.current.today.dayStale).toBe(false));
   });
 });

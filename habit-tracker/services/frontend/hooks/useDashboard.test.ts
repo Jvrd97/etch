@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76, #78, PHASE-03/252
+// [review:need-review] PHASE-01/73-dashboard-hero-today-ring, #176, #76, #78, PHASE-03/252, PHASE-03/264
 // summary: tests for useDashboard's hero load, bounded recent-activity feed and Trends - targeted day-window, last-written and recent queries; the hero never reads the history list; trends cost one table request per period and fail on their own
+// summary: #264 — the trends range ends on the server's day (browser a day behind or ahead, server unreachable)
 // summary: #252 — the hero counts today by the server day (browser a day behind or ahead), the window around the browser's day is cut to the server's two days, a day outside it is read exactly, and a server that cannot name its day leaves the browser's
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -7,7 +8,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Category, CategoryStreak, Entry, Field, JournalEntry, TableResponse } from '@/lib/api';
 import { previousDay } from '@/lib/chart-utils';
 import { todayISO } from '@/lib/date';
-import { shiftDay } from '@/lib/server-day';
+import { localNoonOf, shiftDay } from '@/lib/server-day';
 import { trendDateRange } from '@/lib/trends';
 
 const TIMESTAMP = '2026-07-24T09:00:00Z';
@@ -450,7 +451,7 @@ describe('useDashboard trends', () => {
     const { result } = renderHook(() => useDashboard());
     await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
 
-    const { dateFrom, dateTo } = trendDateRange(30);
+    const { dateFrom, dateTo } = trendDateRange(30, localNoonOf(TODAY));
     expect(tableGet).toHaveBeenCalledTimes(1);
     expect(tableGet).toHaveBeenCalledWith(dateFrom, dateTo);
     expect(result.current.trendPeriod).toBe(30);
@@ -458,6 +459,44 @@ describe('useDashboard trends', () => {
     expect(state.status === 'ready' && state.trends.map((trend) => trend.categoryId)).toEqual([
       WATER.id,
     ]);
+  });
+
+  it('ends the range on the server day when the browser is a day behind, and asks the table once', async () => {
+    const serverDay = shiftDay(TODAY, 1);
+    readDayMode = mock(() => Promise.resolve(dayModeOf(serverDay)));
+    tableGet = mock(() => Promise.resolve(waterTable([serverDay], '6')));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    const { dateFrom, dateTo } = trendDateRange(30, localNoonOf(serverDay));
+    expect(dateTo).toBe(serverDay);
+    expect(tableGet).toHaveBeenCalledTimes(1);
+    expect(tableGet).toHaveBeenCalledWith(dateFrom, dateTo);
+    const state = result.current.trendState;
+    expect(state.status === 'ready' && state.trends[0]?.sparkline.at(-1)?.value).toBe(6);
+  });
+
+  it('ends the range on the server day when the browser is a day ahead', async () => {
+    const serverDay = shiftDay(TODAY, -1);
+    readDayMode = mock(() => Promise.resolve(dayModeOf(serverDay)));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    expect(tableGet).toHaveBeenCalledWith(
+      trendDateRange(30, localNoonOf(serverDay)).dateFrom,
+      serverDay
+    );
+  });
+
+  it('keeps the browser day for the range when the server cannot name its day', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+
+    const { result } = renderHook(() => useDashboard());
+    await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
+
+    expect(tableGet).toHaveBeenCalledWith(trendDateRange(30, localNoonOf(TODAY)).dateFrom, trendDateRange(30, localNoonOf(TODAY)).dateTo);
   });
 
   it('stays loading until the dashboard has its categories, then asks once', async () => {
@@ -477,7 +516,7 @@ describe('useDashboard trends', () => {
     await waitFor(() => expect(tableGet).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.trendState.status).toBe('ready'));
 
-    const { dateFrom, dateTo } = trendDateRange(7);
+    const { dateFrom, dateTo } = trendDateRange(7, localNoonOf(TODAY));
     expect(tableGet).toHaveBeenLastCalledWith(dateFrom, dateTo);
     expect(result.current.trendPeriod).toBe(7);
     expect(getAllCategories.mock.calls.length).toBe(categoryLoads);
@@ -506,7 +545,7 @@ describe('useDashboard trends', () => {
   it('drops the answer of a period the user has already left', async () => {
     let answerFirst: (table: TableResponse) => void = () => {};
     tableGet = mock((dateFrom: string) =>
-      dateFrom === trendDateRange(30).dateFrom
+      dateFrom === trendDateRange(30, localNoonOf(TODAY)).dateFrom
         ? new Promise<TableResponse>((resolve) => {
             answerFirst = resolve;
           })

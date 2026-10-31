@@ -1,9 +1,10 @@
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
-// summary: tests for useCategoryDetail — batched load (the streak now with its relapse days), entry grouping, sibling pager, invalid id guard, streak degrading on its own, and reload after a mutation
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207, PHASE-03/264
+// summary: tests for useCategoryDetail — batched load (the streak now with its relapse days), entry grouping, sibling pager, invalid id guard, streak degrading on its own, and reload after a mutation; #264 — the chart range ends on the server's day
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { Category, Entry, RelapseHistory, TableDay } from '@/lib/api';
+import { todayISO } from '@/lib/date';
 
 const TIMESTAMP = '2026-07-24T00:00:00Z';
 
@@ -22,6 +23,9 @@ const OTHER_CATEGORY: Category = { ...CATEGORY, id: 2, name: 'Mood' };
 const THIRD_CATEGORY: Category = { ...CATEGORY, id: 3, name: 'Reading' };
 
 const DAYS: TableDay[] = [];
+
+// A day no browser clock in this run is on: any read of the browser's calendar shows in a request.
+const SERVER_DAY = '2031-03-05';
 
 const STREAK: RelapseHistory = {
   category_id: 1,
@@ -54,6 +58,7 @@ let getAllCategories: ReturnType<typeof mock>;
 let getRelapses: ReturnType<typeof mock>;
 let getTable: ReturnType<typeof mock>;
 let getAllEntries: ReturnType<typeof mock>;
+let readDayMode: ReturnType<typeof mock>;
 
 // Declares the whole surface on purpose: bun fixes a module's export *names* the
 // first time anything links against it and shares that registry across the run,
@@ -72,6 +77,7 @@ mock.module('@/lib/api', () => ({
   // день», а bun фиксирует имена экспортов модуля при первой линковке — мок,
   // забывший экспорт, удаляет его для всех, кто линкуется следом.
   agentAPI: {
+    dayMode: () => readDayMode(),
     day: () => Promise.resolve(null),
     patchInterval: () => Promise.resolve(null),
     addManualInterval: () => Promise.resolve(null),
@@ -192,6 +198,7 @@ beforeEach(() => {
   );
   getRelapses = mock(() => Promise.resolve(STREAK));
   getTable = mock(() => Promise.resolve({ days: DAYS }));
+  readDayMode = mock(() => Promise.resolve({ date: SERVER_DAY }));
   getAllEntries = mock(() =>
     Promise.resolve([TODAY_ENTRY, SAME_DAY_ENTRY, YESTERDAY_ENTRY])
   );
@@ -283,6 +290,22 @@ describe('useCategoryDetail', () => {
     });
 
     await waitFor(() => expect(result.current.entries).toEqual([TODAY_ENTRY]));
+  });
+
+  it('ends the chart range on the server day, not on the browser calendar', async () => {
+    const { result } = renderHook(() => useCategoryDetail(1));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    expect(getTable).toHaveBeenCalledTimes(1);
+    expect(getTable.mock.calls[0][1]).toBe(SERVER_DAY);
+  });
+
+  it('falls back to the browser day for the chart when the server cannot name its day', async () => {
+    readDayMode = mock(() => Promise.reject(new Error('offline')));
+    const { result } = renderHook(() => useCategoryDetail(1));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    expect(getTable.mock.calls[0][1]).toBe(todayISO());
   });
 
   it('clears a stale load error once the next load succeeds', async () => {

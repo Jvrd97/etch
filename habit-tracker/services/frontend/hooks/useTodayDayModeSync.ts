@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/247
-// summary: keeps the day-mode badge on the day the Today screen is on — a day the screen moved to (found by the minute timer or a reload) and a day the server stopped confirming both make the badge read again, so a decision can never go to a day the header has left; the read joins one already on its way
+// [review:need-review] PHASE-03/247, PHASE-03/264
+// summary: keeps the day-mode badge on the day the Today screen is on — a day the screen moved to (found by the minute timer or a reload) and a day the server stopped confirming both make the badge read again, so a decision can never go to a day the header has left; the read joins one already on its way; #264 — the badge reads again when the day is confirmed again (`dayStale` true to false), not only when it stops being confirmed
 
 import { useEffect, useRef } from 'react';
 import type { UseDayModeResult } from '@/hooks/useDayMode';
@@ -41,7 +41,10 @@ export function useTodayDayModeSync(
   }, [date, reload]);
 
   // A day the server stopped confirming: the read fails the same way and locks the badge.
+  // The way back reads again too: a badge locked by a lost read must not outlive the outage.
+  const wasStale = useRef(dayStale);
   useEffect(() => {
-    if (dayStale) void reload();
+    if (wasStale.current !== dayStale) void reload();
+    wasStale.current = dayStale;
   }, [dayStale, reload]);
 }

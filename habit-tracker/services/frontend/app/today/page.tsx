@@ -1,5 +1,5 @@
 'use client';
-// [review:need-review] PHASE-03/228, PHASE-03/249, PHASE-03/257
+// [review:need-review] PHASE-03/228, PHASE-03/249, PHASE-03/257, PHASE-03/264
 // summary: desktop Today page — the day-mode badge with its switch sits under the title; the badge reads and writes the server's current day, not the browser's date
 // [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
@@ -7,6 +7,7 @@
 // summary: desktop Today page — a quick-mark card opens the dialog with every set of its category beside the day's records while its plus (and its key) still adds one, and every tap or undo reads the day's records and the streak of its category again
 // summary: the date line and the empty-state card follow the server's day: no date line while the day is unknown, no «nothing to track» while a load error is on screen, the day goes to the obligations block
 // summary: #247 — the day-mode badge reads the day through useToday's dayModeClient, so the header and the badge name the same day from one request
+// summary: #264 — the badge is kept on the screen's day by `useTodayDayModeSync` (it reads again when the day stops being confirmed and when it is confirmed again); the page itself is unchanged
 // summary: #257 — `reading` goes to the badge, so its controls are `aria-disabled` and the badge is `aria-busy` while the day is read again (checked in a browser: the keyboard focus stays on the select)
 
 import { useCallback, useState } from 'react';
