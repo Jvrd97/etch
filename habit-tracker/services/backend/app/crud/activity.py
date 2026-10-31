@@ -54,6 +54,10 @@ from app.models.activity import (
 from app.models.mark import PlanMark
 from app.models.plan import DayPlan, PlanItem, PlanSection
 
+# What a roll-up calls the time of an interval that names no application: a
+# manual record has a note, not a bundle, and «—» on a screen is worse than a word.
+MANUAL_APP_NAME = "вручную"
+
 # Шаг нумерации правил при перестановке. Не единица: между двумя правилами
 # должно оставаться место, чтобы вставить третье, не перенумеровывая список.
 ORDER_STEP = 10
@@ -750,6 +754,10 @@ async def task_time_seconds(
     union is the only number in this theme that may be called «время по задаче»,
     and postgres computes it: `range_agg(tstzrange(started_at, ended_at))`.
 
+    Each interval is cut to the day first: one that runs across the boundary
+    counts for the part inside this day here and for the rest in the next, never
+    whole in both.
+
     Returns the tasks and, separately, the seconds that belong to no task at all
     — «работа сверх плана», visible in the same hour rather than out of the
     evening notebook.
@@ -763,7 +771,12 @@ async def task_time_seconds(
             clickup_task_id,
             (
                 SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (upper(r) - lower(r)))), 0)
-                FROM unnest(range_agg(tstzrange(started_at, ended_at))) AS r
+                FROM unnest(
+                    range_agg(
+                        tstzrange(started_at, ended_at)
+                        * tstzrange(:day_start, :day_end)
+                    )
+                ) AS r
             )::bigint AS seconds
         FROM activity_interval
         WHERE started_at < :day_end AND ended_at > :day_start

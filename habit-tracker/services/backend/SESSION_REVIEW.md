@@ -3075,3 +3075,19 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - Тесты бэкенда: `test_week_review.py`, `test_chat_day_card.py`, `test_ios_week_fixture.py` — mod.
 - Веб: `hooks/useHealthAdvice.ts` + тест, `components/week/HealthAdviceBlock.tsx` + тест, `components/week/SupplementsBlock.tsx` — new; `components/week-review/WeekReviewScreen.tsx` + тест, `test-fixture.ts`, `lib/api.ts` — mod.
 - iOS: `API/APIClient+Week.swift`, `API/DTOs+Week.swift`, `Features/Week/{WeekFormat,WeekViewModel,WeekSections,WeekView}.swift`, тесты `WeekViewModelTests`, `WeekAPIClientTests`, `WeekFixtures` — mod.
+
+## 2026-10-31 — PHASE-03/166: интервалы связываются с задачами дня и попадают в закрытие дня
+
+Тронуто 17 файлов (9 `new`, 8 `mod`, считая этот) бэкенда и фронтенда, миграции нет: связь «интервал → задача дня» с `ON DELETE SET NULL` уже стоит с #159 (`activity_interval.plan_item_id` → `plan_item.id`), `plan_task_id` остаётся числовым наследием.
+
+- `app/crud/task_time.py` — new: время по задачам дня (объединение диапазонов), «сделано без следов» (отметка done, ни интервала, ни коммита), работа вне плана от 30 минут, доля интервалов без задачи за 30 дней с числом реально наблюдённых дней.
+- `app/schemas/task_time.py` — new: типы ответа.
+- `app/api/day.py` — mod: `GET /day/{on}/task-time` добавлением в конец; коммиты приносит вызывающий (`committed_item_id`), `commits_checked` честно говорит, смотрели ли.
+- `app/api/agent.py` — mod: `SECONDS_PER_MINUTE` и `MANUAL_APP_NAME` переехали в `crud/task_time.py` (одно определение на два роутера).
+- `tests/test_task_time.py` — new: 15 тестов, включая «число SQL не растёт с числом задач».
+- `frontend/components/agent/TaskTimeBadge.tsx`, `TaskTimeSummary.tsx`, `hooks/useTaskTime.ts`, `lib/task-time.ts` — new; `lib/api.ts`, `components/day/PlanSections.tsx`, `DayScreen.tsx`, `mobile/MobileDayScreen.tsx` — mod (бейдж времени у задачи, блок под Claude Code).
+- Mac (`PanelView.swift`) не тронут: см. тикет.
+
+Круг 2 (PHASE-03/166): интервал через границу суток режется по дню (`crud/task_time.py`, `crud/activity.py::task_time_seconds`); время по задаче считается одним запросом с группировкой по `plan_item_id`; интервалы, привязанные только по `plan_task_id`/`clickup_task_id`, дают поле `other_linked_minutes`; `commits_checked` и `today` в ответе; `MANUAL_APP_NAME` переехал в `crud/activity.py`. Новые тесты в `tests/test_task_time.py` (22 теста). Веб: `useTaskTime` опрашивает только пока день — сегодня и читает один раз после записи отметки; `TaskTimeSummary` показывает `other_linked_minutes`.
+
+Круг 3 (PHASE-03/166): время без привязки считается как разность мультидиапазонов Postgres — минуты, покрытые привязанными интервалами (пункт плана главнее, затем `plan_task_id`/`clickup_task_id`), вычитаются из «без задачи» и из `other_linked_minutes`, поэтому таймер на задаче поверх замера агента не показывается как «работа вне плана», а `tasks + untasked + other` равно объединению интервалов дня (кроме минут, где идут две разные задачи сразу). `long_untasked` строится из кусков разности от 30 минут. Веб: `useTaskTime` держит последний устоявшийся ключ в состоянии (правило `react-hooks/refs`).

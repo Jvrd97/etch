@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/140, PHASE-03/147, PHASE-03/150, PHASE-03/200
+// [review:need-review] PHASE-03/87, PHASE-03/88, PHASE-03/110, PHASE-03/140, PHASE-03/147, PHASE-03/150, PHASE-03/200, PHASE-03/166
+// summary: PHASE-03/166 — a task shows the time recorded on it (the union of its intervals) as a chip beside its title
 // summary: PHASE-03/200 — a line linked to a category carries its fact card under the mark, an unlinked line of an editable plan offers «Связать с категорией», and the editor gets the categories to link to
 // summary: PHASE-03/110 makes the line editable in place — a pencil that opens the editor on it, a button that adds a line to the section, and the warning of the canon printed under the line that earned it; the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, the intent of an act #140 hangs on the line it came from, and the caption saying what the machine proposed on a line the person moved
 // summary: the plan drawn as it was written — sections in order, items nested, a task showing its window and its criterion of being done, every label without a column of its own read back out of `extra`, the mark of each line when the screen passes one in, and the rule a line broke shown on the line itself — the edit stands, the note stays beside it
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import PlanItemEditor from '@/components/day/PlanItemEditor';
 import PlanItemFact from '@/components/day/PlanItemFact';
+import TaskTimeBadge from '@/components/agent/TaskTimeBadge';
 import PlanItemMark from '@/components/day/PlanItemMark';
 import type {
   Category,
@@ -146,6 +148,8 @@ export interface PlanSectionsProps {
   roles?: Role[];
   /** Left out where the plan is only being read; then no fact card is drawn. */
   facts?: PlanFacting;
+  /** Minutes the agent and the hand recorded on each item (#166), by item id; absent draws no badge. */
+  taskMinutes?: Map<string, number>;
 }
 
 /**
@@ -173,6 +177,7 @@ export default function PlanSections({
   proposals,
   roles = [],
   facts,
+  taskMinutes,
 }: PlanSectionsProps) {
   if (sections.length === 0) {
     return (
@@ -209,6 +214,7 @@ export default function PlanSections({
                 proposals={proposals}
                 roles={roles}
                 facts={facts}
+                taskMinutes={taskMinutes}
               />
             ))}
           </ul>
@@ -245,6 +251,7 @@ interface PlanLineProps {
   proposals?: Map<string, string>;
   roles: Role[];
   facts?: PlanFacting;
+  taskMinutes?: Map<string, number>;
 }
 
 /**
@@ -268,6 +275,7 @@ function PlanLine({
   proposals,
   roles,
   facts,
+  taskMinutes,
 }: PlanLineProps) {
   const broken = violations?.get(item.id) ?? [];
   const proposed = proposals?.get(item.id) ?? null;
@@ -328,6 +336,7 @@ function PlanLine({
                 {rigidity}
               </span>
             )}
+            <TaskTimeBadge minutes={taskMinutes?.get(item.id)} />
             {broken.map((violation) => (
               // Marked, not hidden and not blocked: «свой день человек правит
               // свободно», and a rule nobody is told about is a rule that does
@@ -481,6 +490,7 @@ function PlanLine({
               proposals={proposals}
               roles={roles}
               facts={facts}
+              taskMinutes={taskMinutes}
             />
           ))}
         </ul>
