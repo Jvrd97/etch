@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/87, PHASE-03/150
+// [review:need-review] PHASE-03/87, PHASE-03/150, PHASE-03/166
+// summary: PHASE-03/166 — a task shows the minutes recorded on it beside its title, and a task with none shows no chip
 // summary: component tests for the plan — sections keep the order they were sent, a minimum is drawn as its own line under its task, a task shows its criterion of being done, a label without a column of its own is on the screen, a line that broke a rule is marked with it rather than hidden or refused, and a line the person moved carries the version the machine proposed
 
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -255,5 +256,30 @@ describe('PlanSections and what the machine proposed', () => {
     );
 
     expect(screen.queryByText('AI предлагал 09:00-11:00')).toBeNull();
+  });
+});
+
+describe('PlanSections and the time recorded on a task', () => {
+  it('prints the minutes beside the task they were recorded on and on no other', () => {
+    render(
+      <PlanSections
+        sections={[
+          section({
+            items: [item({ id: 'i1', text_plain: 'Первая' }), item({ id: 'i2', text_plain: 'Вторая' })],
+          }),
+        ]}
+        overlapping={NONE}
+        taskMinutes={new Map([['i1', 90]])}
+      />
+    );
+
+    expect(screen.getAllByTitle('Время по задаче: объединение записанных интервалов')).toHaveLength(1);
+    expect(screen.getByText('1 ч 30 мин')).toBeDefined();
+  });
+
+  it('draws no chip when the plan is only read', () => {
+    render(<PlanSections sections={[section({ items: [item({ id: 'i1' })] })]} overlapping={NONE} />);
+
+    expect(screen.queryByTitle('Время по задаче: объединение записанных интервалов')).toBeNull();
   });
 });

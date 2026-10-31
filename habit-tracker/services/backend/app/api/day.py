@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/140, PHASE-03/200
+# [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/88, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/140, PHASE-03/200, PHASE-03/166
+# summary: PHASE-03/166 — GET /day/{date}/task-time: time per task of the day, tasks ticked done with no interval or commit, untasked stretches of half an hour or more and the thirty-day untasked share
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close writes the verdict, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; GET/PUT /day/{date}/anchors mark the anchors of the day by kind and GET/PUT /day/{date}/training write its training and the minimum's own line (#92); #110 adds the per-item editor — PATCH/POST/DELETE of one line and POST .../move for its place, where a human's edit passes everything the database passes and comes back with the document rules it broke as warnings; all three plan writes claim `opened_at` only inside the open window
 # summary: GET /day (today by the day boundary) and GET /day/{date} — the day, the rule in force on it, the map of the day that rule draws (edges, free evening, ceilings, anchors), its plan with schedule and overlaps, its marks, its notebook and the итог with the verdict; POST /day/{date}/plan takes the whole plan as one document, POST /day/{date}/close/review is the 15:40 touch and /close/final the evening one that writes the verdict (the bare /close stays as a synonym of `final`), both idempotent by `Idempotency-Key` and both refusing a day whose итог arrived as prose, PUT .../marks/{item_id} takes one mark and PUT .../notebook the day's text; all three writes claim `opened_at` only inside the open window; .../work-intervals is the CRUD of measured work, which the day answers with as intervals plus a sum and never as a window title
 # summary: PHASE-03/200 — строка плана, связанная с категорией, пишет факт в историю категории: POST .../plan/items/{item_id}/facts под Idempotency-Key, PUT и DELETE .../facts/{entry_id}, отметка в той же транзакции; GET /day несёт `plan_facts`
@@ -21,6 +22,8 @@ from app.crud import plan_revision as revision_crud
 from app.crud import plan_violation as violation_crud
 from app.crud import day_profile as profile_crud
 from app.crud import summary as summary_crud
+from app.crud import task_time as task_time_crud
+from app.crud.task_time import SECONDS_PER_MINUTE
 from app.crud import work_interval as work_crud
 from app.crud.summary import KeyBelongsToAnotherDay
 from app.crud.work_interval import IntervalNotOnDay
@@ -76,6 +79,13 @@ from app.schemas.plan_revision import (
 )
 from app.schemas.plan_violation import PlanViolationResponse, SkeletonRejection
 from app.schemas.summary import DayCloseIn, DayReviewIn, DaySummaryResponse
+from app.schemas.task_time import (
+    LongUntaskedInterval,
+    TaskMinutes,
+    TaskTimeResponse,
+    TracelessTask,
+    UntaskedShareResponse,
+)
 from app.schemas.training import TrainingDayIn, TrainingDayResponse
 from app.schemas.work_interval import (
     WorkDayResponse,
@@ -1538,3 +1548,46 @@ async def put_training(
     )
     await day_crud.touch_day(db, day, opened=False)
     return TrainingDayResponse.model_validate(row)
+
+
+@router.get("/{on}/task-time", response_model=TaskTimeResponse)
+async def get_task_time(
+    on: date,
+    committed_item_id: list[UUID] = Query(
+        default=[],
+        description="Пункты плана, по которым найдены коммиты; их «сделано» не считается пустым",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> TaskTimeResponse:
+    """
+    Время по задачам дня и то, что закрытию дня нужно знать о нём.
+
+    Время по задаче — длина объединения диапазонов, а не сумма длительностей.
+    `done_without_traces` — задачи с отметкой «сделано», у которых нет ни одного
+    интервала и (если `commits_checked`) ни одного коммита. Коммиты сервер не
+    видит: список пунктов с коммитами приносит вызывающий, например `/day-close`.
+    Читает и не пишет: дня, которого нет, эта ручка не заводит.
+    """
+    report = await task_time_crud.task_time_report(
+        db, on, today_local(), set(committed_item_id)
+    )
+    share = report.untasked_share
+    return TaskTimeResponse(
+        date=on,
+        tasks=[TaskMinutes(**vars(row)) for row in report.tasks],
+        untasked_minutes=report.untasked_seconds // SECONDS_PER_MINUTE,
+        long_untasked=[
+            LongUntaskedInterval(**vars(row)) for row in report.long_untasked
+        ],
+        done_without_traces=[
+            TracelessTask(**vars(row)) for row in report.done_without_traces
+        ],
+        commits_checked=bool(committed_item_id),
+        untasked_share=UntaskedShareResponse(
+            window_days=share.window_days,
+            observed_days=share.observed_days,
+            intervals=share.intervals,
+            untasked=share.untasked,
+            share=share.share,
+        ),
+    )

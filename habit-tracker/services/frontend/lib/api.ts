@@ -4413,3 +4413,51 @@ export const weekReviewAPI = {
     });
   },
 };
+
+// [review:need-review] PHASE-03/166
+// summary: TaskTimeDay and taskTimeAPI.day read GET /day/{date}/task-time — minutes per task of the day, tasks ticked done with no interval, untasked stretches of half an hour or more, and the thirty-day share of untasked intervals with the days actually observed
+export interface TaskMinutes {
+  plan_item_id: string;
+  title: string;
+  minutes: number;
+}
+
+export interface TracelessTask {
+  plan_item_id: string;
+  title: string;
+}
+
+export interface LongUntaskedInterval {
+  interval_id: number;
+  started_at: string;
+  ended_at: string;
+  minutes: number;
+  app_name: string;
+}
+
+/** Share of intervals that name no task; `observed_days < window_days` makes it a short-window number. */
+export interface UntaskedShare {
+  window_days: number;
+  observed_days: number;
+  intervals: number;
+  untasked: number;
+  share: number | null;
+}
+
+/** The measured time of one day read against its plan (#166). */
+export interface TaskTimeDay {
+  date: string;
+  tasks: TaskMinutes[];
+  untasked_minutes: number;
+  long_untasked: LongUntaskedInterval[];
+  done_without_traces: TracelessTask[];
+  /** False when no commit list was sent: «следов нет» then means «нет интервалов». */
+  commits_checked: boolean;
+  untasked_share: UntaskedShare;
+}
+
+export const taskTimeAPI = {
+  day: async (date: string) => {
+    return fetcher<TaskTimeDay>(`/day/${date}/task-time`);
+  },
+};

@@ -3047,3 +3047,15 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/crud/supplement.py` — mod: `create_supplement(..., idempotency_key=)` и `supplement_by_idempotency_key`.
 - `app/api/supplements.py` — mod: день отметки считается по `occurred_at` (окно +5 минут / 7 дней берётся у быстрых отметок: `_moment_of_press` из `app/api/quick_marks.py`), `POST /supplements` отвечает 200 первой добавкой на повтор ключа и после проигранной гонки.
 - `tests/test_supplement_occurred_at.py` — new: 23 теста (сутки до 04:00, граница окна, повтор после выхода из окна, число SQL, гонка создания).
+
+## 2026-10-31 — PHASE-03/166: интервалы связываются с задачами дня и попадают в закрытие дня
+
+Тронуто 17 файлов (9 `new`, 8 `mod`, считая этот) бэкенда и фронтенда, миграции нет: связь «интервал → задача дня» с `ON DELETE SET NULL` уже стоит с #159 (`activity_interval.plan_item_id` → `plan_item.id`), `plan_task_id` остаётся числовым наследием.
+
+- `app/crud/task_time.py` — new: время по задачам дня (объединение диапазонов), «сделано без следов» (отметка done, ни интервала, ни коммита), работа вне плана от 30 минут, доля интервалов без задачи за 30 дней с числом реально наблюдённых дней.
+- `app/schemas/task_time.py` — new: типы ответа.
+- `app/api/day.py` — mod: `GET /day/{on}/task-time` добавлением в конец; коммиты приносит вызывающий (`committed_item_id`), `commits_checked` честно говорит, смотрели ли.
+- `app/api/agent.py` — mod: `SECONDS_PER_MINUTE` и `MANUAL_APP_NAME` переехали в `crud/task_time.py` (одно определение на два роутера).
+- `tests/test_task_time.py` — new: 15 тестов, включая «число SQL не растёт с числом задач».
+- `frontend/components/agent/TaskTimeBadge.tsx`, `TaskTimeSummary.tsx`, `hooks/useTaskTime.ts`, `lib/task-time.ts` — new; `lib/api.ts`, `components/day/PlanSections.tsx`, `DayScreen.tsx`, `mobile/MobileDayScreen.tsx` — mod (бейдж времени у задачи, блок под Claude Code).
+- Mac (`PanelView.swift`) не тронут: см. тикет.

@@ -1,5 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/94, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164, PHASE-03/220
+// summary: PHASE-03/166 — the time recorded on each task stands beside it in the plan, and the summary of «done, no trace», work outside the plan and the untasked share stands under the Claude Code block
 // summary: PHASE-03/220 — the Claude Code block (sessions, assistant turns, tokens of the day on screen) stands under the agent banner, drawn from useClaudeUsage
 // summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date on the day the server is in (status.today), drawn from useAgentStatus
 // summary: PHASE-03/200 — a plan line linked to a category carries its fact card, and the day is re-read after a fact or a new link so the mark and the counts follow
@@ -11,6 +12,7 @@ import { CodeXml, Moon, Sun } from 'lucide-react';
 import DayAnchors from '@/components/day/DayAnchors';
 import AgentStatusBanner from '@/components/agent/AgentStatusBanner';
 import ClaudeUsageBlock from '@/components/agent/ClaudeUsageBlock';
+import TaskTimeSummary from '@/components/agent/TaskTimeSummary';
 import DayIntervals from '@/components/agent/DayIntervals';
 import DayMapCard from '@/components/day/DayMapCard';
 import ProfileProposal from '@/components/day/ProfileProposal';
@@ -45,6 +47,8 @@ import { useTrainingState } from '@/hooks/useTrainingState';
 import { useWorkIntervals } from '@/hooks/useWorkIntervals';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useClaudeUsage } from '@/hooks/useClaudeUsage';
+import { useTaskTime } from '@/hooks/useTaskTime';
+import { doneMarksKey, minutesByItem } from '@/lib/task-time';
 import {
   dayAPI,
   type AnchorState,
@@ -119,6 +123,12 @@ export default function DayScreen({ date }: DayScreenProps) {
   const brokenPlanWide = useMemo(() => planWideViolations(violations), [violations]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
   const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
+  // Время по задачам и то, чего в плане не хватает (#166); читается заново после каждой галочки.
+  const taskTime = useTaskTime(
+    detail?.day.date ?? null,
+    doneMarksKey(marking.marks, marking.saving)
+  );
+  const taskMinutes = useMemo(() => minutesByItem(taskTime), [taskTime]);
   // Якоря живут в собственном состоянии по той же причине, что и отметки:
   // галочка обязана встать под пальцем, а не через круг до сервера и обратно.
   const anchorsPayload = useMemo(() => detail?.anchors ?? NO_ANCHORS, [detail]);
@@ -187,6 +197,7 @@ export default function DayScreen({ date }: DayScreenProps) {
 
       <AgentStatusBanner status={agentStatus} date={day.date} />
       <ClaudeUsageBlock usage={claudeUsage} />
+      <TaskTimeSummary taskTime={taskTime} />
 
       {plan === null ? (
         // Не тупик: день без плана — это состояние, из которого есть выход, и
@@ -242,6 +253,7 @@ export default function DayScreen({ date }: DayScreenProps) {
             violations={brokenByItem}
             proposals={proposals}
             roles={roles}
+            taskMinutes={taskMinutes}
             marking={{
               marks: marking.marks,
               saving: marking.saving,
