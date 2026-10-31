@@ -16,6 +16,8 @@ final class HealthMetricsViewModel: ObservableObject {
     @Published private(set) var syncStatus: HealthSyncStatusDTO?
     @Published private(set) var nights: [HealthSleepNightDTO]?
     @Published private(set) var workouts: [HealthWorkoutRecordDTO]?
+    /// The server's index for «Состояние сегодня»; `nil` while the endpoint is missing or its read failed, and the card is then absent.
+    @Published private(set) var healthState: HealthScoreDTO?
     /// Set while the catalogue on screen is the cached one: when it was fetched.
     @Published private(set) var offlineAsOf: Date?
     /// Why the last in-place refresh failed; the screen keeps what it had.
@@ -26,9 +28,11 @@ final class HealthMetricsViewModel: ObservableObject {
     static let metricsKey = "health.metrics.30"
     static let syncStatusKey = "health.sync-status"
     static let nightsKey = "health.sleep.week"
-    static let workoutsKey = "health.workouts.week"
+    static let workoutsKey = "health.workouts.30"
+    static let stateKey = "health.state.week"
 
     private let apiProvider: () -> HealthMetricsAPI?
+    private let stateAPIProvider: () -> HealthStateAPI?
     private let cache: ReadThroughCache
     private let now: () -> Date
     private let calendar: Calendar
@@ -37,11 +41,13 @@ final class HealthMetricsViewModel: ObservableObject {
 
     init(
         apiProvider: @escaping () -> HealthMetricsAPI?,
+        stateAPIProvider: @escaping () -> HealthStateAPI? = { nil },
         cacheStore: CacheStore,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .current
     ) {
         self.apiProvider = apiProvider
+        self.stateAPIProvider = stateAPIProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.now = now
         self.calendar = calendar
@@ -52,7 +58,9 @@ final class HealthMetricsViewModel: ObservableObject {
     }
 
     static func live() -> HealthMetricsViewModel {
-        HealthMetricsViewModel(apiProvider: { APIClient.live() }, cacheStore: ReadCacheLive.shared)
+        HealthMetricsViewModel(
+            apiProvider: { APIClient.live() }, stateAPIProvider: { APIClient.live() }, cacheStore: ReadCacheLive.shared
+        )
     }
 
     /// Nothing has ever synced: every metric of the catalogue is without a day.
@@ -83,21 +91,27 @@ final class HealthMetricsViewModel: ObservableObject {
         let moment = HealthMetricsFormat.localDate(now(), calendar: calendar)
         let monthStart = HealthMetricsFormat.shiftDate(moment, by: 1 - HealthMetricsFormat.sparklineDays)
         let weekStart = HealthMetricsFormat.shiftDate(moment, by: 1 - HealthMetricsFormat.weekDays)
+        let stateAPI = stateAPIProvider()
 
-        // The four reads travel side by side; the cache store is not thread-safe, so what they brought
+        // The five reads travel side by side; the cache store is not thread-safe, so what they brought
         // goes through it one after another, each as the `fetch` of its own read-through load.
         async let metricsAnswer = settle { try await api.fetchHealthMetrics(dateFrom: monthStart, dateTo: moment) }
         async let statusAnswer = settle { try await api.fetchHealthSyncStatus() }
         async let sleepAnswer = settle { try await api.fetchHealthSleep(dateFrom: weekStart, dateTo: moment) }
-        async let workoutsAnswer = settle { try await api.fetchHealthWorkouts(dateFrom: weekStart, dateTo: moment) }
-        let (metricsResult, statusResult, sleepResult, workoutsResult) =
-            await (metricsAnswer, statusAnswer, sleepAnswer, workoutsAnswer)
+        async let workoutsAnswer = settle { try await api.fetchHealthWorkouts(dateFrom: monthStart, dateTo: moment) }
+        async let stateAnswer = settle { () -> HealthStateResponseDTO in
+            guard let stateAPI else { throw APIClientError.invalidResponse }
+            return try await stateAPI.fetchHealthState()
+        }
+        let (metricsResult, statusResult, sleepResult, workoutsResult, stateResult) =
+            await (metricsAnswer, statusAnswer, sleepAnswer, workoutsAnswer, stateAnswer)
         guard mine == generation else { return }
         do {
             let catalogue = try await cache.load(key: Self.metricsKey) { try metricsResult.get() }
             let syncOutcome = await sideRead(key: Self.syncStatusKey, statusResult)
             let sleepOutcome = await sideRead(key: Self.nightsKey, sleepResult)
             let workoutsOutcome = await sideRead(key: Self.workoutsKey, workoutsResult)
+            let stateOutcome = await sideRead(key: Self.stateKey, stateResult)
             guard mine == generation else { return }
             today = moment
             switch catalogue {
@@ -112,6 +126,7 @@ final class HealthMetricsViewModel: ObservableObject {
             if case .fresh(let value)? = syncOutcome { syncStatus = value } else { syncStatus = nil }
             nights = sleepOutcome.map { $0.value.nights }
             workouts = workoutsOutcome.map { $0.value.workouts }
+            healthState = stateOutcome?.value.scores.health
             state = .loaded
         } catch let error as APIClientError {
             guard mine == generation else { return }

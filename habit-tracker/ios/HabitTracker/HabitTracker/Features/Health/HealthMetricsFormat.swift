@@ -183,7 +183,7 @@ enum HealthMetricsFormat {
     }
 
     static let sleepEmptyText = "Ночей за неделю нет: сон приходит с телефона вместе с остальными метриками."
-    static let workoutsEmptyText = "Тренировок за неделю нет: они приходят с телефона вместе с остальными метриками."
+    static let workoutsEmptyText = "Тренировок за 30 дней нет: они приходят с телефона вместе с остальными метриками."
 
     /// `7200` → `7,2 км`, `850` → `850 м`.
     static func workoutDistance(_ meters: Double) -> String {

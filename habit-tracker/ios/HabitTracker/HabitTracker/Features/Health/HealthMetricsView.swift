@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/268
-// summary: the Health tab — the sync/lag block first (a day-old lag is visible without scrolling), the way to the pump screen and its journal, the week of nights and workouts, then every group of the catalogue with the latest value, a 30-day sparkline and the deviation from the metric's own baseline; states: loading, error with retry, the whole catalogue empty, offline from the read cache; pull to refresh in place
+// summary: the Health tab — the sync/lag block first (a day-old lag is visible without scrolling), the way to the pump screen and its journal, the cards (state ring, steps and energy tiles, nights, deviation from the norm, 30 days of workouts), then every group of the catalogue with the latest value, a 30-day sparkline and the deviation from the metric's own baseline; states: loading, error with retry, the whole catalogue empty, offline from the read cache; pull to refresh in place
 import SwiftUI
 
 struct HealthMetricsView: View {
@@ -7,6 +7,7 @@ struct HealthMetricsView: View {
     /// The pump screen's model lives here: opening the tab asks for HealthKit access once (the launch run
     /// only syncs what is already allowed), and the pump screen opened from the list shares the same model.
     @StateObject private var pump = HealthSyncViewModel.live()
+    @State private var showsAllNights = false
 
     init(viewModel: HealthMetricsViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -18,6 +19,9 @@ struct HealthMetricsView: View {
             // Inline, like the More stack: a large title of a scrolling screen renders blank on the iOS 26 simulator.
             .navigationBarTitleDisplayMode(.inline)
             .dsScreenBackground()
+            .navigationDestination(isPresented: $showsAllNights) {
+                HealthMetricDetailView(viewModel: .live(identifier: HealthMetricsFormat.sleepIdentifier, title: "Сон"))
+            }
             .task {
                 await pump.enterSection()
                 await viewModel.appear()
@@ -59,16 +63,10 @@ struct HealthMetricsView: View {
                 }
                 .listRowBackground(DS.Palette.card)
             } else {
-                if let nights = viewModel.nights {
-                    HealthSleepSection(nights: nights, title: "Сон", allNights: {
-                        AnyView(HealthMetricDetailView(viewModel: .live(
-                            identifier: HealthMetricsFormat.sleepIdentifier, title: "Сон"
-                        )))
-                    }, listsNights: false)
-                }
-                if let workouts = viewModel.workouts {
-                    HealthWorkoutsSection(workouts: workouts)
-                }
+                Section { overview }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: DS.Spacing.sm, leading: DS.Spacing.lg, bottom: DS.Spacing.sm, trailing: DS.Spacing.lg))
                 ForEach(HealthMetricsFormat.groups, id: \.id) { group in
                     let rows = HealthMetricsFormat.metrics(of: group.id, in: viewModel.metrics)
                     if !rows.isEmpty {
@@ -87,6 +85,26 @@ struct HealthMetricsView: View {
             }
         }
         .refreshable { await viewModel.refresh() }
+    }
+}
+
+extension HealthMetricsView {
+    /// The cards in the order of the owner's mock-up; a card whose read failed or whose endpoint is missing is simply absent.
+    @ViewBuilder
+    fileprivate var overview: some View {
+        VStack(spacing: DS.Spacing.md) {
+            if let score = viewModel.healthState {
+                HealthStateCard(score: score, metrics: viewModel.metrics)
+            }
+            HealthTilesRow(metrics: viewModel.metrics, today: viewModel.today)
+            if let nights = viewModel.nights {
+                HealthSleepChartCard(nights: nights, today: viewModel.today, onAllNights: { showsAllNights = true })
+            }
+            HealthDeviationCard(metrics: viewModel.metrics)
+            if let workouts = viewModel.workouts {
+                HealthWorkoutsCard(workouts: workouts)
+            }
+        }
     }
 }
 
