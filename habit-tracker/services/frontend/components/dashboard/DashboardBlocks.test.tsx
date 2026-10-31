@@ -43,8 +43,8 @@ describe('ScoreRings', () => {
       <ScoreRings
         scores={{
           health: { value: null, label: null, basis_days: 4 },
-          habits: null,
-          challenges: null,
+          habits: { value: null, done: null, total: null },
+          challenges: { done: null, total: null },
         }}
       />
     );
@@ -53,20 +53,53 @@ describe('ScoreRings', () => {
     expect(screen.queryByText(/из 3 дн\./)).toBeNull();
   });
 
-  it('names a missing plan and missing challenges', () => {
+  it('writes words on the shape the server gives an empty base, and never the text «null»', () => {
+    const { container } = render(<ScoreRings scores={emptySummary().scores} />);
+
+    expect(screen.getByText('План не задан')).toBeTruthy();
+    expect(screen.getByText('Челленджей нет')).toBeTruthy();
+    expect(screen.queryByText('выполнено')).toBeNull();
+    expect(container.textContent).not.toContain('null');
+    expect(container.textContent).not.toContain('NaN');
+  });
+
+  it('names a plan or challenges that exist but have nothing in them', () => {
     render(
       <ScoreRings
         scores={{
-          health: null,
+          health: { value: 50, label: 'fair', basis_days: 5 },
           habits: { value: null, done: 0, total: 0 },
           challenges: { done: 0, total: 0 },
         }}
       />
     );
 
-    expect(screen.getByText('Нет данных')).toBeTruthy();
     expect(screen.getByText('План не задан')).toBeTruthy();
     expect(screen.getByText('Челленджей нет')).toBeTruthy();
+  });
+
+  it('draws challenges done of total, zero done included', () => {
+    render(
+      <ScoreRings
+        scores={{
+          ...fullSummary().scores,
+          challenges: { done: 0, total: 4 },
+        }}
+      />
+    );
+    expect(screen.getByText('0/4')).toBeTruthy();
+  });
+
+  it('says there is no data for habits that have a plan but no value', () => {
+    render(
+      <ScoreRings
+        scores={{
+          ...fullSummary().scores,
+          habits: { value: null, done: null, total: 10 },
+        }}
+      />
+    );
+    expect(screen.getByText('Нет данных')).toBeTruthy();
   });
 });
 
@@ -258,16 +291,21 @@ describe('WorkoutsBlock', () => {
   });
 
   it('leaves out the comparison when the server has none', () => {
-    const workouts = fullSummary().workouts;
-    render(
-      <WorkoutsBlock workouts={workouts === null ? null : { ...workouts, delta_vs_previous: null }} />
-    );
+    render(<WorkoutsBlock workouts={{ ...fullSummary().workouts, delta_vs_previous: null }} />);
     expect(screen.queryByText(/к прошлому периоду/)).toBeNull();
   });
 
-  it('is a line of words without workouts', () => {
-    render(<WorkoutsBlock workouts={null} />);
+  it('is a line of words on the empty shape of the server, with no «всего» and no «null»', () => {
+    const { container } = render(<WorkoutsBlock workouts={emptySummary().workouts} />);
     expect(screen.getByText(/тренировок в этом окне не записано/)).toBeTruthy();
+    expect(container.textContent).not.toContain('всего');
+    expect(container.textContent).not.toContain('null');
+  });
+
+  it('leaves out the total when it is null but weeks came', () => {
+    render(<WorkoutsBlock workouts={{ ...fullSummary().workouts, total: null }} />);
+    expect(screen.queryByText(/всего/)).toBeNull();
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
   });
 });
 

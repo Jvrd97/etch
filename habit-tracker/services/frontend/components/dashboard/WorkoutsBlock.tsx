@@ -17,12 +17,12 @@ function deltaText(delta: number | null): string | null {
 }
 
 interface WorkoutsBlockProps {
-  workouts: DashboardWorkouts | null;
+  workouts: DashboardWorkouts;
   mobile?: boolean;
 }
 
 export function WorkoutsBlock({ workouts, mobile = false }: WorkoutsBlockProps) {
-  const empty = workouts === null || workouts.weeks.length === 0;
+  const empty = workouts.weeks.length === 0;
   const fractions = empty ? [] : workoutBarFractions(workouts.weeks);
   const change = empty ? null : deltaText(workouts.delta_vs_previous);
   return (
@@ -31,7 +31,7 @@ export function WorkoutsBlock({ workouts, mobile = false }: WorkoutsBlockProps) 
       aside={
         empty ? undefined : (
           <>
-            всего {workouts.total}
+            {workouts.total !== null && <>всего {workouts.total}</>}
             {change !== null && <span className="ml-2">{change}</span>}
           </>
         )

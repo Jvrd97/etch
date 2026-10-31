@@ -4528,21 +4528,23 @@ export interface DashboardHealthScore {
   basis_days: number;
 }
 
+/** The server always sends the object; with no plan every field inside is null. */
 export interface DashboardHabitsScore {
   value: number | null;
-  done: number;
-  total: number;
+  done: number | null;
+  total: number | null;
 }
 
+/** The server always sends the object; with no challenge in the window `done` and `total` are null. */
 export interface DashboardChallengesScore {
-  done: number;
-  total: number;
+  done: number | null;
+  total: number | null;
 }
 
 export interface DashboardScores {
-  health: DashboardHealthScore | null;
-  habits: DashboardHabitsScore | null;
-  challenges: DashboardChallengesScore | null;
+  health: DashboardHealthScore;
+  habits: DashboardHabitsScore;
+  challenges: DashboardChallengesScore;
 }
 
 /** `true` done or clean, `false` missed or relapsed, `null` no data. */
@@ -4583,9 +4585,10 @@ export interface DashboardWorkoutWeek {
   minutes: number;
 }
 
+/** With no workout `weeks` is empty and `total` and `delta_vs_previous` are null. */
 export interface DashboardWorkouts {
   weeks: DashboardWorkoutWeek[];
-  total: number;
+  total: number | null;
   delta_vs_previous: number | null;
 }
 
@@ -4604,7 +4607,7 @@ export interface DashboardSummary {
   streaks: DashboardStreak[];
   health: DashboardHealthMetric[];
   bests: DashboardBest[];
-  workouts: DashboardWorkouts | null;
+  workouts: DashboardWorkouts;
   insight: DashboardInsight | null;
 }
 

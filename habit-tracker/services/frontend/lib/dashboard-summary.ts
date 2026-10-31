@@ -139,7 +139,6 @@ export const TONE_WORDS: Readonly<Record<DeltaTone, string | null>> = {
 };
 
 const HEALTH_LABELS: Readonly<Record<string, string>> = {
-  excellent: 'Отлично',
   good: 'Хорошо',
   fair: 'Средне',
   poor: 'Ниже нормы',

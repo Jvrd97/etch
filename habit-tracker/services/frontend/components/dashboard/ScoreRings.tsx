@@ -39,9 +39,6 @@ export function ringViews(scores: DashboardScores): RingView[] {
 
   const healthView: RingView = (() => {
     const base = { key: 'health', title: 'Здоровье', color: HEALTH_RING_COLOR };
-    if (health === null) {
-      return { ...base, fraction: null, centre: '—', caption: 'Нет данных' };
-    }
     if (health.value === null) {
       // Three days are there but the server still gave no score: the personal norm has not formed.
       const enoughDays = health.basis_days >= HEALTH_SCORE_MIN_DAYS;
@@ -66,13 +63,11 @@ export function ringViews(scores: DashboardScores): RingView[] {
 
   const habitsView: RingView = (() => {
     const base = { key: 'habits', title: 'Привычки', color: HABITS_RING_COLOR };
-    if (habits === null || habits.value === null || habits.total === 0) {
-      return {
-        ...base,
-        fraction: null,
-        centre: '—',
-        caption: habits !== null && habits.total === 0 ? 'План не задан' : 'Нет данных',
-      };
+    if (habits.total === null || habits.total === 0) {
+      return { ...base, fraction: null, centre: '—', caption: 'План не задан' };
+    }
+    if (habits.value === null || habits.done === null) {
+      return { ...base, fraction: null, centre: '—', caption: 'Нет данных' };
     }
     return {
       ...base,
@@ -84,7 +79,7 @@ export function ringViews(scores: DashboardScores): RingView[] {
 
   const challengesView: RingView = (() => {
     const base = { key: 'challenges', title: 'Челленджи', color: CHALLENGES_RING_COLOR };
-    if (challenges === null || challenges.total === 0) {
+    if (challenges.total === null || challenges.done === null || challenges.total === 0) {
       return { ...base, fraction: null, centre: '—', caption: 'Челленджей нет' };
     }
     return {

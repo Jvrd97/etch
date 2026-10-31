@@ -95,19 +95,22 @@ export function fullSummary(period: DashboardPeriod = 'week'): DashboardSummary 
   };
 }
 
-/** A window with no data at all: every block empty, nothing replaced by a zero. */
+/**
+ * A window with no data at all, in the shape the server gives an empty base: the
+ * three scores and the workouts are objects whose fields are null, never a bare null.
+ */
 export function emptySummary(period: DashboardPeriod = 'week'): DashboardSummary {
   return {
     ...fullSummary(period),
     scores: {
       health: { value: null, label: null, basis_days: 1 },
-      habits: null,
-      challenges: null,
+      habits: { value: null, done: null, total: null },
+      challenges: { done: null, total: null },
     },
     streaks: [],
     health: [],
     bests: [],
-    workouts: null,
+    workouts: { weeks: [], total: null, delta_vs_previous: null },
     insight: null,
   };
 }
