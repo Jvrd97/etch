@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-02/70
-// summary: reads the workouts of the last seven days for the Health screens once on mount; a failed read leaves the workouts section out, as the sleep section does, so the catalog below never breaks on it
+// [review:need-review] PHASE-02/70, PHASE-03/303
+// summary: reads the workouts of the last 30 days for the Health screens once on mount; a failed read leaves the workouts section out, as the sleep section does, so the catalog below never breaks on it
 
 import { useEffect, useState } from 'react';
 // A namespace import read at call time: suites that mock `@/lib/api` with a
@@ -10,8 +10,8 @@ import type { HealthWorkout, HealthWorkoutsResponse } from '@/lib/api';
 import { localDate } from '@/lib/health-metrics';
 import { shiftDate } from './useSleepNights';
 
-/** Today and the six days before it. */
-export const WORKOUT_WINDOW_DAYS = 7;
+/** Today and the 29 days before it. */
+export const WORKOUT_WINDOW_DAYS = 30;
 
 export type WorkoutsRead = (dateFrom: string, dateTo: string) => Promise<HealthWorkoutsResponse>;
 

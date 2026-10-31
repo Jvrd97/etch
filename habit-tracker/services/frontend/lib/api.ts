@@ -4514,3 +4514,24 @@ export const taskTimeAPI = {
     return fetcher<TaskTimeDay>(`/day/${date}/task-time`);
   },
 };
+
+// [review:need-review] PHASE-03/303
+// summary: HealthScore and healthScoreAPI.today read only the health index of GET /dashboard/summary (contract of #296) for the «Состояние сегодня» card of the Health screen; the card hides while the endpoint is missing
+
+/** `scores.health` of the dashboard summary: 0..100, or null with fewer than three days of data. */
+export interface HealthScore {
+  value: number | null;
+  label: string | null;
+  /** Days the index was computed on. */
+  basis_days: number;
+}
+
+export interface HealthScoreResponse {
+  scores: { health: HealthScore };
+}
+
+export const healthScoreAPI = {
+  today: async () => {
+    return fetcher<HealthScoreResponse>('/dashboard/summary?period=week');
+  },
+};
