@@ -103,8 +103,8 @@ struct DashboardStreaksCard: View {
                                 .font(.caption2)
                                 .foregroundStyle(DS.Palette.textSecondary)
                                 .padding(.horizontal, DS.Spacing.sm)
-                                .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.08), in: Capsule())
+                                .padding(.vertical, DashboardMetrics.badgeVerticalPadding)
+                                .background(DashboardPalette.badgeFill, in: Capsule())
                         }
                     }
                     if !typeSize.isAccessibilitySize { Spacer(minLength: DS.Spacing.sm) }
@@ -176,7 +176,7 @@ struct DashboardHealthCard: View {
             let delta = DashboardFormat.deltaText(metric)
             let word = DashboardFormat.toneWord(tone)
             layout {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DashboardMetrics.tightGap) {
                     Text(metric.label)
                         .font(.footnote)
                         .foregroundStyle(DS.Palette.textSecondary)
@@ -185,7 +185,7 @@ struct DashboardHealthCard: View {
                         .foregroundStyle(DS.Palette.textPrimary)
                 }
                 if !typeSize.isAccessibilitySize { Spacer(minLength: DS.Spacing.sm) }
-                VStack(alignment: typeSize.isAccessibilitySize ? .leading : .trailing, spacing: 2) {
+                VStack(alignment: typeSize.isAccessibilitySize ? .leading : .trailing, spacing: DashboardMetrics.tightGap) {
                     Label(delta, systemImage: arrow)
                         .font(.footnote)
                         .foregroundStyle(DashboardPalette.color(tone))
@@ -240,7 +240,7 @@ struct DashboardBestsCard: View {
             let value = DashboardFormat.value(identifier: best.identifier, value: best.value, unit: best.unit)
             let day = DashboardFormat.bestDayText(best.date, today: today)
             layout {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DashboardMetrics.tightGap) {
                     Text(best.label)
                         .font(.footnote)
                         .foregroundStyle(DS.Palette.textSecondary)
@@ -258,8 +258,8 @@ struct DashboardBestsCard: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(DashboardPalette.lime)
                             .padding(.horizontal, DS.Spacing.sm)
-                            .padding(.vertical, 2)
-                            .background(DashboardPalette.lime.opacity(0.12), in: Capsule())
+                            .padding(.vertical, DashboardMetrics.badgeVerticalPadding)
+                            .background(DashboardPalette.recordFill, in: Capsule())
                     }
                 }
             }

@@ -240,6 +240,143 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.refreshError, "Сервер не смог собрать сводку. Попробуйте ещё раз через минуту.")
     }
 
+    // MARK: A refresh that overtakes a read
+
+    func testARefreshThatFailsWhileTheFirstLoadHangsShowsTheErrorAndNotAnEndlessLoader() async {
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        var calls = 0
+        api.handler = { _ in
+            calls += 1
+            if calls == 1 {
+                await withCheckedContinuation { release = $0 }
+            }
+            throw APIClientError.timeout
+        }
+        let viewModel = makeViewModel(api)
+
+        let first = Task { await viewModel.load() }
+        while release == nil { await Task.yield() }
+        XCTAssertEqual(viewModel.state, .loading)
+        await viewModel.refresh()
+        release?.resume()
+        await first.value
+
+        XCTAssertEqual(viewModel.state, .failure("Сервер не ответил вовремя"))
+    }
+
+    func testAFailedRetryAfterAFailureReplacesTheReasonWithTheNewOne() async {
+        let api = MockDashboardSummaryAPI()
+        api.handler = { _ in throw APIClientError.unexpectedStatus(500) }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .failure("Сервер не смог собрать сводку. Попробуйте ещё раз через минуту."))
+
+        api.handler = { _ in throw APIClientError.timeout }
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.state, .failure("Сервер не ответил вовремя"))
+        XCTAssertNil(viewModel.refreshError)
+    }
+
+    func testAPullWhileTheFirstLoadRunsAndSucceedsLeavesTheNumbersOnScreen() async throws {
+        let week = try DashboardFixtures.week()
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        var calls = 0
+        api.handler = { _ in
+            calls += 1
+            if calls == 1 { await withCheckedContinuation { release = $0 } }
+            return week
+        }
+        let viewModel = makeViewModel(api)
+        let first = Task { await viewModel.load() }
+        while release == nil { await Task.yield() }
+
+        await viewModel.refresh()
+        release?.resume()
+        await first.value
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.summary, week)
+    }
+
+    // MARK: Leaving the screen
+
+    func testLeavingTheScreenMidReadDoesNotMarkTheNumbersAsNotUpdated() async throws {
+        let store = InMemoryCacheStore()
+        let week = try DashboardFixtures.week()
+        await makeViewModel(answering(week, week), store: store).load()
+
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        api.handler = { _ in
+            await withCheckedContinuation { release = $0 }
+            // What a cancelled request looks like to the client: a transport error.
+            throw APIClientError.transport(code: NSURLErrorCancelled)
+        }
+        let viewModel = makeViewModel(api, store: store)
+        let reading = Task { await viewModel.load() }
+        while release == nil { await Task.yield() }
+
+        reading.cancel()
+        release?.resume()
+        await reading.value
+
+        XCTAssertNil(viewModel.offlineAsOf)
+        XCTAssertNil(viewModel.summary)
+        XCTAssertNotEqual(viewModel.state, .failure(DashboardFormat.offlineEmptyMessage))
+    }
+
+    func testComingBackAfterACancelledReadLoadsAgain() async throws {
+        let week = try DashboardFixtures.week()
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        var calls = 0
+        api.handler = { _ in
+            calls += 1
+            if calls == 1 {
+                await withCheckedContinuation { release = $0 }
+                throw APIClientError.transport(code: NSURLErrorCancelled)
+            }
+            return week
+        }
+        let viewModel = makeViewModel(api)
+        let reading = Task { await viewModel.load() }
+        while release == nil { await Task.yield() }
+        reading.cancel()
+        release?.resume()
+        await reading.value
+
+        await viewModel.appear()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.summary, week)
+    }
+
+    // MARK: Switch is synchronous
+
+    func testTheSegmentChangesAtOnceAndTheOldAnswerCannotLandUnderTheNewPeriod() async throws {
+        let week = try DashboardFixtures.week()
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        api.handler = { _ in
+            await withCheckedContinuation { release = $0 }
+            return week
+        }
+        let viewModel = makeViewModel(api)
+        let reading = Task { await viewModel.load() }
+        while release == nil { await Task.yield() }
+
+        XCTAssertTrue(viewModel.switchTo(.month))
+        XCTAssertEqual(viewModel.period, .month)
+        XCTAssertFalse(viewModel.switchTo(.month))
+        release?.resume()
+        await reading.value
+
+        XCTAssertNil(viewModel.summary)
+    }
+
     func testComingBackReadsInPlaceInsteadOfShowingTheLoader() async throws {
         let first = try DashboardFixtures.week()
         let api = answering(first, first)

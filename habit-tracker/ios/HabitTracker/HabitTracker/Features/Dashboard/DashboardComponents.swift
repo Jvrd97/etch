@@ -9,6 +9,10 @@ enum DashboardPalette {
     static let amber = Color(hex6: 0xFFB454)
     static let track = Color(hex6: 0x2A2A2A)
     static let dotUnknown = Color.white.opacity(0.12)
+    /// Fill of a small badge («без срывов») and of the nutrition tile.
+    static let badgeFill = Color.white.opacity(0.08)
+    static let tileFill = Color.white.opacity(0.06)
+    static let recordFill = lime.opacity(0.12)
 
     static func color(_ tone: DashboardTone) -> Color {
         switch tone {
@@ -27,9 +31,19 @@ enum DashboardPalette {
     }
 }
 
-/// Smallest comfortable target for a tap.
+/// Sizes the cards share, named once.
 enum DashboardMetrics {
+    /// Smallest comfortable target for a tap.
     static let minTap: CGFloat = 44
+    /// Gap between a value and its caption.
+    static let tightGap: CGFloat = 2
+    /// Gap between an icon and its text.
+    static let iconGap: CGFloat = 4
+    static let badgeVerticalPadding: CGFloat = 2
+    /// How far a number or a date may shrink before it wraps.
+    static let minScale: CGFloat = 0.7
+    static let ringMinScale: CGFloat = 0.5
+    static let barRadius: CGFloat = 8
 }
 
 /// Title of a card with a quieter line beside or, at large text sizes, under it.
@@ -115,7 +129,7 @@ struct DashboardRingShape: View {
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(DS.Palette.textPrimary)
-                .minimumScaleFactor(0.5)
+                .minimumScaleFactor(DashboardMetrics.ringMinScale)
                 .lineLimit(1)
                 .padding(lineWidth)
         }

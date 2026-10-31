@@ -53,7 +53,7 @@ struct DashboardWorkoutsCard: View {
                             .foregroundStyle(DS.Palette.textPrimary)
                         ZStack(alignment: .bottom) {
                             Color.clear
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: DashboardMetrics.barRadius, style: .continuous)
                                 .fill(DashboardPalette.lime)
                                 .frame(maxWidth: maxBarWidth)
                                 .frame(height: max(minBar, area * fractions[index]))
@@ -63,13 +63,13 @@ struct DashboardWorkoutsCard: View {
                             .font(.caption2)
                             .foregroundStyle(DS.Palette.textSecondary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                            .minimumScaleFactor(DashboardMetrics.minScale)
                         Text(HealthMetricsFormat.sleepDuration(Double(week.minutes)))
                             .font(.caption2)
                             .foregroundStyle(DS.Palette.textSecondary)
                             .lineLimit(2)
                             .multilineTextAlignment(.center)
-                            .minimumScaleFactor(0.7)
+                            .minimumScaleFactor(DashboardMetrics.minScale)
                     }
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
@@ -81,7 +81,7 @@ struct DashboardWorkoutsCard: View {
 
     private struct CountLabelStyle: LabelStyle {
         func makeBody(configuration: Configuration) -> some View {
-            HStack(spacing: 4) {
+            HStack(spacing: DashboardMetrics.iconGap) {
                 configuration.icon.foregroundStyle(DashboardPalette.lime).imageScale(.small)
                 configuration.title
             }
@@ -185,8 +185,8 @@ struct DashboardNutritionCard: View {
                 Image(systemName: "fork.knife")
                     .font(.title3)
                     .foregroundStyle(DS.Palette.textSecondary)
-                    .frame(width: 44, height: 44)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                    .frame(width: DashboardMetrics.minTap, height: DashboardMetrics.minTap)
+                    .background(DashboardPalette.tileFill, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                     Text(DashboardFormat.nutritionTitle)

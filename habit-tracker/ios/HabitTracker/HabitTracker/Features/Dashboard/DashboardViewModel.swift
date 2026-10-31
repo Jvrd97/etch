@@ -70,13 +70,21 @@ final class DashboardViewModel: ObservableObject {
         await read(silent: true)
     }
 
-    /// Switches the window. The numbers of the other period are dropped at once: under «Месяц» they would be a lie.
-    func select(_ newPeriod: DashboardPeriod) async {
-        guard newPeriod != period else { return }
+    /// Switches the window at once and drops the numbers of the other period: under «Месяц» they would be a lie.
+    /// Returns whether a read is needed. The segment calls this in its setter so it never bounces back for a frame;
+    /// the read follows with `load()`. Bumping the generation keeps an answer still on its way for the old period off the screen.
+    func switchTo(_ newPeriod: DashboardPeriod) -> Bool {
+        guard newPeriod != period else { return false }
         period = newPeriod
         summary = nil
         offlineAsOf = nil
-        await read(silent: false)
+        refreshError = nil
+        generation += 1
+        return true
+    }
+
+    func select(_ newPeriod: DashboardPeriod) async {
+        if switchTo(newPeriod) { await load() }
     }
 
     private func read(silent: Bool) async {
@@ -93,13 +101,14 @@ final class DashboardViewModel: ObservableObject {
             let outcome = try await cache.load(key: Self.cacheKey(for: asked)) {
                 try await api.fetchDashboardSummary(period: asked)
             }
-            guard mine == generation else { return }
+            // The screen was left: a cancelled request looks like a lost connection and would show a copy as «не обновлено».
+            guard mine == generation, !Task.isCancelled else { return }
             show(outcome)
         } catch let error as APIClientError {
-            guard mine == generation else { return }
+            guard mine == generation, !Task.isCancelled else { return }
             fail(DashboardFormat.message(for: error), silent: silent)
         } catch {
-            guard mine == generation else { return }
+            guard mine == generation, !Task.isCancelled else { return }
             fail(DashboardFormat.loadFailedMessage, silent: silent)
         }
     }
@@ -116,8 +125,10 @@ final class DashboardViewModel: ObservableObject {
         state = .loaded
     }
 
+    /// A quiet failure is only quiet when there are numbers to keep on screen. With nothing shown (the first read still
+    /// running, or already failed) the error takes the place of the loader, whoever asked for the read.
     private func fail(_ message: String, silent: Bool) {
-        if silent {
+        if silent, summary != nil, state == .loaded {
             refreshError = message
         } else {
             state = .failure(message)

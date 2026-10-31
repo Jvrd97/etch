@@ -30,7 +30,7 @@ struct DashboardView: View {
     private var periodSwitch: some View {
         Picker("Период", selection: Binding(
             get: { viewModel.period },
-            set: { new in Task { await viewModel.select(new) } }
+            set: { new in if viewModel.switchTo(new) { Task { await viewModel.load() } } }
         )) {
             ForEach(DashboardPeriod.allCases, id: \.self) { period in
                 Text(DashboardFormat.periodTitle(period)).tag(period)
