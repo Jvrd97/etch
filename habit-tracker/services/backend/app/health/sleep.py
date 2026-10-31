@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/238
-# summary: the sleep fold — HealthKit sleep stages by their raw values, intervals grouped into nights by the local wake date (18:00 boundary), minutes per stage over a timeline where overlapping sources count once and a detailed stage wins, bedtime and wake time of the longest session
+# [review:need-review] PHASE-03/238, PHASE-03/277
+# summary: the sleep fold — HealthKit sleep stages by their raw values, sessions (intervals with no gap of an hour) assigned whole to a night by the local wake date of their end (18:00 boundary), minutes per stage over a timeline where overlapping sources count once and a detailed stage wins, bedtime and wake time of the longest session
 """
 Sleep intervals into nights.
 
@@ -8,10 +8,13 @@ intervals, each with one stage. The phone sends them raw; this module is the
 one place that turns them into nights, as `app.health.aggregate` is for the
 quantity metrics. Pure functions, no database.
 
-**A night is named by the wake date.** Every interval that ends between 18:00
-the evening before and 18:00 that day, on the device's own clock, belongs to
-the night of that date. A night that crosses midnight is therefore one night,
-and an afternoon nap counts toward the day it was taken.
+**A night is named by the wake date.** The fold first joins intervals into
+sessions (no gap of an hour or more inside one), then gives each session whole
+to the night of its end: a session that ends between 18:00 the evening before
+and 18:00 that day, on the device's own clock, belongs to the night of that
+date. A night that crosses midnight is one night; a sleep from 10:00 to 20:00
+after a night shift is one night too, not a nap and a night; an afternoon nap
+counts toward the day it was taken.
 
 **Sources do not add up.** iPhone and Watch (and any sleep app) write their
 own intervals over the same minutes. The fold walks the timeline once: each
@@ -129,19 +132,37 @@ def wake_date_of(interval: SleepInterval) -> date:
 
 
 def fold_nights(intervals: Iterable[SleepInterval]) -> list[SleepNight]:
-    """Group intervals into nights by wake date and fold each one, oldest first."""
-    by_night: dict[date, list[SleepInterval]] = {}
-    for interval in intervals:
-        if interval.end <= interval.start:
-            continue
-        by_night.setdefault(wake_date_of(interval), []).append(interval)
+    """Join intervals into sessions, give each to the night of its end, fold, oldest first."""
+    by_night: dict[date, list[list[SleepInterval]]] = {}
+    for session in _sessions(i for i in intervals if i.end > i.start):
+        by_night.setdefault(wake_date_of(_last_ending(session)), []).append(session)
     return [_fold_night(day, by_night[day]) for day in sorted(by_night)]
 
 
-def _fold_night(wake_date: date, intervals: Sequence[SleepInterval]) -> SleepNight:
+def _sessions(intervals: Iterable[SleepInterval]) -> list[list[SleepInterval]]:
+    """Runs of intervals, by start, with no gap of `SESSION_GAP` or more inside a run."""
+    sessions: list[list[SleepInterval]] = []
+    session_end: datetime | None = None
+    for interval in sorted(intervals, key=lambda i: i.start):
+        if session_end is None or interval.start - session_end >= SESSION_GAP:
+            sessions.append([])
+            session_end = interval.end
+        sessions[-1].append(interval)
+        session_end = max(session_end, interval.end)
+    return sessions
+
+
+def _last_ending(intervals: Sequence[SleepInterval]) -> SleepInterval:
+    return max(intervals, key=lambda interval: interval.end)
+
+
+def _fold_night(
+    wake_date: date, sessions: Sequence[Sequence[SleepInterval]]
+) -> SleepNight:
+    intervals = [interval for session in sessions for interval in session]
     seconds = _seconds_per_stage(intervals)
-    bedtime, wake_time = _longest_session(intervals)
-    last = max(intervals, key=lambda interval: interval.end)
+    bedtime, wake_time = _longest_session(sessions)
+    last = _last_ending(intervals)
 
     def minutes(*stages: SleepStage) -> float:
         total = sum(seconds[stage] for stage in stages) / SECONDS_PER_MINUTE
@@ -180,16 +201,9 @@ def _seconds_per_stage(intervals: Sequence[SleepInterval]) -> dict[SleepStage, f
     return seconds
 
 
-def _longest_session(intervals: Sequence[SleepInterval]) -> tuple[datetime, datetime]:
-    """Bounds of the longest run of intervals with no gap of `SESSION_GAP` or more."""
-    ordered = sorted(intervals, key=lambda interval: interval.start)
-    sessions: list[tuple[datetime, datetime]] = []
-    start, end = ordered[0].start, ordered[0].end
-    for interval in ordered[1:]:
-        if interval.start - end >= SESSION_GAP:
-            sessions.append((start, end))
-            start, end = interval.start, interval.end
-        else:
-            end = max(end, interval.end)
-    sessions.append((start, end))
-    return max(sessions, key=lambda session: session[1] - session[0])
+def _longest_session(
+    sessions: Sequence[Sequence[SleepInterval]],
+) -> tuple[datetime, datetime]:
+    """Bounds of the longest session: its first start and the end of its last-ending interval."""
+    bounds = [(session[0].start, _last_ending(session).end) for session in sessions]
+    return max(bounds, key=lambda span: span[1] - span[0])

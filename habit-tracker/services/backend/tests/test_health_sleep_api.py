@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-03/238, PHASE-03/272
-# summary: sleep through POST /health/samples (category samples, the same chunk and journal as the quantity metrics) and GET /health/sleep — a night across midnight, iPhone and Watch not added up, a re-sent night overwritten not doubled, an empty range, the sleep day in /health/metrics, refusals by class (unknown stage, sleep as a quantity, a quantity as a category), a cycle-tracking type refused as unknown, and a category type added by a catalogue row alone
+# [review:need-review] PHASE-03/238, PHASE-03/272, PHASE-03/277
+# summary: sleep through POST /health/samples (category samples, the same chunk and journal as the quantity metrics) and GET /health/sleep — a night across midnight, iPhone and Watch not added up, a re-sent night overwritten not doubled, a night cut at its start by a read window not overwriting the whole one, an empty range, the sleep day in /health/metrics, refusals by class (unknown stage, sleep as a quantity, a quantity as a category), a cycle-tracking type refused as unknown, and a category type added by a catalogue row alone
 """
 Sleep end to end on the HTTP surface.
 
@@ -9,6 +9,7 @@ else; the server folds them into nights keyed by the local wake date
 """
 
 import uuid
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Any
 
@@ -17,10 +18,11 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import health as health_crud
+from tests.conftest import test_engine
 from app.models import HealthHourBucket, HealthMetric, HealthSleepNight, HealthSyncRun
 
 SLEEP = "HKCategoryTypeIdentifierSleepAnalysis"
@@ -123,6 +125,100 @@ async def test_a_resent_night_is_overwritten_not_doubled(
     assert night["asleep_min"] == 270
     count = await db_session.scalar(select(func.count()).select_from(HealthSleepNight))
     assert count == 1
+
+
+# The same night as `NIGHT`, read from 01:00: a phone whose window opened late
+# after a flight sends the end of the night and none of its beginning.
+CUT_AT_THE_START = [
+    stage(IN_BED, "2026-10-20T01:00:00.000Z", "2026-10-20T05:00:00.000Z"),
+    stage(REM, "2026-10-20T02:00:00.000Z", "2026-10-20T04:00:00.000Z"),
+]
+
+
+async def test_a_night_cut_at_its_start_does_not_overwrite_the_whole_one(
+    client: AsyncClient,
+) -> None:
+    await post(client, {"category_samples": NIGHT})
+    await post(client, {"category_samples": CUT_AT_THE_START})
+
+    (night,) = await nights(client)
+    assert night["in_bed_min"] == 480
+    assert night["asleep_min"] == 390
+    assert night["bedtime"] == "2026-10-19T23:00:00+02:00"
+
+
+async def test_the_whole_night_replaces_one_that_arrived_cut(
+    client: AsyncClient,
+) -> None:
+    await post(client, {"category_samples": CUT_AT_THE_START})
+    (cut,) = await nights(client)
+    assert cut["in_bed_min"] == 240
+
+    await post(client, {"category_samples": NIGHT})
+
+    (night,) = await nights(client)
+    assert night["in_bed_min"] == 480
+    assert night["asleep_min"] == 390
+
+
+async def count_statements(client: AsyncClient, samples: list[dict[str, Any]]) -> int:
+    statements: list[str] = []
+
+    def count(*args: Any) -> None:
+        statements.append(str(args[2]))
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+    try:
+        await post(client, {"category_samples": samples})
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+    return len(statements)
+
+
+def _shifted(days: int) -> list[dict[str, Any]]:
+    def move(text: str) -> str:
+        moved = datetime.fromisoformat(text.replace("Z", "+00:00")) - timedelta(
+            days=days
+        )
+        return moved.isoformat().replace("+00:00", "Z")
+
+    return [{**s, "start": move(s["start"]), "end": move(s["end"])} for s in NIGHT]
+
+
+async def test_statements_do_not_grow_with_the_number_of_nights_in_a_chunk(
+    client: AsyncClient,
+) -> None:
+    """The class of error: a read or a write per night."""
+    one = await count_statements(client, _shifted(0))
+    week = [sample for day in range(1, 8) for sample in _shifted(day)]
+    seven = await count_statements(client, week)
+
+    assert seven == one
+
+
+async def test_bedtime_is_shown_on_the_wake_clock_on_the_night_clocks_go_back(
+    client: AsyncClient,
+) -> None:
+    # Berlin, 25 October 2026: clocks go back at 03:00. In bed at 23:00 CEST
+    # (+02:00), up at 07:00 CET (+01:00); the interval carries the offset of its end.
+    await post(
+        client,
+        {
+            "category_samples": [
+                stage(
+                    IN_BED,
+                    "2026-10-24T21:00:00.000Z",
+                    "2026-10-25T06:00:00.000Z",
+                    offset=60,
+                )
+            ]
+        },
+    )
+
+    (night,) = await nights(client, "2026-10-24", "2026-10-25")
+    assert night["date"] == "2026-10-25"
+    assert night["bedtime"] == "2026-10-24T22:00:00+01:00"
+    assert night["wake_time"] == "2026-10-25T07:00:00+01:00"
 
 
 async def test_a_range_without_nights_is_empty_and_the_sleep_day_is_absent(

@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/238, PHASE-02/69
-// summary: reads the nights of sleep for the Health screens — the last seven by default, or the range a detail screen names; a failed read leaves the sleep section out, as the sync block does, so the catalog below never breaks on it
+// [review:need-review] PHASE-03/238, PHASE-02/69, PHASE-03/277
+// summary: reads the nights of sleep for the Health screens — the last seven by default, or the range a detail screen names; a failed read is logged and leaves the sleep section out, as the sync block does, so the catalog below never breaks on it
 
 import { useEffect, useState } from 'react';
 // A namespace import read at call time: suites that mock `@/lib/api` with a
@@ -39,8 +39,9 @@ export function useSleepNights(
       .then((body) => {
         if (alive) setNights(body.nights);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Sleep is one section of the screen; its failure must not take the rest down.
+        console.warn('сон не прочитался, секцию сна не показываем', error);
       });
     return () => {
       alive = false;

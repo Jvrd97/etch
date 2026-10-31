@@ -3020,3 +3020,13 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/models/health.py`, `app/models/__init__.py` — mod: модель `HealthWorkout`.
 - `app/schemas/health.py`, `app/crud/health.py`, `app/api/health.py` — mod: секция `workouts` в `POST /health/samples`, upsert по UUID, `GET /health/workouts` (добавлением).
 - `tests/test_health_workouts.py` — new: повтор окна не дублирует, исправленная тренировка перезаписывается, тренировка через полночь в день старта, `null` вместо нуля, нет часовых корзин, отказ на плохие значения, соответствие полей телефону.
+
+## 2026-10-31 — PHASE-03/277: сон — сессия через 18:00 и ночь, обрезанная после перелёта
+
+Тронуто 5 файлов кода (5 `mod`), миграций нет.
+
+- `app/health/sleep.py` — mod: `fold_nights` сначала собирает сессии, потом относит сессию целиком к ночи по её концу.
+- `app/crud/health.py` — mod: `upsert_nights` не перезаписывает целую ночь той, что кончается там же, но начинается позже и короче; возвращает число реально записанных ночей.
+- `tests/test_health_sleep.py`, `tests/test_health_sleep_api.py` — mod: сессия через 18:00, обрезанная ночь, замена обрезанной целой, рост запросов от числа ночей, отбой на часах подъёма в ночь перевода часов.
+- `frontend/components/health/useSleepNights.ts` и `SleepSection.test.tsx` — mod: ошибка чтения сна логируется через `console.warn`.
+- iOS-часть (запас чтения в насосе) не сделана, вынесена в #282.

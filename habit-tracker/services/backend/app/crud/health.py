@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238, PHASE-03/272, PHASE-02/68
-# summary: Health persistence (and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, any other category type into hourly minutes or counts via app.health.categories) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
+# [review:need-review] PHASE-02/64-health-vertical-two-metrics, PHASE-03/245, PHASE-03/255, PHASE-03/132, PHASE-03/238, PHASE-03/272, PHASE-02/68, PHASE-03/277
+# summary: Health persistence (a night cut at its start never overwrites the whole one; and the sync-run journal: chunk accounting, failure by class, latest run per kind; category samples routed by catalogue kind — sleep into nights by wake date, any other category type into hourly minutes or counts via app.health.categories) — catalogue seed/read, natural-key upsert of hourly buckets and of nights, daily fold by local_date (sleep: minutes asleep by wake date), and the one comparison of a metric against the window before it that the week review and the advice share
 """
 Database access for the Health contour.
 
@@ -17,7 +17,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -247,10 +247,15 @@ async def daily_values(
 
 async def upsert_nights(db: AsyncSession, nights: Sequence[SleepNight]) -> int:
     """
-    Write nights on their wake date, overwriting what was there.
+    Write nights on their wake date, overwriting what was there; rows written.
 
     The same rule as `upsert_buckets`: a chunk carries every interval of each
-    night it touches, so the night it folds to is the newer answer.
+    night it touches, so the night it folds to is the newer answer. One
+    exception, decided in the statement itself: a night that ends where the
+    stored one ends but starts later and covers less is the stored night read
+    through a window that opened late (the phone's 18:00 is its current clock,
+    the night's is the one it was slept on, so the first night after a flight
+    arrives cut at the start). The stored night stays.
     """
     if not nights:
         return 0
@@ -271,7 +276,12 @@ async def upsert_nights(db: AsyncSession, nights: Sequence[SleepNight]) -> int:
         for night in nights
     ]
     statement = pg_insert(HealthSleepNight).values(rows)
-    statement = statement.on_conflict_do_update(
+    cut_at_the_start = and_(
+        statement.excluded.wake_time == HealthSleepNight.wake_time,
+        statement.excluded.bedtime > HealthSleepNight.bedtime,
+        statement.excluded.in_bed_min < HealthSleepNight.in_bed_min,
+    )
+    upsert = statement.on_conflict_do_update(
         index_elements=[HealthSleepNight.wake_date],
         set_={
             **{
@@ -281,9 +291,10 @@ async def upsert_nights(db: AsyncSession, nights: Sequence[SleepNight]) -> int:
             },
             "updated_at": func.now(),
         },
-    )
-    await db.execute(statement)
-    return len(rows)
+        where=not_(cut_at_the_start),
+    ).returning(HealthSleepNight.wake_date)
+    written = await db.execute(upsert)
+    return len(written.all())
 
 
 async def sleep_nights(
