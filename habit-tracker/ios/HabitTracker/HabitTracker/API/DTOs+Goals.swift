@@ -59,6 +59,13 @@ struct MilestonePatchDTO: Encodable, Equatable {
     let status: MilestoneStatus
 }
 
+/// The statuses a quarter goal can have (`QUARTER_GOAL_STATUSES` of the server).
+enum QuarterGoalStatus: String {
+    case open
+    case done
+    case dropped
+}
+
 /// One goal of a quarter as `PUT /goals/quarter/{quarter}` takes it: the server writes the quarter as one set.
 struct QuarterGoalInDTO: Encodable, Equatable {
     /// Place in the list, 1...5.

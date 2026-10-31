@@ -171,12 +171,13 @@ struct GoalsView: View {
                 isAddingGoal = true
             } label: {
                 Label("Добавить цель", systemImage: "plus")
+                    .foregroundStyle(DS.Palette.background)
             }
             .buttonStyle(.borderedProminent)
             .tint(DS.Palette.lime)
             .accessibilityIdentifier("goals.add")
-        } else {
-            secondary("В квартале пять целей — больше не бывает.")
+        } else if let note = viewModel.addGoalNote {
+            secondary(note)
         }
     }
 

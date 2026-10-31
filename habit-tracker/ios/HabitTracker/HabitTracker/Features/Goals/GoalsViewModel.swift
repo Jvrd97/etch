@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/216, PHASE-03/295
-// summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows; adding a goal of the quarter (the whole set goes in one PUT, at most five) and every failure said in Russian
+// summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows; adding a goal of the quarter (a fresh read first, so the set that goes in the one PUT is the server's own and not the screen's; at most five; the read cache follows the write) and every failure said in Russian
 import Foundation
 
 /// Words and small rules of the goal board, the same as the web's `GoalsBoard.tsx`.
@@ -10,6 +10,8 @@ enum GoalsFormat {
     static let maxQuarterGoals = 5
     static let emptyTextRefusal = "Напишите, какая это цель."
     static let tooManyGoalsRefusal = "В квартале не больше пяти целей: уберите или замените одну из них."
+    static let offlineAddNote = "Нет связи с сервером — цели можно добавить, когда он ответит."
+    static let fullQuarterNote = "В квартале пять целей — больше не бывает."
     static let unknownFailure = "Не получилось выполнить действие. Попробуйте ещё раз."
 
     /// A failure in words a person reads: never the English of `APIClientError.userMessage`, and the
@@ -147,7 +149,11 @@ final class GoalsViewModel: ObservableObject {
         let read = readsSent
         do {
             let outcome = try await cache.load(key: Self.cacheKey) { try await api.fetchGoals() }
-            guard read > readShown else { return }
+            guard read > readShown else {
+                // The read cache took this answer on its way here; a newer board is already on screen.
+                restoreCache()
+                return
+            }
             readShown = read
             switch outcome {
             case .fresh(let value):
@@ -182,53 +188,83 @@ final class GoalsViewModel: ObservableObject {
         await load()
     }
 
-    /// The board is loaded and the quarter has a free place.
+    /// The board is loaded and fresh, and the quarter has a free place. A cached board may be a
+    /// quarter or a web edit behind, and the write replaces the whole set.
     var canAddGoal: Bool {
-        guard let board else { return false }
+        guard let board, offlineAsOf == nil else { return false }
         return board.goals.count < GoalsFormat.maxQuarterGoals
+    }
+
+    /// Why there is no «Добавить цель» button, when there is a board and no button.
+    var addGoalNote: String? {
+        guard let board else { return nil }
+        if offlineAsOf != nil { return GoalsFormat.offlineAddNote }
+        return board.goals.count < GoalsFormat.maxQuarterGoals ? nil : GoalsFormat.fullQuarterNote
     }
 
     func clearFormError() {
         formError = nil
     }
 
-    /// Adds one goal to the quarter on screen. The server takes the quarter as one set, so the goals
-    /// already there go with it — same text, link and status — and the new one takes the first free
-    /// place. The answer is the whole board, shown as it is. True when the server accepted it.
+    /// Adds one goal to the quarter. The server takes the quarter as one set and removes the places
+    /// that are not in it, so the set is built from a board read right now, never from the one on
+    /// screen (a cached board, or a web edit made after the screen opened, would be erased). The
+    /// goals already there go with it — same text, link and status — and the new one takes the first
+    /// free place. If the read fails, nothing is written. True when the server accepted the goal.
     func addGoal(text: String) async -> Bool {
-        guard !isAdding, let board else { return false }
+        guard !isAdding, board != nil else { return false }
         formError = nil
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             formError = GoalsFormat.emptyTextRefusal
             return false
         }
-        let taken = Set(board.goals.map(\.ord))
-        guard let ord = (1...GoalsFormat.maxQuarterGoals).first(where: { !taken.contains($0) }) else {
-            formError = GoalsFormat.tooManyGoalsRefusal
-            return false
-        }
         guard let api = apiProvider() else {
             formError = GoalsFormat.notConfiguredMessage
             return false
         }
-        let set = board.goals.map {
-            QuarterGoalInDTO(ord: $0.ord, textMd: $0.textMd, milestoneCode: $0.milestoneCode, status: $0.status)
-        } + [QuarterGoalInDTO(ord: ord, textMd: trimmed, milestoneCode: nil, status: "open")]
         isAdding = true
         defer { isAdding = false }
+        let current: GoalsBoardDTO
         do {
-            let saved = try await api.putQuarterGoals(quarter: board.quarter, goals: set)
-            // The PUT answer is the board after the write; a read in flight from before it must not win.
-            readShown = readsSent
-            self.board = saved
-            offlineAsOf = nil
+            current = try await api.fetchGoals()
+        } catch {
+            formError = GoalsFormat.message(for: error)
+            return false
+        }
+        adopt(current)
+        let taken = Set(current.goals.map(\.ord))
+        guard let ord = (1...GoalsFormat.maxQuarterGoals).first(where: { !taken.contains($0) }) else {
+            formError = GoalsFormat.tooManyGoalsRefusal
+            return false
+        }
+        let set = current.goals.map {
+            QuarterGoalInDTO(ord: $0.ord, textMd: $0.textMd, milestoneCode: $0.milestoneCode, status: $0.status)
+        } + [QuarterGoalInDTO(ord: ord, textMd: trimmed, milestoneCode: nil, status: QuarterGoalStatus.open.rawValue)]
+        do {
+            adopt(try await api.putQuarterGoals(quarter: current.quarter, goals: set))
             errorMessage = nil
             return true
         } catch {
             formError = GoalsFormat.message(for: error)
             return false
         }
+    }
+
+    /// Makes an answer the server has just given the board: on screen, in the read cache, and newer
+    /// than any read still in flight.
+    private func adopt(_ fresh: GoalsBoardDTO) {
+        readShown = readsSent
+        board = fresh
+        offlineAsOf = nil
+        restoreCache()
+    }
+
+    /// Writes the board on screen back into the read cache. A read that was in flight while the
+    /// board changed saves its older answer there when it lands; this puts the newer one back.
+    private func restoreCache() {
+        guard let board, offlineAsOf == nil else { return }
+        cache.store.save(board, forKey: Self.cacheKey, updatedAt: cache.now())
     }
 
     /// «Открывается чем» of one milestone, read against the statuses of the board on screen.
