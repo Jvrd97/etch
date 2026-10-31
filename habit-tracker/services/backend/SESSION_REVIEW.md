@@ -715,7 +715,7 @@ Feedback loops: pytest 351/351 green, `ruff check` clean, `ruff format --check` 
 - `app/main.py` — **mod**: роутер дня в `API_ROUTERS`, `_publish_day_boundary()` на старте.
 - `app/models/__init__.py`, `app/schemas/__init__.py` — **mod**: реэкспорт.
 - `tests/conftest.py` — **mod**: autouse-фикстура сбрасывает опубликованную границу между тестами — она процессная по замыслу, и вставленное одним тестом правило иначе решало бы, какой сегодня день, для всех следующих.
-- `tests/test_day_rules.py` — **new**: 26 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
+- `tests/test_day_rules.py` — **new**: 27 тестов; полуоткрытый интервал с двух сторон, резолвер, отказ базы на пересечении, идемпотентный сид, публикация границы, grep-проверка «`def local_date` в репозитории ровно один».
 - `tests/test_day.py` — **new**: 11 тестов ручки; вид дня, legacy-правило на 14 августа, `opened_at = null`, «плана нет» вместо 404, `X-API-Key`, неизменность `kind` после новой строки расписания.
 - Фронтенд — **new**: `lib/day-format.ts` (+тест), `hooks/useDay.ts` (+тест), `components/DayScreen.tsx` (+тест), `components/mobile/MobileDayScreen.tsx`, страницы `app/day/page.tsx`, `app/day/[date]/page.tsx`, `app/m/day/page.tsx`, `app/m/day/[date]/page.tsx`; **mod**: `lib/api.ts` (`dayAPI`, типы), `lib/routes.ts` + `lib/routes.test.ts` (экран Day в реестре), `components/route-icons.ts`.
 - `habit-tracker/docs/day-boundary.md` — **mod**: раздел «Откуда берётся правило» переписан — источник теперь таблица, настройки стали запасным.
@@ -3091,3 +3091,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Круг 2 (PHASE-03/166): интервал через границу суток режется по дню (`crud/task_time.py`, `crud/activity.py::task_time_seconds`); время по задаче считается одним запросом с группировкой по `plan_item_id`; интервалы, привязанные только по `plan_task_id`/`clickup_task_id`, дают поле `other_linked_minutes`; `commits_checked` и `today` в ответе; `MANUAL_APP_NAME` переехал в `crud/activity.py`. Новые тесты в `tests/test_task_time.py` (22 теста). Веб: `useTaskTime` опрашивает только пока день — сегодня и читает один раз после записи отметки; `TaskTimeSummary` показывает `other_linked_minutes`.
 
 Круг 3 (PHASE-03/166): время без привязки считается как разность мультидиапазонов Postgres — минуты, покрытые привязанными интервалами (пункт плана главнее, затем `plan_task_id`/`clickup_task_id`), вычитаются из «без задачи» и из `other_linked_minutes`, поэтому таймер на задаче поверх замера агента не показывается как «работа вне плана», а `tasks + untasked + other` равно объединению интервалов дня (кроме минут, где идут две разные задачи сразу). `long_untasked` строится из кусков разности от 30 минут. Веб: `useTaskTime` держит последний устоявшийся ключ в состоянии (правило `react-hooks/refs`).
+
+## 2026-10-31 — PHASE-03/296: серверная сводка дашборда `GET /dashboard/summary`
+
+Тронуто 6 файлов бэкенда (5 `new`, 1 `mod`) и одна заметка; миграции нет, существующие `crud/health`, `streak`, `challenge` не менялись.
+
+- `app/schemas/dashboard_summary.py` — new: типы ответа; формулы колец «Здоровье», «Привычки», «Челленджи» в docstring.
+- `app/crud/dashboard_summary.py` — new: сборка сводки в 9 запросах; серии из `crud/streak`, среднее против нормы из `crud/health.compare_windows`, пороги из `health/baseline`.
+- `app/api/dashboard_summary.py` — new: ручка `GET /dashboard/summary?period=week|month`.
+- `app/main.py` — mod: регистрация роутера добавлением.
+- `tests/test_dashboard_summary.py` — new: 27 тестов, включая «число SQL не растёт с категориями и днями» и «настоящая модель не вызывается».
+- `docs/PHASE-03/design/296-dashboard-summary.md` — new: контракт и формулы одной страницей.
