@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 580" width="900" height="580">
+  <rect x="0" y="0" width="900" height="580" fill="#ffffff"/>
+  <defs>
+    <style>
+      line, path, circle, rect, polyline, polygon { vector-effect: non-scaling-stroke; }
+      .s  { font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif; }
+      .t  { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; }
+      .cap { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 10px; font-weight: 600; letter-spacing: 0.09em; fill: #6b6b6b; }
+      .tech { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 12px; fill: #000000; }
+      .dim { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 11px; fill: #6b6b6b; }
+      .box { fill: #ffffff; stroke: #000000; stroke-width: 1; }
+    </style>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#000000"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="44" class="t" font-size="22" font-weight="500" fill="#000000">День: от ночного каркаса до вердикта</text>
+  <text x="30" y="68" class="s" font-size="13" fill="#6b6b6b">Над рамкой — кто действует и когда. Жёлтое — шаг, где решается «день выигран».</text>
+  <line x1="30" y1="88" x2="870" y2="88" stroke="#dcdcdc" stroke-width="1"/>
+
+  <!-- Row 1 -->
+  <text x="30" y="112" class="cap">НОЧЬ · WORKER</text>
+  <rect x="30" y="120" width="260" height="150" class="box"/>
+  <text x="44" y="146" class="s" font-size="17">Каркас на завтра</text>
+  <text x="44" y="170" class="tech">nightly_once()</text>
+  <text x="44" y="188" class="tech">pg_advisory_xact_lock</text>
+  <text x="44" y="206" class="tech">есть правило, рабочий день,</text>
+  <text x="44" y="224" class="tech">плана нет → skeleton</text>
+  <text x="44" y="242" class="tech">needs_review = true</text>
+  <text x="44" y="260" class="dim">jobs/nightly.py:96</text>
+
+  <text x="320" y="112" class="cap">УТРО · ЧЕЛОВЕК НАЖИМАЕТ «СОБРАТЬ»</text>
+  <rect x="320" y="120" width="260" height="150" class="box"/>
+  <text x="334" y="146" class="s" font-size="17">Сборка плана</text>
+  <text x="334" y="170" class="tech">модель → check_all, 8 правил</text>
+  <text x="334" y="188" class="tech">нарушения → 1 ремонтный заход</text>
+  <text x="334" y="206" class="tech">не вышло / 300 с → каркас</text>
+  <text x="334" y="224" class="tech">с кодом причины</text>
+  <text x="334" y="242" class="tech">replace_plan → ревизия 0</text>
+  <text x="334" y="260" class="dim">day/generate.py:123</text>
+
+  <text x="610" y="112" class="cap">ДЕНЬ · ВЕБ, КНОПКИ, АГЕНТ</text>
+  <rect x="610" y="120" width="260" height="150" class="box"/>
+  <text x="624" y="146" class="s" font-size="17">Отметки и время</text>
+  <text x="624" y="170" class="tech">пункт: пусто → ✓ → ✕</text>
+  <text x="624" y="188" class="tech">первая отметка замораживает план</text>
+  <text x="624" y="206" class="tech">быстрая отметка закрывает пункт</text>
+  <text x="624" y="224" class="tech">интервалы work → минуты</text>
+  <text x="624" y="242" class="tech">нет интервалов → «не измерено»</text>
+  <text x="624" y="260" class="dim">crud/mark.py:178 · day/work.py:85</text>
+
+  <line x1="290" y1="195" x2="318" y2="195" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="580" y1="195" x2="608" y2="195" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <path d="M740,270 L740,288 L160,288 L160,316" fill="none" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- Row 2 -->
+  <text x="30" y="312" class="cap">15:40 · ЧЕЛОВЕК</text>
+  <rect x="30" y="320" width="260" height="168" class="box"/>
+  <text x="44" y="346" class="s" font-size="17">Ревью</text>
+  <text x="44" y="370" class="tech">POST /day/{d}/close/review</text>
+  <text x="44" y="388" class="tech">Idempotency-Key</text>
+  <text x="44" y="406" class="tech">stage = reviewed</text>
+  <text x="44" y="424" class="tech">можно пропустить:</text>
+  <text x="44" y="442" class="tech">open → closed сразу</text>
+  <text x="44" y="478" class="dim">crud/summary.py:569</text>
+
+  <text x="320" y="312" class="cap">ВЕЧЕР · СЕРВЕР СЧИТАЕТ</text>
+  <rect x="320" y="320" width="260" height="168" class="box" stroke-width="1.5"/>
+  <text x="334" y="346" class="s" font-size="17">Закрытие и вердикт</text>
+  <rect x="334" y="356" width="200" height="22" fill="#ffe500" stroke="#000000" stroke-width="1"/>
+  <text x="342" y="372" class="tech">evaluate_day(rule, facts)</text>
+  <text x="334" y="398" class="tech">1 overtime ≤ потолок профиля</text>
+  <text x="334" y="416" class="tech">2 anchors — все закрыты</text>
+  <text x="334" y="434" class="tech">3 tasks — доля ≥ планки</text>
+  <text x="334" y="452" class="tech">4 role_act — в рабочий день</text>
+  <text x="334" y="478" class="dim">day/evaluate.py:440</text>
+
+  <text x="610" y="312" class="cap">ПОСЛЕ ВЕРДИКТА</text>
+  <rect x="610" y="320" width="260" height="168" class="box"/>
+  <text x="624" y="346" class="s" font-size="17">Долг и серия</text>
+  <text x="624" y="370" class="tech">settle_day: минуты сверх</text>
+  <text x="624" y="388" class="tech">baseline 480 → долг</text>
+  <text x="624" y="406" class="tech">step_streak: won +1, lost → 0,</text>
+  <text x="624" y="424" class="tech">воскресенье не меняет</text>
+  <text x="624" y="442" class="tech">recompute_history по всем дням</text>
+  <text x="624" y="478" class="dim">crud/summary.py:676 · :718</text>
+
+  <line x1="290" y1="404" x2="318" y2="404" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="580" y1="404" x2="608" y2="404" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- outcome -->
+  <line x1="30" y1="508" x2="870" y2="508" stroke="#dcdcdc" stroke-width="1"/>
+  <text x="30" y="534" class="s" font-size="17">won — все условия прошли.  lost — причина = первое непройденное условие.</text>
+  <text x="30" y="560" class="dim" font-size="12">Порядок условий — данные (verdict_rule.reason_order). Переопределить можно только lost → won и только с запиской.</text>
+</svg>

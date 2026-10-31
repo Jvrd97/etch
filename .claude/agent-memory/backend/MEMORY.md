@@ -1,0 +1,2 @@
+- [Frontend api mock exports](frontend-api-mock-exports.md) — new `@/lib/api` export breaks bun suites at link time; use namespace import + injected client
+- [Swarm live-check guards](swarm-live-check-guards.md) — alembic upgrade on live DB and `rm` get held; live check on habit_test_<id> + headless Chrome CDP

@@ -1,0 +1,1 @@
+- [Backend suite runtime](project_backend_suite_runtime.md) — full pytest ~16 min, no xdist; run in background

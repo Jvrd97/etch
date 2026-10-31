@@ -1,0 +1,1 @@
+- [Swarm live check without migration](swarm-live-check-without-migration.md) — migration of habit_live_<id> is held by the guard; check UI on a stub API + raw-CDP Chrome, say so in the report

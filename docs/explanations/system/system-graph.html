@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>habit_tracker_ai — граф связей · связи</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --serif:"IBM Plex Serif",Georgia,"Iowan Old Style",Palatino,serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --ink:#000; --muted:#6b6b6b; --hair:#dcdcdc; --paper:#fff; --accent:#ffe500;
+}
+html,body{margin:0;height:100%;background:var(--paper);color:var(--ink);font-family:var(--sans)}
+header{padding:18px 30px 12px;border-bottom:1px solid var(--hair);display:flex;gap:24px;align-items:baseline;flex-wrap:wrap}
+h1{font:500 22px var(--sans);margin:0}
+header .legend{font:13px var(--serif);color:var(--muted)}
+main{display:grid;grid-template-columns:1fr 320px;height:calc(100% - 60px)}
+svg{width:100%;height:100%;display:block;cursor:grab}
+aside{border-left:1px solid var(--hair);padding:18px 20px;overflow:auto;font-size:14px}
+aside h2{font:500 16px var(--sans);margin:0 0 6px}
+aside .kind{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+aside code{font:12px var(--mono);word-break:break-all}
+aside ul{padding-left:18px;margin:6px 0}
+aside li{margin:3px 0}
+.node rect,.node ellipse{fill:#fff;stroke:#000;stroke-width:1}
+.node.data rect{stroke-dasharray:4 3}
+.node.external ellipse{stroke:#9a9a9a;stroke-dasharray:4 3}
+.node.event rect,.node.job rect{rx:14}
+.node.ui rect{stroke-width:2}
+.node text{font:14px var(--serif);pointer-events:none}
+.node .sub{font:10px var(--sans);fill:var(--muted)}
+.edge{stroke:#000;stroke-width:1;fill:none;marker-end:url(#ar)}
+.edge.http{stroke-dasharray:2 3}.edge.event{stroke-dasharray:6 4}.edge.db,.edge.config{stroke-dasharray:1 3}
+.edge-label{font:10px var(--sans);fill:var(--muted);pointer-events:none;display:none}
+.dim{opacity:.15}
+.sel rect,.sel ellipse{fill:var(--accent)}
+.hot{stroke-width:2}
+.hot + .edge-label{display:block}
+.filters{display:flex;gap:10px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.filters label{cursor:pointer}
+@media (max-width:800px){main{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--hair);max-height:40%}}
+</style>
+<header>
+  <h1>habit_tracker_ai — граф связей</h1>
+  <span class="legend">Клик — соседи и файл. Перетаскивай узлы. Жёлтый — выбранный узел.</span>
+  <span class="filters" id="filters"></span>
+</header>
+<main>
+  <svg id="g"><defs><marker id="ar" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#000"/></marker></defs><g id="edges"></g><g id="labels"></g><g id="nodes"></g></svg>
+  <aside id="panel"><h2>Часть системы</h2><p>Узлов: <b id="nn"></b>, связей: <b id="ne"></b>.</p><p>Выбери узел, чтобы увидеть, кто его вызывает и кого вызывает он, и где это в коде.</p></aside>
+</main>
+<script>
+const DATA = {"nodes": [{"id": "web", "label": "Веб: lib/api.ts", "kind": "ui", "path": "habit-tracker/services/frontend/lib/api.ts", "note": "fetcher + кука, 22 объекта API"}, {"id": "web_today", "label": "Today: useToday / useQuickMarks", "kind": "ui", "path": "habit-tracker/services/frontend/hooks/useToday.ts", "note": "оптимистичные записи, быстрые отметки"}, {"id": "web_chat", "label": "Чат: chat-stream.ts", "kind": "ui", "path": "habit-tracker/services/frontend/lib/chat-stream.ts", "note": "SSE-парсер в discriminated union"}, {"id": "next_proxy", "label": "Next.js rewrites", "kind": "module", "path": "habit-tracker/services/frontend/next.config.ts", "note": "/api/v1/* → backend:8000"}, {"id": "ios", "label": "iOS APIClient", "kind": "ui", "path": "habit-tracker/ios/HabitTracker/HabitTracker/API/APIClient.swift", "note": "X-API-Key из Keychain"}, {"id": "ios_outbox", "label": "iOS OutboxQueue", "kind": "module", "path": "habit-tracker/ios/HabitTracker/HabitTracker/Cache/OutboxQueue.swift", "note": "офлайн-очередь форм Today"}, {"id": "mac", "label": "HabitAgent", "kind": "ui", "path": "habit-tracker/mac/HabitAgent/HabitAgent/Activity/IntervalBuilder.swift", "note": "интервалы активного приложения"}, {"id": "main", "label": "main.py: create_app", "kind": "module", "path": "habit-tracker/services/backend/app/main.py", "note": "22 роутера под require_api_key"}, {"id": "auth", "label": "core/auth + session", "kind": "module", "path": "habit-tracker/services/backend/app/core/auth.py", "note": "X-API-Key или подписанная кука"}, {"id": "daytime", "label": "core/daytime", "kind": "module", "path": "habit-tracker/services/backend/app/core/daytime.py", "note": "граница суток 04:00"}, {"id": "api_categories", "label": "api/categories + entries", "kind": "module", "path": "habit-tracker/services/backend/app/api/categories.py", "note": "EAV CRUD"}, {"id": "crud_category", "label": "crud/category", "kind": "module", "path": "habit-tracker/services/backend/app/crud/category.py", "note": "синхронизация полей по id"}, {"id": "values", "label": "crud/values", "kind": "module", "path": "habit-tracker/services/backend/app/crud/values.py", "note": "текст → тип при чтении"}, {"id": "api_day", "label": "api/day", "kind": "module", "path": "habit-tracker/services/backend/app/api/day.py", "note": "план, отметки, закрытие"}, {"id": "generate", "label": "day/generate", "kind": "module", "path": "habit-tracker/services/backend/app/day/generate.py", "note": "бюджет 300 с, запасной каркас"}, {"id": "skeleton", "label": "day/skeleton", "kind": "module", "path": "habit-tracker/services/backend/app/day/skeleton.py", "note": "план из канона без модели"}, {"id": "constraints", "label": "day/constraints", "kind": "module", "path": "habit-tracker/services/backend/app/day/constraints.py", "note": "8 правил черновика"}, {"id": "crud_plan", "label": "crud/plan", "kind": "module", "path": "habit-tracker/services/backend/app/crud/plan.py", "note": "replace_plan, перенос отметок"}, {"id": "summary", "label": "crud/summary", "kind": "module", "path": "habit-tracker/services/backend/app/crud/summary.py", "note": "два касания, recompute_history"}, {"id": "evaluate", "label": "day/evaluate", "kind": "module", "path": "habit-tracker/services/backend/app/day/evaluate.py", "note": "вердикт — чистая функция"}, {"id": "debt", "label": "crud/day_profile + day/debt", "kind": "module", "path": "habit-tracker/services/backend/app/crud/day_profile.py", "note": "профили потолка, долг"}, {"id": "llm_dayplan", "label": "llm/day_plan", "kind": "module", "path": "habit-tracker/services/backend/app/llm/day_plan.py", "note": "parse_and_validate + ремонт"}, {"id": "plan_flow", "label": "llm/plan_flow", "kind": "module", "path": "habit-tracker/services/backend/app/llm/plan_flow.py", "note": "generate_with_repair"}, {"id": "llm_client", "label": "llm/client + cli", "kind": "module", "path": "habit-tracker/services/backend/app/llm/client.py", "note": "LLMClient.generate: cli | api"}, {"id": "api_chat", "label": "api/chat", "kind": "module", "path": "habit-tracker/services/backend/app/api/chat.py", "note": "ход SSE, плашки, apply"}, {"id": "chat_client", "label": "llm/chat/client", "kind": "module", "path": "habit-tracker/services/backend/app/llm/chat/client.py", "note": "stream_turn: CLI или API"}, {"id": "chat_context", "label": "llm/chat/context", "kind": "module", "path": "habit-tracker/services/backend/app/llm/chat/context.py", "note": "карточка дня ≤ 20 000 символов"}, {"id": "retrieval", "label": "llm/chat/retrieval", "kind": "module", "path": "habit-tracker/services/backend/app/llm/chat/retrieval.py", "note": "белый список из 7 выборок"}, {"id": "daily_summary", "label": "crud/daily_summary", "kind": "module", "path": "habit-tracker/services/backend/app/crud/daily_summary.py", "note": "одна транзакция записи плана"}, {"id": "api_agent", "label": "api/agent", "kind": "module", "path": "habit-tracker/services/backend/app/api/agent.py", "note": "приём интервалов"}, {"id": "classify", "label": "roles/classify", "kind": "module", "path": "habit-tracker/services/backend/app/roles/classify.py", "note": "интервалы → минуты ролей"}, {"id": "matcher", "label": "roles/matcher + precedence", "kind": "module", "path": "habit-tracker/services/backend/app/roles/matcher.py", "note": "(priority, id); merge/subtract"}, {"id": "quick_mark", "label": "crud/quick_mark", "kind": "module", "path": "habit-tracker/services/backend/app/crud/quick_mark.py", "note": "тап, отмена, закрытие пункта"}, {"id": "challenge", "label": "challenge/rules + crud", "kind": "module", "path": "habit-tracker/services/backend/app/challenge/rules.py", "note": "вердикт дня челленджа"}, {"id": "health", "label": "api/health + aggregate", "kind": "module", "path": "habit-tracker/services/backend/app/health/aggregate.py", "note": "часовые корзины"}, {"id": "inbox", "label": "crud/inbox", "kind": "module", "path": "habit-tracker/services/backend/app/crud/inbox.py", "note": "адаптер ClickUp, probe/poll"}, {"id": "credentials", "label": "inbox/credentials", "kind": "module", "path": "habit-tracker/services/backend/app/inbox/credentials.py", "note": "Fernet через HKDF"}, {"id": "worker", "label": "worker: JobRunner", "kind": "job", "path": "habit-tracker/services/backend/app/scheduling/registry.py", "note": "advisory lock + таймаут"}, {"id": "nightly", "label": "jobs/nightly", "kind": "job", "path": "habit-tracker/services/backend/app/jobs/nightly.py", "note": "каркас на завтра"}, {"id": "t_eav", "label": "categories · fields · entries · entry_values", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_02_06_2051-10abe04ed653_initial_migration.py"}, {"id": "t_rule", "label": "day_rule_set · day", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_08_30_1200-c8e0a2b4d6f9_day_and_rule_set.py"}, {"id": "t_plan", "label": "day_plan · plan_item · plan_mark", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_08_30_1600-d9f1b3c5e7a0_plan_tables.py"}, {"id": "t_summary", "label": "day_summary · overtime_debt", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_08_31_1200-a2d4f6b8c0e3_day_summary.py"}, {"id": "t_chat", "label": "chat_* (4 таблицы)", "kind": "data", "path": "habit-tracker/services/backend/app/models/chat.py"}, {"id": "t_roles", "label": "role_time_block · role_act · activity_interval", "kind": "data", "path": "habit-tracker/services/backend/app/models/role.py"}, {"id": "t_quick", "label": "quick_marks · quick_mark_events", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_09_01_2000-a3b5d7f9c1e2_quick_marks.py"}, {"id": "t_challenge", "label": "challenges · challenge_days", "kind": "data", "path": "habit-tracker/services/backend/alembic/versions/2026_09_02_1000-f7c9e1a3b5d8_challenge_tables.py"}, {"id": "t_health", "label": "health_hour_buckets", "kind": "data", "path": "habit-tracker/services/backend/app/models/health.py"}, {"id": "t_inbox", "label": "signal_sources · inbound_signals", "kind": "data", "path": "habit-tracker/services/backend/app/models/inbox.py"}, {"id": "claude", "label": "Claude: claude -p / Anthropic API", "kind": "external"}, {"id": "clickup", "label": "ClickUp API", "kind": "external"}], "edges": [{"from": "web", "to": "next_proxy", "via": "http", "label": "fetch /api/v1, credentials: include", "where": "habit-tracker/services/frontend/lib/api.ts:62"}, {"from": "next_proxy", "to": "main", "via": "http", "label": "rewrites → API_PROXY_TARGET", "where": "habit-tracker/services/frontend/next.config.ts:15"}, {"from": "web_today", "to": "quick_mark", "via": "http", "label": "POST /quick-marks/{id}/events (без ключа)", "where": "habit-tracker/services/frontend/hooks/useQuickMarks.ts:84"}, {"from": "web_chat", "to": "api_chat", "via": "http", "label": "SSE POST …/messages", "where": "habit-tracker/services/frontend/lib/chat-stream.ts:12"}, {"from": "ios", "to": "main", "via": "http", "label": "X-API-Key", "where": "habit-tracker/ios/HabitTracker/HabitTracker/API/APIClient.swift:336"}, {"from": "ios_outbox", "to": "api_categories", "via": "http", "label": "POST /entries + Idempotency-Key", "where": "habit-tracker/ios/HabitTracker/HabitTracker/Cache/OutboxQueue.swift:281"}, {"from": "mac", "to": "api_agent", "via": "http", "label": "POST /agent/activity", "where": "habit-tracker/mac/HabitAgent/HabitAgent/API/AgentAPIClient.swift:23"}, {"from": "main", "to": "auth", "via": "call", "label": "Depends(require_api_key)", "where": "habit-tracker/services/backend/app/main.py:160"}, {"from": "api_categories", "to": "crud_category", "via": "call", "label": "create_category", "where": "habit-tracker/services/backend/app/crud/category.py:157"}, {"from": "crud_category", "to": "t_eav", "via": "db", "label": "write fields by id", "where": "habit-tracker/services/backend/app/crud/category.py:56"}, {"from": "values", "to": "t_eav", "via": "db", "label": "read value Text", "where": "habit-tracker/services/backend/app/crud/values.py:8"}, {"from": "api_day", "to": "generate", "via": "call", "label": "generate_plan (без signals/gates)", "where": "habit-tracker/services/backend/app/api/day.py:909"}, {"from": "generate", "to": "llm_dayplan", "via": "call", "label": "generate_day_plan", "where": "habit-tracker/services/backend/app/day/generate.py:143"}, {"from": "generate", "to": "skeleton", "via": "call", "label": "_skeleton(reason)", "where": "habit-tracker/services/backend/app/day/generate.py:139"}, {"from": "llm_dayplan", "to": "constraints", "via": "call", "label": "check_all", "where": "habit-tracker/services/backend/app/llm/day_plan.py:218"}, {"from": "llm_dayplan", "to": "plan_flow", "via": "call", "label": "generate_with_repair", "where": "habit-tracker/services/backend/app/llm/day_plan.py:225"}, {"from": "plan_flow", "to": "llm_client", "via": "call", "label": "llm.generate", "where": "habit-tracker/services/backend/app/llm/plan_flow.py:79"}, {"from": "llm_client", "to": "claude", "via": "http", "label": "messages.create / claude -p", "where": "habit-tracker/services/backend/app/llm/client.py:53"}, {"from": "api_day", "to": "crud_plan", "via": "call", "label": "replace_plan", "where": "habit-tracker/services/backend/app/api/day.py:910"}, {"from": "crud_plan", "to": "t_plan", "via": "db", "label": "delete + insert + restore marks", "where": "habit-tracker/services/backend/app/crud/plan.py:328"}, {"from": "api_day", "to": "summary", "via": "call", "label": "close_day", "where": "habit-tracker/services/backend/app/crud/summary.py:623"}, {"from": "summary", "to": "evaluate", "via": "call", "label": "evaluate_day", "where": "habit-tracker/services/backend/app/crud/summary.py:795"}, {"from": "summary", "to": "debt", "via": "call", "label": "settle_day", "where": "habit-tracker/services/backend/app/crud/summary.py:676"}, {"from": "summary", "to": "t_summary", "via": "db", "label": "verdict, streak_after", "where": "habit-tracker/services/backend/app/crud/summary.py:718"}, {"from": "daytime", "to": "t_rule", "via": "db", "label": "publish_boundary из действующей версии", "where": "habit-tracker/services/backend/app/crud/day.py:109"}, {"from": "api_chat", "to": "chat_context", "via": "call", "label": "build_day_card", "where": "habit-tracker/services/backend/app/llm/chat/context.py:350"}, {"from": "api_chat", "to": "chat_client", "via": "call", "label": "stream_turn", "where": "habit-tracker/services/backend/app/llm/chat/client.py:490"}, {"from": "chat_client", "to": "claude", "via": "http", "label": "stream-json / messages.stream", "where": "habit-tracker/services/backend/app/llm/chat/client.py:711"}, {"from": "api_chat", "to": "retrieval", "via": "call", "label": "run_need", "where": "habit-tracker/services/backend/app/llm/chat/retrieval.py:509"}, {"from": "retrieval", "to": "inbox", "via": "call", "label": "refresh_stale", "where": "habit-tracker/services/backend/app/llm/chat/retrieval.py:359"}, {"from": "api_chat", "to": "t_chat", "via": "db", "label": "_open_turn: FOR UPDATE + строка streaming", "where": "habit-tracker/services/backend/app/api/chat.py:475"}, {"from": "api_chat", "to": "daily_summary", "via": "call", "label": "apply plan → apply_daily_summary", "where": "habit-tracker/services/backend/app/api/chat.py:1239"}, {"from": "daily_summary", "to": "t_eav", "via": "db", "label": "entries + journal one tx", "where": "habit-tracker/services/backend/app/crud/daily_summary.py:440"}, {"from": "api_agent", "to": "classify", "via": "call", "label": "classify_day по затронутым дням", "where": "habit-tracker/services/backend/app/api/agent.py:144"}, {"from": "classify", "to": "matcher", "via": "call", "label": "resolve_rule", "where": "habit-tracker/services/backend/app/roles/matcher.py:150"}, {"from": "classify", "to": "t_roles", "via": "db", "label": "role_time_block upsert", "where": "habit-tracker/services/backend/app/roles/classify.py:178"}, {"from": "quick_mark", "to": "t_quick", "via": "db", "label": "record_event", "where": "habit-tracker/services/backend/app/crud/quick_mark.py:451"}, {"from": "quick_mark", "to": "t_plan", "via": "db", "label": "_close_planned_item", "where": "habit-tracker/services/backend/app/crud/quick_mark.py:521"}, {"from": "quick_mark", "to": "t_eav", "via": "db", "label": "запись дня категории", "where": "habit-tracker/services/backend/app/crud/quick_mark.py:451"}, {"from": "challenge", "to": "t_challenge", "via": "db", "label": "materialize при чтении", "where": "habit-tracker/services/backend/app/crud/challenge.py:155"}, {"from": "challenge", "to": "t_eav", "via": "db", "label": "verdict_for_day читает значения", "where": "habit-tracker/services/backend/app/challenge/rules.py:116"}, {"from": "health", "to": "t_health", "via": "db", "label": "upsert корзин", "where": "habit-tracker/services/backend/app/api/health.py:31"}, {"from": "inbox", "to": "clickup", "via": "http", "label": "_read_clickup", "where": "habit-tracker/services/backend/app/crud/inbox.py:283"}, {"from": "inbox", "to": "credentials", "via": "call", "label": "decrypt secret", "where": "habit-tracker/services/backend/app/inbox/credentials.py:39"}, {"from": "inbox", "to": "t_inbox", "via": "db", "label": "upsert сигналов", "where": "habit-tracker/services/backend/app/crud/inbox.py:283"}, {"from": "worker", "to": "nightly", "via": "call", "label": "JobRunner.run", "where": "habit-tracker/services/backend/app/scheduling/registry.py:194"}, {"from": "nightly", "to": "skeleton", "via": "call", "label": "каркас на завтра", "where": "habit-tracker/services/backend/app/jobs/nightly.py:96"}, {"from": "nightly", "to": "t_plan", "via": "db", "label": "needs_review=True", "where": "habit-tracker/services/backend/app/jobs/nightly.py:96"}]};
+const svg = document.getElementById('g'), NS='http://www.w3.org/2000/svg';
+const gE=document.getElementById('edges'), gL=document.getElementById('labels'), gN=document.getElementById('nodes');
+const W=()=>1500, H=()=>1100;
+svg.setAttribute('viewBox','0 0 1500 1100');svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+const pt=ev=>{const p=svg.createSVGPoint();p.x=ev.clientX;p.y=ev.clientY;return p.matrixTransform(svg.getScreenCTM().inverse());};
+const nodes=DATA.nodes.map((n,i)=>({...n,x:W()/2+Math.cos(i)*150,y:H()/2+Math.sin(i)*150,vx:0,vy:0}));
+const byId=Object.fromEntries(nodes.map(n=>[n.id,n]));
+const edges=DATA.edges.map(e=>({...e,s:byId[e.from],t:byId[e.to]}));
+const adj={}; nodes.forEach(n=>adj[n.id]=[]); edges.forEach(e=>{adj[e.from].push(e);adj[e.to].push(e);});
+const bw=n=>Math.max(90,n.label.length*8+24), bh=40;
+
+// force layout, без библиотек
+function step(a){
+  for(const n of nodes){n.vx*=.6;n.vy*=.6;}
+  for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
+    const p=nodes[i],q=nodes[j];let dx=q.x-p.x,dy=q.y-p.y,d2=dx*dx+dy*dy||1,d=Math.sqrt(d2);
+    const f=a*22000/d2; dx/=d;dy/=d; p.vx-=dx*f;p.vy-=dy*f;q.vx+=dx*f;q.vy+=dy*f;
+  }
+  for(const e of edges){let dx=e.t.x-e.s.x,dy=e.t.y-e.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=a*(d-190)*.03; dx/=d;dy/=d; e.s.vx+=dx*f;e.s.vy+=dy*f;e.t.vx-=dx*f;e.t.vy-=dy*f;}
+  for(const n of nodes){ if(n.fixed)continue; n.vx+=(W()/2-n.x)*a*.01;n.vy+=(H()/2-n.y)*a*.01;
+    n.x=Math.min(W()-bw(n)/2-10,Math.max(bw(n)/2+10,n.x+n.vx)); n.y=Math.min(H()-30,Math.max(30,n.y+n.vy)); }
+}
+for(let i=0;i<400;i++)step(1-i/450);
+
+// отрисовка
+const elE=edges.map(e=>{const l=document.createElementNS(NS,'line');l.setAttribute('class','edge '+e.via);gE.appendChild(l);
+  const t=document.createElementNS(NS,'text');t.setAttribute('class','edge-label');t.setAttribute('text-anchor','middle');t.textContent=e.label||e.via;gL.appendChild(t);e.el=l;e.tl=t;return l;});
+const elN=nodes.map(n=>{const g=document.createElementNS(NS,'g');g.setAttribute('class','node '+n.kind);
+  const shape=document.createElementNS(NS,n.kind==='external'?'ellipse':'rect');
+  if(n.kind==='external'){shape.setAttribute('rx',bw(n)/2);shape.setAttribute('ry',bh/2);}else{shape.setAttribute('width',bw(n));shape.setAttribute('height',bh);}
+  const t=document.createElementNS(NS,'text');t.setAttribute('text-anchor','middle');t.textContent=n.label;
+  const s=document.createElementNS(NS,'text');s.setAttribute('class','sub');s.setAttribute('text-anchor','middle');s.textContent=(n.note||'').slice(0,28);
+  g.append(shape,t,s);gN.appendChild(g);n.el=g;
+  g.addEventListener('click',ev=>{ev.stopPropagation();select(n);});
+  let drag=null;g.addEventListener('pointerdown',ev=>{const q=pt(ev);drag={dx:n.x-q.x,dy:n.y-q.y};n.fixed=true;g.setPointerCapture(ev.pointerId);});
+  g.addEventListener('pointermove',ev=>{if(!drag)return;const q=pt(ev);n.x=q.x+drag.dx;n.y=q.y+drag.dy;draw();});
+  g.addEventListener('pointerup',()=>{drag=null;});
+  return g;});
+function draw(){
+  for(const e of edges){const l=e.el;const dx=e.t.x-e.s.x,dy=e.t.y-e.s.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    const sx=e.s.x+dx/d*bw(e.s)/2*.9, sy=e.s.y+dy/d*bh/2*.9, tx=e.t.x-dx/d*bw(e.t)/2*1.05, ty=e.t.y-dy/d*bh/2*1.05;
+    l.setAttribute('x1',sx);l.setAttribute('y1',sy);l.setAttribute('x2',tx);l.setAttribute('y2',ty);
+    e.tl.setAttribute('x',(sx+tx)/2);e.tl.setAttribute('y',(sy+ty)/2-4);}
+  for(const n of nodes){const s=n.el.firstChild;
+    if(n.kind==='external'){s.setAttribute('cx',n.x);s.setAttribute('cy',n.y);}else{s.setAttribute('x',n.x-bw(n)/2);s.setAttribute('y',n.y-bh/2);}
+    n.el.children[1].setAttribute('x',n.x);n.el.children[1].setAttribute('y',n.y+(n.note?1:5));
+    n.el.children[2].setAttribute('x',n.x);n.el.children[2].setAttribute('y',n.y+14);}
+}
+draw();
+document.getElementById('nn').textContent=nodes.length;document.getElementById('ne').textContent=edges.length;
+
+const panel=document.getElementById('panel');
+function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function select(n){
+  nodes.forEach(m=>m.el.classList.remove('sel','dim'));edges.forEach(e=>{e.el.classList.remove('hot','dim');});
+  if(!n){panel.innerHTML='<h2>Часть системы</h2><p>Выбери узел.</p>';return;}
+  const near=new Set([n.id]);adj[n.id].forEach(e=>{near.add(e.from);near.add(e.to);});
+  nodes.forEach(m=>{if(!near.has(m.id))m.el.classList.add('dim');});n.el.classList.add('sel');
+  edges.forEach(e=>{if(e.from===n.id||e.to===n.id)e.el.classList.add('hot');else e.el.classList.add('dim');});
+  const outs=adj[n.id].filter(e=>e.from===n.id), ins=adj[n.id].filter(e=>e.to===n.id);
+  const li=e=>`<li><b>${esc(e.from===n.id?byId[e.to].label:byId[e.from].label)}</b> · ${esc(e.via)}${e.label?' · '+esc(e.label):''}${e.where?'<br><code>'+esc(e.where)+'</code>':''}</li>`;
+  panel.innerHTML=`<div class="kind">${esc(n.kind)}</div><h2>${esc(n.label)}</h2>`+
+    (n.path?`<p><code>${esc(n.path)}</code></p>`:'')+(n.note?`<p>${esc(n.note)}</p>`:'')+
+    (outs.length?`<p><b>Вызывает / пишет</b></p><ul>${outs.map(li).join('')}</ul>`:'')+
+    (ins.length?`<p><b>Кто обращается</b></p><ul>${ins.map(li).join('')}</ul>`:'')+
+    (!outs.length&&!ins.length?'<p>Связей нет.</p>':'');
+}
+svg.addEventListener('click',()=>select(null));
+
+// фильтры по типу связи
+const vias=[...new Set(edges.map(e=>e.via))];
+document.getElementById('filters').innerHTML=vias.map(v=>`<label><input type="checkbox" checked data-via="${v}"> ${v}</label>`).join('');
+document.querySelectorAll('[data-via]').forEach(cb=>cb.addEventListener('change',()=>{
+  edges.forEach(e=>{if(e.via===cb.dataset.via){e.el.style.display=cb.checked?'':'none';e.tl.style.display=cb.checked?'':'none';}});}));
+window.addEventListener('resize',draw);
+</script>
+</html>

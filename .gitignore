@@ -21,3 +21,12 @@ habit-tracker/mac/HabitAgent/HabitAgent.xcodeproj/
 
 # Пульс проекта: SQLite функций и фаз (scripts/pulse.py), одна база на все worktree
 .looplab/
+
+# локальное, не коммитить
+.env
+.reportlink
+.worktrees/
+__pycache__/
+.claude/backups/
+docs-pdf/
+docs/explanations/system/system.pdf

@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 800" width="900" height="800">
+  <rect x="0" y="0" width="900" height="800" fill="#ffffff"/>
+  <defs>
+    <style>
+      line, path, circle, rect, polyline, polygon { vector-effect: non-scaling-stroke; }
+      .t  { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; }
+      .s  { font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif; }
+      .cap { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 10px; font-weight: 600; letter-spacing: 0.09em; fill: #6b6b6b; }
+      .tech { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 12px; fill: #000000; }
+      .dim { font-family: 'Helvetica Neue', Helvetica, Inter, system-ui, Arial, sans-serif; font-size: 12px; fill: #6b6b6b; }
+      .box { fill: #ffffff; stroke: #000000; stroke-width: 1; }
+      .plate { fill: rgba(0,0,0,0.025); stroke: #9a9a9a; stroke-width: 0.75; }
+      .dash { fill: #ffffff; stroke: #000000; stroke-width: 1; stroke-dasharray: 4 3; }
+    </style>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#000000"/>
+    </marker>
+    <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9a9a9a"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="44" class="t" font-size="22" font-weight="500" fill="#000000">habit_tracker_ai: кто что держит</text>
+  <text x="30" y="68" class="s" font-size="13" fill="#6b6b6b">Сплошная линия — работает; пунктир — код есть, связь не доходит. Жёлтое — единственный источник истины.</text>
+  <line x1="30" y1="88" x2="870" y2="88" stroke="#dcdcdc" stroke-width="1"/>
+
+  <!-- Clients -->
+  <text x="30" y="110" class="cap">КЛИЕНТЫ</text>
+  <rect x="30" y="118" width="200" height="74" class="box"/>
+  <text x="42" y="142" class="s" font-size="16">Браузер на маке</text>
+  <text x="42" y="162" class="tech">Next.js · /today /day /chat</text>
+  <text x="42" y="180" class="dim">основной интерфейс</text>
+
+  <rect x="245" y="118" width="190" height="74" class="box"/>
+  <text x="257" y="142" class="s" font-size="16">Телефон: /m/*</text>
+  <text x="257" y="162" class="tech">тот же Next.js + PWA</text>
+  <text x="257" y="180" class="dim">голос через Web Speech</text>
+
+  <rect x="450" y="118" width="200" height="74" class="box"/>
+  <text x="462" y="142" class="s" font-size="16">iOS-приложение</text>
+  <text x="462" y="162" class="tech">SwiftUI · SwiftData-кэш</text>
+  <rect x="462" y="170" width="176" height="16" class="dash"/>
+  <text x="468" y="182" class="dim" font-size="11">HealthKit: читает, не шлёт</text>
+
+  <rect x="665" y="118" width="205" height="74" class="box"/>
+  <text x="677" y="142" class="s" font-size="16">HabitAgent (macOS)</text>
+  <text x="677" y="162" class="tech">активное приложение, 5 с</text>
+  <text x="677" y="180" class="dim">только bundle_id и время</text>
+
+  <!-- tailnet band -->
+  <line x1="30" y1="232" x2="870" y2="232" stroke="#9a9a9a" stroke-width="1" stroke-dasharray="6 4"/>
+  <text x="30" y="226" class="cap">TAILNET</text>
+
+  <!-- client arrows -->
+  <line x1="200" y1="192" x2="190" y2="298" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <text x="192" y="214" class="dim" font-size="11" text-anchor="end">кука habit_session</text>
+  <line x1="330" y1="192" x2="212" y2="298" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="550" y1="192" x2="470" y2="298" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <text x="548" y="218" class="dim" font-size="11">X-API-Key</text>
+  <line x1="740" y1="192" x2="600" y2="298" stroke="#000000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+  <text x="690" y="250" class="dim" font-size="11">POST /agent/activity:</text>
+  <text x="690" y="264" class="dim" font-size="11">прод по http://100.x отвергается</text>
+
+  <!-- VPS frame -->
+  <rect x="30" y="270" width="650" height="500" fill="none" stroke="#c4c4c4" stroke-width="1"/>
+  <text x="42" y="290" class="cap">VPS · DOCKER COMPOSE</text>
+
+  <!-- frontend -->
+  <rect x="50" y="300" width="170" height="64" class="box"/>
+  <text x="62" y="322" class="s" font-size="16">frontend :3000</text>
+  <text x="62" y="340" class="tech">прокси /api/v1 →</text>
+  <text x="62" y="356" class="tech">backend:8000</text>
+  <line x1="220" y1="332" x2="248" y2="332" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- backend -->
+  <rect x="250" y="300" width="410" height="250" class="box"/>
+  <text x="262" y="322" class="s" font-size="17">backend :8000 · FastAPI</text>
+  <text x="262" y="340" class="dim">gunicorn ×2 · async SQLAlchemy 2.0 · 149 эндпоинтов</text>
+
+  <rect x="262" y="352" width="190" height="40" class="plate"/>
+  <text x="270" y="368" class="tech">api/ · require_api_key</text>
+  <text x="270" y="384" class="dim" font-size="11">22 роутера под /api/v1</text>
+
+  <rect x="460" y="352" width="190" height="40" class="plate"/>
+  <text x="468" y="368" class="tech">day/ · канон, план, вердикт</text>
+  <text x="468" y="384" class="dim" font-size="11">constraints · evaluate · debt</text>
+
+  <rect x="262" y="400" width="190" height="40" class="plate"/>
+  <text x="270" y="416" class="tech">llm/ · чат, план, разбор</text>
+  <text x="270" y="432" class="dim" font-size="11">генерация → ремонт → скелет</text>
+
+  <rect x="460" y="400" width="190" height="40" class="plate"/>
+  <text x="468" y="416" class="tech">roles/ · challenge/ · training/</text>
+  <text x="468" y="432" class="dim" font-size="11">время по ролям, челленджи</text>
+
+  <rect x="262" y="448" width="190" height="40" class="plate"/>
+  <text x="270" y="464" class="tech">crud/ → models/</text>
+  <text x="270" y="480" class="dim" font-size="11">EAV-значения как текст</text>
+
+  <rect x="460" y="448" width="190" height="40" class="plate"/>
+  <text x="468" y="464" class="tech">core/daytime</text>
+  <text x="468" y="480" class="dim" font-size="11">сутки 04:00 → 04:00, Berlin</text>
+
+  <rect x="262" y="496" width="388" height="40" class="plate"/>
+  <text x="270" y="512" class="tech">imports/ · exports/ · inbox/credentials</text>
+  <text x="270" y="528" class="dim" font-size="11">personal-os .md ↔ таблицы; секреты источников под Fernet</text>
+
+  <!-- worker -->
+  <rect x="50" y="384" width="170" height="152" class="box"/>
+  <text x="62" y="406" class="s" font-size="16">worker</text>
+  <text x="62" y="424" class="tech">APScheduler, 1 реплика</text>
+  <rect x="62" y="434" width="146" height="24" class="plate"/>
+  <text x="70" y="450" class="tech">heartbeat · 300 с</text>
+  <rect x="62" y="464" width="146" height="24" class="plate"/>
+  <text x="70" y="480" class="tech">nightly_skeleton · 24 ч</text>
+  <text x="62" y="508" class="dim" font-size="11">pg_try_advisory_lock</text>
+  <text x="62" y="524" class="dim" font-size="11">на каждое задание</text>
+
+  <!-- postgres -->
+  <rect x="50" y="566" width="610" height="190" class="box"/>
+  <rect x="58" y="574" width="226" height="26" fill="#ffe500" stroke="#000000" stroke-width="1"/>
+  <text x="66" y="592" class="t" font-size="13" font-weight="500" fill="#000000">Postgres 16 · 64 таблицы</text>
+  <text x="296" y="592" class="dim">47 миграций, одна голова a9c1e3f5b7d0</text>
+
+  <rect x="62" y="610" width="190" height="40" class="plate"/>
+  <text x="70" y="626" class="tech">EAV: categories, fields,</text>
+  <text x="70" y="642" class="tech">entries, entry_values</text>
+  <rect x="260" y="610" width="190" height="40" class="plate"/>
+  <text x="268" y="626" class="tech">День: day_rule_set, day,</text>
+  <text x="268" y="642" class="tech">day_plan, plan_item, plan_mark</text>
+  <rect x="458" y="610" width="190" height="40" class="plate"/>
+  <text x="466" y="626" class="tech">Итог: day_summary,</text>
+  <text x="466" y="642" class="tech">overtime_debt, week</text>
+
+  <rect x="62" y="658" width="190" height="40" class="plate"/>
+  <text x="70" y="674" class="tech">Чат: conversations, messages,</text>
+  <text x="70" y="690" class="tech">plans, retrievals</text>
+  <rect x="260" y="658" width="190" height="40" class="plate"/>
+  <text x="268" y="674" class="tech">Отметки: quick_marks,</text>
+  <text x="268" y="690" class="tech">quick_mark_events, challenges</text>
+  <rect x="458" y="658" width="190" height="40" class="plate"/>
+  <text x="466" y="674" class="tech">Роли: role, role_rule,</text>
+  <text x="466" y="690" class="tech">role_time_block, role_act</text>
+
+  <rect x="62" y="706" width="190" height="40" class="plate"/>
+  <text x="70" y="722" class="tech">Мак: activity_interval,</text>
+  <text x="70" y="738" class="tech">tracked_app, title_rule</text>
+  <rect x="260" y="706" width="190" height="40" class="plate"/>
+  <text x="268" y="722" class="tech">Входящие: signal_sources,</text>
+  <text x="268" y="738" class="tech">inbound_signals, commitments</text>
+  <rect x="458" y="706" width="190" height="40" class="plate"/>
+  <text x="466" y="722" class="tech">Здоровье: health_metrics,</text>
+  <text x="466" y="738" class="tech">health_hour_buckets</text>
+
+  <line x1="455" y1="550" x2="455" y2="564" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+  <line x1="135" y1="536" x2="135" y2="564" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <!-- externals -->
+  <text x="700" y="290" class="cap">ВНЕШНЕЕ</text>
+  <rect x="700" y="300" width="170" height="92" class="box"/>
+  <text x="712" y="322" class="s" font-size="16">Claude</text>
+  <text x="712" y="340" class="tech">claude -p (подпроцесс)</text>
+  <text x="712" y="356" class="tech">или Anthropic API</text>
+  <text x="712" y="374" class="dim" font-size="11">без tools, без MCP</text>
+  <line x1="660" y1="420" x2="698" y2="360" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <rect x="700" y="410" width="170" height="70" class="box"/>
+  <text x="712" y="432" class="s" font-size="16">ClickUp API</text>
+  <text x="712" y="450" class="tech">опрос по запросу чата</text>
+  <text x="712" y="466" class="dim" font-size="11">Gmail, Telegram: заготовка</text>
+  <line x1="660" y1="512" x2="698" y2="455" stroke="#000000" stroke-width="1" marker-end="url(#ar)"/>
+
+  <rect x="700" y="500" width="170" height="74" class="dash"/>
+  <text x="712" y="522" class="s" font-size="16">Насос HealthKit</text>
+  <text x="712" y="540" class="tech">POST /health/samples</text>
+  <text x="712" y="558" class="dim" font-size="11">сервер готов, iOS не зовёт</text>
+
+  <line x1="30" y1="782" x2="870" y2="782" stroke="#dcdcdc" stroke-width="1"/>
+  <text x="30" y="796" class="dim">Снимок main @ 000f9b2, 2026-10-01. Сервер виден только внутри tailnet. Пользователь один: таблицы users и колонки user_id нет.</text>
+</svg>
