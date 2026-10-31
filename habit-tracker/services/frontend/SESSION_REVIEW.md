@@ -2381,3 +2381,17 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - `components/health/HealthMetricGroups.test.tsx` — new: метрика каждой новой группы под своим заголовком.
 
 Не проверено глазами: `next dev` не запускался (правило роя); проверка — компонентный тест и tsc.
+
+## 2026-10-31 — PHASE-03/257: бейдж режима дня — проверка в браузере, фокус, зависшее чтение
+
+Тронуто 9 файлов: 4 кода (`mod`), 4 теста (`mod`), `SESSION_REVIEW.md`.
+
+- `hooks/useDayMode.ts` — mod: таймаут чтения `READ_TIMEOUT_MS` (10 с) считает чтение неудачным и отдаёт `reading`; повтор после потери просит `{ fresh: true }`; ответы принимаются по порядку запуска (`readsStarted`/`lastTaken`), сбой старого чтения при живом новом не показывается; один флаг `mounted` вместо `alive`.
+- `hooks/useToday.ts` — mod (одна строка, вне перечня доски): `dayModeClient.read` понимает `{ fresh: true }`, иначе повтор присоединялся бы к зависшему запросу. Предупредить #264 и #166.
+- `components/agent/DayModeBadge.tsx` — mod (файл лежит в `components/agent/`, а не в `components/day/DayMode*`): блокировка через `aria-disabled` и пустой обработчик вместо `disabled`; `aria-busy` на время чтения и записи; через 800 мс чтения затемнение и «Читаю режим дня…».
+- `app/today/page.tsx` — mod: только маркер ревью.
+- Тесты: `hooks/useDayMode.test.ts` (таймаут, порядок ответов, `mounted` в `dropIfOverlapped`), `components/agent/DayModeBadge.test.tsx`, `app/today/page.test.tsx` (связка `reading`, проверено мутацией), `hooks/useToday.test.ts` (`fresh`).
+
+Проверено в Chrome 157 (headless, сырой CDP) на `next dev` :3257 и заглушке API :8257 (база `habit_live_257` не мигрирована: миграцию держит охранник; реального бэкенда не было). До правки: при чтении 1,5 с `select` терял фокус (`document.activeElement` = BODY, `disabled`), чекбокс не принимал клик. После: фокус на `select` остаётся, `disabled` нет, чтение 2,5 с — `aria-busy`, через 0,8 с текст и затемнение, запись за время чтения не уходит; зависшее чтение — «Не удалось прочитать режим дня» через 10,0 с, «Повторить» шлёт новый запрос и снимает блокировку; быстрое чтение не мигает серым (opacity 1).
+
+Не проверено: настоящий Alt+Tab (фокус окна имитировался событием `focus`), Safari и Firefox, тёмная и светлая темы кроме тёмной, экранный диктор для `role="status"`.

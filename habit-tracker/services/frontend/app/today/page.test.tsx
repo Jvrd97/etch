@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/162, PHASE-03/237, PHASE-03/247
-// summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read
+// [review:need-review] PHASE-03/162, PHASE-03/237, PHASE-03/247, PHASE-03/257
+// summary: tests for the desktop Today screen — the day-mode badge is drawn from the day-mode read, and is locked (aria-disabled, aria-busy) exactly while the hook reads the day
 // summary: the desktop Today shows one server date in the title, the records read, the obligation count and the entry form while the browser clock is a day behind; with an unknown day there is no date line, no «nothing to track» and the ask-about-the-day button is disabled
 // [review:need-review] PHASE-03/121, PHASE-01/177, PHASE-01/206
 // summary: tests for the desktop Today screen — the quick-mark section drawn from the directory, absent entirely when the directory is empty, and the legacy quick-input card that steps aside for a category the directory covers, and the sets behind a quick-mark card — the dialog of every set opened from the card's name and counter, the plus and the key that still add one without opening it, the day's records read again after every tap, and a set taken back from the list lowering the card's counter
@@ -346,6 +346,36 @@ describe('the day mode on /today', () => {
     await waitFor(() => expect(screen.getByLabelText('Вид дня')).toBeDefined());
     expect((screen.getByLabelText('no-code') as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText('по расписанию')).toBeDefined();
+  });
+
+  it('locks the badge with aria-disabled while the day is read again, and frees it when the read answers', async () => {
+    await renderToday();
+    const select = await screen.findByLabelText('Вид дня');
+    expect(select.getAttribute('aria-disabled')).toBe('false');
+
+    // The window is focused again: the second read of the day does not answer yet.
+    let answer: (mode: typeof TUESDAY_MODE) => void = () => {};
+    readDayMode = mock(
+      () =>
+        new Promise<typeof TUESDAY_MODE>((resolve) => {
+          answer = resolve;
+        })
+    );
+    select.focus();
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Вид дня').getAttribute('aria-disabled')).toBe('true'));
+    expect(screen.getByLabelText('Вид дня').closest('[aria-busy]')?.getAttribute('aria-busy')).toBe('true');
+    // A locked control stays enabled for the browser, so the keyboard focus is not lost.
+    expect((screen.getByLabelText('Вид дня') as HTMLSelectElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(screen.getByLabelText('Вид дня'));
+
+    await act(async () => {
+      answer(TUESDAY_MODE);
+    });
+    await waitFor(() => expect(screen.getByLabelText('Вид дня').getAttribute('aria-disabled')).toBe('false'));
   });
 });
 

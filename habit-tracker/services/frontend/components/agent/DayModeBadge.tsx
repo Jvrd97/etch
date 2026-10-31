@@ -1,11 +1,15 @@
-// [review:need-review] PHASE-03/249
+// [review:need-review] PHASE-03/249, PHASE-03/257
 // summary: the badge of the day mode on Today — the kind in a list and no-code as a separate switch (a working Tuesday is both), who decided (schedule or hand), a way back to the schedule for a day decided by hand, and a link to the week schedule; a read that failed is said aloud with a retry instead of leaving the badge out; since #241 also when a mode is already on screen (it may be yesterday's): the controls are locked until a read goes through; since #249 also while a re-read is on its way (`reading`), so a decision cannot go to yesterday's date
+// summary: #257 — a lock is `aria-disabled` plus a no-op handler, never `disabled`: a disabled control loses keyboard focus when the window is focused again and the read starts, and a click on it is eaten; the badge is `aria-busy` while it reads or saves, and a read that takes longer than `SLOW_READ_MS` dims the controls and says «Читаю режим дня…» (a short read flashes nothing)
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import type { DayMode, DayModeKind } from '@/lib/api';
 import { KIND_OPTIONS, NOCODE_LABEL, RESET_LABEL, sourceLabel } from '@/lib/day-mode';
 
 export const MODE_SCHEDULE_HREF = '/agent/mode-schedule';
+/** A read shorter than this repaints nothing: the controls only dim for a read the person can feel. */
+export const SLOW_READ_MS = 800;
 
 export interface DayModeBadgeProps {
   /** Null while the first answer is awaited, and after a failed read. */
@@ -20,10 +24,28 @@ export interface DayModeBadgeProps {
   onDecide: (kind: DayModeKind, nocode: boolean) => void;
   onReset: () => void;
   onRetry: () => void;
+  /** For tests: how long a read lasts before the badge says it is slow. */
+  slowReadMs?: number;
 }
 
 const LOAD_FAILED = 'Не удалось прочитать режим дня';
 const RETRY_LABEL = 'Повторить';
+const READING_LABEL = 'Читаю режим дня…';
+const DIMMED = 'opacity-50 cursor-not-allowed';
+
+/** True once `active` has lasted `afterMs`; false again as soon as it ends. */
+function useLasted(active: boolean, afterMs: number): boolean {
+  const [lasted, setLasted] = useState(false);
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setTimeout(() => setLasted(true), afterMs);
+    return () => {
+      clearTimeout(timer);
+      setLasted(false);
+    };
+  }, [active, afterMs]);
+  return active && lasted;
+}
 
 function LoadFailedNotice({ onRetry }: { onRetry: () => void }) {
   return (
@@ -47,7 +69,9 @@ export default function DayModeBadge({
   onDecide,
   onReset,
   onRetry,
+  slowReadMs = SLOW_READ_MS,
 }: DayModeBadgeProps) {
+  const slowReading = useLasted(reading && mode !== null, slowReadMs);
   if (mode === null) {
     if (!loadFailed) return null;
     return (
@@ -57,17 +81,22 @@ export default function DayModeBadge({
     );
   }
   const locked = saving || reading || loadFailed;
+  const dimmed = saving || loadFailed || slowReading;
+  const dim = dimmed ? DIMMED : '';
   return (
     <div
       data-source={mode.source}
+      aria-busy={reading || saving}
       className="flex flex-wrap items-center gap-3 rounded-3xl border border-white/5 bg-surface px-4 py-3 text-sm"
     >
       <select
         aria-label="Вид дня"
         value={mode.kind}
-        disabled={locked}
-        onChange={(event) => onDecide(event.target.value as DayModeKind, mode.nocode)}
-        className="rounded-xl bg-card border border-white/10 px-2 py-1 text-text-primary"
+        aria-disabled={locked}
+        onChange={(event) => {
+          if (!locked) onDecide(event.target.value as DayModeKind, mode.nocode);
+        }}
+        className={`rounded-xl bg-card border border-white/10 px-2 py-1 text-text-primary ${dim}`}
       >
         {KIND_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>
@@ -75,12 +104,14 @@ export default function DayModeBadge({
           </option>
         ))}
       </select>
-      <label className="inline-flex items-center gap-2 text-text-primary">
+      <label className={`inline-flex items-center gap-2 text-text-primary ${dim}`}>
         <input
           type="checkbox"
           checked={mode.nocode}
-          disabled={locked}
-          onChange={() => onDecide(mode.kind, !mode.nocode)}
+          aria-disabled={locked}
+          onChange={() => {
+            if (!locked) onDecide(mode.kind, !mode.nocode);
+          }}
         />
         {NOCODE_LABEL}
       </label>
@@ -88,12 +119,19 @@ export default function DayModeBadge({
       {mode.source === 'manual' && (
         <button
           type="button"
-          disabled={locked}
-          onClick={onReset}
-          className="text-lime hover:underline disabled:opacity-50"
+          aria-disabled={locked}
+          onClick={() => {
+            if (!locked) onReset();
+          }}
+          className={`text-lime hover:underline ${dim}`}
         >
           {RESET_LABEL}
         </button>
+      )}
+      {slowReading && (
+        <span role="status" className="text-text-secondary">
+          {READING_LABEL}
+        </span>
       )}
       <Link href={MODE_SCHEDULE_HREF} className="ml-auto text-text-secondary hover:text-text-primary">
         Расписание
