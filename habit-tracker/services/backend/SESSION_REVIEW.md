@@ -3035,7 +3035,6 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 **Когда смоук гоняется снова:** перед каждым выкатом (`make preflight`) и после каждого обновления бинарника `claude`.
 
 **Если смоук упал:** `claude вышел с кодом N` — сломан флаг изоляции, чинить `ISOLATION_FLAGS`; число токенов выше порога на десятки тысяч — изоляция отвалилась, чинить флаги; превышение на сотни токенов при целых флагах — вырос префикс CLI или `ONESHOT_SYSTEM_PROMPT`, порог пересматривается в `test_cli_isolation_smoke.py` вместе с датой замера и версией CLI.
-||||||| 1f54014
 
 ## 2026-10-31 — PHASE-03/259: момент нажатия у отметки приёма и идемпотентное создание добавки
 
@@ -3047,7 +3046,6 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/crud/supplement.py` — mod: `create_supplement(..., idempotency_key=)` и `supplement_by_idempotency_key`.
 - `app/api/supplements.py` — mod: день отметки считается по `occurred_at` (окно +5 минут / 7 дней берётся у быстрых отметок: `_moment_of_press` из `app/api/quick_marks.py`), `POST /supplements` отвечает 200 первой добавкой на повтор ключа и после проигранной гонки.
 - `tests/test_supplement_occurred_at.py` — new: 23 теста (сутки до 04:00, граница окна, повтор после выхода из окна, число SQL, гонка создания).
-||||||| 1f54014
 
 ## 2026-10-31 — PHASE-03/277: сон — сессия через 18:00 и ночь, обрезанная после перелёта
 
