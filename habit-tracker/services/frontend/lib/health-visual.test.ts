@@ -1,4 +1,4 @@
-// [review:need-review] PHASE-03/303
+// [review:need-review] PHASE-03/303 (round 2)
 // summary: tests of the Health screen visuals' arithmetic — the word of the index and the lit segments of its ring, the tile series, the position of a deviation on its track (constant history, clamping, too little history), the seven sleep bars with a gap and the best night, and the workout totals
 
 import { describe, expect, it } from 'bun:test';
@@ -7,6 +7,7 @@ import {
   DEVIATION_METRICS,
   RING_SEGMENTS,
   deviationRatio,
+  deviationVerdict,
   deviationRows,
   litSegments,
   ringTicks,
@@ -95,6 +96,38 @@ describe('deviation bars', () => {
   it('fills the track on any step away from a constant history', () => {
     expect(deviationRatio(0.1, 0)).toBe(1);
     expect(deviationRatio(-0.1, 0)).toBe(-1);
+  });
+
+  it('does not scale a bar by rounding noise', () => {
+    expect(deviationRatio(1e-9, 0)).toBe(0);
+    expect(deviationRatio(0.5, 1e-9)).toBe(1);
+  });
+
+  it('judges each metric by its own direction: lower pulse and breathing are better, higher HRV is better', () => {
+    expect(deviationVerdict(-3, false)).toBe('better');
+    expect(deviationVerdict(3, false)).toBe('worse');
+    expect(deviationVerdict(3, true)).toBe('better');
+    expect(deviationVerdict(-3, true)).toBe('worse');
+    expect(deviationVerdict(0, true)).toBeNull();
+    expect(deviationVerdict(0.04, false)).toBeNull();
+  });
+
+  it('colours resting pulse and HRV above and below the norm by that direction, amber only for worse', () => {
+    const baseline = (deviation: number, stddev = 2) => ({
+      mean: 50, stddev, days: 20, day: '2026-10-30', deviation, outside_typical: false,
+    });
+    const tones = (deviation: number, stddev?: number) =>
+      deviationRows([
+        metric({ identifier: DEVIATION_METRICS[0].identifier, baseline: baseline(deviation, stddev) }),
+        metric({ identifier: DEVIATION_METRICS[1].identifier, baseline: baseline(deviation, stddev) }),
+        metric({ identifier: DEVIATION_METRICS[2].identifier, baseline: baseline(deviation, stddev) }),
+      ]).map((row) => row.tone);
+
+    // resting pulse, HRV, breathing
+    expect(tones(5)).toEqual(['warn', 'good', 'warn']);
+    expect(tones(-5)).toEqual(['good', 'warn', 'good']);
+    expect(tones(0)).toEqual(['good', 'good', 'good']);
+    expect(tones(5, 0)).toEqual(['warn', 'good', 'warn']);
   });
 
   it('draws only the metrics the catalog holds with a day, and marks a missing norm', () => {

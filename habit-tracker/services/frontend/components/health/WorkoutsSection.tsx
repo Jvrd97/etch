@@ -4,6 +4,7 @@
 import type { HealthWorkout } from '@/lib/api';
 import { HEALTH_COLORS, workoutTotals, type WorkoutTotal } from '@/lib/health-visual';
 import { nightLabel, sleepDuration, wallClock } from './SleepSection';
+import { WORKOUT_WINDOW_DAYS } from './useWorkouts';
 
 const METERS_PER_KILOMETER = 1000;
 const FRACTION_DIGITS = 1;
@@ -12,8 +13,7 @@ const PERCENT = 100;
 const MINUTES_AS_HOURS_FROM = 120;
 const NEWEST_SHOWN = 5;
 
-export const WORKOUTS_EMPTY_TEXT =
-  'Тренировок за 30 дней нет: они приходят с телефона вместе с остальными метриками.';
+export const WORKOUTS_EMPTY_TEXT = `Тренировок за ${WORKOUT_WINDOW_DAYS} дней нет: они приходят с телефона вместе с остальными метриками.`;
 
 const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: FRACTION_DIGITS });
 
@@ -87,7 +87,7 @@ export default function WorkoutsSection({ workouts }: WorkoutsSectionProps) {
       ) : (
         <>
           <p className="text-sm text-text-secondary">
-            За 30 дней: {workoutsCount(workouts.length)} · {activeTime(allMinutes)}
+            За {WORKOUT_WINDOW_DAYS} дней: {workoutsCount(workouts.length)} · {activeTime(allMinutes)}
           </p>
           <ul aria-label="Тренировки по видам" className="mt-4 space-y-4">
             {totals.map((total) => (
@@ -105,7 +105,7 @@ export default function WorkoutsSection({ workouts }: WorkoutsSectionProps) {
                   <div
                     className="h-full rounded-full"
                     style={{
-                      width: `${(total.minutes / busiest) * PERCENT}%`,
+                      width: busiest > 0 ? `${(total.minutes / busiest) * PERCENT}%` : 0,
                       backgroundColor: HEALTH_COLORS.lime,
                     }}
                   />

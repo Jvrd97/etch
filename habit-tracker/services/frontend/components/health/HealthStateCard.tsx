@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/303
-// summary: the «Состояние сегодня» card — the server's index of the day as a word, a number out of 100 and a segmented ring; honest lines when the server has fewer than three days to compute it on or sends a label this screen has no word for; nothing at all while the index is missing
+// summary: the «Состояние сегодня» card — the server's index of the day as a word, a number out of 100 and a segmented ring, captioned as the mean of the last 7 days (and by how many days of data when fewer); two honest lines for a missing number (under three days of data, or three and more with no personal norm yet); a label this screen has no word for; nothing at all while the index is missing
 
 import type { HealthScore } from '@/lib/api';
 import {
@@ -16,8 +16,13 @@ const RING_INNER_RADIUS = 44;
 const RING_OUTER_RADIUS = 56;
 const TICK_WIDTH = 5;
 
-export const SCORE_EMPTY_TEXT =
-  'Индекс считается минимум по трём дням данных: синхронизируйте телефон ещё раз.';
+/** The server needs three days of data for an index. */
+const MIN_BASIS_DAYS = 3;
+/** The index is the mean over this window, not the value of today. */
+const WINDOW_DAYS = 7;
+
+export const SCORE_FEW_DAYS_TEXT = 'Данных пока мало: синхронизируйте телефон';
+export const SCORE_NO_NORM_TEXT = 'Личная норма ещё не набралась: нужно больше дней данных';
 
 export interface HealthStateCardProps {
   /** Null while the answer is missing, or the endpoint is not there yet. */
@@ -82,7 +87,7 @@ export default function HealthStateCard({ score }: HealthStateCardProps) {
         <div className="min-w-0 space-y-1">
           {value === null ? (
             <p role="status" className="text-sm text-text-secondary">
-              {SCORE_EMPTY_TEXT}
+              {score.basis_days < MIN_BASIS_DAYS ? SCORE_FEW_DAYS_TEXT : SCORE_NO_NORM_TEXT}
             </p>
           ) : (
             <>
@@ -95,7 +100,9 @@ export default function HealthStateCard({ score }: HealthStateCardProps) {
                 </p>
               )}
               <p className="text-sm text-text-secondary">
-                Индекс по {daysText(score.basis_days)} данных
+                {score.basis_days < WINDOW_DAYS
+                  ? `За ${WINDOW_DAYS} дней, по ${daysText(score.basis_days)} данных`
+                  : `За ${WINDOW_DAYS} дней`}
               </p>
             </>
           )}

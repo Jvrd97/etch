@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-03/303
-// summary: the arithmetic behind the Health screen visuals — the word and tone of the day's index, the segments of its ring, the steps and energy tiles, the seven sleep bars (deep+REM against light, best night), the deviation bars around the personal norm and the 30-day workout totals; pure functions over the data the screens already read, no formula of its own for the index
+// summary: the arithmetic behind the Health screen visuals — the word and tone of the day's index, the segments of its ring, the steps and energy tiles, the seven sleep bars (deep+REM against light, best night), the deviation bars around the personal norm (better or worse by the metric's own direction) and the 30-day workout totals; pure functions over the data the screens already read, no formula of its own for the index
 
 import type { HealthMetric, HealthSleepNight, HealthWorkout } from '@/lib/api';
 import { shiftDate, sparklinePoints } from '@/lib/health';
@@ -101,15 +101,29 @@ export function tileSeries(metric: HealthMetric): TileSeries {
 
 // ---------------------------------------------------------------- deviation from the norm
 
-/** The metrics whose deviation from the personal norm the screen draws; the colour never decides alone, the text says "вне обычного" too. */
-export const DEVIATION_METRICS: ReadonlyArray<{ identifier: string; label: string }> = [
-  { identifier: 'HKQuantityTypeIdentifierRestingHeartRate', label: 'Пульс покоя' },
-  { identifier: 'HKQuantityTypeIdentifierHeartRateVariabilitySDNN', label: 'ВСР' },
-  { identifier: 'HKQuantityTypeIdentifierRespiratoryRate', label: 'Дыхание' },
+/**
+ * The metrics whose deviation from the personal norm the screen draws, and which way is better:
+ * a lower resting pulse and calmer breathing are better, a higher HRV is better.
+ * The colour never decides alone, the text says «лучше нормы» / «хуже нормы» too.
+ */
+export const DEVIATION_METRICS: ReadonlyArray<{
+  identifier: string;
+  label: string;
+  higherIsBetter: boolean;
+}> = [
+  { identifier: 'HKQuantityTypeIdentifierRestingHeartRate', label: 'Пульс покоя', higherIsBetter: false },
+  { identifier: 'HKQuantityTypeIdentifierHeartRateVariabilitySDNN', label: 'ВСР', higherIsBetter: true },
+  { identifier: 'HKQuantityTypeIdentifierRespiratoryRate', label: 'Дыхание', higherIsBetter: false },
 ];
 
 /** A bar reaches the edge of its track at this many usual spreads from the mean. */
 export const FULL_SCALE_SPREADS = 2;
+
+/** Below this a spread or a deviation is rounding noise, not a number to scale a bar by. */
+const DEVIATION_EPSILON = 1e-6;
+const DEVIATION_DIGITS = 1;
+
+export type DeviationVerdict = 'better' | 'worse';
 
 export interface DeviationRow {
   identifier: string;
@@ -117,28 +131,40 @@ export interface DeviationRow {
   metric: HealthMetric;
   /** -1..1 around the zero line; null while the metric has too little history for a norm. */
   ratio: number | null;
+  /** Which side of the norm the day is on; null on the norm itself (as the text prints it) or without a norm. */
+  verdict: DeviationVerdict | null;
+  /** Amber only for a day on the worse side of the norm. */
   tone: HealthTone;
 }
 
-/** The position of a deviation on its track: against a constant history any step away fills the track. */
+/** The position of a deviation on its track: against a constant history any real step away fills the track. */
 export function deviationRatio(deviation: number, stddev: number): number {
-  if (deviation === 0) return 0;
-  if (stddev <= 0) return Math.sign(deviation);
+  if (Math.abs(deviation) <= DEVIATION_EPSILON) return 0;
+  if (stddev <= DEVIATION_EPSILON) return Math.sign(deviation);
   return Math.max(-1, Math.min(1, deviation / (stddev * FULL_SCALE_SPREADS)));
 }
 
+/** Better or worse than the norm for a metric; the norm itself (to the digit the text shows) is neither. */
+export function deviationVerdict(deviation: number, higherIsBetter: boolean): DeviationVerdict | null {
+  const shown = Number(deviation.toFixed(DEVIATION_DIGITS));
+  if (shown === 0) return null;
+  return Math.sign(shown) * (higherIsBetter ? 1 : -1) > 0 ? 'better' : 'worse';
+}
+
 export function deviationRows(metrics: readonly HealthMetric[]): DeviationRow[] {
-  return DEVIATION_METRICS.flatMap(({ identifier, label }) => {
+  return DEVIATION_METRICS.flatMap(({ identifier, label, higherIsBetter }) => {
     const metric = findMetric(metrics, identifier);
     if (metric === undefined || metric.days.length === 0) return [];
     const { baseline } = metric;
+    const verdict = baseline === null ? null : deviationVerdict(baseline.deviation, higherIsBetter);
     return [
       {
         identifier,
         label,
         metric,
         ratio: baseline === null ? null : deviationRatio(baseline.deviation, baseline.stddev),
-        tone: baseline?.outside_typical ? 'warn' : 'good',
+        verdict,
+        tone: verdict === 'worse' ? 'warn' : 'good',
       },
     ];
   });

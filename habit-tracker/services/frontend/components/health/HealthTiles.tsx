@@ -71,7 +71,7 @@ function HealthTile({
   basePath: string;
 }) {
   const { latest, average, points } = tileSeries(metric);
-  const color = metric.identifier === STEPS_IDENTIFIER ? HEALTH_COLORS.lime : HEALTH_COLORS.amber;
+  const color = metric.identifier === STEPS_IDENTIFIER ? HEALTH_COLORS.lime : HEALTH_COLORS.sky;
   return (
     <Link
       href={metricHref(basePath, metric.identifier)}

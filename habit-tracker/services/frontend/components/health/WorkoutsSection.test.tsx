@@ -126,6 +126,12 @@ describe('WorkoutsSection', () => {
     ]);
   });
 
+  it('does not draw a NaN bar when every workout has zero minutes', () => {
+    const { container } = render(<WorkoutsSection workouts={[{ ...YOGA, duration_min: 0 }]} />);
+
+    expect(container.innerHTML).not.toContain('NaN');
+  });
+
   it('shows only the five newest workouts in the list', () => {
     const many = Array.from({ length: 8 }, (_, index) => ({ ...RUN, id: `run-${index}` }));
     render(<WorkoutsSection workouts={many} />);

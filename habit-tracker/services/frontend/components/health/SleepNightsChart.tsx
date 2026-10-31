@@ -93,7 +93,7 @@ export default function SleepNightsChart({ nights, detailHref }: SleepNightsChar
                   {nightLabel(bar.date)}:{' '}
                   {bar.night === null
                     ? 'ночи нет'
-                    : `${sleepDuration(bar.night.asleep_min)}, глубокий и REM ${sleepDuration(bar.deepRemMin)}${bar.isBest ? ', лучшая ночь' : ''}`}
+                    : `${sleepDuration(bar.night.asleep_min)}, глубокий и REM ${sleepDuration(bar.deepRemMin)}${bar.isBest ? ', самая долгая ночь' : ''}`}
                 </span>
               </li>
             ))}

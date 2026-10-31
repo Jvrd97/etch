@@ -1,11 +1,16 @@
 // [review:need-review] PHASE-03/303
-// summary: «Отклонение от вашей нормы» — a horizontal bar around a zero line for resting heart rate, HRV and breathing, each metric against its own baseline; the bar reaches the edge at two usual spreads, amber and the words «вне обычного» when the day sits beyond the usual spread; a metric with too little history gets a line instead of a bar
+// summary: «Отклонение от вашей нормы» — a horizontal bar around a zero line for resting heart rate, HRV and breathing, each metric against its own baseline; the bar reaches the edge at two usual spreads, lime for the better side of the norm, amber for the worse one, said in words («лучше нормы» / «хуже нормы», «вне обычного» beyond the usual spread); a metric with too little history gets a line instead of a bar
 
 import type { HealthMetric } from '@/lib/api';
 import { deviationText, formatQuantity, OUTSIDE_TYPICAL_TEXT } from '@/lib/health';
-import { HEALTH_COLORS, deviationRows, type DeviationRow } from '@/lib/health-visual';
+import { HEALTH_COLORS, deviationRows, type DeviationRow, type DeviationVerdict } from '@/lib/health-visual';
 
 const HALF_TRACK_PERCENT = 50;
+
+const VERDICT_TEXT: Readonly<Record<DeviationVerdict, string>> = {
+  better: 'лучше нормы',
+  worse: 'хуже нормы',
+};
 
 export const DEVIATION_NO_NORM_TEXT = 'Мало истории для нормы';
 
@@ -75,6 +80,7 @@ function DeviationItem({ row }: { row: DeviationRow }) {
         ) : (
           <>
             {deviationText(baseline, metric.identifier, metric.canonical_unit)}
+            {row.verdict !== null && `, ${VERDICT_TEXT[row.verdict]}`}
             {baseline.outside_typical && `, ${OUTSIDE_TYPICAL_TEXT}`}
           </>
         )}

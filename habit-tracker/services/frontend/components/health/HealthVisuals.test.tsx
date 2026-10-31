@@ -9,7 +9,7 @@ import { localDate } from '@/lib/health-metrics';
 import { shiftDate } from '@/lib/health';
 import { DEVIATION_METRICS, ENERGY_IDENTIFIER, STEPS_IDENTIFIER } from '@/lib/health-visual';
 import DeviationBars, { DEVIATION_NO_NORM_TEXT } from './DeviationBars';
-import HealthStateCard, { SCORE_EMPTY_TEXT } from './HealthStateCard';
+import HealthStateCard, { SCORE_FEW_DAYS_TEXT, SCORE_NO_NORM_TEXT } from './HealthStateCard';
 import HealthTiles from './HealthTiles';
 import HealthVisuals from './HealthVisuals';
 import SleepNightsChart from './SleepNightsChart';
@@ -55,14 +55,26 @@ describe('HealthStateCard', () => {
     expect(screen.getByText('Хорошее')).toBeDefined();
     expect(screen.getByText('78')).toBeDefined();
     expect(screen.getByText('из 100')).toBeDefined();
-    expect(screen.getByText('Индекс по 7 дням данных')).toBeDefined();
+    expect(screen.getByText('За 7 дней')).toBeDefined();
+  });
+
+  it('says how many days stand behind an index of a shorter window', () => {
+    render(<HealthStateCard score={{ value: 70, label: 'good', basis_days: 4 }} />);
+
+    expect(screen.getByText('За 7 дней, по 4 дням данных')).toBeDefined();
   });
 
   it('says why there is no number under three days instead of drawing a zero', () => {
     render(<HealthStateCard score={{ value: null, label: null, basis_days: 2 }} />);
 
-    expect(screen.getByRole('status').textContent).toBe(SCORE_EMPTY_TEXT);
+    expect(screen.getByRole('status').textContent).toBe(SCORE_FEW_DAYS_TEXT);
     expect(screen.queryByText('из 100')).toBeNull();
+  });
+
+  it('says the personal norm is still missing when three days or more brought no index', () => {
+    render(<HealthStateCard score={{ value: null, label: null, basis_days: 5 }} />);
+
+    expect(screen.getByRole('status').textContent).toBe(SCORE_NO_NORM_TEXT);
   });
 
   it('prints the number alone for a label it has no word for', () => {
@@ -130,7 +142,7 @@ describe('SleepNightsChart', () => {
     expect(screen.getByRole('heading', { name: 'Сон по ночам' })).toBeDefined();
     const rows = screen.getByRole('list', { name: 'Ночи недели' }).querySelectorAll('li');
     expect(rows).toHaveLength(7);
-    expect(rows[5].textContent).toContain('лучшая ночь');
+    expect(rows[5].textContent).toContain('самая долгая ночь');
     expect(rows[5].textContent).toContain('8 ч');
     expect(rows[4].textContent).toContain('ночи нет');
     expect(screen.getByText(/отбой 00:10, подъём 07:40/)).toBeDefined();
@@ -159,8 +171,9 @@ describe('DeviationBars', () => {
 
     expect(screen.getByRole('heading', { name: 'Отклонение от вашей нормы' })).toBeDefined();
     const items = screen.getAllByRole('listitem').map((item) => item.textContent);
-    expect(items[0]).toContain('+4 уд/мин к обычному, вне обычного');
+    expect(items[0]).toContain('+4 уд/мин к обычному, хуже нормы, вне обычного');
     expect(items[1]).toContain('как обычно');
+    expect(items[1]).not.toContain('нормы,');
     expect(items[2]).toContain(DEVIATION_NO_NORM_TEXT);
   });
 
