@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263, PHASE-03/294
+// summary: PHASE-03/294 — the cards are ordered by use (a table read of the last 30 days, kept in the snapshot; a failed read leaves the server's order); a plus tap adds the field's step once (one in flight per category, the save goes through the outbox); a relapse is recorded on a chosen day (the key follows the day) and a recorded one moves to another day
 // summary: PHASE-03/263 — a late failure of an older load says nothing when a newer read is on screen
 // summary: PHASE-03/248 — a second load keeps the loaded screen and reports its failure as a line; PHASE-03/256 — the cache stamp after a re-read of the records stays the age of the categories and streaks it keeps
 // summary: PHASE-03/248 round 2 — the line a failed refresh wrote is taken back by the next refresh that works, and only that line
@@ -14,6 +15,8 @@ struct TodaySnapshot: Codable, Equatable {
     let categories: [CategoryDTO]
     let entries: [EntryDTO]
     let streaks: [Int: CategoryStreakDTO]
+    /// Entries per category over the last 30 days; nil when the read failed or the snapshot is older than it.
+    var usage: [Int: CategoryUsage]? = nil
 }
 
 @MainActor
@@ -41,6 +44,8 @@ final class TodayViewModel: ObservableObject {
     /// When non-nil the screen is showing cached data because the last load fell back
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
+    /// Categories whose plus tap is being saved: a second tap on the same one waits for the first.
+    @Published private(set) var quickAddingCategoryIDs: Set<Int> = []
     @Published var saveErrorMessage: String?
 
     /// Where an avoid card is in recording a relapse. The entry is the one the tap landed on.
@@ -73,7 +78,7 @@ final class TodayViewModel: ObservableObject {
     private let now: () -> Date
     /// Idempotency-Key of a relapse tap that has not been answered yet, kept across a failed attempt so
     /// the retry is the same request to the server and not a second relapse.
-    private var relapseKeys: [Int: String] = [:]
+    private var relapseKeys: [Int: (day: String?, key: String)] = [:]
     /// Live subscription to the outbox, so the pending rows follow a background flush.
     private var cancellables: Set<AnyCancellable> = []
     /// Reads of today's records, numbered as they are sent, and the newest one shown. A load reads
@@ -198,12 +203,16 @@ final class TodayViewModel: ObservableObject {
         }
         let flushing = Task { await outbox?.flush() }
         let today = todayString
+        let usageRange = usageWindow()
         var streaksFailed = false
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 async let categoriesTask = api.fetchCategories()
                 async let entriesTask = api.fetchEntries(startDate: today, endDate: today)
+                // The order of the cards is a nicety: its failure is not the screen's.
+                async let usageTask = Self.fetchUsage(api: api, range: usageRange)
                 let (fetchedCategories, fetchedEntries) = try await (categoriesTask, entriesTask)
+                let usage = await usageTask
                 let active = fetchedCategories.filter(\.isActive)
                 var loadedStreaks: [Int: CategoryStreakDTO] = [:]
                 if active.contains(where: \.isAvoid) {
@@ -219,7 +228,7 @@ final class TodayViewModel: ObservableObject {
                     }
                 }
                 return TodaySnapshot(
-                    categories: active, entries: fetchedEntries, streaks: loadedStreaks
+                    categories: active, entries: fetchedEntries, streaks: loadedStreaks, usage: usage
                 )
             }
             let entriesAreNewest = showsEntries(of: read)
@@ -275,7 +284,7 @@ final class TodayViewModel: ObservableObject {
             offlineAsOf = entriesAreNewest ? updatedAt : nil
             value = stale
         }
-        categories = value.categories
+        categories = TodayOrdering.sorted(value.categories, usage: value.usage)
         if entriesAreNewest { todayEntries = withQueuedRows(value.entries) }
         streaks = value.streaks
     }
@@ -287,9 +296,22 @@ final class TodayViewModel: ObservableObject {
         guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
         let snapshot = TodaySnapshot(
             categories: cached.value.categories, entries: todayEntries.filter { !$0.isPending },
-            streaks: cached.value.streaks
+            streaks: cached.value.streaks, usage: cached.value.usage
         )
         cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
+    }
+
+    /// Entries per category over the last `TodayOrdering.windowDays` days, today included.
+    private static func fetchUsage(
+        api: TodayScreenAPI, range: (from: String, to: String)
+    ) async -> [Int: CategoryUsage]? {
+        guard let table = try? await api.fetchTable(dateFrom: range.from, dateTo: range.to) else { return nil }
+        return TodayOrdering.usage(from: table)
+    }
+
+    private func usageWindow() -> (from: String, to: String) {
+        let to = todayString
+        return (DayCalendar.day(to, plusDays: 1 - TodayOrdering.windowDays), to)
     }
 
     private func nextEntriesRead() -> Int {
@@ -323,34 +345,40 @@ final class TodayViewModel: ObservableObject {
     /// Records a relapse of an avoid category in one tap, at any field set: the server picks what to
     /// write (a tick, a 1, or an entry with no values), so the client has no copy of the rule. Then
     /// the streak is read again, so the card shows the reset number straight away.
-    func recordRelapse(categoryID: Int) async {
+    /// `day` is the day it happened on (`yyyy-MM-dd`); nil, or today's date, is the server's today.
+    @discardableResult
+    func recordRelapse(categoryID: Int, on day: String? = nil) async -> Bool {
+        let day = day == todayString ? nil : day
         saveErrorMessage = nil
         switch relapseState(forCategory: categoryID) {
         case .recording, .undoing, .savingDetails:
-            return
+            return false
         case .idle, .recorded:
             break
         }
         guard let api = apiProvider() else {
             saveErrorMessage = Self.notConfiguredMessage
-            return
+            return false
         }
         let previous = relapseState(forCategory: categoryID)
-        let key = relapseKeys[categoryID] ?? UUID().uuidString
-        relapseKeys[categoryID] = key
+        // A retry of the same day is the same request; another day is another relapse.
+        let key = relapseKeys[categoryID].flatMap { $0.day == day ? $0.key : nil } ?? UUID().uuidString
+        relapseKeys[categoryID] = (day: day, key: key)
         relapseStates[categoryID] = .recording
         let landed: RelapseRecordedDTO
         do {
-            landed = try await api.recordRelapse(categoryId: categoryID, idempotencyKey: key)
+            landed = try await api.recordRelapse(
+                categoryId: categoryID, entryDate: day, idempotencyKey: key
+            )
         } catch let error as APIClientError {
             relapseStates[categoryID] = previous
             saveErrorMessage = error.isConnectivity
                 ? "\(Self.relapseFailedMessage): \(error.userMessage)" : error.userMessage
-            return
+            return false
         } catch {
             relapseStates[categoryID] = previous
             saveErrorMessage = Self.relapseFailedMessage
-            return
+            return false
         }
         relapseKeys[categoryID] = nil
         // A repeated tap within the minute gets this screen's own relapse back with `created: false`;
@@ -360,8 +388,9 @@ final class TodayViewModel: ObservableObject {
             recorded = RelapseRecordedDTO(entry: landed.entry, created: true)
         }
         relapseStates[categoryID] = .recorded(recorded)
-        upsert(recorded.entry)
+        place(recorded.entry)
         await refreshStreak(categoryID: categoryID, api: api)
+        return true
     }
 
     /// Takes back the relapse this screen wrote. Never deletes a relapse somebody else recorded.
@@ -386,9 +415,12 @@ final class TodayViewModel: ObservableObject {
         await refreshStreak(categoryID: categoryID, api: api)
     }
 
-    /// Adds the optional "how much" and a note to the relapse the tap wrote. PATCH replaces the
-    /// whole value list, so what the server wrote for the tap goes back along with the amount.
-    func saveRelapseDetails(categoryID: Int, amount: String, notes: String) async -> Bool {
+    /// Adds the optional "how much" and a note to the relapse the tap wrote, and moves it to another day
+    /// when `day` differs from the one it holds. PATCH replaces the whole value list, so what the
+    /// server wrote for the tap goes back along with the amount.
+    func saveRelapseDetails(
+        categoryID: Int, amount: String, notes: String, day: String? = nil
+    ) async -> Bool {
         saveErrorMessage = nil
         guard case .recorded(let recorded) = relapseState(forCategory: categoryID),
               let api = apiProvider() else { return false }
@@ -407,18 +439,19 @@ final class TodayViewModel: ObservableObject {
                 + [EntryValueDTO(fieldId: field.id, value: trimmedAmount)]
         }
         let note = trimmedNotes.isEmpty ? nil : trimmedNotes
-        guard values != nil || note != nil else { return true }
+        let movedTo = day.flatMap { $0 == recorded.entry.entryDate ? nil : $0 }
+        guard values != nil || note != nil || movedTo != nil else { return true }
 
         relapseStates[categoryID] = .savingDetails(recorded)
         do {
             let updated = try await api.updateEntry(
                 id: recorded.entry.id,
-                EntryUpdateDTO(entryDate: nil, notes: note, values: values)
+                EntryUpdateDTO(entryDate: movedTo, notes: note, values: values)
             )
             relapseStates[categoryID] = .recorded(
                 RelapseRecordedDTO(entry: updated, created: recorded.created)
             )
-            upsert(updated)
+            place(updated)
             await refreshStreak(categoryID: categoryID, api: api)
             return true
         } catch let error as APIClientError {
@@ -443,6 +476,15 @@ final class TodayViewModel: ObservableObject {
     private func refreshStreak(categoryID: Int, api: TodayScreenAPI) async {
         if let refreshed = try? await api.fetchStreak(categoryId: categoryID) {
             streaks[categoryID] = refreshed
+        }
+    }
+
+    /// Puts the entry into today's list, or takes it out when it belongs to another day.
+    private func place(_ entry: EntryDTO) {
+        if entry.entryDate == todayString {
+            upsert(entry)
+        } else {
+            todayEntries.removeAll { $0.id == entry.id }
         }
     }
 
@@ -507,6 +549,23 @@ final class TodayViewModel: ObservableObject {
             await refreshStreak(categoryID: categoryID, api: api)
         }
         return true
+    }
+
+    // MARK: Plus
+
+    /// The plus of a row whose plan is a step: adds the step to today as one entry. A tap while the
+    /// category's previous one is still being saved is dropped, so one press is one entry; the save
+    /// is the form save (one key per attempt, the outbox when the network is down). True when saved or queued.
+    @discardableResult
+    func quickAdd(categoryID: Int) async -> Bool {
+        guard let category = categories.first(where: { $0.id == categoryID }),
+              case .step(let fieldID, let amount) = TodayQuickAdd.plan(for: category),
+              !quickAddingCategoryIDs.contains(categoryID) else { return false }
+        quickAddingCategoryIDs.insert(categoryID)
+        defer { quickAddingCategoryIDs.remove(categoryID) }
+        var values = TodayQuickAdd.defaultValues(for: category, except: fieldID)
+        values[fieldID] = TodayQuickAdd.formatAmount(amount)
+        return await saveEntry(categoryID: categoryID, values: values)
     }
 
     /// Saves today's values for the category. Form categories create a new entry

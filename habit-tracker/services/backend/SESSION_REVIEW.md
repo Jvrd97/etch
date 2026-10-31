@@ -3091,3 +3091,11 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Круг 2 (PHASE-03/166): интервал через границу суток режется по дню (`crud/task_time.py`, `crud/activity.py::task_time_seconds`); время по задаче считается одним запросом с группировкой по `plan_item_id`; интервалы, привязанные только по `plan_task_id`/`clickup_task_id`, дают поле `other_linked_minutes`; `commits_checked` и `today` в ответе; `MANUAL_APP_NAME` переехал в `crud/activity.py`. Новые тесты в `tests/test_task_time.py` (22 теста). Веб: `useTaskTime` опрашивает только пока день — сегодня и читает один раз после записи отметки; `TaskTimeSummary` показывает `other_linked_minutes`.
 
 Круг 3 (PHASE-03/166): время без привязки считается как разность мультидиапазонов Postgres — минуты, покрытые привязанными интервалами (пункт плана главнее, затем `plan_task_id`/`clickup_task_id`), вычитаются из «без задачи» и из `other_linked_minutes`, поэтому таймер на задаче поверх замера агента не показывается как «работа вне плана», а `tasks + untasked + other` равно объединению интервалов дня (кроме минут, где идут две разные задачи сразу). `long_untasked` строится из кусков разности от 30 минут. Веб: `useTaskTime` держит последний устоявшийся ключ в состоянии (правило `react-hooks/refs`).
+
+## 2026-10-31 — PHASE-03/294: Today на телефоне — быстрый ввод по «+», дата срыва, порядок по частоте
+
+Тронуто 21 файл (9 `new`, 12 `mod`). Миграции нет, голова Alembic прежняя (`a2c4e6f8b0d3`).
+
+- Бэкенд: `app/api/categories.py`, `app/crud/streak.py`, `app/schemas/streak.py` — mod (`POST /categories/{id}/relapses` принимает необязательное `entry_date`, день позже сегодняшнего — 422, окно повтора считается внутри дня); `tests/test_relapse_on_date.py` — new (7 тестов; перенос срыва — существующий `PATCH /entries/{id}`).
+- iOS new: `Features/Today/{TodayQuickAdd,TodayOrdering,DayCalendar,RelapseWhenSheet,QuickAmountSheet}.swift`, `HabitTrackerTests/TodayQuickAddTests.swift`.
+- iOS mod: `Features/Today/{TodayView,TodayViewModel,RelapseDetailsSheet}.swift`, `API/{APIClient+Today,DTOs+Today}.swift`, `API/DTOs.swift` (одно поле `FieldDTO.quickSteps`, добавлением), `HabitTrackerTests/{TodayViewModelTests,TodayScreenAPITests}.swift`.

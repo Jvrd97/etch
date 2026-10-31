@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/210
+// [review:need-review] PHASE-01/210, PHASE-03/294
+// summary: PHASE-03/294 — the day of the recorded relapse can be moved on a month grid
 // summary: optional details of a relapse the tap already recorded — how much (a positive number, or leave it empty) and a note, saved as a PATCH over the entry the tap wrote
 import SwiftUI
 
@@ -9,6 +10,7 @@ struct RelapseDetailsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var amount = ""
     @State private var notes = ""
+    @State private var day = ""
     @State private var isSaving = false
 
     private var amountFieldName: String? {
@@ -28,6 +30,14 @@ struct RelapseDetailsSheet: View {
                     Text("Срыв уже записан. Здесь можно добавить подробности.")
                 }
                 .listRowBackground(DS.Palette.card)
+                if !day.isEmpty {
+                    Section {
+                        DayCalendarPicker(selection: $day, maxDay: viewModel.todayString)
+                    } header: {
+                        Text("Когда случилось: \(RelapseAnalysis.formatDay(day))")
+                    }
+                    .listRowBackground(DS.Palette.card)
+                }
                 if let message = viewModel.saveErrorMessage {
                     Section {
                         Text(message).foregroundStyle(DS.Palette.danger)
@@ -49,7 +59,7 @@ struct RelapseDetailsSheet: View {
             }
             .onAppear { prefill() }
         }
-        .presentationDetents([.fraction(0.45), .medium])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
 
@@ -60,6 +70,7 @@ struct RelapseDetailsSheet: View {
             return
         }
         notes = recorded.entry.notes ?? ""
+        day = recorded.entry.entryDate
         if let field = viewModel.amountField(forCategory: category.id),
            let stored = recorded.entry.values.first(where: { $0.fieldId == field.id })?.value {
             amount = stored
@@ -69,7 +80,9 @@ struct RelapseDetailsSheet: View {
     private func save() async {
         isSaving = true
         defer { isSaving = false }
-        if await viewModel.saveRelapseDetails(categoryID: category.id, amount: amount, notes: notes) {
+        if await viewModel.saveRelapseDetails(
+            categoryID: category.id, amount: amount, notes: notes, day: day
+        ) {
             dismiss()
         }
     }

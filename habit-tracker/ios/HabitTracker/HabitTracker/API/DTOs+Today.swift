@@ -1,5 +1,6 @@
 // [review:need-review] PHASE-01/210, PHASE-03/236
 // summary: wire types of the Today screen beyond DTOs.swift — the quick-mark directory with the day's state, one tap and its answer, an undo, one set of the day's journal, the relapse history of an avoid category and the answer to a one-tap relapse
+// summary: PHASE-03/294 — the body of a relapse recorded on a chosen day
 // summary: PHASE-03/236 — a tap may carry `occurredAt`, the moment of a press replayed from the queue
 import Foundation
 
@@ -97,6 +98,11 @@ struct RelapseHistoryDTO: Codable, Equatable {
     let trackedSince: String?
     let relapseDates: [String]
     let today: String
+}
+
+/// Body of `POST /categories/{id}/relapses` when the relapse happened on another day than today.
+struct RelapseRecordRequestDTO: Encodable, Equatable {
+    let entryDate: String
 }
 
 /// The entry a one-tap relapse landed on. `created` is true when this request (or an earlier
