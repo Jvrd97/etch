@@ -3047,3 +3047,14 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/crud/supplement.py` — mod: `create_supplement(..., idempotency_key=)` и `supplement_by_idempotency_key`.
 - `app/api/supplements.py` — mod: день отметки считается по `occurred_at` (окно +5 минут / 7 дней берётся у быстрых отметок: `_moment_of_press` из `app/api/quick_marks.py`), `POST /supplements` отвечает 200 первой добавкой на повтор ключа и после проигранной гонки.
 - `tests/test_supplement_occurred_at.py` — new: 23 теста (сутки до 04:00, граница окна, повтор после выхода из окна, число SQL, гонка создания).
+||||||| 1f54014
+
+## 2026-10-31 — PHASE-03/277: сон — сессия через 18:00 и ночь, обрезанная после перелёта
+
+Тронуто 5 файлов кода (5 `mod`), миграций нет.
+
+- `app/health/sleep.py` — mod: `fold_nights` сначала собирает сессии, потом относит сессию целиком к ночи по её концу.
+- `app/crud/health.py` — mod: `upsert_nights` не перезаписывает целую ночь той, что кончается там же, но начинается позже и короче; возвращает число реально записанных ночей.
+- `tests/test_health_sleep.py`, `tests/test_health_sleep_api.py` — mod: сессия через 18:00, обрезанная ночь, замена обрезанной целой, рост запросов от числа ночей, отбой на часах подъёма в ночь перевода часов.
+- `frontend/components/health/useSleepNights.ts` и `SleepSection.test.tsx` — mod: ошибка чтения сна логируется через `console.warn`.
+- iOS-часть (запас чтения в насосе) не сделана, вынесена в #282.

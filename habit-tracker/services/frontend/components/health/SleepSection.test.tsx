@@ -1,7 +1,7 @@
-// [review:need-review] PHASE-03/238
-// summary: render tests of the sleep section — the last night with its stages and the phone's own bedtime and wake time, the week of nights, the honest empty line, nothing before the answer — and the read of the seven-night window that a failure leaves out
+// [review:need-review] PHASE-03/238, PHASE-03/277
+// summary: render tests of the sleep section — the last night with its stages and the phone's own bedtime and wake time, the week of nights, the honest empty line, nothing before the answer — and the read of the seven-night window that a failure leaves out and logs
 
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import type { HealthSleepNight } from '@/lib/api';
 import { localDate } from '@/lib/health-metrics';
@@ -131,10 +131,17 @@ describe('useSleepNights', () => {
       return Promise.reject(new Error('network down'));
     };
 
-    const { result } = renderHook(() => useSleepNights(read));
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { result } = renderHook(() => useSleepNights(read));
 
-    await waitFor(() => expect(calls).toBe(1));
-    expect(result.current).toBeNull();
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      expect(calls).toBe(1);
+      expect(result.current).toBeNull();
+      expect(warn.mock.calls[0]?.[1]).toBeInstanceOf(Error);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('shifts dates across a month edge on the calendar alone', () => {

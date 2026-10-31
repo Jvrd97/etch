@@ -1,4 +1,4 @@
-# [review:need-review] PHASE-03/238
+# [review:need-review] PHASE-03/238, PHASE-03/277
 # summary: pure tests of the sleep fold — a night across midnight lands on its wake date, the 18:00 boundary, iPhone and Watch over the same minutes counted once, stage priority, a nap does not move bedtime or wake time, an empty input is no night, unknown stage values refused
 """
 The night fold of `app.health.sleep`, without a database.
@@ -68,12 +68,47 @@ def test_the_day_boundary_is_six_in_the_evening_local() -> None:
         [
             # Ends 17:59 Berlin: still Monday's sleep (a nap).
             interval(SleepStage.ASLEEP_CORE, "2026-10-19T15:00", "2026-10-19T15:59"),
-            # Ends 18:30 Berlin: already the night that ends on Tuesday.
-            interval(SleepStage.ASLEEP_CORE, "2026-10-19T16:00", "2026-10-19T16:30"),
+            # Ends 19:30 Berlin, an hour after the nap: the night that ends on Tuesday.
+            interval(SleepStage.ASLEEP_CORE, "2026-10-19T17:00", "2026-10-19T17:30"),
         ]
     )
 
     assert [n.wake_date for n in nights] == [date(2026, 10, 19), date(2026, 10, 20)]
+
+
+def test_a_session_across_six_in_the_evening_is_one_night() -> None:
+    # After a night shift, Berlin 10:00-20:00: the session ends past 18:00, so the
+    # whole of it is the night that ends on Tuesday, not Monday's nap plus a night.
+    nights = fold_nights(
+        [
+            interval(SleepStage.ASLEEP_CORE, "2026-10-19T08:00", "2026-10-19T12:00"),
+            interval(SleepStage.ASLEEP_DEEP, "2026-10-19T12:00", "2026-10-19T14:00"),
+            interval(SleepStage.ASLEEP_REM, "2026-10-19T14:00", "2026-10-19T18:00"),
+        ]
+    )
+
+    (night,) = nights
+    assert night.wake_date == date(2026, 10, 20)
+    assert night.asleep_min == 600
+    assert (night.core_min, night.deep_min, night.rem_min) == (240, 120, 240)
+    assert night.bedtime == at("2026-10-19T08:00")
+    assert night.wake_time == at("2026-10-19T18:00")
+
+
+def test_a_session_across_six_keeps_the_sleep_after_it_in_the_same_night() -> None:
+    # The session that crosses 18:00 and a sleep that follows it from 21:00 are
+    # separate sessions of one night; the longer one gives bedtime and wake time.
+    (night,) = fold_nights(
+        [
+            interval(SleepStage.ASLEEP_CORE, "2026-10-19T08:00", "2026-10-19T17:00"),
+            interval(SleepStage.ASLEEP_CORE, "2026-10-19T19:00", "2026-10-19T21:00"),
+        ]
+    )
+
+    assert night.wake_date == date(2026, 10, 20)
+    assert night.asleep_min == 660
+    assert night.bedtime == at("2026-10-19T08:00")
+    assert night.wake_time == at("2026-10-19T17:00")
 
 
 def test_iphone_and_watch_over_the_same_minutes_are_not_added_up() -> None:
