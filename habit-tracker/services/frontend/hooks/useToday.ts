@@ -1,8 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253, PHASE-03/257
 // summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the first-round snapshot whose four reads run side by side (categories, the server's day, the records of a window around it, cut to that day, and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 // summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it; the day is read again with the snapshot when the tab returns and on a one-minute timer for a tab that stays in front across the boundary; only the newest snapshot is applied, a tick saved for a finished day is not shown in the new one, and increments of a finished day are dropped; a day that cannot be read leaves date empty and the screen without data
 // summary: #247/#253 — one read of the day per moment shared by the snapshot, the minute timer and the day-mode badge (dayModeClient); the records no longer wait for the day; a day not confirmed (last snapshot read failed, or three minute reads in a row did) refuses ticks and increments and is said in the banner once; a failed tick rolls back only on the day it was written for; the timer's answer after unmount is dropped and its retry of a failed first load does not raise the banner again
+// summary: #257 — the badge's day read takes `{ fresh: true }` after a lost read, so its retry starts a new request instead of joining a hung one
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
@@ -526,8 +527,9 @@ export function useToday(): UseTodayResult {
   // screen has not moved to and no snapshot is on the way, the screen moves.
   const dayModeClient = useMemo<DayModeClient>(
     () => ({
-      read: async () => {
-        const mode = await readDay(false);
+      // `fresh`: the badge's retry after a lost read must not join the request that is still hanging.
+      read: async (options) => {
+        const mode = await readDay(options?.fresh === true);
         if (
           mounted.current &&
           loadsInFlight.current === 0 &&

@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253
+// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253, PHASE-03/257
 // summary: tests for useToday — the targeted re-read after a quick mark (records, ticks and the one streak that can have moved, nothing else, and never an older answer over a newer one), silent visibility refetch, the two rounds of the cold path (the buttons land after the first, the streaks report themselves from the second and a tap goes through while they are still in flight), the optimistic number increment with per-tap rollback, the quick-mark tap that costs one request and repaints from its own answer, the retry that sends the second attempt under the key of the first, and the undo that puts the day back
+// summary: #257 — the badge's read joins the day read in flight, but `{ fresh: true }` (its retry after a lost read) starts a new request
 // summary: #247/#253 — the screen and its day-mode badge share one read of the day (same day, one request, the badge's answer moves the screen); records ask in parallel with the day; a day not confirmed by three minute reads in a row refuses writes and says so once; a failed tick rolls back only on its own day; no snapshot after unmount; the retry of a failed first load stays quiet
 // summary: the server day in useToday: the header, the records read, the re-read after a mark, the checklist tick and the increment use the day of GET /day-mode while the browser is a day behind; a changed day is followed on return to the tab and by the minute timer (fake timers); an older snapshot, a tick or a re-read of a finished day never lands over the new day; a day that cannot be read leaves no screen and no request for records
 
@@ -1595,6 +1596,24 @@ describe('round 2: the badge follows the day the screen moved to (#247)', () => 
     await waitFor(() => expect(result.current.date).toBe(NEXT_DAY));
 
     expect(getAllCategories).toHaveBeenCalledTimes(1);
+  });
+
+  it('joins the day read in flight for the badge, and starts a new request for a retry after a lost read', async () => {
+    const { result } = renderHook(() => useToday());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const hung = deferred<ReturnType<typeof dayModeOf>>();
+    readDayMode = mock(() => hung.promise);
+    void result.current.dayModeClient.read();
+    void result.current.dayModeClient.read();
+    expect(readDayMode).toHaveBeenCalledTimes(1);
+
+    void result.current.dayModeClient.read({ fresh: true });
+    expect(readDayMode).toHaveBeenCalledTimes(2);
+    hung.resolve(dayModeOf(TODAY));
+    await act(async () => {
+      await Promise.resolve();
+    });
   });
 
   it('starts no snapshot from a badge read answered after the screen is gone', async () => {

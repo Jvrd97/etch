@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/249
-// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried, a tab that comes back after the day boundary reads the new day and writes to it, a re-read that failed leaves no write to the stale date, and a read that overlapped a write never overwrites its answer (and is asked again after the write when it was dropped, but not once the hook is gone); since #249 two decides in one tick send one write, and nothing goes out while a read is on its way
+// [review:need-review] PHASE-03/249, PHASE-03/257
+// summary: tests for useDayMode — the server's current day is read on mount and every write goes to the date of that answer (never a browser date), a decision is replaced by the server's answer, a reset takes the day back to the schedule, a failed write keeps the last mode and says so, a failed read (also a client that throws before returning a promise) is reported and can be retried, a tab that comes back after the day boundary reads the new day and writes to it, a re-read that failed leaves no write to the stale date, and a read that overlapped a write never overwrites its answer (and is asked again after the write when it was dropped, but not once the hook is gone); since #249 two decides in one tick send one write, and nothing goes out while a read is on its way; since #257 a read that hangs is reported as failed after a timeout (and a retry asks anew instead of joining it), reads are taken in the order they started and not in the order they answered, and a read that crossed a finished write is asked again only while the hook is mounted
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -433,5 +433,201 @@ describe('useDayMode', () => {
     });
 
     expect(result.current.mode?.kind).toBe('sick');
+  });
+});
+
+describe('useDayMode: a read that hangs and reads that answer out of order (#257)', () => {
+  const SHORT_TIMEOUT_MS = 30;
+
+  it('reports a read that never answers as failed, unlocks `reading` and keeps the old mode', async () => {
+    let reads = 0;
+    const api = client({
+      read: () => {
+        reads += 1;
+        return reads === 1 ? Promise.resolve(SCHEDULED) : new Promise<DayMode>(() => {});
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api, SHORT_TIMEOUT_MS));
+    await waitFor(() => expect(result.current.mode).toEqual(SCHEDULED));
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(result.current.reading).toBe(true));
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
+
+    expect(result.current.reading).toBe(false);
+    expect(result.current.mode).toEqual(SCHEDULED);
+  });
+
+  it('reports a first read that never answers, and a retry reads anew instead of joining it', async () => {
+    const asked: Array<{ fresh?: boolean } | undefined> = [];
+    const api = client({
+      read: (options) => {
+        asked.push(options);
+        return asked.length === 1 ? new Promise<DayMode>(() => {}) : Promise.resolve(SCHEDULED);
+      },
+    });
+    const { result } = renderHook(() => useDayMode(api, SHORT_TIMEOUT_MS));
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
+    expect(result.current.mode).toBeNull();
+
+    await act(async () => {
+      await result.current.reload();
+    });
+
+    expect(asked[0]?.fresh).not.toBe(true);
+    expect(asked[1]).toEqual({ fresh: true });
+    expect(result.current.loadFailed).toBe(false);
+    expect(result.current.mode).toEqual(SCHEDULED);
+  });
+
+  it('takes a late answer of a read that was reported as failed', async () => {
+    let releaseRead: (mode: DayMode) => void = () => {};
+    const api = client({
+      read: () =>
+        new Promise<DayMode>((resolve) => {
+          releaseRead = resolve;
+        }),
+    });
+    const { result } = renderHook(() => useDayMode(api, SHORT_TIMEOUT_MS));
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
+
+    await act(async () => {
+      releaseRead(SCHEDULED);
+    });
+
+    expect(result.current.loadFailed).toBe(false);
+    expect(result.current.mode).toEqual(SCHEDULED);
+  });
+
+  it('does not let the answer of an older read overwrite a newer one', async () => {
+    const releases: Array<(mode: DayMode) => void> = [];
+    const api = client({
+      read: () => new Promise<DayMode>((resolve) => releases.push(resolve)),
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(releases.length).toBe(1));
+    // The retry button and a `focus` in a row: the second read is asked after midnight.
+    act(() => {
+      void result.current.reload();
+    });
+    await waitFor(() => expect(releases.length).toBe(2));
+
+    await act(async () => {
+      releases[1]({ ...SCHEDULED, date: '2026-10-28' });
+    });
+    await act(async () => {
+      releases[0]({ ...SCHEDULED, date: '2026-10-27' });
+    });
+
+    expect(result.current.mode?.date).toBe('2026-10-28');
+    expect(result.current.reading).toBe(false);
+  });
+
+  it('takes the answers in the order the reads started when the older one answers first', async () => {
+    const releases: Array<(mode: DayMode) => void> = [];
+    const api = client({
+      read: () => new Promise<DayMode>((resolve) => releases.push(resolve)),
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(releases.length).toBe(1));
+    act(() => {
+      void result.current.reload();
+    });
+    await waitFor(() => expect(releases.length).toBe(2));
+
+    await act(async () => {
+      releases[0]({ ...SCHEDULED, date: '2026-10-27' });
+    });
+    await act(async () => {
+      releases[1]({ ...SCHEDULED, date: '2026-10-28' });
+    });
+
+    expect(result.current.mode?.date).toBe('2026-10-28');
+  });
+
+  it('does not report a failure of an older read while a newer one is on its way', async () => {
+    const settle: Array<{ ok: (mode: DayMode) => void; fail: () => void }> = [];
+    const api = client({
+      read: () =>
+        new Promise<DayMode>((ok, reject) => settle.push({ ok, fail: () => reject(new Error('offline')) })),
+    });
+    const { result } = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(settle.length).toBe(1));
+    act(() => {
+      void result.current.reload();
+    });
+    await waitFor(() => expect(settle.length).toBe(2));
+
+    await act(async () => {
+      settle[0].fail();
+    });
+    expect(result.current.loadFailed).toBe(false);
+    expect(result.current.reading).toBe(true);
+
+    await act(async () => {
+      settle[1].ok(SCHEDULED);
+    });
+    expect(result.current.mode).toEqual(SCHEDULED);
+    expect(result.current.loadFailed).toBe(false);
+  });
+
+  /** A write that finishes while a read begun during it is still unanswered; returns what the test needs next. */
+  async function readCrossingAFinishedWrite() {
+    let releaseRead: (mode: DayMode) => void = () => {};
+    let releaseWrite: () => void = () => {};
+    let reads = 0;
+    const api = client({
+      read: () => {
+        reads += 1;
+        if (reads !== 2) return Promise.resolve(SCHEDULED);
+        return new Promise<DayMode>((resolve) => {
+          releaseRead = resolve;
+        });
+      },
+      set: (date, draft) =>
+        new Promise<DayMode>((resolve) => {
+          releaseWrite = () => resolve({ date, ...draft, source: 'manual' });
+        }),
+    });
+    const view = renderHook(() => useDayMode(api));
+    await waitFor(() => expect(view.result.current.mode).not.toBeNull());
+
+    let writing: Promise<void> = Promise.resolve();
+    act(() => {
+      writing = view.result.current.decide('work', false);
+    });
+    await waitFor(() => expect(view.result.current.saving).toBe(true));
+    act(() => {
+      void view.result.current.reload();
+    });
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => {
+      releaseWrite();
+      await writing;
+    });
+    return { ...view, reads: () => reads, answer: () => releaseRead(SCHEDULED) };
+  }
+
+  it('asks again when a read that crossed a finished write answers and the hook is still mounted', async () => {
+    const run = await readCrossingAFinishedWrite();
+
+    await act(async () => {
+      run.answer();
+    });
+
+    await waitFor(() => expect(run.reads()).toBe(3));
+  });
+
+  it('does not ask again when a read that crossed a finished write answers after the hook is gone', async () => {
+    const run = await readCrossingAFinishedWrite();
+
+    run.unmount();
+    await act(async () => {
+      run.answer();
+    });
+
+    expect(run.reads()).toBe(2);
   });
 });
