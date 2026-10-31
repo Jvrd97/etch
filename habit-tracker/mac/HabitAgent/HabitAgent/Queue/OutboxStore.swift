@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/163, PHASE-03/217, PHASE-03/172
-// summary: SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with the code kept in the agent state — the last one and a tally per code
+// [review:need-review] PHASE-03/163, PHASE-03/217, PHASE-03/172, PHASE-03/170
+// summary: since #170 also the file queue of quick-mark taps (`QuickMarkOutbox`) at the end of the file; SwiftData queue of closed intervals under ~/Library/Application Support/com.talvior.habitagent/ (in memory if the disk refuses) — enqueue, read in batches of 500, delete once the server confirmed, drop after 14 days with the code kept in the agent state — the last one and a tally per code
 import Foundation
 import SwiftData
 import os
@@ -305,4 +305,109 @@ final class OutboxStore {
             Self.logger.error("Queue save failed: \(AgentLog.code(of: error), privacy: .public); \(String(describing: error), privacy: .private)")
         }
     }
+}
+
+/// Taps on quick marks waiting for the server, in a file next to the interval queue.
+///
+/// A tap is on disk from the moment of the press and goes out oldest first under its own
+/// `Idempotency-Key`, so a resend after a lost answer is one event. Failures wait on `Backoff`;
+/// a refusal that will repeat (the mark is gone or off, the press is older than the server accepts)
+/// drops the tap and is remembered in `lastRejectedAt`.
+@MainActor
+final class QuickMarkOutbox: ObservableObject {
+    typealias Sender = (QuickMarkTap) async throws -> QuickMarkEventResult
+
+    /// First retry after 15 s, then 30 s, then 60 s for good: a network that came back is noticed within a minute.
+    static let retryDelays = (first: TimeInterval(15), last: TimeInterval(60))
+    private static let log = Logger(subsystem: AgentPaths.identifier, category: "quick-mark-outbox")
+
+    @Published private(set) var pending: [QuickMarkTap]
+    private(set) var lastRejectedAt: Date?
+    /// Called with the server's answer before the tap leaves `pending`.
+    var onConfirmed: (QuickMarkEventResult) -> Void = { _ in }
+
+    private let fileURL: URL
+    private let send: Sender
+    private let now: () -> Date
+    private var backoff = Backoff(initialDelay: retryDelays.first, maxDelay: retryDelays.last)
+    private var notBefore = Date.distantPast
+    private var flushing = false
+
+    init(fileURL: URL, now: @escaping () -> Date = Date.init, send: @escaping Sender) {
+        self.fileURL = fileURL
+        self.now = now
+        self.send = send
+        pending = Self.load(fileURL)
+    }
+
+    /// `~/Library/Application Support/com.talvior.habitagent/quick-mark-taps.json`
+    static func defaultFileURL() -> URL {
+        AgentPaths.directory.appendingPathComponent("quick-mark-taps.json")
+    }
+
+    /// True when there is something to send and the backoff has run out.
+    var isDue: Bool {
+        !pending.isEmpty && !flushing && now() >= notBefore
+    }
+
+    /// Writes the tap to disk at once; sending is `flush`.
+    func enqueue(_ tap: QuickMarkTap) {
+        pending.append(tap)
+        persist()
+    }
+
+    /// Sends the oldest first, one at a time, until one fails. `force` ignores the backoff.
+    func flush(force: Bool = false) async {
+        guard !flushing, !pending.isEmpty, force || now() >= notBefore else { return }
+        flushing = true
+        defer { flushing = false }
+        while let head = pending.first {
+            do {
+                onConfirmed(try await send(head))
+                backoff.reset()
+                notBefore = .distantPast
+            } catch PanelAPIError.rejected(let status) {
+                lastRejectedAt = now()
+                Self.log.error("quick-mark tap refused with \(status), dropped")
+            } catch {
+                notBefore = now().addingTimeInterval(backoff.recordFailure())
+                return
+            }
+            pending.removeAll { $0.key == head.key }
+            persist()
+        }
+    }
+
+    private func persist() {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: AgentPaths.directoryPermissions]
+            )
+            try Self.encoder.encode(pending).write(to: fileURL, options: .atomic)
+        } catch {
+            Self.log.error("could not write the quick-mark queue: \(error.localizedDescription)")
+        }
+    }
+
+    private static func load(_ url: URL) -> [QuickMarkTap] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        if let taps = try? decoder.decode([QuickMarkTap].self, from: data) { return taps }
+        // Not overwritten by the next write: a person can still read what was in it.
+        try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("unreadable"))
+        log.error("quick-mark queue was unreadable and was set aside")
+        return []
+    }
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
 }

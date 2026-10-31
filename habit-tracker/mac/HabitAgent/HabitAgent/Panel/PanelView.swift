@@ -1,9 +1,9 @@
-// [review:need-review] PHASE-03/159
-// summary: the content of the floating window — date and a stale marker, the current task, the timer with start and stop, the button that opens the day in the browser, an empty band kept for the quick marks of #170, and (since #162) the day-mode switcher
+// [review:need-review] PHASE-03/159, PHASE-03/170
+// summary: the content of the floating window — date and a stale marker, the current task, the timer with start and stop, the button that opens the day in the browser, the day-mode switcher (since #162) and the row of quick marks (since #170)
 import SwiftUI
 
-/// The window is a column of sections. A new one (the day mode of #162 is one;
-/// the quick marks of #170 are next) is one more line in `PanelView.body`, not a change to the others.
+/// The window is a column of sections. A new one (the day mode of #162 and the quick marks of #170
+/// are two) is one more line in `PanelView.body`, not a change to the others.
 struct PanelView: View {
     @ObservedObject var model: PanelModel
     let onMinimize: () -> Void
@@ -15,7 +15,7 @@ struct PanelView: View {
             TimerSection(timer: model.timer, onToggle: model.toggleTimer)
             ModeSwitcher(model: model)
             Spacer(minLength: 0)
-            QuickMarksSlot()
+            if let quickMarks = model.quickMarks { QuickMarksRow(model: quickMarks) }
             Button(action: model.openDayInBrowser) {
                 Label("Открыть день в браузере", systemImage: "safari")
                     .frame(maxWidth: .infinity)
@@ -127,14 +127,5 @@ private struct TimerSection: View {
 
     private static func clock(_ date: Date) -> String {
         date.formatted(date: .omitted, time: .shortened)
-    }
-}
-
-/// Room for the quick marks of #170: they are drawn there, not by this ticket.
-private struct QuickMarksSlot: View {
-    static let height: CGFloat = 28
-
-    var body: some View {
-        Color.clear.frame(height: Self.height)
     }
 }

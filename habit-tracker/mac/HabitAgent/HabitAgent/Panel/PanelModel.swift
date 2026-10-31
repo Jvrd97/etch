@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/241
-// summary: what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the server's answer to the write (and then from the next config); since #228 one mode write at a time (`modeSaving` is claimed synchronously in the handler and locks the switcher; a second change is dropped and logged) and a fresh config clears «не сохранилось»; since #241 the server's answer to a write stays until a poll started after that answer succeeds (modified or 304), not until any poll lands
+// [review:need-review] PHASE-03/241, PHASE-03/170
+// summary: since #170 the panel also carries the model of the quick marks row and passes the one-second tick on to it; what the floating panel shows and does — the polled config, the timer, whether the config is stale, start and stop on the current task, and the button that opens the day page on the date the window shows; since #162 the day mode, a decision or a reset written for the date the window shows and repainted from the server's answer to the write (and then from the next config); since #228 one mode write at a time (`modeSaving` is claimed synchronously in the handler and locks the switcher; a second change is dropped and logged) and a fresh config clears «не сохранилось»; since #241 the server's answer to a write stays until a poll started after that answer succeeds (modified or 304), not until any poll lands
 import Combine
 import Foundation
 import os
@@ -12,6 +12,8 @@ final class PanelModel: ObservableObject {
 
     let config: ConditionalPoller<PanelConfig>
     let timer: TaskTimer
+    /// The row of quick marks (#170); nil where the window has no server to ask (tests).
+    let quickMarks: QuickMarksModel?
     /// The config part of the window has been silent longer than its threshold.
     @Published private(set) var configIsStale = false
     /// The last write of the day mode did not go through; the mode shown is the old one.
@@ -37,6 +39,7 @@ final class PanelModel: ObservableObject {
     init(
         config: ConditionalPoller<PanelConfig>,
         timer: TaskTimer,
+        quickMarks: QuickMarksModel? = nil,
         outbox: ManualIntervalOutbox? = nil,
         serverAddress: @escaping () -> String?,
         openURL: @escaping (URL) -> Void,
@@ -45,6 +48,7 @@ final class PanelModel: ObservableObject {
     ) {
         self.config = config
         self.timer = timer
+        self.quickMarks = quickMarks
         self.outbox = outbox
         self.serverAddress = serverAddress
         self.openURL = openURL
@@ -119,6 +123,7 @@ final class PanelModel: ObservableObject {
     /// Called about once a second by whoever owns the window.
     func tick() {
         timer.tick()
+        quickMarks?.tick()
         configIsStale = config.isStale(at: now())
         if let outbox, outbox.isDue { Task { await outbox.flush() } }
     }

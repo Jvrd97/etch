@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-03/155, PHASE-03/163
-// summary: sends idempotent batches of title-free activity intervals to the API and names the bundle a 422 refused; the default session keeps no cache or cookies on disk
+// [review:need-review] PHASE-03/155, PHASE-03/163, PHASE-03/170
+// summary: since #170 also the two quick-mark calls of the floating window (the list of the agent surface with an ETag, and one tap under an Idempotency-Key) in an extension at the end of the file; sends idempotent batches of title-free activity intervals to the API and names the bundle a 422 refused; the default session keeps no cache or cookies on disk
 import Foundation
 
 enum AgentAPIError: Error, Equatable {
@@ -81,5 +81,72 @@ struct AgentAPIClient {
     /// A string `detail` is the catalogue refusal; a validation list decodes to nothing.
     private struct ErrorBody: Decodable {
         let detail: String
+    }
+}
+
+// MARK: - Quick marks (#170)
+
+extension AgentAPIClient {
+    private static let quickMarksPath = "/api/v1/quick-marks"
+    private static let agentSource = "agent"
+    private static let notModified = 304
+    /// A refusal the server repeats for the same tap: the mark is gone (404) or off (409), or the press
+    /// is older than the server takes (422). Everything else — a wrong key, a 5xx — may pass.
+    private static let finalQuickMarkStatuses: Set<Int> = [404, 409, 422]
+
+    /// `GET /quick-marks?surface=agent`. No `date`: the server counts its own day, and a window that
+    /// counted it too would disagree with the app between midnight and four in the morning.
+    func fetchQuickMarks(etag: String?) async throws -> PollResponse<[QuickMark]> {
+        guard let base = PanelAPIClient.endpoint(for: serverAddress, path: Self.quickMarksPath),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw PanelAPIError.notConfigured }
+        components.queryItems = [URLQueryItem(name: "surface", value: Self.agentSource)]
+        guard let url = components.url else { throw PanelAPIError.notConfigured }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.requestTimeout)
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let (body, response) = try await quickMarkData(for: request)
+        if response.statusCode == Self.notModified { return .notModified }
+        guard response.statusCode == 200 else { throw PanelAPIError.http(status: response.statusCode) }
+        return .modified(try JSONDecoder().decode([QuickMark].self, from: body), etag: response.value(forHTTPHeaderField: "ETag"))
+    }
+
+    /// `POST /quick-marks/{id}/events`. 201 is a new event, 200 the same event again for a repeated key;
+    /// both answer with the day's new state. No `value`: the server applies the step of the button.
+    func send(_ tap: QuickMarkTap) async throws -> QuickMarkEventResult {
+        guard let url = PanelAPIClient.endpoint(for: serverAddress, path: "\(Self.quickMarksPath)/\(tap.markID)/events") else {
+            throw PanelAPIError.notConfigured
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.requestTimeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue(tap.key.uuidString, forHTTPHeaderField: "Idempotency-Key")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        request.httpBody = try encoder.encode(TapBody(occurredAt: tap.occurredAt, utcOffsetMinutes: tap.utcOffsetMinutes, source: Self.agentSource))
+        let (body, response) = try await quickMarkData(for: request)
+        guard (200..<300).contains(response.statusCode) else {
+            throw Self.finalQuickMarkStatuses.contains(response.statusCode)
+                ? PanelAPIError.rejected(status: response.statusCode) : PanelAPIError.http(status: response.statusCode)
+        }
+        return try JSONDecoder().decode(QuickMarkEventResult.self, from: body)
+    }
+
+    private func quickMarkData(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let (body, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        return (body, response)
+    }
+
+    private struct TapBody: Encodable {
+        let occurredAt: Date
+        let utcOffsetMinutes: Int
+        let source: String
+
+        enum CodingKeys: String, CodingKey {
+            case occurredAt = "occurred_at"
+            case utcOffsetMinutes = "utc_offset_minutes"
+            case source
+        }
     }
 }
