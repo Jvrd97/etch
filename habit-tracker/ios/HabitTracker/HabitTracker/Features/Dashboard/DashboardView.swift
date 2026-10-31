@@ -1,11 +1,11 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/37-ios-insights, PHASE-01/208
-// summary: Dashboard screen — Lime Tech dark restyle: KPI cards, recent-activity feed, lime quick-actions; Insights entry point
+// [review:need-review] PHASE-03/304
+// summary: Dashboard screen by the accepted mock-up — the Неделя/Месяц switch, the window's dates, the cached-answer note, then the three rings, streaks, health state, bests, workout dynamics, insight and the nutrition placeholder; loading, a Russian error with «Повторить», pull to refresh in place
 import SwiftUI
 
 struct DashboardView: View {
     @StateObject private var viewModel: DashboardViewModel
 
-    /// Quick jumps: Today is a tab, Journal and Insights are pushed on the More stack.
+    /// The insight card leads to the reports under More.
     private let onNavigate: (AppDestination) -> Void
 
     init(viewModel: DashboardViewModel, onNavigate: @escaping (AppDestination) -> Void) {
@@ -14,130 +14,91 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        content
-            .navigationTitle("Dashboard")
-            .dsScreenBackground()
-        .task {
-            await viewModel.load()
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+                periodSwitch
+                content
+            }
+            .padding(DS.Spacing.lg)
         }
+        .refreshable { await viewModel.refresh() }
+        .navigationTitle("Dashboard")
+        .dsScreenBackground()
+        .task { await viewModel.appear() }
+    }
+
+    private var periodSwitch: some View {
+        Picker("Период", selection: Binding(
+            get: { viewModel.period },
+            set: { new in Task { await viewModel.select(new) } }
+        )) {
+            ForEach(DashboardPeriod.allCases, id: \.self) { period in
+                Text(DashboardFormat.periodTitle(period)).tag(period)
+            }
+        }
+        .pickerStyle(.segmented)
     }
 
     @ViewBuilder
     private var content: some View {
         switch viewModel.state {
         case .idle, .loading:
-            NeonLoader(label: "Loading")
+            NeonLoader(label: "Загружаю сводку")
+                .frame(minHeight: 280)
         case .failure(let message):
-            DSErrorState(message: message) {
-                Task { await viewModel.load() }
-            }
+            failure(message)
         case .loaded:
-            dashboard
-        }
-    }
-
-    private var dashboard: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DS.Spacing.xl) {
-                kpiRow
-                sectionHeader("Recent activity")
-                recentActivity
-                sectionHeader("Quick actions")
-                quickActions
-            }
-            .padding(DS.Spacing.lg)
-        }
-        .refreshable {
-            await viewModel.load()
-        }
-    }
-
-    private var kpiRow: some View {
-        HStack(spacing: DS.Spacing.md) {
-            kpiCard(label: "Categories", value: viewModel.stats.categoriesCount)
-            kpiCard(label: "Entries", value: viewModel.stats.entriesCount)
-            kpiCard(label: "Journal", value: viewModel.stats.journalCount)
-        }
-    }
-
-    private func kpiCard(label: String, value: Int) -> some View {
-        Card {
-            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-                Text("\(value)")
-                    .font(DS.Typography.h1)
-                    .foregroundStyle(DS.Palette.textPrimary)
-                    .monospacedDigit()
-                Text(label)
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Palette.textSecondary)
+            if let summary = viewModel.summary {
+                cards(summary)
             }
         }
+    }
+
+    private func failure(_ message: String) -> some View {
+        VStack(spacing: DS.Spacing.lg) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.largeTitle)
+                .foregroundStyle(DS.Palette.textSecondary)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.body)
+                .foregroundStyle(DS.Palette.textSecondary)
+                .multilineTextAlignment(.center)
+            Button(DashboardFormat.retryTitle) { Task { await viewModel.load() } }
+                .buttonStyle(LimeButtonStyle())
+                .fixedSize()
+        }
+        .frame(maxWidth: .infinity, minHeight: 280)
     }
 
     @ViewBuilder
-    private var recentActivity: some View {
-        if viewModel.stats.recentEntries.isEmpty {
-            Card {
-                Text("Nothing here yet")
-                    .font(DS.Typography.body)
-                    .foregroundStyle(DS.Palette.textSecondary)
-            }
-        } else {
-            Card {
-                VStack(spacing: 0) {
-                    ForEach(Array(viewModel.stats.recentEntries.enumerated()), id: \.element.id) { index, entry in
-                        if index > 0 {
-                            Divider().overlay(DS.Palette.cardStroke)
-                                .padding(.vertical, DS.Spacing.sm)
-                        }
-                        HStack {
-                            Image(systemName: "calendar")
-                                .foregroundStyle(DS.Palette.lime)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Entry #\(entry.id)")
-                                    .font(DS.Typography.body)
-                                    .foregroundStyle(DS.Palette.textPrimary)
-                                Text(entry.entryDate)
-                                    .font(DS.Typography.caption)
-                                    .foregroundStyle(DS.Palette.textSecondary)
-                            }
-                            Spacer()
-                            Text("\(entry.values.count) values")
-                                .font(DS.Typography.caption)
-                                .foregroundStyle(DS.Palette.textSecondary)
-                        }
-                    }
-                }
-            }
-        }
+    private func cards(_ summary: DashboardSummaryDTO) -> some View {
+        statusLines(summary)
+        DashboardRingsCard(scores: summary.scores)
+        DashboardStreaksCard(streaks: summary.streaks)
+        DashboardHealthCard(metrics: summary.health)
+        DashboardBestsCard(bests: summary.bests, period: viewModel.period, today: summary.today)
+        DashboardWorkoutsCard(workouts: summary.workouts)
+        DashboardInsightCard(insight: summary.insight, period: viewModel.period) { onNavigate(.more(.insights)) }
+        DashboardNutritionCard()
     }
 
-    private var quickActions: some View {
-        HStack(spacing: DS.Spacing.md) {
-            Button {
-                onNavigate(.tab(.today))
-            } label: {
-                Label("Today", systemImage: "checkmark.circle")
+    /// The window's dates, and an honest note when the numbers are an old copy or a refresh failed.
+    private func statusLines(_ summary: DashboardSummaryDTO) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            Text(DashboardFormat.rangeText(from: summary.from, to: summary.to))
+                .font(.footnote)
+                .foregroundStyle(DS.Palette.textSecondary)
+            if let asOf = viewModel.offlineAsOf {
+                Text(DashboardFormat.staleText(asOf))
+                    .font(.footnote)
+                    .foregroundStyle(DashboardPalette.amber)
             }
-            .buttonStyle(LimeButtonStyle(prominent: false))
-            Button {
-                onNavigate(.more(.journal))
-            } label: {
-                Label("Journal", systemImage: "book")
+            if let problem = viewModel.refreshError {
+                Text(problem)
+                    .font(.footnote)
+                    .foregroundStyle(DashboardPalette.amber)
             }
-            .buttonStyle(LimeButtonStyle(prominent: false))
-            Button {
-                onNavigate(.more(.insights))
-            } label: {
-                Label("Insights", systemImage: "sparkles")
-            }
-            .buttonStyle(LimeButtonStyle(prominent: false))
         }
-    }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(DS.Typography.section)
-            .foregroundStyle(DS.Palette.textPrimary)
     }
 }

@@ -1,10 +1,9 @@
-// [review:need-review] PHASE-01/10-ios-dashboard, PHASE-01/208
-// summary: Dashboard state — parallel-loads category/entry/journal counts + recent activity, mirrors the web dashboard
+// [review:need-review] PHASE-03/304
+// summary: Dashboard state — the server's summary of the week or the month through the read cache (each period under its own key; offline answers carry their moment), the period switch with a late answer of a period left behind dropped, a return to the screen and pull to refresh read in place, errors in Russian; the day is the server's `today`, the phone's clock is never asked
 import Foundation
 
 @MainActor
 final class DashboardViewModel: ObservableObject {
-    /// Discriminated load state for the dashboard.
     enum LoadState: Equatable {
         case idle
         case loading
@@ -12,87 +11,116 @@ final class DashboardViewModel: ObservableObject {
         case failure(String)
     }
 
-    /// Aggregated counters and the recent-activity feed shown on the dashboard.
-    struct Stats: Equatable {
-        var categoriesCount: Int
-        var entriesCount: Int
-        var journalCount: Int
-        var recentEntries: [EntryDTO]
-
-        static let empty = Stats(
-            categoriesCount: 0, entriesCount: 0, journalCount: 0, recentEntries: []
-        )
-    }
-
     @Published private(set) var state: LoadState = .idle
-    @Published private(set) var stats: Stats = .empty
+    @Published private(set) var summary: DashboardSummaryDTO?
+    @Published private(set) var period: DashboardPeriod = .week
+    /// Set while the screen shows a cached answer because the server was out of reach: when it was fetched.
+    @Published private(set) var offlineAsOf: Date?
+    /// Why the last in-place refresh failed; the screen keeps what it had.
+    @Published private(set) var refreshError: String?
 
-    /// How many entries the recent-activity feed surfaces (parity with the web dashboard).
-    static let recentEntriesLimit = 5
-    static let notConfiguredMessage = "Set the server address in Settings"
+    private let apiProvider: () -> DashboardSummaryAPI?
+    private let cache: ReadThroughCache
+    /// Bumped by every read; an answer that finds a newer number was asked about a period the person left.
+    private var generation = 0
 
-    private let apiProvider: () -> DashboardAPI?
-
-    /// Primary init: the provider is re-evaluated on every load, so Settings
-    /// changes (server address / API key) take effect without an app restart.
-    init(apiProvider: @escaping () -> DashboardAPI?) {
+    init(
+        apiProvider: @escaping () -> DashboardSummaryAPI?,
+        cacheStore: CacheStore,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.apiProvider = apiProvider
+        self.cache = ReadThroughCache(store: cacheStore, now: now)
     }
 
-    /// Convenience init with a fixed API (used by unit tests).
-    convenience init(api: DashboardAPI) {
-        self.init(apiProvider: { api })
+    convenience init(api: DashboardSummaryAPI, cacheStore: CacheStore, now: @escaping () -> Date = Date.init) {
+        self.init(apiProvider: { api }, cacheStore: cacheStore, now: now)
     }
 
-    /// Builds the production view model from stored Settings (UserDefaults + Keychain).
+    /// The provider is re-evaluated on every read, so a changed server address in Settings takes effect without a restart.
     static func live() -> DashboardViewModel {
-        DashboardViewModel(apiProvider: { APIClient.live() })
+        DashboardViewModel(apiProvider: { APIClient.live() }, cacheStore: ReadCacheLive.shared)
     }
 
-    /// Loads category/entry/journal counts and the recent-activity feed in one parallel pass.
+    static func cacheKey(for period: DashboardPeriod) -> String {
+        "dashboard.summary.\(period.rawValue)"
+    }
+
+    /// The server's day of the answer on screen.
+    var serverToday: String? { summary?.today }
+
+    // MARK: Reading
+
     func load() async {
-        state = .loading
+        await read(silent: false)
+    }
+
+    /// The screen came on again. With numbers already shown they are read in place:
+    /// a loader over what the person was reading would be a step back.
+    func appear() async {
+        if summary == nil {
+            await load()
+        } else {
+            await refresh()
+        }
+    }
+
+    /// Pull to refresh: the screen stays, so the gesture is not cancelled by its own redraw.
+    func refresh() async {
+        await read(silent: true)
+    }
+
+    /// Switches the window. The numbers of the other period are dropped at once: under «Месяц» they would be a lie.
+    func select(_ newPeriod: DashboardPeriod) async {
+        guard newPeriod != period else { return }
+        period = newPeriod
+        summary = nil
+        offlineAsOf = nil
+        await read(silent: false)
+    }
+
+    private func read(silent: Bool) async {
+        generation += 1
+        let mine = generation
+        let asked = period
+        refreshError = nil
+        if !silent { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(Self.notConfiguredMessage)
+            fail(DashboardFormat.notConfiguredMessage, silent: silent)
             return
         }
         do {
-            async let categoriesTask = api.fetchCategories()
-            async let entriesTask = api.fetchEntries(categoryId: nil)
-            async let journalTask = api.fetchJournalList()
-            let (categories, entries, journal) = try await (
-                categoriesTask, entriesTask, journalTask
-            )
-            stats = Self.aggregate(
-                categories: categories, entries: entries, journalTotal: journal.total
-            )
-            state = .loaded
+            let outcome = try await cache.load(key: Self.cacheKey(for: asked)) {
+                try await api.fetchDashboardSummary(period: asked)
+            }
+            guard mine == generation else { return }
+            show(outcome)
         } catch let error as APIClientError {
-            state = .failure(error.userMessage)
+            guard mine == generation else { return }
+            fail(DashboardFormat.message(for: error), silent: silent)
         } catch {
-            state = .failure("Unexpected error")
+            guard mine == generation else { return }
+            fail(DashboardFormat.loadFailedMessage, silent: silent)
         }
     }
 
-    /// Pure aggregation of the fetched data into dashboard `Stats`.
-    /// Recent entries are newest first (date desc, id desc on ties) and capped
-    /// at `recentEntriesLimit`.
-    static func aggregate(
-        categories: [CategoryDTO], entries: [EntryDTO], journalTotal: Int
-    ) -> Stats {
-        let recent = entries
-            .sorted {
-                if $0.entryDate != $1.entryDate {
-                    return $0.entryDate > $1.entryDate
-                }
-                return $0.id > $1.id
-            }
-            .prefix(recentEntriesLimit)
-        return Stats(
-            categoriesCount: categories.count,
-            entriesCount: entries.count,
-            journalCount: journalTotal,
-            recentEntries: Array(recent)
-        )
+    private func show(_ outcome: CacheOutcome<DashboardSummaryDTO>) {
+        switch outcome {
+        case .fresh(let value):
+            summary = value
+            offlineAsOf = nil
+        case .stale(let value, let updatedAt):
+            summary = value
+            offlineAsOf = updatedAt
+        }
+        state = .loaded
+    }
+
+    private func fail(_ message: String, silent: Bool) {
+        if silent {
+            refreshError = message
+        } else {
+            state = .failure(message)
+        }
     }
 }

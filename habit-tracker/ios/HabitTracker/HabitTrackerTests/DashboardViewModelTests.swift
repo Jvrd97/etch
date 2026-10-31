@@ -1,115 +1,258 @@
-// [review:need-review] PHASE-01/10-ios-dashboard
-// summary: unit tests for DashboardViewModel — counter aggregation, recent activity (newest first, capped), failure + not-configured states
+// [review:need-review] PHASE-03/304
+// summary: dashboard state tests — the first read for the week through the read cache (fresh, offline with its moment, nothing cached), the period switch (own cache key per period, a late answer of a period left behind dropped, answers in launch order), refresh in place that keeps the screen, not-configured and server errors in Russian, and the server's day coming from the answer
+import Combine
 import XCTest
 @testable import HabitTracker
 
-/// Scriptable stand-in for the API used by `DashboardViewModel`.
-final class MockDashboardAPI: DashboardAPI {
-    var categoriesResult: Result<[CategoryDTO], Error> = .success([])
-    var entriesResult: Result<[EntryDTO], Error> = .success([])
-    var journalResult: Result<JournalListResponseDTO, Error> = .success(
-        JournalListResponseDTO(total: 0, items: [])
-    )
-    private(set) var entriesCategoryFilters: [Int?] = []
+final class MockDashboardSummaryAPI: DashboardSummaryAPI {
+    var handler: (DashboardPeriod) async throws -> DashboardSummaryDTO = { _ in throw APIClientError.invalidResponse }
+    private(set) var asked: [DashboardPeriod] = []
 
-    func fetchCategories() async throws -> [CategoryDTO] {
-        try categoriesResult.get()
-    }
-
-    func fetchEntries(categoryId: Int?) async throws -> [EntryDTO] {
-        entriesCategoryFilters.append(categoryId)
-        return try entriesResult.get()
-    }
-
-    func fetchJournalList() async throws -> JournalListResponseDTO {
-        try journalResult.get()
+    func fetchDashboardSummary(period: DashboardPeriod) async throws -> DashboardSummaryDTO {
+        asked.append(period)
+        return try await handler(period)
     }
 }
 
 @MainActor
 final class DashboardViewModelTests: XCTestCase {
-    private func makeCategory(id: Int, name: String) -> CategoryDTO {
-        CategoryDTO(
-            id: id,
-            name: name,
-            icon: nil,
-            color: nil,
-            displayMode: "form",
-            isActive: true,
-            fields: []
-        )
+    private let moment = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeViewModel(_ api: MockDashboardSummaryAPI, store: CacheStore = InMemoryCacheStore()) -> DashboardViewModel {
+        DashboardViewModel(api: api, cacheStore: store, now: { [moment] in moment })
     }
 
-    private func makeEntry(id: Int, date: String) -> EntryDTO {
-        EntryDTO(id: id, categoryId: 1, entryDate: date, values: [])
+    private func answering(_ week: DashboardSummaryDTO, _ month: DashboardSummaryDTO) -> MockDashboardSummaryAPI {
+        let api = MockDashboardSummaryAPI()
+        api.handler = { $0 == .week ? week : month }
+        return api
     }
 
-    // MARK: - Counters (acceptance: parity with the web dashboard counters)
+    // MARK: First read
 
-    func testLoadAggregatesCounters() async {
-        let api = MockDashboardAPI()
-        api.categoriesResult = .success([
-            makeCategory(id: 1, name: "Отжимания"),
-            makeCategory(id: 2, name: "Сон"),
-        ])
-        api.entriesResult = .success([
-            makeEntry(id: 1, date: "2026-07-20"),
-            makeEntry(id: 2, date: "2026-07-19"),
-            makeEntry(id: 3, date: "2026-07-18"),
-        ])
-        api.journalResult = .success(JournalListResponseDTO(total: 7, items: []))
+    func testLoadAsksTheWeekFirstAndShowsIt() async throws {
+        let week = try DashboardFixtures.week()
+        let api = answering(week, try DashboardFixtures.month())
+        let viewModel = makeViewModel(api)
+        XCTAssertEqual(viewModel.state, .idle)
 
-        let viewModel = DashboardViewModel(api: api)
+        await viewModel.load()
+
+        XCTAssertEqual(api.asked, [.week])
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.period, .week)
+        XCTAssertEqual(viewModel.summary, week)
+        XCTAssertNil(viewModel.offlineAsOf)
+    }
+
+    func testTheDayComesFromTheAnswerAndNotFromTheClock() async throws {
+        let api = answering(try DashboardFixtures.week(), try DashboardFixtures.month())
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.summary?.today, "2026-10-31")
+        // The test clock stands in 2027: the screen still knows only the server's day.
+        XCTAssertEqual(viewModel.serverToday, "2026-10-31")
+    }
+
+    func testWithoutAServerAddressTheScreenSaysSo() async {
+        let viewModel = DashboardViewModel(apiProvider: { nil }, cacheStore: InMemoryCacheStore(), now: { Date() })
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .failure("Укажите адрес сервера в More → Settings"))
+    }
+
+    func testAServerErrorIsShownInWords() async {
+        let api = MockDashboardSummaryAPI()
+        api.handler = { _ in throw APIClientError.unexpectedStatus(500) }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .failure("Сервер не смог собрать сводку. Попробуйте ещё раз через минуту."))
+        XCTAssertNil(viewModel.summary)
+    }
+
+    func testAnUnexpectedErrorIsInRussianToo() async {
+        struct Odd: Error {}
+        let api = MockDashboardSummaryAPI()
+        api.handler = { _ in throw Odd() }
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.state, .failure("Не удалось загрузить сводку"))
+    }
+
+    // MARK: Offline
+
+    func testOfflineShowsTheLastAnswerWithItsMoment() async throws {
+        let store = InMemoryCacheStore()
+        let week = try DashboardFixtures.week()
+        await makeViewModel(answering(week, week), store: store).load()
+
+        let offline = MockDashboardSummaryAPI()
+        offline.handler = { _ in throw APIClientError.transport(code: -1009) }
+        let viewModel = makeViewModel(offline, store: store)
         await viewModel.load()
 
         XCTAssertEqual(viewModel.state, .loaded)
-        XCTAssertEqual(viewModel.stats.categoriesCount, 2)
-        XCTAssertEqual(viewModel.stats.entriesCount, 3)
-        XCTAssertEqual(viewModel.stats.journalCount, 7)
-        // The dashboard aggregates from the unfiltered entries list.
-        XCTAssertEqual(api.entriesCategoryFilters, [nil])
+        XCTAssertEqual(viewModel.summary, week)
+        XCTAssertEqual(viewModel.offlineAsOf, moment)
     }
 
-    // MARK: - Recent activity
-
-    func testRecentEntriesAreNewestFirstAndCapped() async {
-        let api = MockDashboardAPI()
-        api.entriesResult = .success([
-            makeEntry(id: 3, date: "2026-07-18"),
-            makeEntry(id: 6, date: "2026-07-21"),
-            makeEntry(id: 1, date: "2026-07-20"),
-            makeEntry(id: 2, date: "2026-07-20"),
-            makeEntry(id: 4, date: "2026-07-19"),
-            makeEntry(id: 5, date: "2026-07-17"),
-        ])
-
-        let viewModel = DashboardViewModel(api: api)
+    func testOfflineWithNothingCachedIsAnErrorInWords() async {
+        let api = MockDashboardSummaryAPI()
+        api.handler = { _ in throw APIClientError.timeout }
+        let viewModel = makeViewModel(api)
         await viewModel.load()
-
-        // Newest first (date desc, id desc on ties), capped at the recent limit (5).
-        XCTAssertEqual(viewModel.stats.recentEntries.map(\.id), [6, 2, 1, 4, 3])
-        XCTAssertEqual(viewModel.stats.recentEntries.count, DashboardViewModel.recentEntriesLimit)
+        XCTAssertEqual(viewModel.state, .failure("Сервер не ответил вовремя"))
     }
 
-    // MARK: - Failure / configuration
+    func testBackOnlineClearsTheOfflineMark() async throws {
+        let store = InMemoryCacheStore()
+        let week = try DashboardFixtures.week()
+        await makeViewModel(answering(week, week), store: store).load()
+        let flaky = MockDashboardSummaryAPI()
+        flaky.handler = { _ in throw APIClientError.transport(code: -1009) }
+        let viewModel = makeViewModel(flaky, store: store)
+        await viewModel.load()
+        XCTAssertNotNil(viewModel.offlineAsOf)
 
-    func testLoadFailureSetsFailureMessage() async {
-        let api = MockDashboardAPI()
-        api.categoriesResult = .failure(APIClientError.timeout)
+        flaky.handler = { _ in week }
+        await viewModel.refresh()
 
-        let viewModel = DashboardViewModel(api: api)
+        XCTAssertNil(viewModel.offlineAsOf)
+    }
+
+    // MARK: Period switch
+
+    func testSwitchingThePeriodAsksTheOtherWindowAndShowsIt() async throws {
+        let month = try DashboardFixtures.month()
+        let api = answering(try DashboardFixtures.week(), month)
+        let viewModel = makeViewModel(api)
         await viewModel.load()
 
-        guard case .failure(let message) = viewModel.state else {
-            return XCTFail("Expected failure state, got \(viewModel.state)")
+        await viewModel.select(.month)
+
+        XCTAssertEqual(api.asked, [.week, .month])
+        XCTAssertEqual(viewModel.period, .month)
+        XCTAssertEqual(viewModel.summary, month)
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testChoosingThePeriodAlreadyShownAsksNothing() async throws {
+        let api = answering(try DashboardFixtures.week(), try DashboardFixtures.month())
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        await viewModel.select(.week)
+        XCTAssertEqual(api.asked, [.week])
+    }
+
+    func testEachPeriodHasItsOwnCacheEntry() async throws {
+        let store = InMemoryCacheStore()
+        let week = try DashboardFixtures.week()
+        let month = try DashboardFixtures.month()
+        let viewModel = makeViewModel(answering(week, month), store: store)
+        await viewModel.load()
+        await viewModel.select(.month)
+
+        XCTAssertEqual(store.load(DashboardSummaryDTO.self, forKey: DashboardViewModel.cacheKey(for: .week))?.value, week)
+        XCTAssertEqual(store.load(DashboardSummaryDTO.self, forKey: DashboardViewModel.cacheKey(for: .month))?.value, month)
+    }
+
+    func testTheMonthOfflineDoesNotShowTheWeeksCachedAnswer() async throws {
+        let store = InMemoryCacheStore()
+        let week = try DashboardFixtures.week()
+        await makeViewModel(answering(week, week), store: store).load()
+
+        let offline = MockDashboardSummaryAPI()
+        offline.handler = { _ in throw APIClientError.transport(code: -1009) }
+        let viewModel = makeViewModel(offline, store: store)
+        await viewModel.load()
+        await viewModel.select(.month)
+
+        XCTAssertEqual(viewModel.period, .month)
+        XCTAssertNil(viewModel.summary)
+        XCTAssertEqual(viewModel.state, .failure("Нет связи с сервером. Сохранённой сводки пока нет: подключитесь и повторите."))
+    }
+
+    func testALateAnswerOfAPeriodLeftBehindIsDropped() async throws {
+        let week = try DashboardFixtures.week()
+        let month = try DashboardFixtures.month()
+        let api = MockDashboardSummaryAPI()
+        var release: CheckedContinuation<Void, Never>?
+        api.handler = { period in
+            if period == .month {
+                await withCheckedContinuation { release = $0 }
+                return month
+            }
+            return week
         }
-        XCTAssertFalse(message.isEmpty)
-    }
-
-    func testLoadWithoutConfiguredAPIFails() async {
-        let viewModel = DashboardViewModel(apiProvider: { nil })
+        let viewModel = makeViewModel(api)
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.state, .failure(DashboardViewModel.notConfiguredMessage))
+        let slow = Task { await viewModel.select(.month) }
+        while release == nil { await Task.yield() }
+        await viewModel.select(.week)
+        release?.resume()
+        await slow.value
+
+        XCTAssertEqual(viewModel.period, .week)
+        XCTAssertEqual(viewModel.summary, week)
+        XCTAssertEqual(viewModel.state, .loaded)
+    }
+
+    func testAFailedSwitchLeavesThePeriodChosenAndTheErrorInPlaceOfOldNumbers() async throws {
+        let api = answering(try DashboardFixtures.week(), try DashboardFixtures.month())
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        api.handler = { _ in throw APIClientError.unexpectedStatus(500) }
+
+        await viewModel.select(.month)
+
+        XCTAssertEqual(viewModel.period, .month)
+        XCTAssertNil(viewModel.summary)
+        XCTAssertEqual(viewModel.state, .failure("Сервер не смог собрать сводку. Попробуйте ещё раз через минуту."))
+    }
+
+    // MARK: Refresh in place
+
+    func testRefreshKeepsTheScreenAndTakesTheNewAnswer() async throws {
+        let first = try DashboardFixtures.week()
+        let api = answering(first, first)
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        let second = try DashboardFixtures.decode(DashboardFixtures.weekJSON.replacingOccurrences(of: "\"value\": 78", with: "\"value\": 80"))
+        api.handler = { _ in second }
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.summary?.scores.health.value, 80)
+    }
+
+    func testAFailedRefreshKeepsTheNumbersAndSaysWhy() async throws {
+        let first = try DashboardFixtures.week()
+        let api = answering(first, first)
+        let viewModel = makeViewModel(api)
+        await viewModel.load()
+        api.handler = { _ in throw APIClientError.unexpectedStatus(500) }
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.summary, first)
+        XCTAssertEqual(viewModel.refreshError, "Сервер не смог собрать сводку. Попробуйте ещё раз через минуту.")
+    }
+
+    func testComingBackReadsInPlaceInsteadOfShowingTheLoader() async throws {
+        let first = try DashboardFixtures.week()
+        let api = answering(first, first)
+        let viewModel = makeViewModel(api)
+        await viewModel.appear()
+        XCTAssertEqual(viewModel.state, .loaded)
+
+        var states: [DashboardViewModel.LoadState] = []
+        let watch = viewModel.$state.sink { states.append($0) }
+        await viewModel.appear()
+        watch.cancel()
+
+        XCTAssertFalse(states.contains(.loading))
+        XCTAssertEqual(api.asked.count, 2)
     }
 }
