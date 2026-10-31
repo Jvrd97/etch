@@ -1,104 +1,54 @@
-// [review:need-review] PHASE-01/174, #176, #76, #78
-// summary: Dashboard renders current streaks, accepts recent activity state and shows the Trends block in both shells - fixed thirty days on desktop, a period selector on mobile
-import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import type { TrendState } from '@/hooks/useDashboard';
-import type { TrendPeriod } from '@/lib/trends';
+// [review:need-review] #302
+// summary: the two Dashboard pages read /dashboard/summary through the real api client and draw the summary - a stubbed fetch, no module mock, so the request path and period query are the ones the browser sends
 
-const TREND_ROW = {
-  categoryId: 4,
-  categoryName: 'Pushups',
-  icon: null,
-  unit: 'reps',
-  color: '#ff6b6b',
-  average: 38.6,
-  deltaPercent: 18,
-  sparkline: [{ date: '2026-09-30', value: 38.6 }],
-};
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fullSummary } from '@/test-fixtures/dashboard-summary';
+import type { DashboardPeriod } from '@/lib/api';
 
-let trendState: TrendState = { status: 'ready', trends: [TREND_ROW] };
-let trendPeriod: TrendPeriod = 30;
-const setTrendPeriod = mock<(period: TrendPeriod) => void>(() => {});
+const realFetch = globalThis.fetch;
+let requested: string[] = [];
 
-mock.module('@/hooks/useDashboard', () => ({
-  INSIGHT_PERIOD_OPTIONS: [7, 30],
-  useDashboard: () => ({
-    stats: { categoriesCount: 0, entriesCount: 0, journalCount: 0 },
-    hero: {
-      ringProgress: 0,
-      entriesToday: 0,
-      lastEntry: null,
-      tip: { text: 'Start here', kind: 'empty' },
-    },
-    avoidStreaks: [],
-    categories: [],
-    continueEntries: [],
-    recentActivity: [],
-    trendState,
-    trendPeriod,
-    loading: false,
-    error: null,
-    insight: { status: 'idle' },
-    insightPeriod: 7,
-    setError: () => {},
-    setInsightPeriod: () => {},
-    setTrendPeriod,
-    generateInsight: async () => {},
-  }),
-}));
+beforeEach(() => {
+  requested = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    requested.push(url);
+    const period: DashboardPeriod = url.endsWith('period=month') ? 'month' : 'week';
+    return new Response(JSON.stringify(fullSummary(period)), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+});
+
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
 
 const { default: Dashboard } = await import('./page');
 const { default: MobileDashboard } = await import('../m/dashboard/page');
 
-afterEach(() => {
-  cleanup();
-  trendState = { status: 'ready', trends: [TREND_ROW] };
-  trendPeriod = 30;
-  setTrendPeriod.mockClear();
-});
-
-describe('Dashboard', () => {
-  it('keeps Current streaks inside the hero card', () => {
+describe('Dashboard pages', () => {
+  it('desktop asks for the week and then the month', async () => {
     render(<Dashboard />);
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Серии' })).toBeTruthy());
+    expect(requested).toEqual(['/api/v1/dashboard/summary?period=week']);
 
-    const hero = screen.getByTestId('dashboard-hero');
-    expect(within(hero).getByRole('heading', { name: 'Current streaks' })).toBeTruthy();
-  });
-
-  it('keeps Current streaks inside the mobile hero card', () => {
-    render(<MobileDashboard />);
-
-    const hero = screen.getByTestId('mobile-dashboard-hero');
-    expect(within(hero).getByRole('heading', { name: 'Current streaks' })).toBeTruthy();
-  });
-
-  it('shows the Trends block on desktop with its fixed thirty days and no selector', () => {
-    render(<Dashboard />);
-
-    const trends = screen.getByRole('region', { name: 'Trends' });
-    expect(within(trends).getByRole('link', { name: /Pushups/ }).getAttribute('href')).toBe(
-      '/categories/4'
+    fireEvent.click(screen.getByRole('button', { name: 'Месяц' }));
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Лучшее за месяц' })).toBeTruthy()
     );
-    expect(within(trends).queryByRole('group', { name: 'Trends period' })).toBeNull();
+    expect(requested).toEqual([
+      '/api/v1/dashboard/summary?period=week',
+      '/api/v1/dashboard/summary?period=month',
+    ]);
   });
 
-  it('shows the Trends block on mobile and passes the chosen period to the hook', () => {
-    trendPeriod = 7;
+  it('mobile draws the same summary', async () => {
     render(<MobileDashboard />);
-
-    const trends = screen.getByRole('region', { name: 'Trends' });
-    expect(within(trends).getByRole('link', { name: /Pushups/ }).getAttribute('href')).toBe(
-      '/m/categories/4?period=7'
-    );
-    fireEvent.click(within(trends).getByRole('button', { name: '90 days' }));
-    expect(setTrendPeriod).toHaveBeenCalledWith(90);
-  });
-
-  it('keeps the dashboard readable when only the trends failed', () => {
-    trendState = { status: 'error', message: 'table is down' };
-    render(<Dashboard />);
-
-    expect(screen.getByRole('alert').textContent).toBe('table is down');
-    expect(screen.getByTestId('dashboard-hero')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Инсайт недели' })).toBeTruthy());
+    expect(requested).toEqual(['/api/v1/dashboard/summary?period=week']);
   });
 });

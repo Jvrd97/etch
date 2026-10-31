@@ -4514,3 +4514,100 @@ export const taskTimeAPI = {
     return fetcher<TaskTimeDay>(`/day/${date}/task-time`);
   },
 };
+
+// ============ Dashboard summary (#302) ============
+// [review:need-review] #302
+// summary: DashboardSummary and dashboardAPI.summary read GET /dashboard/summary?period=week|month (contract of #296) — three score rings, streaks with day dots, health against the personal norm, bests, workouts per week and the insight of the week; a block without data arrives as null or an empty list, never as zero
+
+export type DashboardPeriod = 'week' | 'month';
+
+/** Health score: 0..100, or null while fewer than three days stand behind it (`basis_days` says how many do). */
+export interface DashboardHealthScore {
+  value: number | null;
+  label: string | null;
+  basis_days: number;
+}
+
+export interface DashboardHabitsScore {
+  value: number | null;
+  done: number;
+  total: number;
+}
+
+export interface DashboardChallengesScore {
+  done: number;
+  total: number;
+}
+
+export interface DashboardScores {
+  health: DashboardHealthScore | null;
+  habits: DashboardHabitsScore | null;
+  challenges: DashboardChallengesScore | null;
+}
+
+/** `true` done or clean, `false` missed or relapsed, `null` no data. */
+export type DashboardDayMark = boolean | null;
+
+export interface DashboardStreak {
+  category_id: number;
+  name: string;
+  kind: 'build' | 'avoid';
+  current: number;
+  best: number;
+  days: DashboardDayMark[];
+}
+
+export interface DashboardHealthMetric {
+  identifier: string;
+  label: string;
+  value: number | null;
+  unit: string;
+  /** Distance from the personal norm in the metric's own unit; null while there is no norm. */
+  baseline_delta: number | null;
+}
+
+export interface DashboardBest {
+  identifier: string;
+  label: string;
+  value: number;
+  unit: string;
+  date: string;
+  is_record: boolean;
+}
+
+export interface DashboardWorkoutWeek {
+  week_start: string;
+  count: number;
+  minutes: number;
+}
+
+export interface DashboardWorkouts {
+  weeks: DashboardWorkoutWeek[];
+  total: number;
+  delta_vs_previous: number | null;
+}
+
+export interface DashboardInsight {
+  text: string;
+  generated_at: string;
+}
+
+export interface DashboardSummary {
+  period: DashboardPeriod;
+  from: string;
+  to: string;
+  /** The server's day, the one every window is counted from. */
+  today: string;
+  scores: DashboardScores;
+  streaks: DashboardStreak[];
+  health: DashboardHealthMetric[];
+  bests: DashboardBest[];
+  workouts: DashboardWorkouts | null;
+  insight: DashboardInsight | null;
+}
+
+export const dashboardAPI = {
+  summary: async (period: DashboardPeriod) => {
+    return fetcher<DashboardSummary>(`/dashboard/summary?period=${period}`);
+  },
+};
