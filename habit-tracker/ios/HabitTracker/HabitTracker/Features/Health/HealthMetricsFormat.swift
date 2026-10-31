@@ -183,7 +183,7 @@ enum HealthMetricsFormat {
     }
 
     static let sleepEmptyText = "Ночей за неделю нет: сон приходит с телефона вместе с остальными метриками."
-    static let workoutsEmptyText = "Тренировок за неделю нет: они приходят с телефона вместе с остальными метриками."
+    static let workoutsEmptyText = "Тренировок за 30 дней нет: они приходят с телефона вместе с остальными метриками."
 
     /// `7200` → `7,2 км`, `850` → `850 м`.
     static func workoutDistance(_ meters: Double) -> String {
@@ -191,16 +191,6 @@ enum HealthMetricsFormat {
         let kilometers = (meters / 1000 * 10).rounded() / 10
         let text = kilometers == kilometers.rounded() ? String(Int(kilometers)) : String(kilometers).replacingOccurrences(of: ".", with: ",")
         return "\(text) км"
-    }
-
-    /// The numbers HealthKit held for the workout, in reading order; a missing one is left out.
-    static func workoutDetails(_ workout: HealthWorkoutRecordDTO) -> [String] {
-        var details: [String] = []
-        if let meters = workout.distanceM { details.append(workoutDistance(meters)) }
-        if let kcal = workout.energyKcal { details.append("\(Int(kcal.rounded())) ккал") }
-        if let pulse = workout.avgHeartRate { details.append("пульс \(Int(pulse.rounded())) уд/мин") }
-        if let peak = workout.maxHeartRate { details.append("макс. \(Int(peak.rounded()))") }
-        return details
     }
 
     // MARK: States in words
@@ -220,13 +210,18 @@ enum HealthMetricsFormat {
         }
     }
 
-    /// «Нет связи · обновлено 27 окт., 09:41» — absolute, so it stays honest while the screen sits open.
-    static func offlineCaption(_ date: Date, timeZone: TimeZone = .current) -> String {
+    /// «27 окт., 09:41» — an absolute moment, so a caption stays honest while the screen sits open.
+    static func asOfText(_ date: Date, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ru_RU")
         formatter.timeZone = timeZone
         formatter.setLocalizedDateFormatFromTemplate("dMMMHHmm")
-        return "Нет связи · обновлено \(formatter.string(from: date))"
+        return formatter.string(from: date)
+    }
+
+    /// «Нет связи · обновлено 27 окт., 09:41».
+    static func offlineCaption(_ date: Date, timeZone: TimeZone = .current) -> String {
+        "Нет связи · обновлено \(asOfText(date, timeZone: timeZone))"
     }
 
     // MARK: Sync block

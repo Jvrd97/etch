@@ -34,7 +34,7 @@ final class HealthMetricsViewModelTests: XCTestCase {
         XCTAssertEqual(model.today, "2026-10-29")
         XCTAssertTrue(api.calls.contains("metrics 2026-09-30...2026-10-29"))
         XCTAssertTrue(api.calls.contains("sleep 2026-10-23...2026-10-29"))
-        XCTAssertTrue(api.calls.contains("workouts 2026-10-23...2026-10-29"))
+        XCTAssertTrue(api.calls.contains("workouts 2026-09-30...2026-10-29"))
         XCTAssertTrue(api.calls.contains("status"))
         XCTAssertFalse(model.isCatalogEmpty)
         XCTAssertNotNil(model.syncStatus)
