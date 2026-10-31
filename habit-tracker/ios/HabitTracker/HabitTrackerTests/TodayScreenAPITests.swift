@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/210
+// [review:need-review] PHASE-01/210, PHASE-03/294
+// summary: PHASE-03/294 — a relapse recorded on a day carries it in the body; a field decodes its quick steps
 // summary: wire-format tests for the #210 Today endpoints — quick-mark directory/tap/undo/day events, bulk avoid streaks, one-tap relapse with Idempotency-Key, relapse history
 import XCTest
 @testable import HabitTracker
@@ -189,6 +190,45 @@ final class TodayScreenAPITests: XCTestCase {
         XCTAssertEqual(recorded.entry.id, 77)
         XCTAssertEqual(recorded.entry.values, [EntryValueDTO(fieldId: 10, value: "true")])
         XCTAssertTrue(recorded.created)
+    }
+
+    func testRecordRelapseOnADaySendsItInTheBodyUnderTheSameKey() async throws {
+        var captured: URLRequest?
+        MockURLProtocol.requestHandler = { request in
+            captured = request
+            return Self.response(request, status: 201, body: """
+            {"id": 78, "category_id": 1, "entry_date": "2026-10-22", "notes": null,
+             "created_at": "2026-10-25T09:00:00", "updated_at": "2026-10-25T09:00:00",
+             "values": [], "created": true}
+            """)
+        }
+
+        let recorded = try await client.recordRelapse(
+            categoryId: 1, entryDate: "2026-10-22", idempotencyKey: "relapse-key-2"
+        )
+
+        XCTAssertEqual(captured?.httpMethod, "POST")
+        XCTAssertEqual(captured?.url?.path, "/api/v1/categories/1/relapses")
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "Idempotency-Key"), "relapse-key-2")
+        let data = try XCTUnwrap(Self.bodyData(of: try XCTUnwrap(captured)))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        XCTAssertEqual(body, ["entry_date": "2026-10-22"])
+        XCTAssertEqual(recorded.entry.entryDate, "2026-10-22")
+    }
+
+    func testAFieldDecodesItsQuickStepsAndAnOldAnswerWithoutThemStillDecodes() throws {
+        let decoder = APIJSONCoding.makeDecoder()
+        let withSteps = Data("""
+        {"id": 1, "name": "Count", "field_type": "number", "is_required": true, "default_value": null,
+         "options": null, "order": 0, "quick_steps": [-5, 10, 0.5]}
+        """.utf8)
+        let without = Data("""
+        {"id": 1, "name": "Count", "field_type": "number", "is_required": true, "default_value": null,
+         "options": null, "order": 0}
+        """.utf8)
+
+        XCTAssertEqual(try decoder.decode(FieldDTO.self, from: withSteps).quickSteps, [-5, 10, 0.5])
+        XCTAssertNil(try decoder.decode(FieldDTO.self, from: without).quickSteps)
     }
 
     func testFetchRelapseHistoryDecodesTheDaysAndTheServersToday() async throws {

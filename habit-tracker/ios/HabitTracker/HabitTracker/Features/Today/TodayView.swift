@@ -1,4 +1,6 @@
-// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263
+// [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263, PHASE-03/294
+// summary: PHASE-03/294 round 3 — the plus is never disabled (a switched-off button hands its touch to the card and the second tap of a quick double press opened the form), a ticked box shows «сделано» and a second tap writes nothing, the row body is one VoiceOver button
+// summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, ticks the box, or opens the one-field sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
 // summary: PHASE-03/263 — the empty screen shows the refresh failure line
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
 import SwiftUI
@@ -21,6 +23,8 @@ struct TodayView: View {
     @State private var selectedCategory: CategoryDTO?
     @State private var daySheet: DaySheetTarget?
     @State private var detailsCategory: CategoryDTO?
+    @State private var fieldCategory: CategoryDTO?
+    @State private var whenCategory: CategoryDTO?
 
     init(viewModel: TodayViewModel, quickMarks: QuickMarksViewModel? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -52,6 +56,12 @@ struct TodayView: View {
         }
         .sheet(item: $detailsCategory) { category in
             RelapseDetailsSheet(category: category, viewModel: viewModel)
+        }
+        .sheet(item: $fieldCategory) { category in
+            QuickFieldSheet(category: category, viewModel: viewModel)
+        }
+        .sheet(item: $whenCategory) { category in
+            RelapseWhenSheet(category: category, viewModel: viewModel)
         }
     }
 
@@ -229,6 +239,14 @@ struct TodayView: View {
                     .disabled(isBusy(relapse))
                     .accessibilityIdentifier("avoid.happened.\(category.id)")
                     Button {
+                        whenCategory = category
+                    } label: {
+                        pill("Когда?", color: DS.Palette.lime)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isBusy(relapse))
+                    .accessibilityIdentifier("avoid.when.\(category.id)")
+                    Button {
                         openDaySheet(for: category)
                     } label: {
                         pill("Записи", color: DS.Palette.textSecondary)
@@ -268,7 +286,7 @@ struct TodayView: View {
             EmptyView()
         case .recorded(let recorded), .undoing(let recorded), .savingDetails(let recorded):
             HStack(spacing: DS.Spacing.sm) {
-                Text(recorded.created ? "Срыв записан" : "Срыв уже записан")
+                Text(relapseLine(recorded))
                     .font(DS.Typography.caption)
                     .foregroundStyle(DS.Palette.textPrimary)
                 Spacer()
@@ -287,6 +305,12 @@ struct TodayView: View {
         }
     }
 
+    private func relapseLine(_ recorded: RelapseRecordedDTO) -> String {
+        let base = recorded.created ? "Срыв записан" : "Срыв уже записан"
+        guard recorded.entry.entryDate != viewModel.todayString else { return base }
+        return "\(base): \(RelapseAnalysis.formatDay(recorded.entry.entryDate))"
+    }
+
     /// Streak length with the correct English day form, e.g. "1 day" / "42 days".
     /// Mirrors the web `formatDays` so both clients read identically.
     static func formatDays(_ days: Int) -> String {
@@ -295,11 +319,15 @@ struct TodayView: View {
 
     // MARK: Habit card
 
+    /// The size of the plus: a thumb hits it without opening the row.
+    private static let quickAddIconSize: CGFloat = 32
+    private static let quickAddHitSize: CGFloat = 48
+
+    /// The whole card, its padding included, opens the form; the plus inside it is a button of its own
+    /// and takes its taps first.
     private func habitCard(_ category: CategoryDTO) -> some View {
-        Button {
-            selectedCategory = category
-        } label: {
-            Card {
+        Card {
+            HStack(spacing: DS.Spacing.sm) {
                 HStack(spacing: DS.Spacing.md) {
                     if let icon = category.icon, !icon.isEmpty {
                         Text(icon)
@@ -312,16 +340,65 @@ struct TodayView: View {
                     if hasPendingEntry(category) {
                         PendingRowTag()
                     }
-                    Text(todaySummary(for: category))
-                        .font(DS.Typography.card)
-                        .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundStyle(DS.Palette.lime)
-                        .font(DS.Typography.section)
+                    // A ticked box says «сделано» beside the plus; its raw «true» would only crowd the name.
+                    if !viewModel.isTicked(categoryID: category.id) {
+                        Text(todaySummary(for: category))
+                            .font(DS.Typography.card)
+                            .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
+                    }
                 }
+                .frame(minHeight: Self.quickAddHitSize)
+                // One element for VoiceOver that opens the form; the plus beside it is another one.
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { selectedCategory = category }
+                .accessibilityIdentifier("today.card.\(category.id)")
+                quickAddButton(category)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { selectedCategory = category }
+    }
+
+    /// What the plus does is `TodayQuickAdd`'s call: add the step, ask for the amount, or open the form.
+    private func quickAddButton(_ category: CategoryDTO) -> some View {
+        let plan = TodayQuickAdd.plan(for: category)
+        let isAdding = viewModel.quickAddingCategoryIDs.contains(category.id)
+        let isTicked = viewModel.isTicked(categoryID: category.id)
+        return Button {
+            switch plan {
+            case .step, .check:
+                Task { await viewModel.quickAdd(categoryID: category.id) }
+            case .amountSheet, .textSheet:
+                fieldCategory = category
+            case .fullForm:
+                selectedCategory = category
+            }
+        } label: {
+            HStack(spacing: DS.Spacing.xs) {
+                if case .step(_, let amount) = plan {
+                    Text("+\(TodayQuickAdd.formatAmount(amount))")
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.lime)
+                }
+                if isTicked {
+                    Text("сделано")
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Palette.lime)
+                }
+                Image(systemName: isTicked ? "checkmark.circle.fill" : "plus.circle.fill")
+                    .font(.system(size: Self.quickAddIconSize))
+                    .foregroundStyle(DS.Palette.lime)
+                    .frame(width: Self.quickAddHitSize, height: Self.quickAddHitSize)
+            }
+            .contentShape(Rectangle())
+        }
         .buttonStyle(.plain)
+        // Never `.disabled`: a switched-off button hands its touch to the card behind it, and the second
+        // tap of a quick double press would open the form. The model drops that tap instead.
+        .opacity(isAdding ? 0.5 : 1)
+        .accessibilityLabel(isTicked ? "Сделано: \(category.name)" : "Добавить: \(category.name)")
+        .accessibilityIdentifier("today.quickadd.\(category.id)")
     }
 
     private func hasEntries(_ category: CategoryDTO) -> Bool {
@@ -344,6 +421,13 @@ struct TodayView: View {
         if entries.count == 1, entries[0].values.count == 1,
            let value = entries[0].values[0].value {
             return value
+        }
+        // Water in three taps reads as one total, not as «3 entries».
+        if category.fields.count == 1, category.fields[0].fieldType == .number {
+            let amounts = entries.compactMap { $0.values.first?.value.flatMap { Double($0) } }
+            if amounts.count == entries.count {
+                return TodayQuickAdd.formatAmount(amounts.reduce(0, +))
+            }
         }
         return "\(entries.count) entries"
     }

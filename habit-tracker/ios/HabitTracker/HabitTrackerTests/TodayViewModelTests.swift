@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263
+// [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263, PHASE-03/294
+// summary: PHASE-03/294 — the double answers the table read and takes the day of a relapse; tests of the plus button (a step goes once, a tap while the first is in flight is dropped, offline it is queued under one key), of a relapse recorded on a chosen day and moved to another, and of the order of the cards by use
 // summary: PHASE-03/263 — two parallel loads (L2 answered, L1 failed late), empty screen refresh failure, real failing save for another action's error
 // summary: PHASE-03/256 — a re-read of the records leaves the cache stamp at the age of the categories; a second load keeps the loaded screen (no loader, a failure is a line of text)
 // summary: PHASE-03/248 round 2 — a refresh that works takes back the failure line of an earlier refresh and leaves the error of another action
@@ -39,6 +40,11 @@ final class MockTodayAPI: TodayScreenAPI {
     private(set) var createKeys: [String?] = []
     private(set) var upsertedChecklists: [ChecklistUpsertDTO] = []
     private(set) var fetchedStreakIDs: [Int] = []
+    /// The table read that orders the cards; failing by default, so a test that says nothing about the
+    /// order gets the server's.
+    var tableResult: Result<TableResponseDTO, Error> = .failure(APIClientError.invalidResponse)
+    private(set) var tableRanges: [(from: String, to: String)] = []
+    private(set) var relapseDates: [String?] = []
 
     /// Runs once inside the next categories read, before its answer: the load's own parent waits on the
     /// categories first, so holding them here never cancels the entries read beside it.
@@ -109,8 +115,24 @@ final class MockTodayAPI: TodayScreenAPI {
         return try avoidStreaksResult.get()
     }
 
-    func recordRelapse(categoryId: Int, idempotencyKey: String) async throws -> RelapseRecordedDTO {
+    /// Runs once inside the next table read, before its answer: a slow table.
+    var duringFetchTable: (@MainActor () async -> Void)?
+
+    func fetchTable(dateFrom: String, dateTo: String) async throws -> TableResponseDTO {
+        tableRanges.append((from: dateFrom, to: dateTo))
+        let answer = tableResult
+        if let hook = duringFetchTable {
+            duringFetchTable = nil
+            await hook()
+        }
+        return try answer.get()
+    }
+
+    func recordRelapse(
+        categoryId: Int, entryDate: String?, idempotencyKey: String
+    ) async throws -> RelapseRecordedDTO {
         relapseCalls.append((categoryId: categoryId, key: idempotencyKey))
+        relapseDates.append(entryDate)
         guard !relapseResults.isEmpty else { throw APIClientError.invalidResponse }
         return try relapseResults.removeFirst().get()
     }
@@ -1075,5 +1097,436 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": false], ["20": true]], "the old one never follows the new")
         XCTAssertEqual(outbox.pendingCount, 0)
+    }
+
+    // MARK: Plus button (#294)
+
+    private var waterWithStep: CategoryDTO {
+        makeCategory(
+            id: 1, name: "Pushups",
+            fields: [
+                FieldDTO(
+                    id: 10, name: "Count", fieldType: .number, isRequired: true, defaultValue: nil,
+                    options: nil, order: 0, quickSteps: [-5, 10]
+                )
+            ]
+        )
+    }
+
+    private func savedEntry(id: Int = 101, value: String = "10") -> EntryDTO {
+        EntryDTO(id: id, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: value)])
+    }
+
+    func testPlusAddsTheStepOnceAsOneEntryUnderAKey() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([waterWithStep])
+        api.createEntryResult = .success(savedEntry())
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.createdEntries.count, 1)
+        XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "10")])
+        XCTAssertEqual(api.createdEntries.first?.entryDate, Self.fixedToday)
+        XCTAssertNotNil(api.createKeys.first ?? nil, "a lost answer must not become a second step")
+        XCTAssertEqual(viewModel.entries(forCategory: 1), [savedEntry()])
+        XCTAssertTrue(viewModel.quickAddingCategoryIDs.isEmpty)
+    }
+
+    func testAPlusTapWhileTheFirstIsBeingSavedIsDropped() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([waterWithStep])
+        api.createEntryResult = .success(savedEntry())
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        var secondTapSaved: Bool?
+        api.duringCreateEntry = { secondTapSaved = await viewModel.quickAdd(categoryID: 1) }
+
+        await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertEqual(secondTapSaved, false)
+        XCTAssertEqual(api.createdEntries.count, 1, "one press is one entry")
+    }
+
+    func testAPlusTapAfterTheFirstIsDoneAddsAnotherStepUnderAnotherKey() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([waterWithStep])
+        api.createEntryResult = .success(savedEntry())
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 1)
+        api.createEntryResult = .success(savedEntry(id: 102))
+        await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertEqual(api.createdEntries.count, 2)
+        XCTAssertNotEqual(api.createKeys[0], api.createKeys[1])
+    }
+
+    func testAnOfflinePlusIsQueuedOnceUnderTheKeyOfItsAttempt() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([waterWithStep])
+        api.createEntryResult = .failure(APIClientError.transport(code: -1009))
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved, "airplane mode does not lose the step")
+        XCTAssertEqual(outbox.pendingCount, 1)
+        XCTAssertEqual(outbox.pending.first?.key, api.createKeys.first ?? nil, "the replay is the same request")
+        XCTAssertEqual(viewModel.entries(forCategory: 1).map(\.isPending), [true])
+        XCTAssertEqual(viewModel.entries(forCategory: 1).first?.values.first?.value, "10")
+    }
+
+    func testPlusDoesNothingForACategoryWithoutAStep() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([pushups])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertFalse(saved)
+        XCTAssertTrue(api.createdEntries.isEmpty, "the sheet asks for the amount, the tap alone writes nothing")
+    }
+
+    // MARK: Relapse on a day (#294)
+
+    private func loadedAvoid(_ api: MockTodayAPI) async -> TodayViewModel {
+        api.categoriesResult = .success([avoidCategory(fields: [makeBooleanField(id: 10, name: "Did it")])])
+        api.avoidStreaksResult = .success([makeStreak(categoryID: 1, current: 7, best: 12, lastRelapse: "2026-07-16")])
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        return viewModel
+    }
+
+    private func pastRelapse(on day: String, entryID: Int = 301) -> RelapseRecordedDTO {
+        RelapseRecordedDTO(
+            entry: EntryDTO(id: entryID, categoryId: 1, entryDate: day, values: []), created: true
+        )
+    }
+
+    func testARelapseOnAChosenDayReachesTheServerAndTheStreakIsReadAgain() async {
+        let api = MockTodayAPI()
+        let viewModel = await loadedAvoid(api)
+        api.relapseResults = [.success(pastRelapse(on: "2026-07-20"))]
+        api.streakResults[1] = .success(makeStreak(categoryID: 1, current: 3, best: 12, lastRelapse: "2026-07-20"))
+
+        let recorded = await viewModel.recordRelapse(categoryID: 1, on: "2026-07-20")
+
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(api.relapseDates, ["2026-07-20"])
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.lastRelapseDate, "2026-07-20")
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 3)
+        XCTAssertTrue(viewModel.entries(forCategory: 1).isEmpty, "a relapse of Thursday is not a record of today")
+        guard case .recorded(let state) = viewModel.relapseState(forCategory: 1) else {
+            return XCTFail("expected the recorded state")
+        }
+        XCTAssertEqual(state.entry.entryDate, "2026-07-20")
+    }
+
+    func testTodayChosenOnTheCalendarIsSentAsNoDay() async {
+        let api = MockTodayAPI()
+        let viewModel = await loadedAvoid(api)
+        api.relapseResults = [.success(recorded())]
+
+        await viewModel.recordRelapse(categoryID: 1, on: Self.fixedToday)
+
+        XCTAssertEqual(api.relapseDates, [nil], "the server decides what today is")
+    }
+
+    func testARetryOfTheSameDayKeepsTheKeyAndAnotherDayTakesANewOne() async {
+        let api = MockTodayAPI()
+        let viewModel = await loadedAvoid(api)
+        api.relapseResults = Array(repeating: .failure(APIClientError.timeout), count: 3)
+
+        await viewModel.recordRelapse(categoryID: 1, on: "2026-07-20")
+        await viewModel.recordRelapse(categoryID: 1, on: "2026-07-20")
+        await viewModel.recordRelapse(categoryID: 1, on: "2026-07-19")
+
+        XCTAssertEqual(api.relapseCalls[0].key, api.relapseCalls[1].key, "a retry is the same relapse")
+        XCTAssertNotEqual(api.relapseCalls[1].key, api.relapseCalls[2].key, "Thursday after Friday is another one")
+    }
+
+    func testARecordedRelapseMovesToAnotherDayAndLeavesTodaysList() async {
+        let api = MockTodayAPI()
+        let viewModel = await loadedAvoid(api)
+        api.relapseResults = [.success(recorded())]
+        await viewModel.recordRelapse(categoryID: 1)
+        XCTAssertEqual(viewModel.entries(forCategory: 1).count, 1)
+        api.updateEntryResult = .success(EntryDTO(id: 300, categoryId: 1, entryDate: "2026-07-17", values: []))
+        api.streakResults[1] = .success(makeStreak(categoryID: 1, current: 6, best: 12, lastRelapse: "2026-07-17"))
+
+        let saved = await viewModel.saveRelapseDetails(categoryID: 1, amount: "", notes: "", day: "2026-07-17")
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.updatedEntries.map(\.payload.entryDate), ["2026-07-17"])
+        XCTAssertTrue(viewModel.entries(forCategory: 1).isEmpty)
+        XCTAssertEqual(viewModel.streak(forCategory: 1)?.currentStreak, 6)
+    }
+
+    func testTheSameDayInTheDetailsSendsNothing() async {
+        let api = MockTodayAPI()
+        let viewModel = await loadedAvoid(api)
+        api.relapseResults = [.success(recorded())]
+        await viewModel.recordRelapse(categoryID: 1)
+
+        let saved = await viewModel.saveRelapseDetails(categoryID: 1, amount: "", notes: "", day: Self.fixedToday)
+
+        XCTAssertTrue(saved)
+        XCTAssertTrue(api.updatedEntries.isEmpty)
+    }
+
+    // MARK: Order by use (#294)
+
+    private func tableOfUse(_ counts: [Int: Int]) -> TableResponseDTO {
+        TableResponseDTO(
+            categories: [],
+            days: [
+                TableDayDTO(
+                    date: "2026-07-22",
+                    cells: counts.map {
+                        TableCellDTO(categoryId: $0.key, fieldId: $0.key * 10, aggregatedValue: nil, entryCount: $0.value)
+                    }
+                )
+            ]
+        )
+    }
+
+    private func threeCategories() -> [CategoryDTO] {
+        [1, 2, 3].map { makeCategory(id: $0, name: "C\($0)", fields: [makeNumberField(id: $0 * 10, name: "n")]) }
+    }
+
+    func testTheCardsFollowTheirUseOverTheLastThirtyDays() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        let viewModel = makeViewModel(api: api)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.categories.map(\.id), [3, 2, 1])
+        XCTAssertEqual(api.tableRanges.count, 1, "one extra request, not one per card")
+        XCTAssertEqual(api.tableRanges.first?.from, "2026-06-24")
+        XCTAssertEqual(api.tableRanges.first?.to, Self.fixedToday)
+    }
+
+    func testAFailedUseReadLeavesTheServersOrderAndTheScreenLoaded() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.categories.map(\.id), [1, 2, 3])
+        XCTAssertNil(viewModel.saveErrorMessage)
+    }
+
+    func testASaveDoesNotMoveACardUntilTheNextLoad() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        api.createEntryResult = .success(EntryDTO(id: 9, categoryId: 1, entryDate: Self.fixedToday, values: []))
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        _ = await viewModel.saveEntry(categoryID: 1, values: [10: "1"])
+        XCTAssertEqual(viewModel.categories.map(\.id), [3, 2, 1], "nothing jumps under the finger")
+
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2, 1: 9]))
+        await viewModel.load()
+        XCTAssertEqual(viewModel.categories.map(\.id), [1, 3, 2])
+    }
+
+    func testTheOrderSurvivesAnOfflineStartFromTheCache() async {
+        let cache = InMemoryCacheStore()
+        let online = MockTodayAPI()
+        online.categoriesResult = .success(threeCategories())
+        online.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        let fixed = makeFixedDate()
+        await TodayViewModel(api: online, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }).load()
+
+        let offline = MockTodayAPI()
+        offline.categoriesResult = .failure(APIClientError.transport(code: -1009))
+        offline.entriesResult = .failure(APIClientError.transport(code: -1009))
+        let restarted = TodayViewModel(api: offline, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed })
+        await restarted.load()
+
+        XCTAssertNotNil(restarted.offlineAsOf)
+        XCTAssertEqual(restarted.categories.map(\.id), [3, 2, 1])
+    }
+
+    // MARK: Plus: tick and order under a slow table (#294 round 2)
+
+    private var coldShower: CategoryDTO {
+        makeCategory(
+            id: 1, name: "Cold shower", fields: [makeBooleanField(id: 10, name: "Done")], displayMode: "form"
+        )
+    }
+
+    func testPlusTicksASingleBoxOnceWithoutASheet() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        var secondTapSaved: Bool?
+        api.duringCreateEntry = { secondTapSaved = await viewModel.quickAdd(categoryID: 1) }
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(secondTapSaved, false, "a tap while the first is saved is dropped")
+        XCTAssertEqual(api.createdEntries.count, 1)
+        XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "true")])
+        XCTAssertNotNil(api.createKeys.first ?? nil)
+    }
+
+    func testAnOfflineTickIsQueuedUnderTheKeyOfItsAttempt() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .failure(APIClientError.transport(code: -1009))
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(outbox.pendingCount, 1)
+        XCTAssertEqual(outbox.pending.first?.key, api.createKeys.first ?? nil)
+    }
+
+    func testPlusOnAOneBoxChecklistGoesThroughTheIdempotentDayUpsert() async {
+        let api = MockTodayAPI()
+        let checklist = makeCategory(
+            id: 2, name: "Morning", fields: [makeBooleanField(id: 20, name: "Meditate")], displayMode: "checklist"
+        )
+        api.categoriesResult = .success([checklist])
+        api.upsertChecklistResult = .success(
+            EntryDTO(id: 55, categoryId: 2, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 20, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 2)
+
+        XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": true]])
+        XCTAssertTrue(api.createdEntries.isEmpty)
+    }
+
+    func testASlowTableDoesNotHoldTheLoadAndItsLateAnswerOrdersTheNextOne() async {
+        let cache = InMemoryCacheStore()
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        // The table answers only when the test lets it: no wall clock, the load either waits or it does not.
+        var gate: CheckedContinuation<Void, Never>?
+        var tableAnswered = false
+        api.duringFetchTable = {
+            await withCheckedContinuation { gate = $0 }
+            tableAnswered = true
+        }
+        let fixed = makeFixedDate()
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed },
+            usageReadLimit: .milliseconds(20)
+        )
+
+        await viewModel.load()
+
+        XCTAssertFalse(tableAnswered, "the load returned while the table was still unanswered")
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.categories.map(\.id), [1, 2, 3], "no previous snapshot: the server's order")
+
+        // The late answer is kept: a start that cannot reach the server shows the order it brought.
+        await spinUntil { gate != nil }
+        gate?.resume()
+        await spinUntil { cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage != nil }
+        let offline = MockTodayAPI()
+        offline.categoriesResult = .failure(APIClientError.transport(code: -1009))
+        offline.entriesResult = .failure(APIClientError.transport(code: -1009))
+        let restarted = TodayViewModel(
+            api: offline, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+        )
+        await restarted.load()
+        XCTAssertEqual(restarted.categories.map(\.id), [3, 2, 1])
+    }
+
+    func testAFailedTableKeepsTheUsageOfThePreviousSnapshot() async {
+        let cache = InMemoryCacheStore()
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        let fixed = makeFixedDate()
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+        )
+        await viewModel.load()
+
+        api.tableResult = .failure(APIClientError.timeout)
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.categories.map(\.id), [3, 2, 1], "the order does not jump back")
+        XCTAssertEqual(
+            cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage?.keys.sorted(), [2, 3],
+            "the cache keeps the usage"
+        )
+    }
+
+    func testAShownTickIsNotTickedAgainAndAQueuedOneCountsToo() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        XCTAssertFalse(viewModel.isTicked(categoryID: 1))
+
+        await viewModel.quickAdd(categoryID: 1)
+        let again = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(viewModel.isTicked(categoryID: 1))
+        XCTAssertFalse(again)
+        XCTAssertEqual(api.createdEntries.count, 1, "a second tap after the answer writes nothing")
+    }
+
+    func testAnOfflineTickIsNotQueuedTwice() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .failure(APIClientError.transport(code: -1009))
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 1)
+        await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(viewModel.isTicked(categoryID: 1), "the pending tick reads as done")
+        XCTAssertEqual(outbox.pendingCount, 1)
+        XCTAssertEqual(api.createdEntries.count, 1)
+    }
+
+    func testAnUntickedDayCanBeTickedAfterAFalseEntry() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.entriesResult = .success([
+            EntryDTO(id: 90, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "false")])
+        ])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.createdEntries.count, 1)
     }
 }

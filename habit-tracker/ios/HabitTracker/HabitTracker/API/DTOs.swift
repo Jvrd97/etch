@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-01/08-ios-entries-crud, PHASE-01/38-ios-avoid-streaks, PHASE-01/37-ios-insights, PHASE-01/12-ios-offline-queue
+// [review:need-review] PHASE-01/08-ios-entries-crud, PHASE-01/38-ios-avoid-streaks, PHASE-01/37-ios-insights, PHASE-01/12-ios-offline-queue, PHASE-03/294
+// summary: PHASE-03/294 — FieldDTO.quickSteps (the configured quick-add steps, additive)
 // summary: Codable DTOs mirroring backend schemas — FieldTypeDTO, checklist upsert, category/field write payloads, entry notes + update payload; category streakMode + CategoryStreakDTO; AI insight request/report/list-item; EntryDTO.isPending marks offline-queued optimistic rows
 import Foundation
 
@@ -121,6 +122,8 @@ struct FieldDTO: Codable, Identifiable, Equatable {
     let defaultValue: String?
     let options: String?
     let order: Int
+    /// Steps of the quick-add buttons (`quick_steps`); nil when none are configured.
+    var quickSteps: [Double]? = nil
 }
 
 /// Single field value inside an entry; also used as the create payload item.

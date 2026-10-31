@@ -3102,3 +3102,15 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 - `app/main.py` — mod: регистрация роутера добавлением.
 - `tests/test_dashboard_summary.py` — new: 32 теста, включая «число SQL не растёт с категориями и днями» и «настоящая модель не вызывается».
 - `docs/PHASE-03/design/296-dashboard-summary.md` — new: контракт и формулы одной страницей.
+
+## 2026-10-31 — PHASE-03/294: Today на телефоне — быстрый ввод по «+», дата срыва, порядок по частоте
+
+Тронуто 21 файл (9 `new`, 12 `mod`). Миграции нет, голова Alembic прежняя (`a2c4e6f8b0d3`).
+
+- Бэкенд: `app/api/categories.py`, `app/crud/streak.py`, `app/schemas/streak.py` — mod (`POST /categories/{id}/relapses` принимает необязательное `entry_date`, день позже сегодняшнего — 422, окно повтора считается внутри дня); `tests/test_relapse_on_date.py` — new (7 тестов; перенос срыва — существующий `PATCH /entries/{id}`).
+- iOS new: `Features/Today/{TodayQuickAdd,TodayOrdering,DayCalendar,RelapseWhenSheet,QuickAmountSheet}.swift`, `HabitTrackerTests/TodayQuickAddTests.swift`.
+- iOS mod: `Features/Today/{TodayView,TodayViewModel,RelapseDetailsSheet}.swift`, `API/{APIClient+Today,DTOs+Today}.swift`, `API/DTOs.swift` (одно поле `FieldDTO.quickSteps`, добавлением), `HabitTrackerTests/{TodayViewModelTests,TodayScreenAPITests}.swift`.
+
+Круг 2 (PHASE-03/294): «+» ставит галочку у одного булева поля одним нажатием (и у чек-листа из одного поля), у одного текстового поля открывает лист (`QuickAmountSheet` стал `QuickFieldSheet`, rename); полная форма — только для категорий с несколькими полями, которые заполняются вручную. Чтение таблицы порядка ждёт не дольше `usageReadLimit` (1.5 с), сбой или опоздание берут `usage` из предыдущего снимка, поздний ответ пишется в кэш для следующей загрузки. Тело ряда — вся карточка (`onTapGesture`), «+» — своя кнопка. Файлы: `Features/Today/{TodayQuickAdd,TodayViewModel,TodayView,TodayOrdering,QuickFieldSheet}.swift`, тесты `TodayQuickAddTests`, `TodayViewModelTests` — mod; `app/schemas/streak.py` — лишняя строка summary.
+
+Круг 3 (PHASE-03/294): у «+» убран `.disabled` (выключенная кнопка отдаёт касание карточке, и второй тап быстрого двойного нажатия открывал форму), занятость — `opacity`, второй тап отбрасывает `quickAdd`; булева привычка с сегодняшней галочкой (в том числе в очереди) не пишется второй раз, «+» показывает «сделано»; тело ряда — один элемент VoiceOver (`.combine`, `.isButton`); правило «остальные поля необязательные или с умолчанием» одно для числа, булева и текста; таймер в `readUsage` отменяется; тест медленной таблицы без стенных часов. Файлы: `Features/Today/{TodayView,TodayViewModel,TodayQuickAdd}.swift`, тесты `TodayQuickAddTests`, `TodayViewModelTests` — mod.
