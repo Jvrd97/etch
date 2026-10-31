@@ -1,4 +1,5 @@
-// [review:need-review] PHASE-03/197
+// [review:need-review] PHASE-03/197, PHASE-03/264
+// summary: PHASE-03/264 — «Сегодня» and «Вчера» in the history count from the server's day
 // summary: tests for deleting from the history on the wide /chat screen — also that the header's question and its error stay with the conversation they were asked in, a late answer to a delete never reaches the conversation opened meanwhile, the running-answer notice goes when the answer ends and does not come back on the next turn of the same conversation; — another conversation goes and the open one stays, the open one goes (from the row or from the header, by the same path) and the screen is left on «nothing selected» with a clean address and no new conversation, an unnamed one, the date group going with its last row, cancel sending nothing, one request on a double click, a failure kept and retried, and a running answer explained instead of offered for deletion
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -13,6 +14,7 @@ let replaced: string[];
 let pushed: string[];
 let streamTurn: (onEvent: (event: ChatStreamEvent) => void) => Promise<void>;
 let searchParams: URLSearchParams;
+let readDayMode: ReturnType<typeof mock>;
 
 const OPEN = 5;
 const OPEN_TITLE = 'почему не добежал';
@@ -24,6 +26,8 @@ const OLD_TITLE = 'старый вопрос';
 const STORED_MESSAGE = 'вчера не добежал';
 const OTHER_MESSAGE = 'сделай план на завтра';
 const STARTED = 11;
+// The day the server runs by default: weeks after the conversations below, so their groups carry dates, not «Сегодня».
+const SERVER_DAY = '2026-09-15';
 
 // Declares the whole @/lib/api surface: bun fixes a module's export names the
 // first time anything links against it and shares that registry across the run.
@@ -41,6 +45,7 @@ mock.module('@/lib/api', () => ({
   // день», а bun фиксирует имена экспортов модуля при первой линковке — мок,
   // забывший экспорт, удаляет его для всех, кто линкуется следом.
   agentAPI: {
+    dayMode: () => readDayMode(),
     day: () => Promise.resolve(null),
     patchInterval: () => Promise.resolve(null),
     addManualInterval: () => Promise.resolve(null),
@@ -197,6 +202,7 @@ function serverError(status: number, text: string) {
 
 beforeEach(() => {
   searchParams = new URLSearchParams(`conversation=${OPEN}`);
+  readDayMode = mock(() => Promise.resolve({ date: SERVER_DAY }));
   replaced = [];
   pushed = [];
   window.localStorage.clear();
@@ -248,6 +254,25 @@ async function confirmRow(title: string, label = 'Удалить') {
     fireEvent.click(within(confirmation(title)).getByRole('button', { name: label }));
   });
 }
+
+describe('the history is grouped by the server day', () => {
+  it('calls the server day «Сегодня» and the one before it «Вчера»', async () => {
+    readDayMode = mock(() => Promise.resolve({ date: '2026-08-03' }));
+    await openScreen();
+
+    await screen.findByText('Сегодня');
+    expect(screen.getByText('Вчера')).toBeTruthy();
+  });
+
+  it('counts from the server day when the browser calendar is on another one', async () => {
+    readDayMode = mock(() => Promise.resolve({ date: '2026-08-04' }));
+    await openScreen();
+
+    // 08-03 is yesterday for the server now, and 08-02 is two days back.
+    await screen.findByText('Вчера');
+    expect(screen.queryByText('Сегодня')).toBeNull();
+  });
+});
 
 describe('deleting from the history on the wide screen', () => {
   it('deletes another conversation and keeps the open one on screen', async () => {

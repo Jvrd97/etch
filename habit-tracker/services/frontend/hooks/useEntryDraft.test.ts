@@ -1,5 +1,5 @@
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/177
-// summary: tests for useEntryDraft — seeding, category switching, create vs update dispatch and the single save-failure text shared by all three editors
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, PHASE-01/42-mobile-categories-and-detail, PHASE-01/177, PHASE-03/264
+// summary: tests for useEntryDraft — seeding, category switching, create vs update dispatch and the single save-failure text shared by all three editors; #264 — the `@/lib/date` mock keeps the module's other exports
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -177,7 +177,10 @@ mock.module('@/lib/api', () => ({
   tableAPI: { get: () => Promise.resolve({ days: [] }) },
 }));
 
-mock.module('@/lib/date', () => ({ todayISO: () => TODAY }));
+// Copied before mocking: bun rewrites a mocked module's namespace in place, and the rest of
+// `@/lib/date` must stay for every file that links after this one.
+const realDate = { ...(await import('@/lib/date')) };
+mock.module('@/lib/date', () => ({ ...realDate, todayISO: () => TODAY }));
 
 const { useEntryDraft, SAVE_ENTRY_ERROR } = await import('./useEntryDraft');
 

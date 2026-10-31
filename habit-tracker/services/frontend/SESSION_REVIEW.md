@@ -2337,7 +2337,6 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - Тесты: `hooks/useToday.test.ts`, `hooks/useDailySummary.test.ts`, `hooks/useDashboard.test.ts`, `app/today/page.test.tsx`, `app/m/today/page.test.tsx`, `app/m/entries/page.test.tsx`, `app/m/categories/[id]/page.test.tsx`, `components/CategoryChart.test.tsx`, `components/chat/ChatHistorySheet.test.tsx` (new), `components/week/WeekScreen.test.tsx`, `components/day/DaySidebar.test.tsx`, `components/life/LifeGrid.test.tsx` — mod.
 
 Живая проверка: заглушка API на 8892 (день на сутки впереди браузера, 150 мс на ответ) и dev-фронт на 3892, headless Chrome по сырому CDP. Настоящий бэкенд не поднимался: `habit_test_247` пуста (миграции в рое не запускаются).
-||||||| 5d9190c
 
 ## 2026-10-27 — PHASE-03/249: слот записи режима дня (веб)
 
@@ -2361,6 +2360,8 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 Задержка первого круга Today, измерено на заглушке API (не на реальном бэкенде) с ответом 150 мс на запрос, dev-фронт, headless Chrome по CDP: до — запрос записей уходил через ~155 мс после `/day-mode`, два последовательных круга, ~300 мс до готового экрана; после — день, категории, записи и кнопки уходят в один момент, ~150 мс. `GET /day-mode` на загрузку: до 2 (хук и бейдж), после 1. Живой реальной базы нет: `habit_test_247` пуста, миграции в рое не запускаются.
 
 Остатки вне объёма (отдельный тикет, не делались): тренды дашборда (`useDashboard.ts` около 267, `trendDateRange(new Date())`), `todayISO()` в `app/chat/page.tsx:412`, `app/journal/page.tsx:175`, `app/m/journal/page.tsx:181`, `components/roles/RoleRulesScreen.tsx:69` (тот же UTC-баг), `hooks/useCategoryDetail.ts:95`, `hooks/useTable.ts:31-32`, `components/day/WorkIntervals.tsx:93`; бэкенд `GET /entries` без дат не подставляет `today_local()`.
+
+Не проверено в круге 2: браузер и реальный бэкенд (всё на заглушке API и в тестах хуков); остатки ниже закрыты тикетом #264 (см. запись от 2026-10-31 в конце файла).
 
 ## 2026-10-30 — PHASE-03/238: секция сна на /health и /m/health
 
@@ -2395,3 +2396,16 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 Проверено в Chrome 157 (headless, сырой CDP) на `next dev` :3257 и заглушке API :8257 (база `habit_live_257` не мигрирована: миграцию держит охранник; реального бэкенда не было). До правки: при чтении 1,5 с `select` терял фокус (`document.activeElement` = BODY, `disabled`), чекбокс не принимал клик. После: фокус на `select` остаётся, `disabled` нет, чтение 2,5 с — `aria-busy`, через 0,8 с текст и затемнение, запись за время чтения не уходит; зависшее чтение — «Не удалось прочитать режим дня» через 10,0 с, «Повторить» шлёт новый запрос и снимает блокировку; быстрое чтение не мигает серым (opacity 1).
 
 Не проверено: настоящий Alt+Tab (фокус окна имитировался событием `focus`), Safari и Firefox, тёмная и светлая темы кроме тёмной, экранный диктор для `role="status"`.
+
+## 2026-10-31 — PHASE-03/264: остатки дня сервера (ревью #247, #252, #253)
+
+Тронуто 24 файла: 13 кода (12 `mod`, `test-fixtures/replace-method.ts` — new), 10 тестов (4 new: `app/journal/page.test.tsx`, `app/m/journal/page.test.tsx`, `components/roles/RoleRulesScreen.test.tsx`, `hooks/useTable.test.ts`; 6 `mod`, среди них `components/CategoryChart.test.tsx` — одна строка: день отсчёта через `toISODate`), `SESSION_REVIEW.md`.
+
+- `hooks/useToday.ts` — mod: `ENTRIES_WINDOW_LIMIT` экспортируется, запасное точное чтение дня идёт с ним (а не с серверными 100). Вместо счётчика `loadsInFlight` — `snapshotDayRead`: минутный опрос и чтение бейджа не запускают второй снимок, только если присоединились к чтению дня этого же снимка; снимок, повисший на записях, больше не держит экран на вчера. Успешное чтение бейджа с днём, равным дню экрана, снимает «день не подтверждён». Сохранено `options?.fresh === true` из #257.
+- `hooks/useTodayDayModeSync.ts` — mod: бейдж перечитывается и на переходе `dayStale` true в false.
+- Остальные места «сегодня» от часов браузера: `hooks/useDashboard.ts` (тренды: диапазон кончается днём сервера, `localNoonOf` в `lib/server-day.ts`; `lib/trends.ts` считает окно через `toISODate`, а не `todayISO`, чтобы подмена `todayISO` в соседних наборах не двигала день), `hooks/useCategoryDetail.ts` и `hooks/useTable.ts` (`readServerDay`, запасной вариант — день браузера), `app/chat/page.tsx` («Сегодня»/«Вчера» в истории — `useDisplayDay`), `app/journal/page.tsx` и `app/m/journal/page.tsx` (новая запись датируется днём сервера, выбранная читателем дата главнее), `components/roles/RoleRulesScreen.tsx` (UTC-запасной вариант убран: диапазон всегда от `work_day`). `components/day/WorkIntervals.tsx:93` не менялся: `now.toISOString()` — момент остановки, а не календарный день.
+- Тесты: `hooks/useEntryDraft.test.ts` — мок `@/lib/date` копирует `...realDate`; других `mock.module` без копии для `@/lib/date` нет (grep). Мутации «опрос без защиты по промису», «без ослабления `dayStale` на выходе», «чтение бейджа не снимает stale», «точное чтение без limit» роняют тесты.
+
+Проверено вживую: реальный бэкенд (uvicorn :8264) на копии `habit_live_264` (миграции применены, `day_start_hour` = 15 при местных 13:45, поэтому день сервера 2026-10-30, день браузера 2026-10-31 — то же, что около 04:00), `next dev` :3264, Chrome 157 headless по сырому CDP. Шапка Today, запись «300 ml» (а не 999 за день браузера), дата новой записи в `/journal` и `/m/journal`, таблица (14 дней кончаются 2026-10-30), график категории, тренды дашборда (avg 200 ml за 30 дней, без 31-го). Бэкенд остановлен на 3 минуты: баннер «День не подтверждён сервером» и бейдж «Не удалось прочитать режим дня» (select `aria-disabled`); после старта бэкенда следующий минутный опрос снял баннер и разблокировал бейдж сам, без нажатия «Повторить».
+
+Не проверено: история `/chat` вживую (разговоров в базе не было, группировка проверена тестом), Safari и Firefox, светлая тема, реальный переход через 04:00 (имитирован сдвигом границы дня), второй пункт тикета про бэкенд (`GET /entries` без дат) — роль backend.

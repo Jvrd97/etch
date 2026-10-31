@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207
-// summary: category-detail state extracted from app/categories/[id]/page.tsx — one batched load of category, siblings, chart days, entries and the streak with its relapse days, so the desktop page and /m/categories/[id] render the same screen
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207, PHASE-03/264
+// summary: category-detail state extracted from app/categories/[id]/page.tsx — one batched load of category, siblings, chart days, entries and the streak with its relapse days, so the desktop page and /m/categories/[id] render the same screen; #264 — the chart range ends on the server's day (the browser's when the server cannot be asked)
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -14,6 +14,9 @@ import {
 } from '@/lib/api';
 import { categorySiblings } from '@/lib/category-nav';
 import { chartDateRange } from '@/lib/chart-data';
+import { todayISO } from '@/lib/date';
+import { readServerDay } from '@/hooks/useServerDay';
+import { localNoonOf } from '@/lib/server-day';
 import { groupEntriesByDate } from '@/lib/entry-groups';
 
 /** Full history without pagination (ticket #22: pagination is out of scope). */
@@ -92,7 +95,14 @@ export function useCategoryDetail(categoryId: number): UseCategoryDetailResult {
         // every hop along the category strip, and a banner from a one-off
         // failure must not follow the user onto the category that loaded fine.
         setError(null);
-        const { from, to } = chartDateRange(new Date());
+        // The chart ends on the server's day (the browser's calendar day is ahead of it
+        // between midnight and the boundary hour); the table waits for it, the rest do not.
+        const chartRows = readServerDay()
+          .catch(() => todayISO())
+          .then((day) => {
+            const { from, to } = chartDateRange(localNoonOf(day));
+            return tableAPI.get(from, to);
+          });
         const [categoryResult, categoriesResult, tableResult, entriesResult, streakResult] =
           await Promise.all([
             categoriesAPI.getById(categoryId),
@@ -101,7 +111,7 @@ export function useCategoryDetail(categoryId: number): UseCategoryDetailResult {
             // /m/categories finds itself missing from its own tab strip and
             // gets a dead prev/next pager.
             categoriesAPI.getAll(false),
-            tableAPI.get(from, to),
+            chartRows,
             entriesAPI.getAll({ categoryId, limit: ENTRIES_FETCH_LIMIT }),
             // Secondary widget: a failure here must not blank the whole page,
             // so it degrades to "no streak block" instead of rejecting the batch.

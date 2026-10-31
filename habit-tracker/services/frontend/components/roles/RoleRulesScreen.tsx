@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/139
-// summary: the rules screen both shells draw — the markup as rows in the order the resolver picks a winner in, the form with its mandatory dry run, and the re-markup of a period with its before/after
+// [review:need-review] PHASE-03/139, PHASE-03/264
+// summary: the rules screen both shells draw — the markup as rows in the order the resolver picks a winner in, the form with its mandatory dry run, and the re-markup of a period with its before/after; #264 — the re-markup range always ends on the server's work day, the browser's UTC date is no longer a fallback
 
 import { useCallback, useEffect, useState } from 'react';
 import ErrorAlert from '@/components/ErrorAlert';
@@ -32,7 +32,8 @@ export interface RoleRulesScreenProps {
 export default function RoleRulesScreen({ compact = false }: RoleRulesScreenProps) {
   const [roles, setRoles] = useState<Role[]>([]);
   const [rules, setRules] = useState<RoleRule[]>([]);
-  const [today, setToday] = useState<string | null>(null);
+  // The server's work day: set by the load that ends `loading`, so nothing below runs without it.
+  const [today, setToday] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,7 +67,7 @@ export default function RoleRulesScreen({ compact = false }: RoleRulesScreenProp
   if (loading) return <LoadingSpinner size="lg" />;
   if (error !== null) return <ErrorAlert message={error} />;
 
-  const range = defaultRange(today ?? new Date().toISOString().slice(0, 10));
+  const range = defaultRange(today);
   const card = `bg-card border border-white/5 rounded-3xl ${compact ? 'p-4' : 'p-6'}`;
 
   const save = async (draft: RoleRuleDraft) => {

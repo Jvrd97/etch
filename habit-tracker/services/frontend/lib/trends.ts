@@ -1,9 +1,10 @@
-// [review:need-review] #78
+// [review:need-review] #78, PHASE-03/264
 // summary: pure maths of the dashboard Trends block - period windows over one GET /table range, top-4 category selection, daily average, delta to the previous period, sparkline points and geometry, readable series color
+// summary: #264 — the period windows are counted back from the moment passed in with `toISODate`, so a screen that passes the server's day is not moved by a suite's fixed `todayISO` mock
 
 import type { Category, TableDay } from './api';
 import { SERIES_COLORS, parseCellValue, type ChartPeriod } from './chart-data';
-import { fromISODate, toISODate, todayISO } from './date';
+import { fromISODate, toISODate } from './date';
 import { formatValue } from './format-value';
 import { firstNumberField } from './today-categories';
 
@@ -61,7 +62,8 @@ export interface DashboardTrend {
 
 /** `count` local calendar dates ending today, oldest first. */
 function datesEndingToday(count: number, now: Date): string[] {
-  const end = fromISODate(todayISO(now));
+  // `toISODate(now)`, not `todayISO(now)`: suites replace `todayISO` with a fixed day that ignores `now`.
+  const end = fromISODate(toISODate(now));
   return Array.from({ length: count }, (_, index) => {
     const date = new Date(end);
     date.setDate(end.getDate() - (count - 1 - index));

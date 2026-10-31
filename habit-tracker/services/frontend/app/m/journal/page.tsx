@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/44-mobile-journal, PHASE-01/49-device-acceptance-checklist
+// [review:need-review] PHASE-01/44-mobile-journal, PHASE-01/49-device-acceptance-checklist, PHASE-03/264
 // summary: mobile Journal screen — same data as the desktop page via useJournal, entries rendered with the shared Markdown component, creation and editing done in a FullScreenSheet; all body text stays at text-sm or larger so it reads without a zoom
+// summary: #264 — a new entry is dated by the server's day, not the browser's calendar
 
 import { useState } from 'react';
 import { BookOpen, Pencil, X } from 'lucide-react';
@@ -12,7 +13,7 @@ import MobileHeaderAction from '@/components/mobile/HeaderAction';
 import { MOOD_OPTIONS, moodOption } from '@/components/journal-moods';
 import { useJournal } from '@/hooks/useJournal';
 import { journalAPI, type JournalEntry, type JournalEntryCreate } from '@/lib/api';
-import { todayISO } from '@/lib/date';
+import { useDisplayDay } from '@/hooks/useServerDay';
 import { TAP_TARGET_PX, entryInputClass } from '@/lib/ui-constants';
 
 /** What the editor sheet is currently doing; closed when null. */
@@ -178,7 +179,10 @@ interface JournalEditorSheetProps {
 function JournalEditorSheet({ entry, onCancel, onSaved }: JournalEditorSheetProps) {
   const [title, setTitle] = useState(entry?.title ?? '');
   const [content, setContent] = useState(entry?.content ?? '');
-  const [entryDate, setEntryDate] = useState(entry?.entry_date ?? todayISO());
+  // A new entry is dated by the server's day (the browser's until the server has named it); a date the reader picked wins.
+  const serverDay = useDisplayDay(entry === null);
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
+  const entryDate = pickedDate ?? entry?.entry_date ?? serverDay;
   const [mood, setMood] = useState(entry?.mood ?? '');
   const [tags, setTags] = useState(entry?.tags ?? '');
   const [saving, setSaving] = useState(false);
@@ -241,7 +245,7 @@ function JournalEditorSheet({ entry, onCancel, onSaved }: JournalEditorSheetProp
           id="journal-date"
           type="date"
           value={entryDate}
-          onChange={(e) => setEntryDate(e.target.value)}
+          onChange={(e) => setPickedDate(e.target.value)}
           required
           style={{ minHeight: TAP_TARGET_PX }}
           className={entryInputClass}

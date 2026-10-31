@@ -1,6 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/45-mobile-table-sticky-date, PHASE-01/73-category-field-reorder
-// summary: Table-screen state extracted from app/table/page.tsx so the desktop page and /m/table share the same data load, dynamic column building (checklist categories expand to one column per boolean field), tab grouping and optimistic checklist toggle
+// [review:need-review] PHASE-01/45-mobile-table-sticky-date, PHASE-01/73-category-field-reorder, PHASE-03/264
+// summary: Table-screen state extracted from app/table/page.tsx so the desktop page and /m/table share the same data load, dynamic column building (checklist categories expand to one column per boolean field), tab grouping and optimistic checklist toggle; #264 — the table's fourteen days end on the server's day, not the browser's
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -13,7 +13,9 @@ import {
   type TableDay,
   type TableResponse,
 } from '@/lib/api';
-import { toISODate } from '@/lib/date';
+import { todayISO } from '@/lib/date';
+import { readServerDay } from '@/hooks/useServerDay';
+import { shiftDay } from '@/lib/server-day';
 import { orderedFields } from '@/lib/today-categories';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 
@@ -27,11 +29,10 @@ const UNGROUPED_TAB = 'Other';
 export const TRUE_VALUE = 'true';
 const FALSE_VALUE = 'false';
 
-function dateRange(): { from: string; to: string } {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(to.getDate() - (DAYS_SHOWN - 1));
-  return { from: toISODate(from), to: toISODate(to) };
+/** The days the table spans, ending on the server's day (the browser's when the server cannot be asked). */
+async function readDateRange(): Promise<{ from: string; to: string }> {
+  const to = await readServerDay().catch(() => todayISO());
+  return { from: shiftDay(to, -(DAYS_SHOWN - 1)), to };
 }
 
 /** One table column: a form category's primary field, or a checklist boolean field. */
@@ -125,9 +126,8 @@ export function useTable(): UseTableResult {
 
   const loadData = useCallback(async () => {
     try {
-      const { from, to } = dateRange();
       const [response, categoriesData] = await Promise.all([
-        tableAPI.get(from, to),
+        readDateRange().then(({ from, to }) => tableAPI.get(from, to)),
         categoriesAPI.getAll(),
       ]);
       setData(response);
