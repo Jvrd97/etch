@@ -115,9 +115,17 @@ final class MockTodayAPI: TodayScreenAPI {
         return try avoidStreaksResult.get()
     }
 
+    /// Runs once inside the next table read, before its answer: a slow table.
+    var duringFetchTable: (@MainActor () async -> Void)?
+
     func fetchTable(dateFrom: String, dateTo: String) async throws -> TableResponseDTO {
         tableRanges.append((from: dateFrom, to: dateTo))
-        return try tableResult.get()
+        let answer = tableResult
+        if let hook = duringFetchTable {
+            duringFetchTable = nil
+            await hook()
+        }
+        return try answer.get()
     }
 
     func recordRelapse(
@@ -1350,5 +1358,118 @@ final class TodayViewModelTests: XCTestCase {
 
         XCTAssertNotNil(restarted.offlineAsOf)
         XCTAssertEqual(restarted.categories.map(\.id), [3, 2, 1])
+    }
+
+    // MARK: Plus: tick and order under a slow table (#294 round 2)
+
+    private var coldShower: CategoryDTO {
+        makeCategory(
+            id: 1, name: "Cold shower", fields: [makeBooleanField(id: 10, name: "Done")], displayMode: "form"
+        )
+    }
+
+    func testPlusTicksASingleBoxOnceWithoutASheet() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .success(
+            EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+        var secondTapSaved: Bool?
+        api.duringCreateEntry = { secondTapSaved = await viewModel.quickAdd(categoryID: 1) }
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(secondTapSaved, false, "a tap while the first is saved is dropped")
+        XCTAssertEqual(api.createdEntries.count, 1)
+        XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "true")])
+        XCTAssertNotNil(api.createKeys.first ?? nil)
+    }
+
+    func testAnOfflineTickIsQueuedUnderTheKeyOfItsAttempt() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([coldShower])
+        api.createEntryResult = .failure(APIClientError.transport(code: -1009))
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(outbox.pendingCount, 1)
+        XCTAssertEqual(outbox.pending.first?.key, api.createKeys.first ?? nil)
+    }
+
+    func testPlusOnAOneBoxChecklistGoesThroughTheIdempotentDayUpsert() async {
+        let api = MockTodayAPI()
+        let checklist = makeCategory(
+            id: 2, name: "Morning", fields: [makeBooleanField(id: 20, name: "Meditate")], displayMode: "checklist"
+        )
+        api.categoriesResult = .success([checklist])
+        api.upsertChecklistResult = .success(
+            EntryDTO(id: 55, categoryId: 2, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 20, value: "true")])
+        )
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 2)
+
+        XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": true]])
+        XCTAssertTrue(api.createdEntries.isEmpty)
+    }
+
+    func testASlowTableDoesNotHoldTheLoadAndItsLateAnswerOrdersTheNextOne() async {
+        let cache = InMemoryCacheStore()
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        api.duringFetchTable = { try? await Task.sleep(for: .milliseconds(400)) }
+        let fixed = makeFixedDate()
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed },
+            usageReadLimit: .milliseconds(20)
+        )
+
+        let started = ContinuousClock.now
+        await viewModel.load()
+        let took = ContinuousClock.now - started
+
+        XCTAssertLessThan(took, .milliseconds(300), "the screen does not wait for the table")
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.categories.map(\.id), [1, 2, 3], "no previous snapshot: the server's order")
+
+        // The late answer is kept: a start that cannot reach the server shows the order it brought.
+        await spinUntil { cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage != nil }
+        let offline = MockTodayAPI()
+        offline.categoriesResult = .failure(APIClientError.transport(code: -1009))
+        offline.entriesResult = .failure(APIClientError.transport(code: -1009))
+        let restarted = TodayViewModel(
+            api: offline, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+        )
+        await restarted.load()
+        XCTAssertEqual(restarted.categories.map(\.id), [3, 2, 1])
+    }
+
+    func testAFailedTableKeepsTheUsageOfThePreviousSnapshot() async {
+        let cache = InMemoryCacheStore()
+        let api = MockTodayAPI()
+        api.categoriesResult = .success(threeCategories())
+        api.tableResult = .success(tableOfUse([3: 5, 2: 2]))
+        let fixed = makeFixedDate()
+        let viewModel = TodayViewModel(
+            api: api, cacheStore: cache, timeZone: TimeZone(identifier: "UTC")!, now: { fixed }
+        )
+        await viewModel.load()
+
+        api.tableResult = .failure(APIClientError.timeout)
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.categories.map(\.id), [3, 2, 1], "the order does not jump back")
+        XCTAssertEqual(
+            cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.usage?.keys.sorted(), [2, 3],
+            "the cache keeps the usage"
+        )
     }
 }

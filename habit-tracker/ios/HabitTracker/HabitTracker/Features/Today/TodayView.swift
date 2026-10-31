@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263, PHASE-03/294
-// summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, or opens the one-field amount sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
+// summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, ticks the box, or opens the one-field sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
 // summary: PHASE-03/263 — the empty screen shows the refresh failure line
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
 import SwiftUI
@@ -22,7 +22,7 @@ struct TodayView: View {
     @State private var selectedCategory: CategoryDTO?
     @State private var daySheet: DaySheetTarget?
     @State private var detailsCategory: CategoryDTO?
-    @State private var amountCategory: CategoryDTO?
+    @State private var fieldCategory: CategoryDTO?
     @State private var whenCategory: CategoryDTO?
 
     init(viewModel: TodayViewModel, quickMarks: QuickMarksViewModel? = nil) {
@@ -56,8 +56,8 @@ struct TodayView: View {
         .sheet(item: $detailsCategory) { category in
             RelapseDetailsSheet(category: category, viewModel: viewModel)
         }
-        .sheet(item: $amountCategory) { category in
-            QuickAmountSheet(category: category, viewModel: viewModel)
+        .sheet(item: $fieldCategory) { category in
+            QuickFieldSheet(category: category, viewModel: viewModel)
         }
         .sheet(item: $whenCategory) { category in
             RelapseWhenSheet(category: category, viewModel: viewModel)
@@ -322,36 +322,37 @@ struct TodayView: View {
     private static let quickAddIconSize: CGFloat = 32
     private static let quickAddHitSize: CGFloat = 48
 
+    /// The whole card, its padding included, opens the form; the plus inside it is a button of its own
+    /// and takes its taps first.
     private func habitCard(_ category: CategoryDTO) -> some View {
         Card {
             HStack(spacing: DS.Spacing.sm) {
-                Button {
-                    selectedCategory = category
-                } label: {
-                    HStack(spacing: DS.Spacing.md) {
-                        if let icon = category.icon, !icon.isEmpty {
-                            Text(icon)
-                                .font(DS.Typography.section)
-                        }
-                        Text(category.name)
-                            .font(DS.Typography.card)
-                            .foregroundStyle(DS.Palette.textPrimary)
-                        Spacer()
-                        if hasPendingEntry(category) {
-                            PendingRowTag()
-                        }
-                        Text(todaySummary(for: category))
-                            .font(DS.Typography.card)
-                            .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
+                HStack(spacing: DS.Spacing.md) {
+                    if let icon = category.icon, !icon.isEmpty {
+                        Text(icon)
+                            .font(DS.Typography.section)
                     }
-                    .frame(minHeight: Self.quickAddHitSize)
-                    .contentShape(Rectangle())
+                    Text(category.name)
+                        .font(DS.Typography.card)
+                        .foregroundStyle(DS.Palette.textPrimary)
+                    Spacer()
+                    if hasPendingEntry(category) {
+                        PendingRowTag()
+                    }
+                    Text(todaySummary(for: category))
+                        .font(DS.Typography.card)
+                        .foregroundStyle(hasEntries(category) ? DS.Palette.lime : DS.Palette.textSecondary)
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("today.card.\(category.id)")
+                .frame(minHeight: Self.quickAddHitSize)
                 quickAddButton(category)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { selectedCategory = category }
+        // A container of its own: an identifier on the bare card would overwrite the plus button's.
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Открыть \(category.name)") { selectedCategory = category }
+        .accessibilityIdentifier("today.card.\(category.id)")
     }
 
     /// What the plus does is `TodayQuickAdd`'s call: add the step, ask for the amount, or open the form.
@@ -360,10 +361,10 @@ struct TodayView: View {
         let isAdding = viewModel.quickAddingCategoryIDs.contains(category.id)
         return Button {
             switch plan {
-            case .step:
+            case .step, .check:
                 Task { await viewModel.quickAdd(categoryID: category.id) }
-            case .amountSheet:
-                amountCategory = category
+            case .amountSheet, .textSheet:
+                fieldCategory = category
             case .fullForm:
                 selectedCategory = category
             }

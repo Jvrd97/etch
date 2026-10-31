@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/05-ios-today-quick-entry, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-03/225, PHASE-03/242, PHASE-03/248, PHASE-03/256, PHASE-03/263, PHASE-03/294
-// summary: PHASE-03/294 — the cards are ordered by use (a table read of the last 30 days, kept in the snapshot; a failed read leaves the server's order); a plus tap adds the field's step once (one in flight per category, the save goes through the outbox); a relapse is recorded on a chosen day (the key follows the day) and a recorded one moves to another day
+// summary: PHASE-03/294 — the cards are ordered by use (a table read of the last 30 days, kept in the snapshot; the load waits for it at most `usageReadLimit`, a failed or late read takes the usage of the previous snapshot, a late answer is cached for the next load); a plus tap adds the field's step once (one in flight per category, the save goes through the outbox); a relapse is recorded on a chosen day (the key follows the day) and a recorded one moves to another day
 // summary: PHASE-03/263 — a late failure of an older load says nothing when a newer read is on screen
 // summary: PHASE-03/248 — a second load keeps the loaded screen and reports its failure as a line; PHASE-03/256 — the cache stamp after a re-read of the records stays the age of the categories and streaks it keeps
 // summary: PHASE-03/248 round 2 — the line a failed refresh wrote is taken back by the next refresh that works, and only that line
@@ -68,6 +68,9 @@ final class TodayViewModel: ObservableObject {
     // Zero of a count or of time spent is what a clean day records: saved over the tap, it would
     // quietly turn the relapse into one.
     static let amountNotPositiveMessage = "Сколько — больше нуля, или оставьте поле пустым"
+    /// The longest a load waits for the table that orders the cards: past it the screen is drawn in the
+    /// order of the previous snapshot and the late answer is kept for the next load.
+    nonisolated static let usageReadLimit: Duration = .milliseconds(1500)
     /// Read-cache key for the whole Today snapshot.
     static let cacheKey = "today.snapshot"
 
@@ -76,6 +79,8 @@ final class TodayViewModel: ObservableObject {
     private let outbox: OutboxQueue?
     private let dateFormatter: DateFormatter
     private let now: () -> Date
+    /// How long a load waits for the table that orders the cards.
+    private let usageReadLimit: Duration
     /// Idempotency-Key of a relapse tap that has not been answered yet, kept across a failed attempt so
     /// the retry is the same request to the server and not a second relapse.
     private var relapseKeys: [Int: (day: String?, key: String)] = [:]
@@ -97,8 +102,10 @@ final class TodayViewModel: ObservableObject {
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        usageReadLimit: Duration = TodayViewModel.usageReadLimit
     ) {
+        self.usageReadLimit = usageReadLimit
         self.apiProvider = apiProvider
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.outbox = outbox
@@ -158,14 +165,16 @@ final class TodayViewModel: ObservableObject {
         cacheStore: CacheStore = InMemoryCacheStore(),
         outbox: OutboxQueue? = nil,
         timeZone: TimeZone = .current,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        usageReadLimit: Duration = TodayViewModel.usageReadLimit
     ) {
         self.init(
             apiProvider: { api },
             cacheStore: cacheStore,
             outbox: outbox,
             timeZone: timeZone,
-            now: now
+            now: now,
+            usageReadLimit: usageReadLimit
         )
     }
 
@@ -210,7 +219,7 @@ final class TodayViewModel: ObservableObject {
                 async let categoriesTask = api.fetchCategories()
                 async let entriesTask = api.fetchEntries(startDate: today, endDate: today)
                 // The order of the cards is a nicety: its failure is not the screen's.
-                async let usageTask = Self.fetchUsage(api: api, range: usageRange)
+                async let usageTask = self.readUsage(api: api, range: usageRange)
                 let (fetchedCategories, fetchedEntries) = try await (categoriesTask, entriesTask)
                 let usage = await usageTask
                 let active = fetchedCategories.filter(\.isActive)
@@ -301,12 +310,68 @@ final class TodayViewModel: ObservableObject {
         cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
     }
 
-    /// Entries per category over the last `TodayOrdering.windowDays` days, today included.
-    private static func fetchUsage(
-        api: TodayScreenAPI, range: (from: String, to: String)
-    ) async -> [Int: CategoryUsage]? {
-        guard let table = try? await api.fetchTable(dateFrom: range.from, dateTo: range.to) else { return nil }
-        return TodayOrdering.usage(from: table)
+    private enum UsageRead {
+        case answered([Int: CategoryUsage]?)
+        case timedOut
+    }
+
+    /// The first of two finishers resumes the waiting load; the second finds it gone. Both run on the main actor.
+    @MainActor
+    private final class UsageRace {
+        private var continuation: CheckedContinuation<UsageRead, Never>?
+
+        init(_ continuation: CheckedContinuation<UsageRead, Never>) {
+            self.continuation = continuation
+        }
+
+        func finish(_ read: UsageRead) {
+            continuation?.resume(returning: read)
+            continuation = nil
+        }
+    }
+
+    /// Entries per category over the last `TodayOrdering.windowDays` days, today included. The read
+    /// never holds the load past `usageReadLimit`; a failed or late read gives the usage of the previous
+    /// snapshot, so the order neither jumps nor is wiped from the cache. An answer that comes late goes
+    /// to the cache and orders the next load, not the screen in front of the person.
+    private func readUsage(api: TodayScreenAPI, range: (from: String, to: String)) async -> [Int: CategoryUsage]? {
+        let fetch = Task { () -> [Int: CategoryUsage]? in
+            guard let table = try? await api.fetchTable(dateFrom: range.from, dateTo: range.to) else { return nil }
+            return TodayOrdering.usage(from: table)
+        }
+        let limit = usageReadLimit
+        // Not a task group: a group waits for its children, and the table read is not cancelled by the timer.
+        let read: UsageRead = await withCheckedContinuation { continuation in
+            let race = UsageRace(continuation)
+            Task { race.finish(.answered(await fetch.value)) }
+            Task {
+                try? await Task.sleep(for: limit)
+                race.finish(.timedOut)
+            }
+        }
+        switch read {
+        case .answered(let usage):
+            return usage ?? previousUsage()
+        case .timedOut:
+            Task { [weak self] in
+                if let usage = await fetch.value { self?.keepUsageForNextLoad(usage) }
+            }
+            return previousUsage()
+        }
+    }
+
+    private func previousUsage() -> [Int: CategoryUsage]? {
+        cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey)?.value.usage
+    }
+
+    /// Writes a late answer into the cached snapshot, keeping its age.
+    private func keepUsageForNextLoad(_ usage: [Int: CategoryUsage]) {
+        guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
+        let snapshot = TodaySnapshot(
+            categories: cached.value.categories, entries: cached.value.entries,
+            streaks: cached.value.streaks, usage: usage
+        )
+        cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
     }
 
     private func usageWindow() -> (from: String, to: String) {
@@ -553,18 +618,28 @@ final class TodayViewModel: ObservableObject {
 
     // MARK: Plus
 
-    /// The plus of a row whose plan is a step: adds the step to today as one entry. A tap while the
-    /// category's previous one is still being saved is dropped, so one press is one entry; the save
-    /// is the form save (one key per attempt, the outbox when the network is down). True when saved or queued.
+    /// The plus of a row whose plan is a step or a tick: writes it to today as one entry (a checklist's
+    /// idempotent day upsert). A tap while the category's previous one is still being saved is dropped,
+    /// so one press is one entry; the save is the form save (one key per attempt, the outbox when the
+    /// network is down). True when saved or queued.
     @discardableResult
     func quickAdd(categoryID: Int) async -> Bool {
         guard let category = categories.first(where: { $0.id == categoryID }),
-              case .step(let fieldID, let amount) = TodayQuickAdd.plan(for: category),
               !quickAddingCategoryIDs.contains(categoryID) else { return false }
+        let fieldID: Int
+        let value: String
+        switch TodayQuickAdd.plan(for: category) {
+        case .step(let id, let amount):
+            (fieldID, value) = (id, TodayQuickAdd.formatAmount(amount))
+        case .check(let id):
+            (fieldID, value) = (id, "true")
+        case .amountSheet, .textSheet, .fullForm:
+            return false
+        }
         quickAddingCategoryIDs.insert(categoryID)
         defer { quickAddingCategoryIDs.remove(categoryID) }
         var values = TodayQuickAdd.defaultValues(for: category, except: fieldID)
-        values[fieldID] = TodayQuickAdd.formatAmount(amount)
+        values[fieldID] = value
         return await saveEntry(categoryID: categoryID, values: values)
     }
 

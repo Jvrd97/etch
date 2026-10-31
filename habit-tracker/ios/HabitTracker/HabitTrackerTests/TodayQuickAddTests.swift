@@ -59,15 +59,50 @@ final class TodayQuickAddTests: XCTestCase {
         XCTAssertEqual(TodayQuickAdd.plan(for: needsText), .fullForm)
     }
 
-    func testChecklistAvoidAndNumberlessCategoriesKeepTheFullForm() {
+    func testASingleBoxIsATickAndAOneBoxChecklistToo() {
+        XCTAssertEqual(
+            TodayQuickAdd.plan(for: category(fields: [field(id: 10, type: .boolean)])), .check(fieldID: 10)
+        )
         XCTAssertEqual(
             TodayQuickAdd.plan(for: category(fields: [field(id: 10, type: .boolean)], displayMode: "checklist")),
-            .fullForm
+            .check(fieldID: 10)
         )
+    }
+
+    func testABoxWithOnlyOptionalFieldsBesideItIsStillATick() {
+        let withNote = category(fields: [
+            field(id: 10, type: .boolean), field(id: 11, type: .text, required: false, order: 1),
+        ])
+
+        XCTAssertEqual(TodayQuickAdd.plan(for: withNote), .check(fieldID: 10))
+    }
+
+    func testASingleTextFieldAsksForTheTextInASheet() {
+        XCTAssertEqual(
+            TodayQuickAdd.plan(for: category(fields: [field(id: 10, type: .text)])), .textSheet(fieldID: 10)
+        )
+    }
+
+    func testTheFullFormIsLeftForSeveralFieldsThatMustBeFilledByHand() {
+        let twoRequiredTexts = category(fields: [field(id: 10, type: .text), field(id: 11, type: .text, order: 1)])
+        let twoRequiredBoxes = category(fields: [field(id: 10, type: .boolean), field(id: 11, type: .boolean, order: 1)])
+        let longChecklist = category(
+            fields: [field(id: 10, type: .boolean), field(id: 11, type: .boolean, order: 1)], displayMode: "checklist"
+        )
+
+        XCTAssertEqual(TodayQuickAdd.plan(for: twoRequiredTexts), .fullForm)
+        XCTAssertEqual(TodayQuickAdd.plan(for: twoRequiredBoxes), .fullForm, "which box is not a guess")
+        XCTAssertEqual(TodayQuickAdd.plan(for: longChecklist), .fullForm)
+    }
+
+    func testAvoidAndFieldlessCategoriesKeepTheFullForm() {
         XCTAssertEqual(
             TodayQuickAdd.plan(for: category(fields: [field(id: 10)], streakMode: "avoid")), .fullForm
         )
-        XCTAssertEqual(TodayQuickAdd.plan(for: category(fields: [field(id: 10, type: .text)])), .fullForm)
+        XCTAssertEqual(
+            TodayQuickAdd.plan(for: category(fields: [field(id: 10, type: .select)])), .fullForm
+        )
+        XCTAssertEqual(TodayQuickAdd.plan(for: category(fields: [])), .fullForm)
     }
 
     func testAStepIsWrittenWithoutATrailingZeroOrFloatNoise() {

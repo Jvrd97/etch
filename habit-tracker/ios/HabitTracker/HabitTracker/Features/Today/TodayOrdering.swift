@@ -12,8 +12,9 @@ enum TodayOrdering {
     /// The window of the count, today included.
     static let windowDays = 30
 
-    /// Entries per category over the table's days. A day's entries of a category are the largest count among
-    /// its field cells: every cell of a day counts the same entries, the ones that have a value for its field.
+    /// Entries per category over the table's days. The table counts entries per field cell, not per
+    /// category, so a day takes the largest `entry_count` among the category's cells: a floor of the day's
+    /// entries (an entry with no values in any field is not in the table), enough to rank the cards.
     static func usage(from table: TableResponseDTO) -> [Int: CategoryUsage] {
         var counts: [Int: Int] = [:]
         var lastDays: [Int: String] = [:]

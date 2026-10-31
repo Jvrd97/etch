@@ -1,8 +1,8 @@
 // [review:need-review] PHASE-03/294
-// summary: the quick entry behind the plus of a habit row that has no step — one number field with the keyboard up, the other fields take their defaults, the save is the form save (one key per attempt, the outbox when offline)
+// summary: the quick entry behind the plus of a habit row that has no step — one number or text field with the keyboard up, the other fields take their defaults, the save is the form save (one key per attempt, the outbox when offline)
 import SwiftUI
 
-struct QuickAmountSheet: View {
+struct QuickFieldSheet: View {
     let category: CategoryDTO
     @ObservedObject var viewModel: TodayViewModel
 
@@ -12,15 +12,24 @@ struct QuickAmountSheet: View {
     @FocusState private var focused: Bool
 
     private var field: FieldDTO? {
-        guard case .amountSheet(let fieldID) = TodayQuickAdd.plan(for: category) else { return nil }
-        return category.fields.first { $0.id == fieldID }
+        switch TodayQuickAdd.plan(for: category) {
+        case .amountSheet(let fieldID), .textSheet(let fieldID):
+            return category.fields.first { $0.id == fieldID }
+        case .step, .check, .fullForm:
+            return nil
+        }
     }
 
-    /// The typed number with a comma read as a point; nil while it is not a number.
+    private var isNumber: Bool { field?.fieldType == .number }
+
+    /// The typed value: a number with a comma read as a point, or the trimmed text; nil while it is empty
+    /// or, for a number, not a number.
     private var normalizedAmount: String? {
         let text = amount.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: ",", with: ".")
-        return Double(text) == nil ? nil : text
+        guard !text.isEmpty else { return nil }
+        guard isNumber else { return text }
+        let number = text.replacingOccurrences(of: ",", with: ".")
+        return Double(number) == nil ? nil : number
     }
 
     var body: some View {
@@ -34,9 +43,9 @@ struct QuickAmountSheet: View {
                         .minimumScaleFactor(0.5)
                         .frame(maxWidth: .infinity)
                     TextField(field?.name ?? category.name, text: $amount)
-                        .keyboardType(.decimalPad)
+                        .keyboardType(isNumber ? .decimalPad : .default)
                         .focused($focused)
-                        .accessibilityIdentifier("quickamount.field")
+                        .accessibilityIdentifier("quickfield.field")
                 }
                 .listRowBackground(DS.Palette.card)
                 if let message = viewModel.saveErrorMessage {
@@ -56,7 +65,7 @@ struct QuickAmountSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
                         .disabled(isSaving || normalizedAmount == nil || field == nil)
-                        .accessibilityIdentifier("quickamount.save")
+                        .accessibilityIdentifier("quickfield.save")
                 }
             }
             .onAppear {
