@@ -956,6 +956,13 @@ async def undo_event(
     the event is read again under it: a press or another undo committed while
     this request waited has to be seen by the checks, or the undo would judge a
     day that no longer exists and subtract from a total that has moved.
+
+    A relapse press does not take the day — it appends its own row and reads
+    nothing before writing — so an undo can pass the "last tap" check while a
+    relapse of the same button is still uncommitted, and take back the earlier
+    one. That is the order "undo first, relapse after", which is what a press
+    arriving a moment later would give anyway: nothing is lost and nothing is
+    taken back twice, because the relapse keeps its own row and its own event.
     """
     await entry_crud.lock_day(db, mark.category_id, event.entry_date)
     await db.refresh(event, ["undone_at"])

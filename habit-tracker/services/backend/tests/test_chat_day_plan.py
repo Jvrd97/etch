@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-03/187
 # summary: the day plan a chat may propose — for an empty day it is a draft, for a day that already has one it is a rewrite the server names itself, both written through the same `replace_plan` everything else uses; a line whose code the rewrite keeps keeps its mark; breaking one of the eight rules it is refused by rule code and writes not a single row
+# [review:need-review] 312
+# summary: #312 — the card that writes a day plan and ticks takes the days of its categories before it writes the plan
 """
 Чат предлагает план дня — и умеет переписать существующий.
 
@@ -39,9 +41,11 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import chat as chat_api
 from app.api.chat import _attach_plan
 from app.crud import chat as chat_crud
 from app.crud import day as day_crud
+from app.crud import entry as entry_crud
 from app.day.constraints import RULE_FREE_EVENING_EMPTY
 from app.models.chat import MESSAGE_ROLE_ASSISTANT, ChatPlan as ChatPlanRow
 from app.models.plan import DayPlan, PlanItem
@@ -339,6 +343,63 @@ class TestProposing:
 @pytest.mark.asyncio
 class TestApplying:
     """Применение: один путь записи и две проверки перед ним."""
+
+    async def test_the_days_of_the_ticks_are_taken_before_the_plan_is_written(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        A card with a day plan and a tick takes the category's day first (#312).
+
+        A press of a button the plan names holds that day and then closes the
+        plan's line. Written first, the plan's rows would be held by this
+        transaction while it queued for the day — and the press, holding the day,
+        would queue for those rows.
+        """
+        category = await client.post(
+            "/api/v1/categories",
+            json={
+                "name": "Витамины",
+                "display_mode": "checklist",
+                "fields": [{"name": "D3", "field_type": "boolean", "order": 1}],
+            },
+        )
+        assert category.status_code == 201, category.text
+        tick = {
+            "op": "check",
+            "category_id": category.json()["id"],
+            "field_id": category.json()["fields"][0]["id"],
+            "source_text": "выпил витамины",
+        }
+        plan_id = await store_proposal(
+            client, db_session, proposal(legal_day_plan(), checklist=[tick])
+        )
+
+        order: list[str] = []
+        lock_day = entry_crud.lock_day
+        write_day_plan = chat_api._write_day_plan
+
+        async def taking_the_day(db: AsyncSession, category_id: int, on: date) -> None:
+            order.append("day")
+            await lock_day(db, category_id, on)
+
+        async def writing_the_plan(db: AsyncSession, on: date, op: Any) -> Any:
+            order.append("plan")
+            return await write_day_plan(db, on, op)
+
+        monkeypatch.setattr(entry_crud, "lock_day", taking_the_day)
+        monkeypatch.setattr(chat_api, "_write_day_plan", writing_the_plan)
+
+        response = await client.post(
+            f"{CHAT_URL}/plans/{plan_id}/apply",
+            json={"day_plan": True, "checklist": [tick]},
+        )
+
+        assert response.status_code == 201, response.text
+        assert "plan" in order
+        assert order[0] == "day"
 
     async def test_an_offered_day_plan_becomes_the_day_plan(
         self, client: AsyncClient, db_session: AsyncSession

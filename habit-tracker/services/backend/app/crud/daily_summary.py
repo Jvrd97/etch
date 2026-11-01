@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-01/75-daily-summary-checklist
 # summary: id-only semantic validation of day metrics and checklist ticks + all-or-nothing apply of metrics, ticks (merged onto the day's current state, never replacing it) and the day's journal text, deduped by an applied_daily_summaries row keyed on Idempotency-Key, which records the exact metric pairs it wrote
+# [review:need-review] 312
+# summary: #312 — the apply holds the day of every category it writes before it reads any (`lock_summary_days`, one fixed order), so concurrent applies cannot deadlock and a press committed while it queued is neither split into a second row nor overwritten
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -437,6 +439,32 @@ def _write_metric_value(
     db.add(new_value)
 
 
+async def lock_summary_days(
+    db: AsyncSession, request: DailySummaryApplyRequest
+) -> None:
+    """
+    Hold the day of every category the apply writes, before it reads any of them.
+
+    Taken once, up front and in one order (`entry_crud.lock_days`), rather than
+    by `upsert_checklist_values` category by category as the loop reaches it:
+    two applies naming the same categories in different orders would otherwise
+    hold one day each and wait for the other. Up front also means the day's row
+    found for a metric and the ticks merged onto are read after the last
+    concurrent press committed — not before it, which would add a second row
+    for the day or write a box back to what it said a moment earlier.
+
+    Public because the chat card calls it before it writes a day plan: a press
+    holding the day may go on to close a line of that plan, and the card must
+    not be holding the plan's rows while it queues for the day.
+    """
+    await entry_crud.lock_days(
+        db,
+        [op.category_id for op in request.metrics]
+        + [op.category_id for op in request.checklist],
+        request.entry_date,
+    )
+
+
 async def apply_daily_summary(
     db: AsyncSession,
     request: DailySummaryApplyRequest,
@@ -470,6 +498,7 @@ async def apply_daily_summary(
     journal_entry_id: int | None = None
 
     try:
+        await lock_summary_days(db, request)
         for op in request.metrics:
             problem = _validate_one(op, categories_by_id)
             if problem is not None:
@@ -500,17 +529,9 @@ async def apply_daily_summary(
             # it. Reading it here also means the merge sees the metrics' own
             # entry when a category has both.
             #
-            # Accepted risk, deliberately not locked: a hand tick committed
-            # between this read and the write below is lost. The window is the
-            # few milliseconds of one apply, the collision needs the same
-            # category on the same date from two devices at once, and the loss
-            # is one box a user can see is unticked and tick again. A
-            # `SELECT ... FOR UPDATE` on the day's entry would close it at the
-            # cost of holding a row lock across the whole apply — including the
-            # journal write and the LLM-free but still multi-statement tail —
-            # which trades a rare lost tick for a common lock wait. Revisit if
-            # the app ever gains concurrent writers per user (background sync,
-            # a second client applying days automatically).
+            # Read after `lock_summary_days` took this day at the top: a box a
+            # button ticked while this apply queued is already in `current`,
+            # and no press can tick one between this read and the write below.
             current = await entry_crud.get_checklist_state(
                 db, category_id, request.entry_date
             )

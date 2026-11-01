@@ -7,6 +7,8 @@
 # summary: PHASE-03/187 lets that day plan land on a day that already has one — the server names the operation a draft or a rewrite by the state of the day, the canon is still judged twice, and one card rewrites the day exactly once
 # summary: PHASE-03/116 opens the answer row as `streaming` before generation (it is also the lock that makes a second POST a 409), closes it from `finally` on every exit, refuses with 502 when the backend dies before the first frame, and unsticks a dialogue by a reset handle when the worker died with it
 # summary: PHASE-03/197 gives DELETE the same row-locked streaming-turn guard, so a second browser tab cannot erase a conversation while its answer is still being written
+# [review:need-review] 312
+# summary: #312 — the card that writes a day plan and its numbers or ticks holds the days of those categories before it writes the plan
 """
 Ручки разговора.
 
@@ -1357,6 +1359,12 @@ async def apply_plan(
                     journal_entry_id=replayed.journal_entry_id,
                     applied_operations=_applied_operations(request, payload),
                 )
+
+        if request is not None:
+            # The days first, the plan second (#312): a press holding a day may
+            # close a line of this plan, and the card must not be holding the
+            # plan's rows while it queues for that day.
+            await daily_summary_crud.lock_summary_days(db, request)
 
         if payload.day_plan and stored.day_plan is not None:
             day_plan_id = await _write_day_plan(db, stored.entry_date, stored.day_plan)

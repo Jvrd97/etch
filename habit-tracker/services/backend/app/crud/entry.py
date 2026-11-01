@@ -3,8 +3,8 @@
 # [review:need-review] 309
 # summary: #309 — the canonical entry and the ticks of the day are read for many categories at once (`checklist_entry_ids`, `get_checklist_states`), the one-category readers ask the batch; create_entry reads the written row back once, without a refresh before the select
 # [review:need-review] 312
-# summary: #312 — `lock_day` serialises the writers of one category's day (`pg_advisory_xact_lock`), and `upsert_checklist_values` takes it before it looks for the day's row, so two ticks at once cannot both create one
-from collections.abc import Collection
+# summary: #312 — `lock_day` serialises the writers of one category's day (`pg_advisory_xact_lock`), `lock_days` takes several in one fixed order, and `upsert_checklist_values` takes the day before it looks for the day's row, so two ticks at once cannot both create one
+from collections.abc import Collection, Iterable
 from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, and_, text
@@ -194,24 +194,42 @@ async def delete_entry(db: AsyncSession, entry_id: int) -> bool:
 
 async def lock_day(db: AsyncSession, category_id: int, entry_date: date) -> None:
     """
-    Занять день категории до конца транзакции: следующий писатель того же дня ждёт.
+    Hold one category's day until the transaction ends; the next writer of it waits.
 
-    Писатель дня читает строку дня и её значение, а потом пишет поверх. Два
-    таких писателя одновременно — два нажатия `+250`, двойной тап галки — оба
-    видят одно и то же «до»: прибавка теряется, а на пустом дне каждый создаёт
-    свою запись. Уникального ключа `(category_id, entry_date)` у `entries` нет и
-    быть не может — срыв намеренно пишет строку на каждое нажатие, — а
-    `FOR UPDATE` не на что ставить, пока строки дня нет. Поэтому день
-    занимается консультативной блокировкой по ключу «категория + дата».
+    A writer of the day reads the day's row and its value, then writes over it.
+    Two of them at once — two presses of `+250`, a double tap on a box — read the
+    same "before": a step is lost, and on an empty day each creates its own row.
+    `entries` has no unique `(category_id, entry_date)` and cannot have one (a
+    relapse appends a row per press on purpose), and `FOR UPDATE` has nothing to
+    lock while the day has no row yet. So the day is held by an advisory lock
+    keyed on category and date.
 
-    Блокировка транзакционная: снимается коммитом или откатом, забыть её снять
-    нельзя. Повторный захват в той же транзакции не ждёт, поэтому вызывать
-    можно из каждого писателя, не зная, занял ли день вызывающий. Читать строку
-    дня надо после этого вызова: при READ COMMITTED следующий запрос видит то,
-    что закоммитил предыдущий владелец.
+    The lock is transactional: commit or rollback releases it, so it cannot be
+    left behind. Taking it again in the same transaction does not wait, so every
+    writer can take it without knowing whether its caller already has. Read the
+    day after this call: under READ COMMITTED the next statement sees what the
+    previous holder committed.
+
+    A transaction that needs the days of several categories takes them through
+    `lock_days`, never one by one in its own order.
     """
     key = lock_key(f"entries.day:{category_id}:{entry_date.isoformat()}")
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+async def lock_days(
+    db: AsyncSession, category_ids: Iterable[int], entry_date: date
+) -> None:
+    """
+    Hold the day of several categories, always in ascending `category_id`.
+
+    One order for every transaction is what keeps two of them from waiting for
+    each other: taken in the order of the request, an apply naming `[A, B]` and
+    one naming `[B, A]` would each hold one day and queue for the other. A
+    single-category writer takes one lock and cannot close such a cycle.
+    """
+    for category_id in sorted(set(category_ids)):
+        await lock_day(db, category_id, entry_date)
 
 
 async def checklist_entry_ids(
@@ -314,8 +332,8 @@ async def upsert_checklist_values(
     `upsert_checklist_entry` для ручки `PUT /entries/checklist`, apply разбора
     дня для всего остального.
 
-    День занимается (`lock_day`) до поиска строки: иначе два одновременных
-    вызова на пустом дне создали бы по записи.
+    The day is taken (`lock_day`) before the row is looked for: two calls at
+    once on an empty day would otherwise create a row each.
     """
     await lock_day(db, category_id, entry_date)
     entry_id = await checklist_entry_id(db, category_id, entry_date)
