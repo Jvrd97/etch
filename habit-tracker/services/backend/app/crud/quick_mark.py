@@ -2,6 +2,8 @@
 # summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write, read back as the sets of one category's day with the flag that says which of them undo would accept
 # [review:need-review] 309
 # summary: #309 — the directory reads the state of the day of all its buttons in a fixed number of statements (`day_states`); the one-button `day_state` asks the same batch, so there is still one reading of «what does today say»
+# [review:need-review] 312
+# summary: #312 — presses of one button that arrive together do not lose each other: the numeric writer and undo take the day (`entry_crud.lock_day`) before they read it, and undo re-reads its event under the lock
 """
 What a quick mark means and where its value lands.
 
@@ -489,7 +491,12 @@ async def _write_number(
     `entry_crud.checklist_entry_id` — the one rule for "which row is the day" —
     so a quick mark, a tick and the day-summary apply all deepen the same row
     instead of racing to create three.
+
+    The day is taken (`entry_crud.lock_day`) before the read: two presses that
+    arrive together would otherwise both read the same total and the second
+    write would erase the first one's step.
     """
+    await entry_crud.lock_day(db, mark.category_id, on)
     entry_id = await entry_crud.checklist_entry_id(db, mark.category_id, on)
     if entry_id is None:
         entry = Entry(category_id=mark.category_id, entry_date=on)
@@ -944,7 +951,14 @@ async def undo_event(
     used, so an increment loses exactly the delta it added and a `set_value`
     returns to the figure it replaced — `delta` is the distance the stored value
     actually travelled, which is what makes both a single subtraction.
+
+    The day is taken (`entry_crud.lock_day`) before any of the three checks, and
+    the event is read again under it: a press or another undo committed while
+    this request waited has to be seen by the checks, or the undo would judge a
+    day that no longer exists and subtract from a total that has moved.
     """
+    await entry_crud.lock_day(db, mark.category_id, event.entry_date)
+    await db.refresh(event, ["undone_at"])
     if event.undone_at is not None:
         raise UndoRefused(
             UNDO_ALREADY_UNDONE,
