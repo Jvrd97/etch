@@ -150,12 +150,13 @@ struct TodayView: View {
                             sectionLabel("Habits")
                         }
                         ForEach(plainCategories) { category in
-                            habitCard(category)
+                            categoryCard(category)
                         }
                     }
                 }
                 .padding(DS.Spacing.lg)
             }
+            .scrollDismissesKeyboard(.interactively)
             .refreshable {
                 await reload()
             }
@@ -323,8 +324,23 @@ struct TodayView: View {
     private static let quickAddIconSize: CGFloat = 32
     private static let quickAddHitSize: CGFloat = 48
 
-    /// The whole card, its padding included, opens the form; the plus inside it is a button of its own
-    /// and takes its taps first.
+    /// A category counted in one number gets the input row of the web card; every other kind keeps the
+    /// row with the plus.
+    @ViewBuilder
+    private func categoryCard(_ category: CategoryDTO) -> some View {
+        if let field = TodayQuickAdd.numberField(for: category) {
+            TodayNumberCard(
+                category: category, field: field, summary: todaySummary(for: category),
+                hasEntries: hasEntries(category), hasPending: hasPendingEntry(category),
+                viewModel: viewModel
+            ) { openDaySheet(for: category) }
+        } else {
+            habitCard(category)
+        }
+    }
+
+    /// The whole card, its padding included, opens the day's records with the history under them (the
+    /// form is the sheet's «Добавить»); the plus inside it is a button of its own and takes its taps first.
     private func habitCard(_ category: CategoryDTO) -> some View {
         Card {
             HStack(spacing: DS.Spacing.sm) {
@@ -351,13 +367,13 @@ struct TodayView: View {
                 // One element for VoiceOver that opens the form; the plus beside it is another one.
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAction { selectedCategory = category }
+                .accessibilityAction { openDaySheet(for: category) }
                 .accessibilityIdentifier("today.card.\(category.id)")
                 quickAddButton(category)
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { selectedCategory = category }
+        .onTapGesture { openDaySheet(for: category) }
     }
 
     /// What the plus does is `TodayQuickAdd`'s call: add the step, ask for the amount, or open the form.

@@ -398,6 +398,23 @@ final class TodayViewModel: ObservableObject {
         todayEntries.filter { $0.categoryId == categoryID }
     }
 
+    /// The records of the category before today, a day at a time, the newest day first: what the card's
+    /// sheet shows under today's. Nil when the read fails, so the sheet can say so instead of showing an
+    /// empty history.
+    func historyDays(forCategory categoryID: Int) async -> [HistoryDay]? {
+        guard let api = apiProvider() else { return nil }
+        let today = todayString
+        do {
+            let entries = try await api.fetchEntries(categoryId: categoryID)
+            let earlier = entries.filter { $0.categoryId == categoryID && $0.entryDate < today }
+            return Dictionary(grouping: earlier, by: \.entryDate)
+                .map { HistoryDay(date: $0.key, entries: $0.value.sorted { $0.id > $1.id }) }
+                .sorted { $0.date > $1.date }
+        } catch {
+            return nil
+        }
+    }
+
     /// Avoid-streak numbers for the category, or nil when there is no card to show.
     func streak(forCategory categoryID: Int) -> CategoryStreakDTO? {
         streaks[categoryID]
@@ -625,19 +642,21 @@ final class TodayViewModel: ObservableObject {
     /// so one press is one entry; the save is the form save (one key per attempt, the outbox when the
     /// network is down). True when saved or queued.
     @discardableResult
-    func quickAdd(categoryID: Int) async -> Bool {
+    func quickAdd(categoryID: Int, amount typed: Double? = nil) async -> Bool {
         guard let category = categories.first(where: { $0.id == categoryID }),
               !quickAddingCategoryIDs.contains(categoryID) else { return false }
         let fieldID: Int
         let value: String
-        switch TodayQuickAdd.plan(for: category) {
-        case .step(let id, let amount):
+        switch (TodayQuickAdd.plan(for: category), typed) {
+        case (.step(let id, _), let amount?), (.amountSheet(let id), let amount?):
             (fieldID, value) = (id, TodayQuickAdd.formatAmount(amount))
-        case .check(let id):
+        case (.step(let id, let amount), nil):
+            (fieldID, value) = (id, TodayQuickAdd.formatAmount(amount))
+        case (.check(let id), _):
             // Today already holds the tick (a queued one too): a second tap writes nothing.
             if isTicked(categoryID: categoryID) { return false }
             (fieldID, value) = (id, "true")
-        case .amountSheet, .textSheet, .fullForm:
+        case (.amountSheet, nil), (.textSheet, _), (.fullForm, _):
             return false
         }
         quickAddingCategoryIDs.insert(categoryID)
@@ -746,4 +765,12 @@ private extension OutboxWrite {
             return nil
         }
     }
+}
+
+/// One day of a category's history.
+struct HistoryDay: Identifiable, Equatable {
+    let date: String
+    let entries: [EntryDTO]
+
+    var id: String { date }
 }

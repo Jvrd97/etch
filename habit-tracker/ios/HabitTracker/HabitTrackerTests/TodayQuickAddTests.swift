@@ -194,4 +194,30 @@ final class TodayQuickAddTests: XCTestCase {
         XCTAssertEqual(DayCalendar.month(containing: "2024-02-10").cells.compactMap { $0 }.count, 29)
         XCTAssertEqual(DayCalendar.day("2026-03-01", plusDays: -1), "2026-02-28")
     }
+
+    // MARK: Input row of the number card
+
+    func testAnEmptyInputRecordsTheStepOrOne() {
+        XCTAssertEqual(TodayQuickAdd.amount(from: "", step: 250), 250)
+        XCTAssertEqual(TodayQuickAdd.amount(from: "  ", step: nil), 1)
+    }
+
+    func testATypedNumberIsRecordedAsTyped() {
+        XCTAssertEqual(TodayQuickAdd.amount(from: "40", step: 250), 40)
+        XCTAssertEqual(TodayQuickAdd.amount(from: "0,5", step: nil), 0.5, "a comma is a point")
+        XCTAssertEqual(TodayQuickAdd.amount(from: "-100", step: 250), -100, "a negative takes a typo back")
+    }
+
+    func testZeroAndTextRecordNothing() {
+        XCTAssertNil(TodayQuickAdd.amount(from: "0", step: 250))
+        XCTAssertNil(TodayQuickAdd.amount(from: "abc", step: 250))
+        XCTAssertNil(TodayQuickAdd.amount(from: "inf", step: nil))
+    }
+
+    func testOnlyACategoryOfOneNumberGetsTheInputRow() {
+        XCTAssertEqual(TodayQuickAdd.numberField(for: category(fields: [field(id: 10)]))?.id, 10)
+        XCTAssertEqual(TodayQuickAdd.numberField(for: category(fields: [field(id: 10, steps: [250])]))?.id, 10)
+        XCTAssertNil(TodayQuickAdd.numberField(for: category(fields: [field(id: 10, type: .boolean)])))
+        XCTAssertNil(TodayQuickAdd.numberField(for: category(fields: [field(id: 10)], streakMode: "avoid")))
+    }
 }

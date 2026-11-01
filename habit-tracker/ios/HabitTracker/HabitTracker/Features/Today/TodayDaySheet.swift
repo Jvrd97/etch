@@ -1,5 +1,5 @@
 // [review:need-review] PHASE-01/210
-// summary: the day of one category behind a Today card — the quick-mark sets of the day (when a button answers for the category) above the day's records, a record deleted by swipe, a new record through the quick-entry sheet, and the buttons' totals re-read after anything that changed them
+// summary: the day of one category behind a Today card, with its earlier days under it as a history — the quick-mark sets of the day (when a button answers for the category) above the day's records, a record deleted by swipe, a new record through the quick-entry sheet, and the buttons' totals re-read after anything that changed them
 import SwiftUI
 
 struct TodayDaySheet: View {
@@ -9,6 +9,9 @@ struct TodayDaySheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var adding = false
+    /// Earlier days of the category; nil until the read answers or when it fails.
+    @State private var history: [HistoryDay]?
+    @State private var historyLoaded = false
 
     private var entries: [EntryDTO] {
         viewModel.entries(forCategory: target.categoryID)
@@ -34,6 +37,7 @@ struct TodayDaySheet: View {
                 } header: {
                     Text(target.mark == nil ? "Записи за сегодня" : "Записи за день")
                 }
+                historySections
                 if let message = viewModel.saveErrorMessage {
                     Section {
                         Text(message).foregroundStyle(DS.Palette.danger)
@@ -64,9 +68,34 @@ struct TodayDaySheet: View {
                 }
             }
             .onAppear { viewModel.saveErrorMessage = nil }
+            .task {
+                history = await viewModel.historyDays(forCategory: target.categoryID)
+                historyLoaded = true
+            }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    /// The days before today, each under its date; a failed read and an empty history say so.
+    @ViewBuilder
+    private var historySections: some View {
+        if let days = history, !days.isEmpty {
+            ForEach(days) { day in
+                Section(day.date) {
+                    ForEach(day.entries) { entry in
+                        entryRow(entry)
+                            .listRowBackground(DS.Palette.card)
+                    }
+                }
+            }
+        } else if historyLoaded {
+            Section("История") {
+                Text(history == nil ? "Не удалось загрузить историю." : "Раньше записей нет.")
+                    .foregroundStyle(DS.Palette.textSecondary)
+                    .listRowBackground(DS.Palette.card)
+            }
+        }
     }
 
     private func entryRow(_ entry: EntryDTO) -> some View {

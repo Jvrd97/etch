@@ -57,6 +57,31 @@ enum TodayQuickAdd: Equatable {
         return values
     }
 
+    /// The number field a card with its own input row writes to: a category whose plus takes a number,
+    /// with a step or without one. Nil for ticks, text, avoid cards and the full form.
+    static func numberField(for category: CategoryDTO) -> FieldDTO? {
+        switch plan(for: category) {
+        case .step(let fieldID, _), .amountSheet(let fieldID):
+            return category.fields.first { $0.id == fieldID }
+        case .check, .textSheet, .fullForm:
+            return nil
+        }
+    }
+
+    /// What a tap of the plus records: the typed number (a comma read as a point), or the field's step —
+    /// one when it has none — while the input is empty. Nil for zero and for text that is no number:
+    /// there is nothing worth writing, and an error for a stray key would be noise.
+    static func amount(from text: String, step: Double?) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return step ?? implicitAmount }
+        guard let amount = Double(trimmed.replacingOccurrences(of: ",", with: ".")),
+              amount.isFinite, amount != 0 else { return nil }
+        return amount
+    }
+
+    /// Recorded by an empty plus when the field has no step: one glass, one cigarette.
+    static let implicitAmount = 1.0
+
     /// «250», «0.5»: no trailing «.0» on a whole step, the same in every locale.
     static func formatAmount(_ amount: Double) -> String {
         let rounded = (amount * 10_000).rounded() / 10_000

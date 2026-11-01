@@ -29,6 +29,8 @@ protocol TodayScreenAPI: TodayAPI {
     func fetchTable(dateFrom: String, dateTo: String) async throws -> TableResponseDTO
     func updateEntry(id: Int, _ payload: EntryUpdateDTO) async throws -> EntryDTO
     func deleteEntry(id: Int) async throws
+    /// Every record of one category, all days: the history behind a card.
+    func fetchEntries(categoryId: Int?) async throws -> [EntryDTO]
 }
 
 extension TodayScreenAPI {

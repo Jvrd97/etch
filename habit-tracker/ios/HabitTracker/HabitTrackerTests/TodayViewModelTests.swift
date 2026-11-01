@@ -77,6 +77,14 @@ final class MockTodayAPI: TodayScreenAPI {
         return try answer.get()
     }
 
+    var historyResult: Result<[EntryDTO], Error> = .success([])
+    private(set) var historyCategoryIDs: [Int?] = []
+
+    func fetchEntries(categoryId: Int?) async throws -> [EntryDTO] {
+        historyCategoryIDs.append(categoryId)
+        return try historyResult.get()
+    }
+
     func createEntry(_ entry: EntryCreateDTO) async throws -> EntryDTO {
         try await createEntry(entry, idempotencyKey: nil)
     }
@@ -253,6 +261,32 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(api.fetchedEntryRanges.count, 1)
         XCTAssertEqual(api.fetchedEntryRanges.first?.start, Self.fixedToday)
         XCTAssertEqual(api.fetchedEntryRanges.first?.end, Self.fixedToday)
+    }
+
+    func testHistoryListsEarlierDaysOfTheCategoryNewestFirst() async {
+        let api = MockTodayAPI()
+        func entry(_ id: Int, _ category: Int, _ day: String) -> EntryDTO {
+            EntryDTO(id: id, categoryId: category, entryDate: day, values: [EntryValueDTO(fieldId: 10, value: "\(id)")])
+        }
+        api.historyResult = .success([
+            entry(1, 1, "2026-07-20"), entry(2, 1, Self.fixedToday), entry(3, 1, "2026-07-22"),
+            entry(4, 1, "2026-07-22"), entry(5, 2, "2026-07-21"),
+        ])
+
+        let days = await makeViewModel(api: api).historyDays(forCategory: 1)
+
+        XCTAssertEqual(api.historyCategoryIDs, [1])
+        XCTAssertEqual(days?.map(\.date), ["2026-07-22", "2026-07-20"])
+        XCTAssertEqual(days?.first?.entries.map(\.id), [4, 3])
+    }
+
+    func testHistoryIsNilWhenTheReadFails() async {
+        let api = MockTodayAPI()
+        api.historyResult = .failure(APIClientError.invalidResponse)
+
+        let days = await makeViewModel(api: api).historyDays(forCategory: 1)
+
+        XCTAssertNil(days)
     }
 
     func testSaveEntryPostsTodayPayloadAndAppendsEntry() async {
@@ -1133,6 +1167,35 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertNotNil(api.createKeys.first ?? nil, "a lost answer must not become a second step")
         XCTAssertEqual(viewModel.entries(forCategory: 1), [savedEntry()])
         XCTAssertTrue(viewModel.quickAddingCategoryIDs.isEmpty)
+    }
+
+    func testPlusRecordsTheTypedAmountInPlaceOfTheStepAndWithoutAnyStep() async {
+        let api = MockTodayAPI()
+        let bare = CategoryDTO(
+            id: 1, name: "Pushups", icon: nil, color: nil, displayMode: "form", streakMode: "build", isActive: true,
+            fields: [FieldDTO(id: 10, name: "Count", fieldType: .number, isRequired: true, defaultValue: nil, options: nil, order: 0)]
+        )
+        api.categoriesResult = .success([bare])
+        api.createEntryResult = .success(savedEntry(value: "40"))
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        let saved = await viewModel.quickAdd(categoryID: 1, amount: 40)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "40")])
+    }
+
+    func testTypedAmountWinsOverTheStep() async {
+        let api = MockTodayAPI()
+        api.categoriesResult = .success([waterWithStep])
+        api.createEntryResult = .success(savedEntry(value: "7"))
+        let viewModel = makeViewModel(api: api)
+        await viewModel.load()
+
+        await viewModel.quickAdd(categoryID: 1, amount: 7)
+
+        XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "7")])
     }
 
     func testAPlusTapWhileTheFirstIsBeingSavedIsDropped() async {
