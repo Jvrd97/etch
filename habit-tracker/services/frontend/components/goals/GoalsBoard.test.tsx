@@ -1,8 +1,9 @@
-// [review:need-review] PHASE-03/93
+// [review:need-review] PHASE-03/93, #311
+// summary: #311 round 3 — a failed re-read keeps the board on screen and says so above it
 // summary: component tests for the goal board — six levels, ten milestones and five goals of the quarter are on the screen, and the chip by which M10 waits for M9 reads differently once M9 is closed
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import type { GoalsPayload, Milestone, MilestoneStatus } from '@/lib/api';
 
 function milestone(code: string, overrides: Partial<Milestone> = {}): Milestone {
@@ -131,5 +132,15 @@ describe('GoalsBoard', () => {
     render(<GoalsBoard />);
 
     expect(screen.getByText(/goal\.md/)).toBeDefined();
+  });
+});
+
+describe('GoalsBoard: a failed re-read', () => {
+  it('keeps the board on screen and says the re-read failed', () => {
+    state = { ...state, error: 'offline' };
+    render(<GoalsBoard />);
+
+    expect(screen.getByRole('heading', { name: 'Уровни' })).toBeDefined();
+    expect(within(screen.getByRole('alert')).getByText('offline')).toBeDefined();
   });
 });

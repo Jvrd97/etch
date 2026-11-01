@@ -357,7 +357,14 @@ export function useQueryData<T>(key: string): T | undefined {
   return state.status === 'ready' ? state.data : undefined;
 }
 
-/** A state whose data landed before `before` is shown as if there were no data. */
+/**
+ * A state whose data landed before `before` is shown as if there were no data.
+ *
+ * Stale data with no request out and no error reads as `loading`, not as an
+ * empty screen: the reader's mount effect starts that request (stale data is
+ * older than REVALIDATE_AFTER_MS by far), so the wait is real and ends in an
+ * answer or an error.
+ */
 function distrustOlder<T>(state: QueryState<T>, before: number): QueryState<T> {
   if (state.status !== 'ready' || state.answeredAt >= before) return state;
   if (state.refreshing || state.error === null || state.error === undefined) return LOADING;

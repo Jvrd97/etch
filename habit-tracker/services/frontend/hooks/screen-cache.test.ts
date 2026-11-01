@@ -1,5 +1,5 @@
 // [review:need-review] #311
-// summary: #311 round 2 — a cached «today» (the day, the server's day) older than DAY_TRUST_MS is not drawn, a failed re-read is reported by every screen hook while its data stays, and a Today snapshot of a day the server no longer names is not writable on a re-visit
+// summary: #311 round 3 — a cached «today» of the day screen is drawn at once but not written into until the server confirms it (same day unlocks, D+1 moves the screen, a failed re-read keeps it locked); the server's day older than DAY_TRUST_MS is not drawn, a failed re-read is reported by every screen hook while its data stays, and a Today snapshot of a day the server no longer names is not writable on a re-visit
 // summary: tests across the screen hooks on the shared read cache — every hook of the registry draws its second visit from the cache with no spinner while the server does not answer, Today and its buttons read the directory once and both follow the re-read when the tab comes back, and the end of a session (logout, 401) leaves nothing to draw
 
 import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
@@ -65,6 +65,9 @@ const MARK = {
 const CATEGORIES: Category[] = [];
 const ENTRIES: Entry[] = [];
 const DAY_DETAIL = { day: { date: DAY } } as unknown as DayDetail;
+const NEXT_DAY_DETAIL = { day: { date: '2026-11-02' } } as unknown as DayDetail;
+let todayDetail = DAY_DETAIL;
+let setMark: ReturnType<typeof mock>;
 const WEEK = { iso_code: '2026-W44', starts_on: '2026-10-26', ends_on: DAY } as unknown as Week;
 const DAYS: DayListItem[] = [];
 const GOALS = { levels: [] } as unknown as GoalsPayload;
@@ -99,7 +102,8 @@ mock.module('@/lib/api', () => ({
   dayAPI: {
     ...realApi.dayAPI,
     open: () => answer(DAY_DETAIL),
-    openToday: () => answer(DAY_DETAIL),
+    openToday: () => answer(todayDetail),
+    setMark: (...args: unknown[]) => setMark(...args),
     violations: () => answer([]),
   },
   weeksAPI: { ...realApi.weeksAPI, getCurrent: () => answer(WEEK) },
@@ -120,6 +124,9 @@ const { useCategories } = await import('./useCategories');
 const { useQuickMarks } = await import('./useQuickMarks');
 const { useDashboardSummary } = await import('./useDashboardSummary');
 const { useDay } = await import('./useDay');
+const { useDayMarks } = await import('./useDayMarks');
+const NO_DAY_MARKS: never[] = [];
+const NO_KINDS = new Map<string, string>();
 const { useWeek } = await import('./useWeek');
 const { useDays } = await import('./useDays');
 const { useGoals } = await import('./useGoals');
@@ -135,6 +142,8 @@ beforeEach(() => {
   dayModeNow = DAY_MODE;
   listMarks = mock(() => answer([MARK]));
   createEntry = mock(() => new Promise(() => {}));
+  todayDetail = DAY_DETAIL;
+  setMark = mock(() => Promise.resolve({ item_id: 'a', state: 'done', note: null }));
 });
 
 afterEach(() => {
@@ -264,40 +273,88 @@ async function later<T>(ms: number, body: () => T | Promise<T>): Promise<T> {
 }
 
 describe('a cached «today» goes stale with the clock', () => {
-  it('useDay(null) does not draw a cached today older than the trust window', async () => {
-    const first = renderHook(() => useDay(null, true));
-    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
+  /** The day screen's read and its marks, as the screen wires them. */
+  function useTodayScreen() {
+    const day = useDay(null, true);
+    const marks = useDayMarks(day.writeDate, NO_DAY_MARKS, NO_KINDS);
+    return { day, marks };
+  }
+
+  async function visitedEarlier() {
+    const first = renderHook(useTodayScreen);
+    await waitFor(() => expect(first.result.current.day.writeDate).toBe(DAY));
     first.unmount();
+  }
+
+  it('(a) a re-visit after the window draws the cached today at once, and a mark waits', async () => {
+    await visitedEarlier();
     server = 'hangs';
 
-    await later(DAY_TRUST_MS + 1_000, () => {
-      const { result } = renderHook(() => useDay(null, true));
-      expect(result.current.loading).toBe(true);
-      expect(result.current.detail).toBeNull();
+    await later(DAY_TRUST_MS + 1_000, async () => {
+      const frames: (DayDetail | null)[] = [];
+      const { result } = renderHook(() => {
+        const screen = useTodayScreen();
+        frames.push(screen.day.detail);
+        return screen;
+      });
+      expect(frames[0]).toEqual(DAY_DETAIL);
+      expect(result.current.day.writeDate).toBe('');
+
+      await act(async () => {
+        result.current.marks.setState('a', 'done');
+      });
+      expect(setMark).not.toHaveBeenCalled();
     });
   });
 
-  it('useDay(null) still draws a cached today inside the window', async () => {
-    const first = renderHook(() => useDay(null, true));
-    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
-    first.unmount();
-    server = 'hangs';
+  it('(b) the server confirming the same day unlocks the marks', async () => {
+    await visitedEarlier();
 
-    const { result } = renderHook(() => useDay(null, true));
-    expect(result.current.detail).toEqual(DAY_DETAIL);
+    await later(DAY_TRUST_MS + 1_000, async () => {
+      const { result } = renderHook(useTodayScreen);
+      await waitFor(() => expect(result.current.day.writeDate).toBe(DAY));
+      await act(async () => {
+        result.current.marks.setState('a', 'done');
+      });
+      expect(setMark).toHaveBeenCalledTimes(1);
+      expect(setMark.mock.calls[0][0]).toBe(DAY);
+    });
   });
 
-  it('useDay(null) says so, instead of drawing yesterday, when the re-read of a stale today fails', async () => {
-    const first = renderHook(() => useDay(null, true));
-    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
-    first.unmount();
+  it('(c) the server naming the next day moves the screen there, and nothing goes to yesterday', async () => {
+    await visitedEarlier();
+    todayDetail = NEXT_DAY_DETAIL;
+
+    await later(DAY_TRUST_MS + 1_000, async () => {
+      const { result } = renderHook(useTodayScreen);
+      await act(async () => {
+        result.current.marks.setState('a', 'done');
+      });
+      await waitFor(() => expect(result.current.day.writeDate).toBe(NEXT_DAY));
+      expect(result.current.day.detail).toEqual(NEXT_DAY_DETAIL);
+      expect(setMark.mock.calls.map((call) => call[0])).not.toContain(DAY);
+    });
+  });
+
+  it('(d) a failed re-read keeps the day on screen, says so, and keeps the marks locked', async () => {
+    await visitedEarlier();
     server = 'fails';
 
     await later(DAY_TRUST_MS + 1_000, async () => {
-      const { result } = renderHook(() => useDay(null, true));
-      await waitFor(() => expect(result.current.error).toBe('offline'));
-      expect(result.current.detail).toBeNull();
+      const { result } = renderHook(useTodayScreen);
+      await waitFor(() => expect(result.current.day.error).toBe('offline'));
+      expect(result.current.day.detail).toEqual(DAY_DETAIL);
+      expect(result.current.day.writeDate).toBe('');
+      await act(async () => {
+        result.current.marks.setState('a', 'done');
+      });
+      expect(setMark).not.toHaveBeenCalled();
     });
+  });
+
+  it('a named date is written into at once, cached or not', async () => {
+    const { result } = renderHook(() => useDay(DAY, true));
+    await waitFor(() => expect(result.current.writeDate).toBe(DAY));
   });
 
   it('useServerDay neither shows nor settles a cached day older than the window', async () => {

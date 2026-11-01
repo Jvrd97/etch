@@ -2,9 +2,9 @@
 // [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/147, #311
 // summary: day-screen state for both shells — one fetch of the day, the rule it is judged by and its marks, with "today" left to the server so the browser calendar never decides which day is open, an explicit flag saying a person is looking at it, the rules this day's plan broke fetched beside the day so a `warn` is visible on the line it belongs to, and a reload of a day already on screen kept silent instead of replacing it with a spinner
 
-// summary: #311 round 2 — a cached «today» older than DAY_TRUST_MS is not drawn, a failed re-read is reported, and the key tells a read from an opening
+// summary: #311 round 3 — a cached «today» is drawn at once, but `writeDate` stays '' (writes locked) until the server has confirmed the day within DAY_TRUST_MS; a failed re-read is reported, and the key tells a read from an opening
 // summary: #311 — the day and its violations are two keys of the shared read cache: a re-visit draws the day at once and re-reads it behind the screen, and the first frame no longer waits for the violations
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { dayAPI, type DayDetail, type PlanViolation } from '@/lib/api';
 import { LOAD_DAY_ERROR } from '@/lib/day-format';
 import { errorMessage, useQuery } from '@/lib/query-cache';
@@ -39,6 +39,16 @@ export interface UseDayResult {
   violations: PlanViolation[];
   /** Re-fetch the day, e.g. after it was edited elsewhere. */
   reload: () => void;
+  /**
+   * The date writes may go to, or '' while they must wait.
+   *
+   * A named date is always writable. «Today» drawn from the cache is shown at
+   * once, but it may be yesterday (the day turns at 04:00): its date is offered
+   * to writers only once the server confirmed it within DAY_TRUST_MS, so a tick
+   * in the first frame cannot land in a day that has ended. A re-read that
+   * failed leaves it locked.
+   */
+  writeDate: string;
 }
 
 /**
@@ -55,17 +65,15 @@ export interface UseDayResult {
  * anything could establish.
  */
 export function useDay(date: string | null, opened = false): UseDayResult {
-  // `today` is a key of its own: which day it is stays the server's answer, so a
-  // cached «today» older than DAY_TRUST_MS is not drawn — after 04:00 it is
-  // yesterday, and the marks of the screen would be written into it.
-  const day = useQuery(
-    `day:${date ?? 'today'}${opened ? ':opened' : ''}`,
-    () =>
-      date === null
-        ? opened ? dayAPI.openToday() : dayAPI.getToday()
-        : opened ? dayAPI.open(date) : dayAPI.get(date),
-    { trustFor: date === null ? DAY_TRUST_MS : undefined }
+  // `today` is a key of its own: which day it is stays the server's answer. A
+  // cached «today» is drawn at once (the screen opens instantly) and writes wait
+  // for the server's confirmation — see `writeDate`.
+  const day = useQuery(`day:${date ?? 'today'}${opened ? ':opened' : ''}`, () =>
+    date === null
+      ? opened ? dayAPI.openToday() : dayAPI.getToday()
+      : opened ? dayAPI.open(date) : dayAPI.get(date)
   );
+  const [mountedAt] = useState(() => Date.now());
   const detail = day.state.status === 'ready' ? day.state.data : null;
   const shownDate = detail?.day.date ?? null;
   // Its own key and its own failure, swallowed on purpose: the day is drawn without
@@ -89,5 +97,11 @@ export function useDay(date: string | null, opened = false): UseDayResult {
     error: errorMessage(day.state, LOAD_DAY_ERROR),
     violations: found.state.status === 'ready' ? found.state.data : NO_VIOLATIONS,
     reload,
+    writeDate:
+      detail === null || day.state.status !== 'ready'
+        ? ''
+        : date !== null || day.state.answeredAt >= mountedAt - DAY_TRUST_MS
+          ? detail.day.date
+          : '',
   };
 }
