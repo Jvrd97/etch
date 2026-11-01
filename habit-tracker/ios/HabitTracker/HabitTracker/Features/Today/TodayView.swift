@@ -3,6 +3,8 @@
 // summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, ticks the box, or opens the one-field sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
 // summary: PHASE-03/263 — the empty screen shows the refresh failure line
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached day and buttons are drawn before the first frame, and coming back to the tab reads again only what is not recent
 import SwiftUI
 
 /// What a card of Today opened: the day of one category — its sets (when a button answers for it)
@@ -41,12 +43,19 @@ struct TodayView: View {
         }
         .navigationTitle("Today")
         .dsScreenBackground()
+        .onAppear {
+            // Before the first frame: the cached day is drawn instead of the loader.
+            viewModel.showCached()
+            quickMarks.showCached()
+        }
         .task {
             // A tap or an undo moved the day of a category: read its records and streak again.
             quickMarks.onDayChanged = { [weak viewModel] categoryID in
                 Task { await viewModel?.reloadAfterMark(categoryID: categoryID) }
             }
-            await reload()
+            async let today: Void = viewModel.appear()
+            async let marks: Void = quickMarks.appear()
+            _ = await (today, marks)
         }
         .sheet(item: $selectedCategory) { category in
             QuickEntrySheet(category: category, viewModel: viewModel)

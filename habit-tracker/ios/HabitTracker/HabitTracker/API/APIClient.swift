@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/36-ios-category-charts, PHASE-01/38-ios-avoid-streaks, PHASE-01/37-ios-insights, PHASE-01/39-server-idempotency-key-entries, PHASE-01/208, PHASE-03/225
 // summary: URLSession async/await HTTP client; /api/v1 JSON; EntriesAPI/CategoryDetailAPI refine a shared EntryMutationAPI base (list/patch/delete); CategoryDetailAPI exposes GET /table; TodayAPI adds GET /categories/{id}/streak; InsightsAPI adds POST/GET /insights; createEntry forwards an optional Idempotency-Key header; request helpers are internal for APIClient+<Feature>.swift extensions; APIClient.live() is the single production factory
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — `send` notes every request that is not a GET in `ServerWrites` when it ends, so cached snapshots read before it are not taken as recent
 import Foundation
 import os
 
@@ -393,6 +395,8 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
     /// Executes the request, maps transport/status errors, returns the body on 2xx.
     @discardableResult
     func send(_ request: URLRequest) async throws -> Data {
+        // A write that ended (answered or not) may have changed what any cached snapshot shows.
+        defer { if request.httpMethod != "GET" { ServerWrites.note() } }
         let data: Data
         let response: URLResponse
         do {

@@ -1,5 +1,8 @@
 // [review:need-review] PHASE-01/06-ios-table-view, PHASE-01/11-ios-read-cache, PHASE-01/208
 // summary: Table screen state — loads GET /table (default 30 days) through the read cache (serves last window + offline flag when the network is down), paginates older, fetches cell details
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — coming back to a loaded grid folds the fresh recent window into it: the older pages and the start of the history stay; only pull to refresh replaces the grid
+// summary: PHASE-03/310 — the grid opens from the cached window (no loader), an appearance reads again only when the window is not recent, a re-read keeps the grid and says its failure as a line, an older answer never replaces a newer one
 import Foundation
 
 @MainActor
@@ -19,6 +22,8 @@ final class TableViewModel: ObservableObject {
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
     @Published var loadOlderErrorMessage: String?
+    /// Why the last re-read of a loaded grid failed; the grid stays.
+    @Published private(set) var refreshError: String?
 
     static let notConfiguredMessage = "Set the server address in Settings"
     /// Number of days fetched per page (initial load and each "load older" step).
@@ -38,6 +43,9 @@ final class TableViewModel: ObservableObject {
     private var categories: [TableCategoryMetaDTO] = []
     /// Start of the oldest range already fetched; the next page ends the day before it.
     private var earliestLoadedFrom: Date?
+    /// Loads, numbered as they are sent, and the newest one shown: an older answer never replaces a newer grid.
+    private var loadsSent = 0
+    private var loadShown = 0
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
@@ -78,16 +86,36 @@ final class TableViewModel: ObservableObject {
         )
     }
 
-    /// Loads the most recent `pageDays` days, replacing any previously loaded data.
+    /// The screen came on: the cached window goes on screen at once, the server is asked only when it is not recent.
+    /// A loaded grid takes the fresh window into what it holds: pages read with «load older» stay.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load(merging: state == .loaded)
+    }
+
+    /// Puts the cached window on screen while nothing is shown, without the network.
+    func showCached() {
+        guard state != .loaded, let cached = cache.peek(TableResponseDTO.self, key: Self.cacheKey) else { return }
+        show(cached.value, from: pageStart(endingAt: now()))
+        state = .loaded
+    }
+
+    /// Loads the most recent `pageDays` days, replacing any previously loaded data (pull to refresh, retry);
+    /// `merging` folds them into the loaded days instead and keeps the older pages.
     /// Runs through the read cache: a successful fetch refreshes the grid and the cache;
     /// when the network is down the last cached window is shown with an offline timestamp.
-    func load() async {
-        state = .loading
+    /// A grid on screen stays while it is read again.
+    func load(merging: Bool = false) async {
+        let showsData = state == .loaded
+        if !showsData { state = .loading }
         loadOlderErrorMessage = nil
         guard let api = apiProvider() else {
-            state = .failure(Self.notConfiguredMessage)
+            fail(Self.notConfiguredMessage, showsData: showsData)
             return
         }
+        loadsSent += 1
+        let load = loadsSent
         let to = now()
         let from = pageStart(endingAt: to)
         do {
@@ -97,6 +125,8 @@ final class TableViewModel: ObservableObject {
                     dateTo: self.dateFormatter.string(from: to)
                 )
             }
+            guard load > loadShown else { return }
+            loadShown = load
             let response: TableResponseDTO
             switch outcome {
             case .fresh(let value):
@@ -106,18 +136,40 @@ final class TableViewModel: ObservableObject {
                 response = value
                 offlineAsOf = updatedAt
             }
-            categories = response.categories
-            loadedDays = Dictionary(
-                response.days.map { ($0.date, $0) }, uniquingKeysWith: { _, new in new }
-            )
-            earliestLoadedFrom = from
-            rebuildGrid()
+            if merging { merge(response, from: from, to: to) } else { show(response, from: from) }
+            refreshError = nil
             state = .loaded
         } catch let error as APIClientError {
-            state = .failure(error.userMessage)
+            guard load > loadShown else { return }
+            fail(error.userMessage, showsData: showsData)
         } catch {
-            state = .failure("Unexpected error")
+            guard load > loadShown else { return }
+            fail("Unexpected error", showsData: showsData)
         }
+    }
+
+    private func show(_ response: TableResponseDTO, from: Date) {
+        categories = response.categories
+        loadedDays = Dictionary(
+            response.days.map { ($0.date, $0) }, uniquingKeysWith: { _, new in new }
+        )
+        earliestLoadedFrom = from
+        rebuildGrid()
+    }
+
+    /// The recent window replaces the days of its own range only; days before it and the start of the history stay.
+    private func merge(_ response: TableResponseDTO, from: Date, to: Date) {
+        let first = dateFormatter.string(from: from)
+        let last = dateFormatter.string(from: to)
+        loadedDays = loadedDays.filter { $0.key < first || $0.key > last }
+        for day in response.days { loadedDays[day.date] = day }
+        if !response.categories.isEmpty { categories = response.categories }
+        earliestLoadedFrom = min(earliestLoadedFrom ?? from, from)
+        rebuildGrid()
+    }
+
+    private func fail(_ message: String, showsData: Bool) {
+        if showsData { refreshError = message } else { state = .failure(message) }
     }
 
     /// Fetches the previous `pageDays` days and merges them into the grid.

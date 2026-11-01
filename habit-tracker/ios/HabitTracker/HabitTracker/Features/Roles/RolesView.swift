@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/266
 // summary: Roles screen (More → Роли) — the summary for week/month/quarter with the Friday report and a copy button, today's share bar per role with the target always called a hypothesis, the acts of the day, the minutes form with its blocks (confirm an automatic one, remove), the act form, and a link to the markup rules; loading, error with retry, empty directory, offline note over a cached day; pull to refresh; no navigation stack of its own
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached day is drawn before the first frame
 import SwiftUI
 import UIKit
 
@@ -35,6 +37,7 @@ struct RolesView: View {
                 .accessibilityIdentifier("roles.rules")
             }
         }
+        .onAppear { viewModel.showCached() }
         .task { await viewModel.appear() }
     }
 

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/304
 // summary: Dashboard state — the server's summary of the week or the month through the read cache (each period under its own key; offline answers carry their moment), the period switch with a late answer of a period left behind dropped, a return to the screen and pull to refresh read in place, errors in Russian; the day is the server's `today`, the phone's clock is never asked
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — each period opens from its cached answer (on the screen and on the switch, no loader), an appearance reads again only when the answer is not recent
 import Foundation
 
 @MainActor
@@ -55,9 +57,12 @@ final class DashboardViewModel: ObservableObject {
         await read(silent: false)
     }
 
-    /// The screen came on again. With numbers already shown they are read in place:
-    /// a loader over what the person was reading would be a step back.
+    /// The screen came on, or the period switched. The cached answer goes on screen at once; with numbers
+    /// shown they are read in place (a loader over what the person was reading would be a step back), and
+    /// not at all while recent.
     func appear() async {
+        showCached()
+        if summary != nil, cache.isRecent(key: Self.cacheKey(for: period)) { return }
         if summary == nil {
             await load()
         } else {
@@ -71,8 +76,9 @@ final class DashboardViewModel: ObservableObject {
     }
 
     /// Switches the window at once and drops the numbers of the other period: under «Месяц» they would be a lie.
+    /// The cached answer of the new period takes their place in the same frame.
     /// Returns whether a read is needed. The segment calls this in its setter so it never bounces back for a frame;
-    /// the read follows with `load()`. Bumping the generation keeps an answer still on its way for the old period off the screen.
+    /// the read follows with `appear()`. Bumping the generation keeps an answer still on its way for the old period off the screen.
     func switchTo(_ newPeriod: DashboardPeriod) -> Bool {
         guard newPeriod != period else { return false }
         period = newPeriod
@@ -80,11 +86,19 @@ final class DashboardViewModel: ObservableObject {
         offlineAsOf = nil
         refreshError = nil
         generation += 1
+        showCached()
         return true
     }
 
     func select(_ newPeriod: DashboardPeriod) async {
-        if switchTo(newPeriod) { await load() }
+        if switchTo(newPeriod) { await appear() }
+    }
+
+    /// Puts the cached answer of the period on screen while no numbers are shown, without the network.
+    func showCached() {
+        guard summary == nil, let cached = cache.peek(DashboardSummaryDTO.self, key: Self.cacheKey(for: period)) else { return }
+        summary = cached.value
+        state = .loaded
     }
 
     private func read(silent: Bool) async {

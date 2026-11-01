@@ -1,5 +1,8 @@
 // [review:need-review] PHASE-01/216, PHASE-03/295
 // summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows; adding a goal of the quarter (a fresh read first, so the set that goes in the one PUT is the server's own and not the screen's; at most five; the read cache follows the write) and every failure said in Russian
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — the cache takes no board of a server the address moved away from
+// summary: PHASE-03/310 — the board opens from its cached copy (no loader), an appearance reads again only when the copy is not recent
 import Foundation
 
 /// Words and small rules of the goal board, the same as the web's `GoalsBoard.tsx`.
@@ -138,20 +141,35 @@ final class GoalsViewModel: ObservableObject {
         return board.levels.isEmpty && board.milestones.isEmpty && board.goals.isEmpty
     }
 
+    /// The screen came on: the cached board goes on screen at once, the server is asked only when it is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached board on screen while nothing is shown, without the network.
+    func showCached() {
+        guard state != .loaded, let cached = cache.peek(GoalsBoardDTO.self, key: Self.cacheKey) else { return }
+        board = cached.value
+        state = .loaded
+    }
+
     func load() async {
         // A board already on screen stays while it is read again: pull to refresh must not blank it.
         if state != .loaded { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(GoalsFormat.notConfiguredMessage)
+            if board == nil { state = .failure(GoalsFormat.notConfiguredMessage) } else { errorMessage = GoalsFormat.notConfiguredMessage }
             return
         }
         readsSent += 1
         let read = readsSent
+        let sentUnder = cache.scope
         do {
             let outcome = try await cache.load(key: Self.cacheKey) { try await api.fetchGoals() }
             guard read > readShown else {
                 // The read cache took this answer on its way here; a newer board is already on screen.
-                restoreCache()
+                restoreCache(sentUnder: sentUnder)
                 return
             }
             readShown = read
@@ -225,6 +243,7 @@ final class GoalsViewModel: ObservableObject {
         }
         isAdding = true
         defer { isAdding = false }
+        let sentUnder = cache.scope
         let current: GoalsBoardDTO
         do {
             current = try await api.fetchGoals()
@@ -232,7 +251,7 @@ final class GoalsViewModel: ObservableObject {
             formError = GoalsFormat.message(for: error)
             return false
         }
-        adopt(current)
+        adopt(current, sentUnder: sentUnder)
         let taken = Set(current.goals.map(\.ord))
         guard let ord = (1...GoalsFormat.maxQuarterGoals).first(where: { !taken.contains($0) }) else {
             formError = GoalsFormat.tooManyGoalsRefusal
@@ -242,7 +261,7 @@ final class GoalsViewModel: ObservableObject {
             QuarterGoalInDTO(ord: $0.ord, textMd: $0.textMd, milestoneCode: $0.milestoneCode, status: $0.status)
         } + [QuarterGoalInDTO(ord: ord, textMd: trimmed, milestoneCode: nil, status: QuarterGoalStatus.open.rawValue)]
         do {
-            adopt(try await api.putQuarterGoals(quarter: current.quarter, goals: set))
+            adopt(try await api.putQuarterGoals(quarter: current.quarter, goals: set), sentUnder: sentUnder)
             errorMessage = nil
             return true
         } catch {
@@ -253,18 +272,18 @@ final class GoalsViewModel: ObservableObject {
 
     /// Makes an answer the server has just given the board: on screen, in the read cache, and newer
     /// than any read still in flight.
-    private func adopt(_ fresh: GoalsBoardDTO) {
+    private func adopt(_ fresh: GoalsBoardDTO, sentUnder: String) {
         readShown = readsSent
         board = fresh
         offlineAsOf = nil
-        restoreCache()
+        restoreCache(sentUnder: sentUnder)
     }
 
     /// Writes the board on screen back into the read cache. A read that was in flight while the
     /// board changed saves its older answer there when it lands; this puts the newer one back.
-    private func restoreCache() {
+    private func restoreCache(sentUnder: String) {
         guard let board, offlineAsOf == nil else { return }
-        cache.store.save(board, forKey: Self.cacheKey, updatedAt: cache.now())
+        cache.save(board, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: sentUnder)
     }
 
     /// «Открывается чем» of one milestone, read against the statuses of the board on screen.

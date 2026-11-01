@@ -1,11 +1,13 @@
 // [review:need-review] PHASE-01/36-ios-category-charts, PHASE-01/208
 // summary: Single-category detail state — entries + quick-add + shared mutation surface, plus chart state (table history, period/mode toggles, line series, checklist bars, streaks)
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the entry list and the chart are read side by side, the chart asks the table of its own category only
 import Foundation
 import os
 
 @MainActor
 final class CategoryDetailViewModel: ObservableObject, EntryMutating {
-    private static let logger = Logger(
+    private nonisolated static let logger = Logger(
         subsystem: "com.habittracker.app", category: "CategoryDetailViewModel"
     )
 
@@ -27,7 +29,7 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
     @Published var editDraft: EntryEditDraft?
     @Published var saveErrorMessage: String?
 
-    private let apiProvider: () -> CategoryDetailAPI?
+    private let apiProvider: () -> CategoryChartAPI?
     private let dateFormatter: DateFormatter
     private let now: () -> Date
 
@@ -35,7 +37,7 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
     /// changes (server address / API key) take effect without an app restart.
     init(
         category: CategoryDTO,
-        apiProvider: @escaping () -> CategoryDetailAPI?,
+        apiProvider: @escaping () -> CategoryChartAPI?,
         timeZone: TimeZone = .current,
         now: @escaping () -> Date = Date.init
     ) {
@@ -52,7 +54,7 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
     /// Convenience init with a fixed API (used by unit tests).
     convenience init(
         category: CategoryDTO,
-        api: CategoryDetailAPI,
+        api: CategoryChartAPI,
         timeZone: TimeZone = .current,
         now: @escaping () -> Date = Date.init
     ) {
@@ -141,8 +143,12 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
             return
         }
         do {
+            // Side by side: the chart does not wait for the list.
+            let range = CategoryChart.chartDateRange(today: now())
+            let categoryId = category.id
+            async let chart = Self.chartDays(api: api, categoryId: categoryId, range: range)
             entries = try await api.fetchEntries(categoryId: category.id)
-            await loadChart(using: api)
+            tableDays = await chart
             state = .loaded
         } catch let error as APIClientError {
             state = .failure(error.userMessage)
@@ -151,18 +157,19 @@ final class CategoryDetailViewModel: ObservableObject, EntryMutating {
         }
     }
 
-    /// Fetches the widest chart window and stores it ascending by date so period
+    /// Fetches the widest chart window of the category, ascending by date so period
     /// slicing keeps the most recent days and lines read left-to-right in time.
-    private func loadChart(using api: CategoryDetailAPI) async {
-        let range = CategoryChart.chartDateRange(today: now())
+    private nonisolated static func chartDays(
+        api: CategoryChartAPI, categoryId: Int, range: (from: String, to: String)
+    ) async -> [TableDayDTO] {
         do {
-            let response = try await api.fetchTable(dateFrom: range.from, dateTo: range.to)
-            tableDays = response.days.sorted { $0.date < $1.date }
+            let response = try await api.fetchTable(dateFrom: range.from, dateTo: range.to, categoryId: categoryId)
+            return response.days.sorted { $0.date < $1.date }
         } catch {
             // Chart is secondary content: a table failure must not fail the
             // whole screen. Drop to an empty chart and log (no PII).
-            tableDays = []
-            Self.logger.error("Chart table load failed: \(String(describing: error))")
+            logger.error("Chart table load failed: \(String(describing: error))")
+            return []
         }
     }
 

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/11-ios-read-cache, PHASE-01/208
 // summary: Table screen — Lime Tech dark restyle: contributions-style grid, lime-tinted filled cells, neon loader; offline banner atop when the window came from the read cache
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — opens on the cached window, reads again only what is not recent, a failed re-read is a line above the grid
 import SwiftUI
 
 struct TableView: View {
@@ -21,15 +23,19 @@ struct TableView: View {
             if let offlineAsOf = viewModel.offlineAsOf {
                 OfflineBanner(updatedAt: offlineAsOf)
             }
+            if let problem = viewModel.refreshError {
+                Text(problem)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.danger)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             content
         }
         .navigationTitle("Table")
         .dsScreenBackground()
-        .task {
-            if case .idle = viewModel.state {
-                await viewModel.load()
-            }
-        }
+        .onAppear { viewModel.showCached() }
+        .task { await viewModel.appear() }
         .sheet(item: $selectedCell) { selection in
             TableCellDetailSheet(selection: selection, viewModel: viewModel)
         }

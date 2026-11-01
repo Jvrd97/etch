@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: re-reads when the server's day turns (timer, clock or zone change); «Принял: <название>» for VoiceOver; the button is off while its press is in flight; the form's error is cleared on close; Supplements screen (More → Добавки) — the list with a «Принял» button per supplement («Принято сегодня» once marked, «ждёт отправки» while the press is in the queue), the shared offline-queue strip on top, the offline note over a cached list, an add sheet (name, dose, unit, planned time from two menus — no system date picker), loading, error with retry and empty states; no navigation stack of its own
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached list is drawn before the first frame; a return to the app reads again only what is not recent
 import SwiftUI
 
 struct SupplementsView: View {
@@ -38,10 +40,11 @@ struct SupplementsView: View {
                 .accessibilityIdentifier("supplements.add")
             }
         }
-        .task { await viewModel.load() }
+        .onAppear { viewModel.showCached() }
+        .task { await viewModel.appear() }
         .onChange(of: scenePhase) { _, phase in
-            // The server's day may have turned while the app was away.
-            if phase == .active { Task { await viewModel.load() } }
+            // The server's day may have turned while the app was away; the timer below reads at the turn itself.
+            if phase == .active { Task { await viewModel.appear() } }
         }
         .task(id: viewModel.rule) { await rereadWhenTheDayTurns() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
