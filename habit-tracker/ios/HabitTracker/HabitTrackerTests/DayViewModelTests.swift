@@ -8,6 +8,8 @@
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 — a step keeps the loaded day on screen instead of the loader
 import Combine
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — without the outbox a mark holds its line only for the PUT; the re-read after it runs behind, so the tests wait for it
 import XCTest
 @testable import HabitTracker
 
@@ -133,6 +135,7 @@ final class DayViewModelTests: XCTestCase {
         api.fetchResults = [.success(recounted)]
 
         await viewModel.cycleMark(DayFixtures.taskID)
+        await waitUntil { api.fetchedDates.count == 2 }
 
         XCTAssertEqual(viewModel.counts?.failed, 1)
         XCTAssertEqual(api.fetchedDates.count, 2)
@@ -353,6 +356,7 @@ final class DayViewModelTests: XCTestCase {
         api.fetchResults = [.success(try DayFixtures.day(notebook: .some("Дописали в вебе")))]
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitUntil { viewModel.notebookConflict != nil }
 
         XCTAssertEqual(viewModel.notebook, "Моя правка", "typed text is never replaced silently")
         XCTAssertEqual(viewModel.notebookConflict, "Дописали в вебе")

@@ -1,6 +1,8 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: PHASE-03/236, 242 — an offline press carries its moment (01:00 delivered at 08:00 sends 01:00, no day), waiting presses are said to VoiceOver, the directory is read while the queue still sends, and a read answered after the re-read a delivery started replaces neither the buttons nor the cache; the double sits on the main actor
 // summary: tests for QuickMarksViewModel — directory order from the server, a tap repaints from its own answer in one call, an offline tap goes to the shared outbox under the same key with the server's day and is shown at once, a refusal is shown and not queued, undo of the last tap, the day's sets, the cache and the queued taps over a stale directory, a delivered press re-reads the directory; also the scriptable QuickMarksAPI double shared with the Today tests
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a press goes through the queue and is sent behind the caller: the tests wait for that send; every attempt of a press carries its moment; a refusal lands in "not sent" and is said
 import XCTest
 @testable import HabitTracker
 
@@ -155,12 +157,13 @@ final class QuickMarksViewModelTests: XCTestCase {
         let api = MockQuickMarksAPI()
         api.marksResult = .success([mark(id: 1, total: 1)])
         api.tapResults = [.success(.stub(eventId: 7, markId: 1, total: 2, done: true))]
-        let (viewModel, _) = makeViewModel(api: api)
+        let (viewModel, queue) = makeViewModel(api: api)
         var changedCategories: [Int] = []
         viewModel.onDayChanged = { changedCategories.append($0) }
         await viewModel.load()
 
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
 
         XCTAssertEqual(api.taps.count, 1)
         XCTAssertEqual(api.directoryFetches, 1, "the directory is not read again after a tap")
@@ -187,6 +190,7 @@ final class QuickMarksViewModelTests: XCTestCase {
         await viewModel.load()
 
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
 
         XCTAssertNil(viewModel.errorMessage, "an offline tap is deferred, not failed")
         XCTAssertEqual(queue.pendingCount, 1)
@@ -215,6 +219,7 @@ final class QuickMarksViewModelTests: XCTestCase {
         let (viewModel, queue) = makeViewModel(api: api)
         await viewModel.load()
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
         let firstKey = api.taps[0].key
 
         await queue.flush(using: replay(api))
@@ -223,7 +228,7 @@ final class QuickMarksViewModelTests: XCTestCase {
         XCTAssertEqual(api.taps[1].key, firstKey, "a replay is the same tap, so the day's sum cannot double")
         XCTAssertEqual(api.taps[1].request.occurredAt, "2026-10-25T09:00:00.000Z")
         XCTAssertNil(api.taps[1].request.entryDate)
-        XCTAssertNil(api.taps[0].request.occurredAt, "a direct tap is the server's own moment")
+        XCTAssertEqual(api.taps[0].request.occurredAt, api.taps[1].request.occurredAt, "every attempt is the same press")
         XCTAssertEqual(queue.pendingCount, 0)
     }
 
@@ -265,9 +270,11 @@ final class QuickMarksViewModelTests: XCTestCase {
         await viewModel.load()
 
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
 
-        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertEqual(viewModel.errorMessage, OutboxQueue.tapRefusedReason)
         XCTAssertEqual(queue.pendingCount, 0)
+        XCTAssertEqual(queue.failedCount, 1, "it is in the \"not sent\" list, not lost")
         XCTAssertEqual(viewModel.marks[0].todayTotal, 1)
         XCTAssertNil(viewModel.lastEvent)
     }
@@ -282,11 +289,12 @@ final class QuickMarksViewModelTests: XCTestCase {
                 undoneAt: "2026-10-25T09:01:00+00:00", todayTotal: 1, done: true
             )
         )
-        let (viewModel, _) = makeViewModel(api: api)
+        let (viewModel, queue) = makeViewModel(api: api)
         var changedCategories: [Int] = []
         viewModel.onDayChanged = { changedCategories.append($0) }
         await viewModel.load()
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
         changedCategories.removeAll()
 
         await viewModel.undoLast()
@@ -302,9 +310,10 @@ final class QuickMarksViewModelTests: XCTestCase {
         api.marksResult = .success([mark(id: 1)])
         api.tapResults = [.success(.stub(eventId: 7, markId: 1, total: 1))]
         api.undoResult = .failure(APIClientError.unexpectedStatus(409))
-        let (viewModel, _) = makeViewModel(api: api)
+        let (viewModel, queue) = makeViewModel(api: api)
         await viewModel.load()
         await viewModel.tap(viewModel.marks[0])
+        await waitForSend(queue)
 
         await viewModel.undoLast()
 

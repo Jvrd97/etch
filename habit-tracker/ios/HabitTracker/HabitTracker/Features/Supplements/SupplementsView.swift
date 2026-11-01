@@ -2,6 +2,8 @@
 // summary: re-reads when the server's day turns (timer, clock or zone change); «Принял: <название>» for VoiceOver; the button is off while its press is in flight; the form's error is cleared on close; Supplements screen (More → Добавки) — the list with a «Принял» button per supplement («Принято сегодня» once marked, «ждёт отправки» while the press is in the queue), the shared offline-queue strip on top, the offline note over a cached list, an add sheet (name, dose, unit, planned time from two menus — no system date picker), loading, error with retry and empty states; no navigation stack of its own
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 — the cached list is drawn before the first frame; a return to the app reads again only what is not recent
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the «принял» button is off once the row is taken, the press itself shown at once
 import SwiftUI
 
 struct SupplementsView: View {
@@ -134,7 +136,7 @@ private struct SupplementRowView: View {
                 .buttonStyle(LimeButtonStyle(prominent: !row.isTaken))
                 // Wraps to a second line at a large text size instead of being cut off or pushing the name out.
                 .fixedSize(horizontal: false, vertical: true)
-                .disabled(row.isTaken || row.isSending)
+                .disabled(row.isTaken)
                 .accessibilityLabel(row.isTaken ? "Принято сегодня: \(row.supplement.name)" : "Принял: \(row.supplement.name)")
                 .accessibilityIdentifier("supplements.take.\(row.supplement.id)")
             }

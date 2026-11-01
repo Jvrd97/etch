@@ -9,6 +9,8 @@
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the snapshot; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the screen opens on the cached snapshot of today (no loader, no network wait) and reads again only when it is not recent; the snapshot carries its day, and a snapshot of another day neither opens the screen nor shows its records as today's offline; the streak read leaves with the first wave when the known categories have an avoid one, and never waits for the table
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a plus, a typed number, a tick and the form go into the outbox under the key of that press and are on screen at once, the send runs behind; every press counts (no tap is dropped while another is on its way); a delivery puts the server's entry in place of the waiting row in the same turn and reads only the streak of an avoid category; a refusal takes the row away and says why; the «ждёт» tag shows only writes that wait; re-reads after quick-mark deliveries are merged into one
 import Combine
 import Foundation
 
@@ -49,8 +51,9 @@ final class TodayViewModel: ObservableObject {
     /// When non-nil the screen is showing cached data because the last load fell back
     /// to the read cache; the value is the timestamp of that cached snapshot.
     @Published private(set) var offlineAsOf: Date?
-    /// Categories whose plus tap is being saved: a second tap on the same one waits for the first.
-    @Published private(set) var quickAddingCategoryIDs: Set<Int> = []
+    /// Categories with a queued save that waits — failed once or on its way past the quiet period. A save
+    /// that is merely on its way is drawn as a row of the day without the tag.
+    @Published private(set) var waitingCategoryIDs: Set<Int> = []
     @Published var saveErrorMessage: String?
 
     /// Where an avoid card is in recording a relapse. The entry is the one the tap landed on.
@@ -70,6 +73,7 @@ final class TodayViewModel: ObservableObject {
     static let relapseDetailsFailedMessage = "Не удалось сохранить подробности"
     static let entriesRefreshFailedMessage = "Список записей не обновился"
     static let deleteEntryFailedMessage = "Не удалось удалить запись"
+    static let writeRefusedPrefix = "Не отправлено"
     // Zero of a count or of time spent is what a clean day records: saved over the tap, it would
     // quietly turn the relapse into one.
     static let amountNotPositiveMessage = "Сколько — больше нуля, или оставьте поле пустым"
@@ -101,6 +105,10 @@ final class TodayViewModel: ObservableObject {
     private var loadShown = 0
     /// The day of the records on screen; past midnight it is not today any more.
     private var shownDay: String?
+    /// Categories whose records a quick-mark delivery moved while a re-read was already running: that
+    /// re-read is followed by one more, so a burst of presses reads the day twice, not once per press.
+    private var markRereadQueue: Set<Int> = []
+    private var isRereadingAfterMark = false
 
     /// Primary init: the provider is re-evaluated on every load, so Settings
     /// changes (server address / API key) take effect without an app restart.
@@ -125,9 +133,10 @@ final class TodayViewModel: ObservableObject {
         bindOutbox()
     }
 
-    /// Every change of the queue — an offline save, a flush, a retry or discard from the list —
-    /// redraws the pending rows; a delivered save of this screen reads the day again, so the
-    /// server's row takes the place of the pending one. The outbox publishes on the main actor.
+    /// Every change of the queue — a save, a flush, a retry or discard from the list — redraws the
+    /// pending rows. A delivered save of this screen puts the server's entry in place of its pending row
+    /// in the same turn; a refused one is gone from the rows and said in a line. The outbox publishes
+    /// on the main actor.
     private func bindOutbox() {
         guard let outbox else { return }
         outbox.$writes
@@ -136,16 +145,46 @@ final class TodayViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         outbox.delivered
-            .sink { [weak self] writes in
-                guard writes.contains(where: { $0.queuedEntry != nil }) else { return }
-                // Nobody pressed anything: a failed read leaves the rows as they are, without an error.
-                Task { await self?.rereadEntries(reportsFailure: false) }
+            .sink { [weak self] delivery in
+                MainActor.assumeIsolated { self?.settle(delivery) }
+            }
+            .store(in: &cancellables)
+        outbox.refused
+            .sink { [weak self] write in
+                guard write.queuedEntry != nil else { return }
+                MainActor.assumeIsolated {
+                    self?.saveErrorMessage = "\(Self.writeRefusedPrefix) «\(write.label)»: \(write.failure ?? "")"
+                }
             }
             .store(in: &cancellables)
     }
 
     private func redrawPending(_ writes: [OutboxWrite]) {
         todayEntries = withQueuedRows(todayEntries.filter { !$0.isPending }, from: writes)
+        let moment = now()
+        waitingCategoryIDs = Set(
+            writes.filter { $0.status == .pending && $0.isOverdue(at: moment) }
+                .compactMap { $0.queuedEntry?.entry.categoryId }
+        )
+    }
+
+    /// The server took a save of this screen: its entry takes the place of the pending row, and only what
+    /// the entry changes is read again — the streak of an avoid category. A read of the records already
+    /// on its way predates the entry and is not shown. An answer this app could not read reads the day.
+    private func settle(_ delivery: OutboxDelivery) {
+        guard let queued = delivery.write.queuedEntry else { return }
+        guard case .entry(let entry)? = delivery.reply else {
+            // Nobody pressed anything: a failed read leaves the rows as they are, without an error.
+            Task { await rereadEntries(reportsFailure: false) }
+            return
+        }
+        entriesReadShown = entriesReadsSent
+        place(entry)
+        cacheShownEntries(sentUnder: cache.scope)
+        let categoryID = queued.entry.categoryId
+        if categories.first(where: { $0.id == categoryID })?.isAvoid == true, let api = apiProvider() {
+            Task { await refreshStreak(categoryID: categoryID, api: api) }
+        }
     }
 
     /// Saves still waiting in the queue, laid over the server's rows of today as pending rows
@@ -635,12 +674,21 @@ final class TodayViewModel: ObservableObject {
     // MARK: Day changes made elsewhere
 
     /// A quick-mark tap or undo moved the day of this category: read the day's records again, and the
-    /// streak when the category is an avoid one. Pending rows of the offline outbox stay.
+    /// streak when the category is an avoid one. Pending rows of the offline outbox stay. A call while
+    /// such a re-read runs is folded into one more after it.
     func reloadAfterMark(categoryID: Int) async {
         guard let api = apiProvider() else { return }
-        await rereadEntries(reportsFailure: true)
-        if categories.first(where: { $0.id == categoryID })?.isAvoid == true {
-            await refreshStreak(categoryID: categoryID, api: api)
+        markRereadQueue.insert(categoryID)
+        guard !isRereadingAfterMark else { return }
+        isRereadingAfterMark = true
+        defer { isRereadingAfterMark = false }
+        while !markRereadQueue.isEmpty {
+            let moved = markRereadQueue
+            markRereadQueue = []
+            await rereadEntries(reportsFailure: true)
+            for categoryID in moved.sorted() where categories.first(where: { $0.id == categoryID })?.isAvoid == true {
+                await refreshStreak(categoryID: categoryID, api: api)
+            }
         }
     }
 
@@ -691,13 +739,11 @@ final class TodayViewModel: ObservableObject {
     // MARK: Plus
 
     /// The plus of a row whose plan is a step or a tick: writes it to today as one entry (a checklist's
-    /// idempotent day upsert). A tap while the category's previous one is still being saved is dropped,
-    /// so one press is one entry; the save is the form save (one key per attempt, the outbox when the
-    /// network is down). True when saved or queued.
+    /// idempotent day upsert). Every press is one entry under a key of its own, shown at once; the save
+    /// is the form save. True when saved or queued.
     @discardableResult
     func quickAdd(categoryID: Int, amount typed: Double? = nil) async -> Bool {
-        guard let category = categories.first(where: { $0.id == categoryID }),
-              !quickAddingCategoryIDs.contains(categoryID) else { return false }
+        guard let category = categories.first(where: { $0.id == categoryID }) else { return false }
         let fieldID: Int
         let value: String
         switch (TodayQuickAdd.plan(for: category), typed) {
@@ -712,8 +758,6 @@ final class TodayViewModel: ObservableObject {
         case (.amountSheet, nil), (.textSheet, _), (.fullForm, _):
             return false
         }
-        quickAddingCategoryIDs.insert(categoryID)
-        defer { quickAddingCategoryIDs.remove(categoryID) }
         var values = TodayQuickAdd.defaultValues(for: category, except: fieldID)
         values[fieldID] = value
         return await saveEntry(categoryID: categoryID, values: values)
@@ -731,8 +775,9 @@ final class TodayViewModel: ObservableObject {
     /// Saves today's values for the category. Form categories create a new entry
     /// via generic POST under a fresh Idempotency-Key; checklist categories go through the
     /// idempotent `PUT /entries/checklist` upsert (one entry per category+date on the backend).
-    /// Without a network the save goes to the outbox — the form under the key of this attempt,
-    /// both with today's date — and shows as pending. Returns true on success or when queued.
+    /// With the outbox the save is queued — the form under the key of this press, both with today's
+    /// date — drawn at once as a row of the day and sent behind the caller; a refusal comes back as a
+    /// line. Without one it is sent directly. Returns true when saved or queued.
     func saveEntry(categoryID: Int, values: [Int: String]) async -> Bool {
         saveErrorMessage = nil
         guard let api = apiProvider() else {
@@ -741,49 +786,31 @@ final class TodayViewModel: ObservableObject {
         }
         let category = categories.first { $0.id == categoryID }
         let label = category?.name ?? "Запись"
+        let checklist = category?.isChecklist == true ? ChecklistUpsertDTO(
+            categoryId: categoryID,
+            entryDate: todayString,
+            values: Dictionary(uniqueKeysWithValues: values.map { (String($0.key), $0.value == "true") })
+        ) : nil
+        let form = EntryCreateDTO(
+            categoryId: categoryID,
+            entryDate: todayString,
+            notes: nil,
+            values: values
+                .sorted { $0.key < $1.key }
+                .map { EntryValueDTO(fieldId: $0.key, value: $0.value) }
+        )
+        if let outbox {
+            // A newer checklist save of the day replaces a waiting one; one already on its way lands first.
+            outbox.enqueue(checklist.map(OutboxAction.upsertChecklist) ?? .createEntry(form), label: label)
+            outbox.send()
+            return true
+        }
         do {
             let saved: EntryDTO
-            if category?.isChecklist ?? false {
-                let payload = ChecklistUpsertDTO(
-                    categoryId: categoryID,
-                    entryDate: todayString,
-                    values: Dictionary(
-                        uniqueKeysWithValues: values.map {
-                            (String($0.key), $0.value == "true")
-                        }
-                    )
-                )
-                if let outbox, outbox.hasPending(sameTargetAs: .upsertChecklist(payload)) {
-                    // An older save of this day still waits: a direct one would land first and the old
-                    // one over it. The new one replaces it in the queue and goes out now if it can.
-                    outbox.enqueue(.upsertChecklist(payload), label: label)
-                    await outbox.flush()
-                    return true
-                }
-                do {
-                    saved = try await api.upsertChecklistEntry(payload)
-                } catch let error as APIClientError where error.isConnectivity && outbox != nil {
-                    outbox?.enqueue(.upsertChecklist(payload), label: label)
-                    return true
-                }
+            if let payload = checklist {
+                saved = try await api.upsertChecklistEntry(payload)
             } else {
-                let payload = EntryCreateDTO(
-                    categoryId: categoryID,
-                    entryDate: todayString,
-                    notes: nil,
-                    values: values
-                        .sorted { $0.key < $1.key }
-                        .map { EntryValueDTO(fieldId: $0.key, value: $0.value) }
-                )
-                let key = UUID().uuidString
-                do {
-                    saved = try await api.createEntry(payload, idempotencyKey: key)
-                } catch let error as APIClientError where error.isConnectivity && outbox != nil {
-                    // Offline: don't lose "42 pushups". The replay goes under this attempt's key,
-                    // so an attempt that did land and lost its answer is not recorded twice.
-                    outbox?.enqueue(.createEntry(payload), key: key, label: label)
-                    return true
-                }
+                saved = try await api.createEntry(form, idempotencyKey: UUID().uuidString)
             }
             // The checklist upsert can return an entry we already loaded — replace
             // it in place so the list never shows duplicates.

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/294
 // summary: the Today card of a category counted in one number, laid out as on the web — the name opens the history, an input takes any amount, the step buttons adjust it, the plus records it (an empty input records the step, or one)
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the plus is never dimmed: each press is queued and shown at once
 import SwiftUI
 
 struct TodayNumberCard: View {
@@ -104,10 +106,9 @@ struct TodayNumberCard: View {
         .accessibilityLabel("\(category.name): \(label)")
     }
 
-    /// Never `.disabled`: the model drops a second tap while one save is in flight.
+    /// Never `.disabled`: each press is queued and counted, shown at once.
     private var plusButton: some View {
-        let isAdding = viewModel.quickAddingCategoryIDs.contains(category.id)
-        return Button {
+        Button {
             guard let amount = TodayQuickAdd.amount(from: draft, step: step) else { return }
             Task {
                 if await viewModel.quickAdd(categoryID: category.id, amount: amount) {
@@ -123,7 +124,6 @@ struct TodayNumberCard: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(isAdding ? 0.5 : 1)
         .accessibilityLabel("Добавить: \(category.name)")
         .accessibilityIdentifier("today.quickadd.\(category.id)")
     }

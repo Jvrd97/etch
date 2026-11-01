@@ -4,6 +4,8 @@
 // summary: PHASE-03/248, 256 round 2 — a direct mark refused with 502/504 is queued (landed or not); a notebook save left in the queue or refused by it is not remembered as written, on both branches; the cache copy put back keeps its read's stamp
 // summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00); a load's read answered after a delivery's re-read replaces neither the day nor the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is no conflict for the next one
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a mark always goes through the queue and is sent behind the caller (the tests wait for that send); a 500 keeps it waiting and only the queue giving up rolls it back with the reason; the check read of a replay is scripted where the order of reads matters
 import XCTest
 @testable import HabitTracker
 
@@ -57,6 +59,7 @@ final class DayOfflineTests: XCTestCase {
         api.markResult = .failure(offline)
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
         XCTAssertNil(viewModel.actionError, "an offline mark is deferred, not failed")
         XCTAssertEqual(viewModel.state(of: DayFixtures.minimumID), "done")
@@ -182,10 +185,12 @@ final class DayOfflineTests: XCTestCase {
     func testAMarkOfALineWhoseOlderMarkWaitsGoesThroughTheQueue() async throws {
         api.markResult = .failure(offline)
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
         api.markResult = .success(DayFixtures.mark(DayFixtures.minimumID, "failed"))
         api.fetchResults = [.success(try DayFixtures.day(marks: [DayFixtures.mark(DayFixtures.minimumID, "failed")]))]
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
         XCTAssertEqual(api.markCalls.map(\.body.state), ["done", "failed"], "the old tick is never sent after the new one")
         XCTAssertEqual(outbox.pendingCount, 0)
@@ -303,13 +308,17 @@ final class DayOfflineTests: XCTestCase {
     }
 
     func testALoadAnsweredAfterAStepToAnotherDayDoesNotRollBackTheCacheOfTheDayBefore() async throws {
+        // Only the screen under test hears the delivery: the one from setUp would take a scripted answer.
+        viewModel = nil
         let readAt = Date(timeIntervalSince1970: 1_792_918_800)
         var clock = readAt
         let vm = makeViewModel(clock: { clock })
         await vm.load()
         let marked = [DayFixtures.mark(DayFixtures.minimumID, "done")]
-        // Answers in the order they are given: the re-read after the mark, the step's day, then the load's old read.
+        // Answers in the order they are given: the replay's check, the re-read after the mark, the step's day,
+        // then the load's old read.
         api.fetchResults = [
+            .success(try DayFixtures.day()),
             .success(try DayFixtures.day(notebook: .some("Свежий"), marks: marked)),
             .success(try DayFixtures.day(date: "2026-10-24")),
             .success(try DayFixtures.day(notebook: .some("Старый"))),
@@ -325,6 +334,7 @@ final class DayOfflineTests: XCTestCase {
         clock = readAt.addingTimeInterval(600)
         api.markResult = .success(marked[0])
         await vm.setMark(DayFixtures.minimumID, state: "done")
+        await waitUntil { vm.notebook == "Свежий" }
         await vm.showPreviousDay()
         XCTAssertEqual(vm.shownDate, "2026-10-24")
 
@@ -348,6 +358,7 @@ final class DayOfflineTests: XCTestCase {
     func testAMarkWhoseDirectAnswerWasLostIsNoConflictForTheNextMark() async throws {
         api.markResult = .failure(APIClientError.timeout)
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
         XCTAssertEqual(outbox.pending.first?.mayHaveLanded, true, "a timeout may have written the mark")
         // The first PUT did land: the server holds "done".
         let landed = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
@@ -356,6 +367,7 @@ final class DayOfflineTests: XCTestCase {
         api.markResult = .success(DayMarkDTO(itemId: DayFixtures.minimumID, state: next, note: nil))
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
         XCTAssertTrue(outbox.writes.isEmpty, "the server holding the lost mark is not a change made elsewhere")
         XCTAssertEqual(api.markCalls.last?.body.state, next)
@@ -381,6 +393,7 @@ final class DayOfflineTests: XCTestCase {
         api.markResult = .failure(APIClientError.unexpectedStatus(504))
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
         XCTAssertNil(viewModel.actionError, "the proxy timed out: the backend may have written the mark")
         XCTAssertEqual(viewModel.state(of: DayFixtures.minimumID), "done", "the tick stays, as after a timeout")
@@ -391,6 +404,7 @@ final class DayOfflineTests: XCTestCase {
     func testAMarkRefusedWith502IsQueuedAndItsLandedStateIsNoConflictForTheNextMark() async throws {
         api.markResult = .failure(APIClientError.unexpectedStatus(502))
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
         XCTAssertEqual(outbox.pending.first?.mayHaveLanded, true)
         // The first PUT did land after the proxy gave up.
         let landed = DayMarkDTO(itemId: DayFixtures.minimumID, state: "done", note: nil)
@@ -399,19 +413,30 @@ final class DayOfflineTests: XCTestCase {
         api.markResult = .success(DayMarkDTO(itemId: DayFixtures.minimumID, state: next, note: nil))
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
         XCTAssertTrue(outbox.writes.isEmpty, "the server holding the mark the proxy lost is not a change made elsewhere")
         XCTAssertEqual(api.markCalls.last?.body.state, next)
     }
 
-    func testAMarkRefusedWith500IsRolledBackAndNotQueued() async {
+    func testAMarkRefusedWith500WaitsAndIsRolledBackOnlyWhenTheQueueGivesUp() async {
         api.markResult = .failure(APIClientError.unexpectedStatus(500))
 
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
 
-        XCTAssertEqual(outbox.pendingCount, 0, "a refusal of the backend itself wrote nothing")
-        XCTAssertNil(viewModel.state(of: DayFixtures.minimumID))
-        XCTAssertEqual(viewModel.actionError, DayViewModel.markFailedMessage)
+        XCTAssertEqual(viewModel.state(of: DayFixtures.minimumID), "done", "a 500 is tried again, the tick stays")
+        XCTAssertEqual(outbox.pending.first?.serverErrors, 1)
+        XCTAssertNil(viewModel.actionError)
+
+        for _ in 1..<OutboxQueue.maxServerErrorAttempts { await outbox.flush() }
+
+        XCTAssertEqual(outbox.failedCount, 1)
+        XCTAssertNil(viewModel.state(of: DayFixtures.minimumID), "the server never took it")
+        XCTAssertEqual(
+            viewModel.actionError,
+            "Отметка «Минимум: собрать сборку»: Сервер \(OutboxQueue.maxServerErrorAttempts) раз подряд ответил ошибкой 500."
+        )
     }
 
     // MARK: A save the server never took is not remembered as written

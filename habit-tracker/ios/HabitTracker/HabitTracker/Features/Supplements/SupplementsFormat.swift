@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: the server's day rule (zone + day-start hour, cut by wall clock, not by hours of absolute time), form limits on name and dose; words and values of the Supplements screen — dose and planned time as text, the form draft with its checks (name, positive dose with a comma or a point, unit, optional time), the day of a press by the server's rule (the day turns at 04:00), and the words for what the server refuses
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the press refusal words moved to the queue's reasons (a press always goes through it); the per-error mapping is gone
 import Foundation
 
 /// What the person fills in to add a supplement. The planned time is optional.
@@ -123,16 +125,6 @@ enum SupplementsFormat {
             after: moment, matching: DateComponents(hour: rule.dayStartHour, minute: 0, second: 0),
             matchingPolicy: .nextTime
         )
-    }
-
-    // MARK: Errors
-
-    static func message(forMark error: APIClientError) -> String {
-        switch error {
-        case .unexpectedStatus(409): return "Сервер не принял отметку (409): добавка в архиве."
-        case .unexpectedStatus(404): return "Сервер не нашёл эту добавку (404): её удалили."
-        default: return error.userMessage
-        }
     }
 
     // MARK: Private

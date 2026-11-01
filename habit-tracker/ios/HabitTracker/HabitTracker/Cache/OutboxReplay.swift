@@ -2,6 +2,8 @@
 // summary: how a queued write reaches the server — each action is sent to its endpoint under the write's Idempotency-Key; a quick-mark press carries the moment it was made as occurred_at (UTC, milliseconds, one shared formatter) (an old stored press, its day as entry_date); a plan mark and a day notebook are first checked against the day as the server holds it now (read without marking the day as opened) — the state it was made over, its own, or one of the writes it replaced — and a server that moved on, or a check answer that cannot be read, refuses the replay instead of overwriting or dropping it
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: PHASE-03/240 — the replay of markSupplementTaken through OutboxSupplementsAPI; PHASE-03/258 — the supplement side is never nil: without a real one it is a stand-in that refuses like a dead network
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a send returns the server's answer (the entry, the press event, the mark, the fact, the intake) for the screen that shows the write
 import Foundation
 
 /// Entry writes the queue replays. `APIClient` is the production implementation.
@@ -29,15 +31,15 @@ struct OutboxReplay: OutboxSending {
     /// Callers that replay no supplement write leave the default; a write that arrives anyway waits like a dead network.
     var supplements: OutboxSupplementsAPI = NoSupplementsAPI()
 
-    func send(_ action: OutboxAction, idempotencyKey: String) async throws {
+    func send(_ action: OutboxAction, idempotencyKey: String) async throws -> OutboxReply? {
         switch action {
         case .createEntry(let entry):
-            _ = try await entries.createEntry(entry, idempotencyKey: idempotencyKey)
+            return .entry(try await entries.createEntry(entry, idempotencyKey: idempotencyKey))
         case .upsertChecklist(let list):
             // A PUT of the whole day's ticks: repeating it is the same state, no key needed.
-            _ = try await entries.upsertChecklistEntry(list)
+            return .entry(try await entries.upsertChecklistEntry(list))
         case .tapQuickMark(let tap):
-            _ = try await quickMarks.tapQuickMark(
+            return .quickMarkEvent(try await quickMarks.tapQuickMark(
                 id: tap.quickMarkId,
                 request: QuickMarkEventRequestDTO(
                     value: nil, entryDate: tap.serverDay, utcOffsetMinutes: tap.utcOffsetMinutes,
@@ -45,7 +47,7 @@ struct OutboxReplay: OutboxSending {
                     occurredAt: tap.occurredAt.map(Self.wireMoment)
                 ),
                 idempotencyKey: idempotencyKey
-            )
+            ))
         case .setDayMark(let mark):
             if let expected = mark.expected {
                 let current = try await serverDay(mark.date)
@@ -55,26 +57,27 @@ struct OutboxReplay: OutboxSending {
                     throw OutboxConflict(reason: OutboxQueue.markChangedReason)
                 }
             }
-            _ = try await day.setMark(
+            return .dayMark(try await day.setMark(
                 date: mark.date, itemID: mark.itemID, DayMarkRequestDTO(state: mark.state, note: mark.note)
-            )
+            ))
         case .recordPlanFact(let fact):
-            _ = try await day.recordFact(
+            return .planFact(try await day.recordFact(
                 date: fact.date, itemID: fact.itemID, fact.body, idempotencyKey: idempotencyKey
-            )
+            ))
         case .saveNotebook(let notebook):
             if let expected = notebook.expected {
                 let current = try await serverDay(notebook.date).notebook ?? ""
-                if current == notebook.content { return }
+                if current == notebook.content { return nil }
                 guard ([expected] + (notebook.replacedContents ?? [])).contains(current) else {
                     throw OutboxConflict(reason: OutboxQueue.notebookChangedReason)
                 }
             }
             try await day.saveNotebook(date: notebook.date, content: notebook.content)
+            return nil
         case .markSupplementTaken(let intake):
-            _ = try await supplements.markIntake(
+            return .supplementIntake(try await supplements.markIntake(
                 supplementID: intake.supplementId, intakeDate: intake.intakeDate, idempotencyKey: idempotencyKey
-            )
+            ))
         }
     }
 

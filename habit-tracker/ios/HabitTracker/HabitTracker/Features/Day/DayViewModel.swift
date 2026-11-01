@@ -10,6 +10,8 @@
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 round 2 — a step with nothing cached shows the day it goes to (`steppingTo`) while the shown day stays; the next step counts from the day asked for; a step that fails names that day and points the screen back at the day shown; an appearance after midnight reads again whatever the age of the copy; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the day opens from its cached copy (the cached «today» only when it is today), an appearance reads again only when the copy is not recent, a loaded day stays on screen through a step or a re-read (no loader), and a failed re-read is a line, not a replaced screen
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a mark goes into the outbox and the line stays free (no wait for the PUT nor the re-read): a second tap while the first is on its way is queued behind it, not dropped; the marks shown are the server's with the queued ones on top, a delivered mark takes the server's answer in the same turn and a refused one falls back and says why; re-reads after deliveries are merged into one at a time; «ждёт отправки» shows only writes that wait
 import Combine
 import Foundation
 
@@ -65,7 +67,8 @@ final class DayViewModel: ObservableObject {
     @Published private(set) var refreshError: String?
     /// The day being opened while another stays on screen (a step with nothing cached); nil otherwise.
     @Published private(set) var steppingTo: String?
-    /// Lines of the shown day with a mark or a fact written on the phone and not yet on the server.
+    /// Lines of the shown day with a mark or a fact written on the phone that waits for the server — failed
+    /// once, or on its way past the quiet period.
     @Published private(set) var queuedItems: Set<UUID> = []
     /// The notebook of the shown day waits in the queue.
     @Published private(set) var isNotebookQueued = false
@@ -112,6 +115,11 @@ final class DayViewModel: ObservableObject {
     private let cache: ReadThroughCache
     private let now: () -> Date
     private var cancellables: Set<AnyCancellable> = []
+    /// The marks of the shown day as the server holds them; `marks` is them with the queued ones on top.
+    private var serverMarks: [UUID: DayMarkDTO] = [:]
+    /// A re-read after a delivery is running, and another delivery came during it: one more follows.
+    private var isRereadingAfterDelivery = false
+    private var rereadsAfterDelivery = false
     private var loadedDate: String?
     /// Bumped by every load (`showFailure`): an answer of a read sent before it is for what the screen
     /// asked earlier (another day) and is dropped.
@@ -200,29 +208,69 @@ final class DayViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         outbox.delivered
-            .sink { [weak self] writes in
-                guard let self else { return }
-                let ofShownDay = self.shownDate.map { date in writes.contains { $0.action.isDayWrite(of: date) } } ?? false
-                let duringLoad = self.runningLoad != nil && writes.contains { $0.action.writesADay }
-                guard ofShownDay || duringLoad else { return }
-                Task { await self.reloadSilently() }
+            .sink { [weak self] delivery in
+                MainActor.assumeIsolated { self?.settle(delivery) }
+            }
+            .store(in: &cancellables)
+        outbox.refused
+            .sink { [weak self] write in
+                MainActor.assumeIsolated {
+                    guard let self, let date = self.shownDate, write.action.isDayWrite(of: date) else { return }
+                    self.actionError = "\(write.label): \(write.failure ?? Self.markFailedMessage)"
+                }
             }
             .store(in: &cancellables)
     }
 
+    /// A delivered mark of the shown day takes the server's answer in the same turn as the queue dropped
+    /// it, so the tick does not fall back for a frame; the day is then read again behind the screen.
+    private func settle(_ delivery: OutboxDelivery) {
+        let action = delivery.write.action
+        if case .setDayMark(let mark) = action, mark.date == shownDate, case .dayMark(let stored)? = delivery.reply {
+            serverMarks[mark.itemID] = stored
+            showMarks(outbox?.writes ?? [])
+        }
+        let ofShownDay = shownDate.map { action.isDayWrite(of: $0) } ?? false
+        let duringLoad = runningLoad != nil && action.writesADay
+        guard ofShownDay || duringLoad else { return }
+        Task { await rereadAfterDelivery() }
+    }
+
+    /// One re-read at a time for deliveries: a burst of them reads the day twice, not once per write.
+    private func rereadAfterDelivery() async {
+        guard !isRereadingAfterDelivery else {
+            rereadsAfterDelivery = true
+            return
+        }
+        isRereadingAfterDelivery = true
+        defer { isRereadingAfterDelivery = false }
+        repeat {
+            rereadsAfterDelivery = false
+            await reloadSilently()
+        } while rereadsAfterDelivery
+    }
+
     private func redrawQueued(_ writes: [OutboxWrite]) {
-        let waiting = writes.filter { $0.status == .pending }.map(\.action)
+        showMarks(writes)
+        let pending = writes.filter { $0.status == .pending }
         guard let date = shownDate else {
             queuedItems = []
             isNotebookQueued = false
             return
         }
-        queuedItems = Set(waiting.compactMap { $0.queuedItem(of: date) })
-        isNotebookQueued = waiting.contains { $0.queuedNotebook(of: date) != nil }
+        let moment = now()
+        queuedItems = Set(pending.filter { $0.isOverdue(at: moment) }.compactMap { $0.action.queuedItem(of: date) })
+        isNotebookQueued = pending.contains { $0.action.queuedNotebook(of: date) != nil }
     }
 
-    private var waitingActions: [OutboxAction] {
-        (outbox?.pending ?? []).map(\.action)
+    /// The server's marks of the shown day with the queued ones on top: a queued mark is not on the server yet.
+    private func showMarks(_ writes: [OutboxWrite]) {
+        var shown = serverMarks
+        for write in writes where write.status == .pending {
+            guard case .setDayMark(let mark) = write.action, mark.date == shownDate else { continue }
+            shown[mark.itemID] = DayMarkDTO(itemId: mark.itemID, state: mark.state, note: mark.note)
+        }
+        if shown != marks { marks = shown }
     }
 
     /// The title of a plan line, for the list of waiting writes.
@@ -396,11 +444,8 @@ final class DayViewModel: ObservableObject {
         _ fetched: DayDetailDTO, keepingNotebook: Bool, savedSince: (text: String, base: String, epoch: Int)?
     ) {
         detail = fetched
-        let waiting = waitingActions
-        marks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
-        for case .setDayMark(let mark) in waiting where mark.date == fetched.day.date {
-            marks[mark.itemID] = DayMarkDTO(itemId: mark.itemID, state: mark.state, note: mark.note)
-        }
+        serverMarks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
+        showMarks(outbox?.writes ?? [])
         facts = Dictionary(fetched.planFacts.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
         summary = fetched.summary
         counts = fetched.taskCounts
@@ -422,7 +467,7 @@ final class DayViewModel: ObservableObject {
             factKeys = [:]
             closingKeys = [:]
         }
-        let queuedNotebook = waiting.compactMap { $0.queuedNotebook(of: date) }.last
+        let queuedNotebook = (outbox?.pending ?? []).compactMap { $0.action.queuedNotebook(of: date) }.last
         if !keepingNotebook {
             var server = queuedNotebook ?? fetched.notebook ?? ""
             if queuedNotebook == nil, let saved = savedSince {
@@ -548,42 +593,36 @@ final class DayViewModel: ObservableObject {
         await setMark(itemID, state: DayFormat.nextMark(after: marks[itemID]?.state))
     }
 
-    /// Optimistic: the tick follows the finger, the server answer replaces it, a refusal rolls it back.
+    /// Optimistic: the tick follows the finger at once. With the outbox the mark is queued with the state
+    /// it was made over and sent behind the caller; the line stays free, so a second tap while the first
+    /// is on its way is queued behind it (a newer mark of a line replaces a waiting one, never the one
+    /// being sent). The server's answer replaces the tick when it lands, a refusal rolls it back.
+    /// Without the outbox the PUT is direct and only it holds the line; the re-read runs behind.
     func setMark(_ itemID: UUID, state newState: String?) async {
         guard let api = apiProvider() else { actionError = Self.notConfiguredMessage; return }
         guard let date = shownDate, !busyItems.contains(itemID) else { return }
         let previous = marks[itemID]
-        marks[itemID] = DayMarkDTO(itemId: itemID, state: newState, note: previous?.note)
-        busyItems.insert(itemID)
-        defer { busyItems.remove(itemID) }
-        let queued = QueuedDayMark(
-            date: date, itemID: itemID, state: newState, note: previous?.note, expected: previous?.state ?? ""
-        )
-        if let outbox, outbox.hasPending(sameTargetAs: .setDayMark(queued)) {
-            // An older mark of this line still waits: a direct one would land first and the old one over
-            // it. The new one replaces it in the queue (keeping its base) and goes out now if it can.
+        if let outbox {
+            let queued = QueuedDayMark(
+                date: date, itemID: itemID, state: newState, note: previous?.note, expected: previous?.state ?? ""
+            )
             outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»")
-            await outbox.flush()
+            outbox.send()
             return
         }
+        marks[itemID] = DayMarkDTO(itemId: itemID, state: newState, note: previous?.note)
+        busyItems.insert(itemID)
         do {
             let stored = try await api.setMark(
                 date: date, itemID: itemID, DayMarkRequestDTO(state: newState, note: previous?.note)
             )
-            marks[itemID] = stored
-            await reloadSilently()
+            busyItems.remove(itemID)
+            serverMarks[itemID] = stored
+            showMarks([])
+            Task { await reloadSilently() }
         } catch {
-            // A proxy's 502/504 is a lost answer as much as a timeout: the backend may have written the mark.
-            if let outbox, Self.isOffline(error) || OutboxQueue.mayHaveLanded(after: error) {
-                // The tick stays: it is on the phone and reaches the server with the state it was made over.
-                // A later mark replacing it accepts the state it may have written.
-                outbox.enqueue(
-                    .setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»",
-                    mayHaveLanded: OutboxQueue.mayHaveLanded(after: error)
-                )
-                return
-            }
-            marks[itemID] = previous
+            busyItems.remove(itemID)
+            showMarks([])
             actionError = Self.message(for: error, fallback: Self.markFailedMessage)
         }
     }
@@ -632,7 +671,7 @@ final class DayViewModel: ObservableObject {
                 // A new fact waits under the key of this attempt: one that landed and lost its answer is not doubled.
                 outbox?.enqueue(
                     .recordPlanFact(QueuedPlanFact(date: date, itemID: itemID, body: body)),
-                    key: key, label: "Факт «\(itemTitle(itemID))»"
+                    key: key, label: "Факт «\(itemTitle(itemID))»", attemptFailed: true
                 )
                 factKeys[itemID] = nil
                 return true
@@ -660,7 +699,8 @@ final class DayViewModel: ObservableObject {
 
     private func applyWrite(_ written: PlanFactWriteDTO, itemID: UUID) {
         facts[itemID] = written.facts
-        marks[itemID] = written.mark
+        serverMarks[itemID] = written.mark
+        showMarks(outbox?.writes ?? [])
     }
 
     private func factValue(of input: FactInput, in itemFacts: PlanItemFactsDTO) -> PlanFactValue? {
@@ -722,7 +762,9 @@ final class DayViewModel: ObservableObject {
                 } catch let error where Self.isOffline(error) && outbox != nil {
                     // Kept on the phone as saved; the replay checks the server still holds what it was typed over
                     // (or this text, when the attempt may have landed and a later save replaces it).
-                    outbox?.enqueue(queued, label: label, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
+                    outbox?.enqueue(
+                        queued, label: label, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error), attemptFailed: true
+                    )
                     reachedServer = false
                 }
             }

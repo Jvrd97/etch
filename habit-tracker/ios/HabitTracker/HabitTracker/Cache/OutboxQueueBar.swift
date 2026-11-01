@@ -1,10 +1,13 @@
 // [review:need-review] PHASE-03/225, PHASE-03/242
 // summary: PHASE-03/242 — a "not sent" write whose retry would land over a newer write of the same object says so above its buttons; a queued press shows when it was pressed
 // summary: the one counter of the offline queue shown atop Today, Quick marks and Day — "written on the phone, waiting to send: N", "not sent: M" and a word when the server refuses the API key; a tap opens the list of waiting writes with their day and the "not sent" ones with the reason, a retry that says what it will do and sends at once, and discard
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the strip counts only writes that failed once or have been on their way past the quiet period, so a press sent and answered at once does not blink it
 import SwiftUI
 
-/// A strip that appears while the queue holds anything. The count is the queue's, not a screen's:
-/// every screen shows the same number.
+/// A strip that appears while the queue holds a write that waits: one that failed once or has been on its
+/// way longer than `OutboxQueue.quietPeriod`. The count is the queue's, not a screen's: every screen
+/// shows the same number.
 struct OutboxQueueBar: View {
     @ObservedObject var queue: OutboxQueue
     @State private var showsList = false
@@ -19,29 +22,44 @@ struct OutboxQueueBar: View {
         return parts.joined(separator: " · ")
     }
 
+    /// The writes the strip counts at `moment`.
+    static func shown(_ writes: [OutboxWrite], at moment: Date) -> [OutboxWrite] {
+        writes.filter { $0.isOverdue(at: moment) }
+    }
+
     var body: some View {
         if !queue.writes.isEmpty {
-            Button { showsList = true } label: {
-                HStack(spacing: DS.Spacing.sm) {
-                    Image(systemName: queue.failedCount > 0 ? "exclamationmark.icloud" : "icloud.and.arrow.up")
-                    Text(Self.caption(pending: queue.pendingCount, failed: queue.failedCount, waitsForKey: queue.waitsForKey))
-                        .font(DS.Typography.caption)
-                        .multilineTextAlignment(.leading)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(DS.Typography.caption)
+            // Ticks only while something is queued: a write on its way turns into a waiting one by the clock.
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let shown = Self.shown(queue.writes, at: context.date)
+                if !shown.isEmpty {
+                    strip(pending: shown.filter { $0.status == .pending }.count, failed: shown.filter { $0.status == .failed }.count)
                 }
-                .foregroundStyle(queue.failedCount > 0 ? DS.Palette.warning : DS.Palette.lime)
-                .padding(.vertical, DS.Spacing.sm)
-                .padding(.horizontal, DS.Spacing.md)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(DS.Palette.card)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("outbox.bar")
-            .sheet(isPresented: $showsList) {
-                OutboxQueueList(queue: queue)
+        }
+    }
+
+    private func strip(pending: Int, failed: Int) -> some View {
+        Button { showsList = true } label: {
+            HStack(spacing: DS.Spacing.sm) {
+                Image(systemName: failed > 0 ? "exclamationmark.icloud" : "icloud.and.arrow.up")
+                Text(Self.caption(pending: pending, failed: failed, waitsForKey: queue.waitsForKey))
+                    .font(DS.Typography.caption)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(DS.Typography.caption)
             }
+            .foregroundStyle(failed > 0 ? DS.Palette.warning : DS.Palette.lime)
+            .padding(.vertical, DS.Spacing.sm)
+            .padding(.horizontal, DS.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DS.Palette.card)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("outbox.bar")
+        .sheet(isPresented: $showsList) {
+            OutboxQueueList(queue: queue)
         }
     }
 }

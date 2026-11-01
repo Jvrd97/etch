@@ -5,6 +5,8 @@
 // summary: PHASE-03/236, 242 — a press carries the moment it was made (a 422 on that moment is "not sent" with "write to today"); a write replacing a waiting one also accepts the states of replaced writes that went out and lost their answer (`mayHaveLanded`, stored), so one that landed is not a conflict and one that never left adds nothing; a direct attempt that lost its answer is queued with the flag set, a proxy's 502/504 sets it in the replay, and a direct Day mark that gets a 502/504 is queued with `mayHaveLanded: true` instead of rolling back blindly; a failed TLS handshake never carried the body; a retry that would write over a newer write of the same object says so
 // [review:need-review] PHASE-03/240
 // summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the online path of a press: `send()` flushes without holding the caller; each delivery is announced at once with the server's answer (`OutboxDelivery`), a write moved to "not sent" is announced on `refused`; `attemptFailed` (stored, default false) and `isOverdue` tell a write that waits from one that is merely on its way; `withdraw` takes back a press not yet sent; the production queue tries again after a dead network or a 5xx on a growing delay
 import Combine
 import Foundation
 import Network
@@ -238,6 +240,15 @@ struct OutboxWrite: Identifiable, Equatable {
     /// An attempt went out and its answer was lost (a timeout, a dropped connection): the server may
     /// hold this write. A dead network before sending does not count. A replacing write accepts its state.
     var mayHaveLanded = false
+    /// An attempt to send this write failed. A write that is merely on its way (queued a moment ago,
+    /// its first send not answered yet) is not shown as waiting.
+    var attemptFailed = false
+
+    /// Whether the write is shown as waiting or not sent: it failed once, or it has been on its way
+    /// longer than `OutboxQueue.quietPeriod`. A press sent at once and answered is never shown.
+    func isOverdue(at moment: Date) -> Bool {
+        status == .failed || attemptFailed || moment.timeIntervalSince(createdAt) >= OutboxQueue.quietPeriod
+    }
 
     /// The retry button of the "not sent" list says what a retry will do.
     var retryTitle: String {
@@ -255,9 +266,25 @@ struct OutboxConflict: Error, Equatable {
     let reason: String
 }
 
+/// What the server answered to a delivered write, for the screen that shows it.
+enum OutboxReply {
+    case entry(EntryDTO)
+    case quickMarkEvent(QuickMarkEventDTO)
+    case dayMark(DayMarkDTO)
+    case planFact(PlanFactWriteDTO)
+    case supplementIntake(SupplementIntakeDTO)
+}
+
+/// One write the server took, with its answer; the answer is nil when the write returns nothing the
+/// app reads (a notebook) or a 2xx body this app could not read.
+struct OutboxDelivery {
+    let write: OutboxWrite
+    let reply: OutboxReply?
+}
+
 /// The network side of the queue. `OutboxReplay` is the production implementation.
 protocol OutboxSending {
-    func send(_ action: OutboxAction, idempotencyKey: String) async throws
+    func send(_ action: OutboxAction, idempotencyKey: String) async throws -> OutboxReply?
 }
 
 /// Durable list behind `OutboxQueue`. Kept small — the queue owns all policy.
@@ -314,6 +341,7 @@ final class PendingWriteRecord {
     var failure: String?
     var failureKindRaw: String?
     var mayHaveLanded: Bool = false
+    var attemptFailed: Bool = false
 
     init(write: OutboxWrite, action: Data) {
         self.id = write.id
@@ -326,6 +354,7 @@ final class PendingWriteRecord {
         self.failure = write.failure
         self.failureKindRaw = write.failureKind?.rawValue
         self.mayHaveLanded = write.mayHaveLanded
+        self.attemptFailed = write.attemptFailed
     }
 }
 
@@ -385,6 +414,7 @@ final class SwiftDataOutboxStore: OutboxStore {
         record.failure = write.failure
         record.failureKindRaw = write.failureKind?.rawValue
         record.mayHaveLanded = write.mayHaveLanded
+        record.attemptFailed = write.attemptFailed
         persist()
     }
 
@@ -426,7 +456,7 @@ final class SwiftDataOutboxStore: OutboxStore {
             id: record.id, key: record.key, action: action, label: record.label, createdAt: record.createdAt,
             serverErrors: record.serverErrors, status: PendingStatus(rawValue: record.statusRaw) ?? .pending,
             failure: record.failure, failureKind: record.failureKindRaw.flatMap(OutboxFailureKind.init(rawValue:)),
-            mayHaveLanded: record.mayHaveLanded
+            mayHaveLanded: record.mayHaveLanded, attemptFailed: record.attemptFailed
         )
     }
 }
@@ -453,6 +483,11 @@ protocol NetworkPathMonitoring: AnyObject {
 @MainActor
 final class OutboxQueue: ObservableObject {
     static let maxServerErrorAttempts = 5
+    /// How long a write may be on its way before the screens and the strip show it as waiting.
+    nonisolated static let quietPeriod: TimeInterval = 3
+    /// The pauses before the production queue tries again after a flush stopped on a dead network or a
+    /// 5xx; the last one repeats. A reconnect or the next press sends sooner.
+    static let retryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30)]
     nonisolated static let dayTurnedReason =
         "Сервер не принял отметку (409): день уже сменился, или кнопка выключена."
     nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
@@ -470,8 +505,11 @@ final class OutboxQueue: ObservableObject {
     @Published private(set) var writes: [OutboxWrite] = []
     /// The last flush stopped on a refused API key (401): the queue waits for Settings, not for the network.
     @Published private(set) var waitsForKey = false
-    /// The writes a flush delivered; announced only when there is at least one.
-    let delivered = PassthroughSubject<[OutboxWrite], Never>()
+    /// Each write the server took, announced as soon as it did, after `writes` dropped it: a screen
+    /// replaces its waiting sign with the answer in the same turn, so nothing blinks.
+    let delivered = PassthroughSubject<OutboxDelivery, Never>()
+    /// Each write moved to the "not sent" list by a flush, with its reason in `failure`.
+    let refused = PassthroughSubject<OutboxWrite, Never>()
 
     private let store: OutboxStore
     private let now: () -> Date
@@ -479,6 +517,10 @@ final class OutboxQueue: ObservableObject {
     private var isFlushing = false
     private var inFlightID: UUID?
     private var monitor: NetworkPathMonitoring?
+    /// Pauses of the retry after a failed flush; empty (no retry) until `startAutoFlush`.
+    private var retryDelays: [Duration] = []
+    private var retryRound = 0
+    private var retryTask: Task<Void, Never>?
 
     /// `sender` is resolved per flush, so a new server address or key applies without a restart.
     init(store: OutboxStore, now: @escaping () -> Date = Date.init, sender: @escaping () -> OutboxSending? = { nil }) {
@@ -503,10 +545,12 @@ final class OutboxQueue: ObservableObject {
     /// A whole-state write replaces a waiting one of the same object (unless that one is in flight).
     /// `mayHaveLanded` says the failed direct attempt went out and lost its answer
     /// (`mayHaveLanded(after:)` of its error): a later write replacing this one accepts its state.
+    /// `attemptFailed` says a direct attempt already failed: the write is shown as waiting at once.
     /// Returns the id of the queued write, so a caller can tell later whether that very write was delivered.
     @discardableResult
     func enqueue(
-        _ action: OutboxAction, key: String = UUID().uuidString, label: String, mayHaveLanded: Bool = false
+        _ action: OutboxAction, key: String = UUID().uuidString, label: String, mayHaveLanded: Bool = false,
+        attemptFailed: Bool = false
     ) -> UUID {
         var action = action
         if action.replacesOlderOfSameTarget {
@@ -515,7 +559,10 @@ final class OutboxQueue: ObservableObject {
                 store.delete(id: older.id)
             }
         }
-        return append(action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded)
+        return append(
+            action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded,
+            attemptFailed: attemptFailed || mayHaveLanded
+        )
     }
 
     /// Puts back a write carried over from an older queue, with its own key and time.
@@ -525,13 +572,15 @@ final class OutboxQueue: ObservableObject {
 
     @discardableResult
     private func append(
-        _ action: OutboxAction, key: String, label: String, createdAt: Date, mayHaveLanded: Bool = false
+        _ action: OutboxAction, key: String, label: String, createdAt: Date, mayHaveLanded: Bool = false,
+        attemptFailed: Bool = false
     ) -> UUID {
         let id = UUID()
         store.append(
             OutboxWrite(
                 id: id, key: key, action: action, label: label, createdAt: createdAt, serverErrors: 0,
-                status: .pending, failure: nil, failureKind: nil, mayHaveLanded: mayHaveLanded
+                status: .pending, failure: nil, failureKind: nil, mayHaveLanded: mayHaveLanded,
+                attemptFailed: attemptFailed
             )
         )
         reload()
@@ -547,6 +596,7 @@ final class OutboxQueue: ObservableObject {
         write.failure = nil
         write.failureKind = nil
         write.serverErrors = 0
+        write.attemptFailed = false
         write.createdAt = now()
         store.update(write)
         reload()
@@ -556,6 +606,20 @@ final class OutboxQueue: ObservableObject {
     func discard(id: UUID) {
         store.delete(id: id)
         reload()
+    }
+
+    /// Takes back a write that has not left the phone: deleted, and nothing is sent. False when it is
+    /// being sent right now or is no longer waiting — the server may get it, the caller undoes it there.
+    @discardableResult
+    func withdraw(id: UUID) -> Bool {
+        guard id != inFlightID, pending.contains(where: { $0.id == id }) else { return false }
+        discard(id: id)
+        return true
+    }
+
+    /// Sends the waiting writes without holding the caller: a press is on screen once it is queued.
+    func send() {
+        Task { await flush() }
     }
 
     /// What a retry of a "not sent" write would write over: a later write of the same whole-state
@@ -585,26 +649,54 @@ final class OutboxQueue: ObservableObject {
             inFlightID = nil
         }
         var tried: Set<UUID> = []
-        var sent: [OutboxWrite] = []
+        var stopped = false
         while let write = store.fetchAll().first(where: { $0.status == .pending && !tried.contains($0.id) }) {
             tried.insert(write.id)
             inFlightID = write.id
             do {
-                try await sender.send(write.action, idempotencyKey: write.key)
-                store.delete(id: write.id)
-                sent.append(write)
+                let reply = try await sender.send(write.action, idempotencyKey: write.key)
                 waitsForKey = false
+                deliver(write, reply: reply)
             } catch {
-                if !settle(write, after: error) { break }
+                if !settle(write, after: error) {
+                    stopped = true
+                    break
+                }
             }
         }
         reload()
-        if !sent.isEmpty { delivered.send(sent) }
+        scheduleRetry(after: stopped)
     }
 
-    /// Starts flushing on every reconnect (and on the monitor's first report at launch).
-    func startAutoFlush(monitor: NetworkPathMonitoring) {
+    private func deliver(_ write: OutboxWrite, reply: OutboxReply?) {
+        store.delete(id: write.id)
+        reload()
+        delivered.send(OutboxDelivery(write: write, reply: reply))
+    }
+
+    /// A flush that stopped on a dead network or a 5xx is tried again on a growing pause; one that
+    /// emptied the queue resets the pause. A refused key waits for Settings, not for the clock.
+    private func scheduleRetry(after stopped: Bool) {
+        retryTask?.cancel()
+        retryTask = nil
+        guard stopped, !waitsForKey, !retryDelays.isEmpty else {
+            if !stopped { retryRound = 0 }
+            return
+        }
+        let delay = retryDelays[min(retryRound, retryDelays.count - 1)]
+        retryRound += 1
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.flush()
+        }
+    }
+
+    /// Starts flushing on every reconnect (and on the monitor's first report at launch), and again after
+    /// a flush that stopped, on the pauses of `retryDelays`.
+    func startAutoFlush(monitor: NetworkPathMonitoring, retryDelays: [Duration] = OutboxQueue.retryDelays) {
         self.monitor = monitor
+        self.retryDelays = retryDelays
         monitor.onBecameOnline { [weak self] in
             await self?.flush()
         }
@@ -614,6 +706,7 @@ final class OutboxQueue: ObservableObject {
     /// Records the failure of `write`. Returns true when the flush may go on to the next write.
     private func settle(_ write: OutboxWrite, after error: Error) -> Bool {
         var settled = write
+        settled.attemptFailed = true
         switch Self.outcome(of: error, for: write.action) {
         case .waitForNetwork:
             settled.serverErrors = 0
@@ -632,7 +725,7 @@ final class OutboxQueue: ObservableObject {
                 settled.status = .failed
                 settled.failure = "Сервер \(settled.serverErrors) раз подряд ответил ошибкой \(status)."
                 settled.failureKind = .serverErrors
-                store.update(settled)
+                refuse(settled)
                 return true
             }
             store.update(settled)
@@ -641,12 +734,18 @@ final class OutboxQueue: ObservableObject {
             settled.status = .failed
             settled.failure = reason
             settled.failureKind = kind
-            store.update(settled)
+            refuse(settled)
             return true
         case .delivered:
-            store.delete(id: write.id)
+            deliver(write, reply: nil)
             return true
         }
+    }
+
+    private func refuse(_ write: OutboxWrite) {
+        store.update(write)
+        reload()
+        refused.send(write)
     }
 
     private enum Outcome {

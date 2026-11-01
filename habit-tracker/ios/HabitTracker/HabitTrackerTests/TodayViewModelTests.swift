@@ -6,6 +6,8 @@
 // summary: PHASE-03/242 — a failed re-read after a background delivery leaves no error; a load's read answered after the re-read a delivery started neither replaces the screen nor the cache; the double sits on the main actor
 // summary: unit tests for TodayViewModel — load, save success/failure, checklist upsert routing, one bulk avoid-streak read, one-tap relapse with undo and details, re-read of the day after a quick-mark tap, entry delete; offline: a form or checklist save goes to the shared outbox under the key of its attempt and shows as pending until delivered, the count is the queue's
 import Combine
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — with the outbox a save is queued and sent behind the caller (the tests wait for that send); a delivery puts the server's entry in place without reading the day; a second tick is dropped because the first is on screen at once
 import XCTest
 @testable import HabitTracker
 
@@ -749,6 +751,7 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
 
         let saved = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved, "airplane mode does not lose the record")
         XCTAssertNil(viewModel.saveErrorMessage)
@@ -770,6 +773,7 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
 
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
 
         XCTAssertNotNil(api.createKeys.first ?? nil, "a lost answer of an online save cannot become a duplicate")
         XCTAssertEqual(outbox.pendingCount, 0)
@@ -786,6 +790,7 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
 
         let saved = await viewModel.saveEntry(categoryID: 2, values: [20: "true"])
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved)
         XCTAssertEqual(outbox.pendingCount, 1)
@@ -801,6 +806,7 @@ final class TodayViewModelTests: XCTestCase {
         let (viewModel, outbox) = makeOfflineViewModel(api: api)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
 
         await viewModel.load()
         XCTAssertEqual(viewModel.entries(forCategory: 1).map(\.isPending), [true], "the server does not have it yet")
@@ -819,14 +825,14 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(Set(api.createKeys.compactMap { $0 }).count, 1, "one key across the direct try and every replay")
     }
 
-    func testADeliveryInTheBackgroundReadsTheDayAgain() async throws {
+    func testADeliveryInTheBackgroundIsDrawnWithoutALoader() async throws {
         let api = MockTodayAPI()
         api.categoriesResult = .success([pushups])
         api.createEntryResult = .failure(APIClientError.timeout)
         let (viewModel, outbox) = makeOfflineViewModel(api: api)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
-        let readsBefore = api.fetchedEntryRanges.count
+        await waitForSend(outbox)
         let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
         api.createEntryResult = .success(delivered)
         api.entriesResult = .success([delivered])
@@ -837,13 +843,10 @@ final class TodayViewModelTests: XCTestCase {
         let monitor = MockNetworkMonitor()
         outbox.startAutoFlush(monitor: monitor)
         await monitor.simulateOnline()
-        for _ in 0..<100 where viewModel.todayEntries.contains(where: \.isPending) || api.fetchedEntryRanges.count == readsBefore {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await waitUntil { viewModel.entries(forCategory: 1) == [delivered] }
 
-        XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore)
         XCTAssertFalse(viewModel.todayEntries.contains(where: \.isPending))
-        XCTAssertFalse(states.contains(.loading), "a background delivery re-reads quietly, no loader")
+        XCTAssertFalse(states.contains(.loading), "a background delivery is drawn quietly, no loader")
     }
 
     func testARereadsCacheStampIsNotNewerThanTheCategoriesAndStreaksItKeeps() async throws {
@@ -862,6 +865,7 @@ final class TodayViewModelTests: XCTestCase {
         )
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
         let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
         api.createEntryResult = .success(delivered)
         api.entriesResult = .success([delivered])
@@ -989,6 +993,7 @@ final class TodayViewModelTests: XCTestCase {
         let (first, outbox) = makeOfflineViewModel(api: api)
         await first.load()
         _ = await first.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
         let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
         let viewModel = TodayViewModel(
             api: api, cacheStore: InMemoryCacheStore(), outbox: outbox,
@@ -1060,27 +1065,23 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.saveErrorMessage)
     }
 
-    func testAFailedBackgroundReReadSaysNothingNobodyAskedFor() async throws {
+    func testADeliveryPutsTheServersEntryInPlaceWithoutReadingTheDay() async throws {
         let api = MockTodayAPI()
         api.categoriesResult = .success([pushups])
         api.createEntryResult = .failure(APIClientError.timeout)
         let (viewModel, outbox) = makeOfflineViewModel(api: api)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
         let readsBefore = api.fetchedEntryRanges.count
-        api.createEntryResult = .success(
-            EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
-        )
-        api.entriesResult = .failure(APIClientError.timeout)
+        let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
+        api.createEntryResult = .success(delivered)
 
-        let answeredBefore = api.entriesAnswered
         await outbox.flush()
-        await waitUntil { api.entriesAnswered > answeredBefore }
-        // The read has answered; its failure is handled on the main actor's next turns.
-        for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertGreaterThan(api.fetchedEntryRanges.count, readsBefore, "the delivery did read the day again")
-        XCTAssertNil(viewModel.saveErrorMessage, "nobody pressed anything: a failed quiet re-read is not their error")
+        XCTAssertEqual(viewModel.entries(forCategory: 1), [delivered], "the server's row took the place of the pending one")
+        XCTAssertEqual(api.fetchedEntryRanges.count, readsBefore, "the answer is the entry: the day is not read again")
+        XCTAssertNil(viewModel.saveErrorMessage)
     }
 
     func testAReadSentBeforeADeliveryDoesNotOverwriteTheReadAfterIt() async {
@@ -1091,6 +1092,7 @@ final class TodayViewModelTests: XCTestCase {
         let (viewModel, outbox) = makeOfflineViewModel(api: api, cache: cache)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 1, values: [10: "42"])
+        await waitForSend(outbox)
         let delivered = EntryDTO(id: 7, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "42")])
         let readsBefore = api.fetchedEntryRanges.count
         api.createEntryResult = .success(delivered)
@@ -1122,11 +1124,13 @@ final class TodayViewModelTests: XCTestCase {
         let (viewModel, outbox) = makeOfflineViewModel(api: api)
         await viewModel.load()
         _ = await viewModel.saveEntry(categoryID: 2, values: [20: "false"])
+        await waitForSend(outbox)
         api.upsertChecklistResult = .success(
             EntryDTO(id: 200, categoryId: 2, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 20, value: "true")])
         )
 
         let saved = await viewModel.saveEntry(categoryID: 2, values: [20: "true"])
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved)
         XCTAssertEqual(api.upsertedChecklists.map(\.values), [["20": false], ["20": true]], "the old one never follows the new")
@@ -1166,7 +1170,6 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(api.createdEntries.first?.entryDate, Self.fixedToday)
         XCTAssertNotNil(api.createKeys.first ?? nil, "a lost answer must not become a second step")
         XCTAssertEqual(viewModel.entries(forCategory: 1), [savedEntry()])
-        XCTAssertTrue(viewModel.quickAddingCategoryIDs.isEmpty)
     }
 
     func testPlusRecordsTheTypedAmountInPlaceOfTheStepAndWithoutAnyStep() async {
@@ -1198,21 +1201,6 @@ final class TodayViewModelTests: XCTestCase {
         XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "7")])
     }
 
-    func testAPlusTapWhileTheFirstIsBeingSavedIsDropped() async {
-        let api = MockTodayAPI()
-        api.categoriesResult = .success([waterWithStep])
-        api.createEntryResult = .success(savedEntry())
-        let viewModel = makeViewModel(api: api)
-        await viewModel.load()
-        var secondTapSaved: Bool?
-        api.duringCreateEntry = { secondTapSaved = await viewModel.quickAdd(categoryID: 1) }
-
-        await viewModel.quickAdd(categoryID: 1)
-
-        XCTAssertEqual(secondTapSaved, false)
-        XCTAssertEqual(api.createdEntries.count, 1, "one press is one entry")
-    }
-
     func testAPlusTapAfterTheFirstIsDoneAddsAnotherStepUnderAnotherKey() async {
         let api = MockTodayAPI()
         api.categoriesResult = .success([waterWithStep])
@@ -1236,6 +1224,7 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
 
         let saved = await viewModel.quickAdd(categoryID: 1)
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved, "airplane mode does not lose the step")
         XCTAssertEqual(outbox.pendingCount, 1)
@@ -1437,15 +1426,15 @@ final class TodayViewModelTests: XCTestCase {
         api.createEntryResult = .success(
             EntryDTO(id: 101, categoryId: 1, entryDate: Self.fixedToday, values: [EntryValueDTO(fieldId: 10, value: "true")])
         )
-        let viewModel = makeViewModel(api: api)
+        let (viewModel, outbox) = makeOfflineViewModel(api: api)
         await viewModel.load()
-        var secondTapSaved: Bool?
-        api.duringCreateEntry = { secondTapSaved = await viewModel.quickAdd(categoryID: 1) }
 
         let saved = await viewModel.quickAdd(categoryID: 1)
+        let second = await viewModel.quickAdd(categoryID: 1)
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved)
-        XCTAssertEqual(secondTapSaved, false, "a tap while the first is saved is dropped")
+        XCTAssertFalse(second, "the first tick is on screen at once: a second tap writes nothing")
         XCTAssertEqual(api.createdEntries.count, 1)
         XCTAssertEqual(api.createdEntries.first?.values, [EntryValueDTO(fieldId: 10, value: "true")])
         XCTAssertNotNil(api.createKeys.first ?? nil)
@@ -1459,6 +1448,7 @@ final class TodayViewModelTests: XCTestCase {
         await viewModel.load()
 
         let saved = await viewModel.quickAdd(categoryID: 1)
+        await waitForSend(outbox)
 
         XCTAssertTrue(saved)
         XCTAssertEqual(outbox.pendingCount, 1)
@@ -1569,6 +1559,7 @@ final class TodayViewModelTests: XCTestCase {
 
         await viewModel.quickAdd(categoryID: 1)
         await viewModel.quickAdd(categoryID: 1)
+        await waitForSend(outbox)
 
         XCTAssertTrue(viewModel.isTicked(categoryID: 1), "the pending tick reads as done")
         XCTAssertEqual(outbox.pendingCount, 1)

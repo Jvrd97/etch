@@ -371,7 +371,7 @@ final class OutboxQueueTests: XCTestCase {
         let server = FakeOutboxServer()
         let queue = makeQueue()
         var announced: [[String]] = []
-        let subscription = queue.delivered.sink { announced.append($0.map(\.label)) }
+        let subscription = queue.delivered.sink { announced.append([$0.write.label]) }
         queue.enqueue(entry("1"), label: "a")
         server.failures = [APIClientError.timeout]
         await queue.flush(using: replay(server))

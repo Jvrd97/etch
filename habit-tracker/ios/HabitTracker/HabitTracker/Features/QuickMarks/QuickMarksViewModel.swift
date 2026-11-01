@@ -3,6 +3,8 @@
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the directory; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the buttons open from the cached directory of today (no loader), an appearance reads again only when the directory is not recent, a re-read keeps the buttons and says its failure as a line
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a press is queued under its own key with its moment and drawn at once, the send runs behind; a delivery repaints the button from the server's answer and arms the undo with its event, a refusal takes the press away and says why; undo of a press not sent yet withdraws it from the queue without a request, of one on its way takes it back once it lands
 import Combine
 import Foundation
 
@@ -20,8 +22,19 @@ final class QuickMarksViewModel: ObservableObject {
     @Published private(set) var marks: [QuickMarkDTO] = []
     /// Non-nil while the directory shown is the cached one; the moment it was cached.
     @Published private(set) var offlineAsOf: Date?
-    /// The tap that can still be taken back, or nil when none can.
-    @Published private(set) var lastEvent: QuickMarkEventDTO?
+    /// The press the undo chip takes back: still in the queue, or answered by the server.
+    enum LastPress: Equatable {
+        case queued(writeID: UUID, markID: Int)
+        case landed(QuickMarkEventDTO)
+    }
+
+    /// The press that can still be taken back, or nil when none can.
+    @Published private(set) var lastPress: LastPress?
+    /// The server's answer to that press, once it has one.
+    var lastEvent: QuickMarkEventDTO? {
+        if case .landed(let event)? = lastPress { return event }
+        return nil
+    }
     @Published var errorMessage: String?
 
     /// A tap or an undo went through (or a queued tap was delivered): the day of this category
@@ -47,6 +60,8 @@ final class QuickMarksViewModel: ObservableObject {
     /// than the one on screen is dropped, or a delivered press would vanish from the total.
     private var readsSent = 0
     private var readShown = 0
+    /// A press whose undo was asked while it was on its way: taken back on the server once it lands.
+    private var undoOnDelivery: UUID?
 
     init(
         apiProvider: @escaping () -> QuickMarksAPI?,
@@ -93,9 +108,13 @@ final class QuickMarksViewModel: ObservableObject {
     /// What the undo chip says, or nil when there is nothing to take back. Names the button,
     /// because the chip sits under a row of them.
     var undoCaption: String? {
-        guard let lastEvent, let mark = marks.first(where: { $0.id == lastEvent.quickMarkId }) else {
-            return nil
+        let markID: Int
+        switch lastPress {
+        case .queued(_, let id)?: markID = id
+        case .landed(let event)?: markID = event.quickMarkId
+        case nil: return nil
         }
+        guard let mark = marks.first(where: { $0.id == markID }) else { return nil }
         return "Отменить «\(mark.label)»"
     }
 
@@ -107,7 +126,7 @@ final class QuickMarksViewModel: ObservableObject {
     }
 
     /// Any change of the queue (a press queued, refused, discarded) redraws the buttons; a delivered
-    /// press moved the day of its category: read the totals again and say which days moved.
+    /// press repaints its button from the server's answer and says which day moved; a refused one says why.
     private func bindOutbox() {
         outbox.$writes
             .sink { [weak self] writes in
@@ -115,12 +134,47 @@ final class QuickMarksViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         outbox.delivered
-            .sink { [weak self] writes in
-                let categories = Set(writes.compactMap(\.tapCategoryID)).sorted()
-                guard !categories.isEmpty else { return }
-                Task { await self?.reconcileAfterFlush(categoryIDs: categories) }
+            .sink { [weak self] delivery in
+                MainActor.assumeIsolated { self?.settle(delivery) }
             }
             .store(in: &cancellables)
+        outbox.refused
+            .sink { [weak self] write in
+                guard write.tapMarkID != nil else { return }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.errorMessage = write.failure ?? Self.tapFailedMessage
+                    if case .queued(write.id, _)? = self.lastPress { self.lastPress = nil }
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The server took a press: in the same turn as the queue dropped it, the button takes the server's
+    /// total (the presses still waiting stay on top), and the undo chip of that press gets its event. A
+    /// directory read already on its way predates the press and is not shown; the cache takes the new
+    /// total. A button not on screen yet, or an answer this app could not read, reads the directory instead.
+    private func settle(_ delivery: OutboxDelivery) {
+        guard let categoryID = delivery.write.tapCategoryID else { return }
+        let writeID = delivery.write.id
+        var event: QuickMarkEventDTO?
+        if case .quickMarkEvent(let answer)? = delivery.reply { event = answer }
+        if let event, serverMarks.contains(where: { $0.id == event.quickMarkId }) {
+            readShown = readsSent
+            replace(markID: event.quickMarkId) { $0.applying(event) }
+            cache.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: cache.scope)
+            onDayChanged?(categoryID)
+        } else {
+            Task { await reconcileAfterFlush(categoryIDs: [categoryID]) }
+        }
+        if let event, undoOnDelivery == writeID {
+            undoOnDelivery = nil
+            Task {
+                if let refusal = await undoEvent(event.eventId) { errorMessage = refusal }
+            }
+        } else if case .queued(writeID, _)? = lastPress {
+            lastPress = event.map(LastPress.landed)
+        }
     }
 
     // MARK: Loading
@@ -251,56 +305,46 @@ final class QuickMarksViewModel: ObservableObject {
 
     // MARK: Taps
 
-    /// Records one tap. One network call: the answer carries the new total and `done`, so the
-    /// button repaints from it. Without a network the press is queued under the key of this
-    /// attempt with the moment it was made, and shown at once. The server puts it on the day that
-    /// moment belongs to by its own boundary (04:00), so neither the list's day nor the phone's
-    /// calendar has to guess it.
+    /// Records one tap: queued under a key of its own with the moment it was made, drawn on the button
+    /// at once, and sent behind the caller; the server's answer repaints the button when it comes. The
+    /// server puts the press on the day that moment belongs to by its own boundary (04:00), so neither
+    /// the list's day nor the phone's calendar has to guess it, however late it is delivered.
     func tap(_ mark: QuickMarkDTO) async {
         errorMessage = nil
-        guard let api = apiProvider() else {
+        guard apiProvider() != nil else {
             errorMessage = Self.notConfiguredMessage
             return
         }
-        let key = UUID()
         let pressed = now()
-        let offsetMinutes = timeZone.secondsFromGMT(for: pressed) / 60
-        do {
-            let event = try await api.tapQuickMark(
-                id: mark.id,
-                request: QuickMarkEventRequestDTO(
-                    value: nil, entryDate: nil, utcOffsetMinutes: offsetMinutes,
-                    source: QuickMarkEventRequestDTO.iosSource
-                ),
-                idempotencyKey: key.uuidString
-            )
-            replace(markID: mark.id) { $0.applying(event) }
-            lastEvent = event
-            onDayChanged?(mark.categoryId)
-        } catch let error as APIClientError where error.isConnectivity {
-            outbox.enqueue(
-                .tapQuickMark(
-                    QueuedTap(
-                        quickMarkId: mark.id, categoryId: mark.categoryId, utcOffsetMinutes: offsetMinutes,
-                        serverDay: nil, occurredAt: pressed
-                    )
-                ),
-                key: key.uuidString, label: mark.label
-            )
-        } catch let error as APIClientError {
-            errorMessage = error.userMessage
-        } catch {
-            errorMessage = Self.tapFailedMessage
-        }
+        let writeID = outbox.enqueue(
+            .tapQuickMark(
+                QueuedTap(
+                    quickMarkId: mark.id, categoryId: mark.categoryId,
+                    utcOffsetMinutes: timeZone.secondsFromGMT(for: pressed) / 60,
+                    serverDay: nil, occurredAt: pressed
+                )
+            ),
+            label: mark.label
+        )
+        lastPress = .queued(writeID: writeID, markID: mark.id)
+        outbox.send()
     }
 
     // MARK: Undo
 
-    /// Takes the last tap back: one action, no trip to the entry editor.
+    /// Takes the last tap back: one action, no trip to the entry editor. A press that has not left the
+    /// phone is withdrawn from the queue without a request; one on its way is taken back once it lands.
     func undoLast() async {
-        guard let event = lastEvent else { return }
-        if let refusal = await undoEvent(event.eventId) {
-            errorMessage = refusal
+        switch lastPress {
+        case .queued(let writeID, _)?:
+            lastPress = nil
+            if !outbox.withdraw(id: writeID) { undoOnDelivery = writeID }
+        case .landed(let event)?:
+            if let refusal = await undoEvent(event.eventId) {
+                errorMessage = refusal
+            }
+        case nil:
+            return
         }
     }
 
@@ -312,7 +356,7 @@ final class QuickMarksViewModel: ObservableObject {
         defer {
             // The offer is spent for this tap either way: a success took it back, a refusal means it
             // is no longer the last one, and a chip that answers 409 forever is worse than none.
-            if lastEvent?.eventId == eventID { lastEvent = nil }
+            if lastEvent?.eventId == eventID { lastPress = nil }
         }
         do {
             let undone = try await api.undoQuickMarkEvent(id: eventID)

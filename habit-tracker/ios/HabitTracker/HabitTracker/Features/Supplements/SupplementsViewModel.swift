@@ -3,6 +3,8 @@
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 round 2 — the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the list opens from its cached copy (a copy of another day without «принял»), an appearance reads again only when the copy is not recent, a re-read of a shown list says its failure as a line
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — «принял» is queued under its own key with the day of the press and shows as taken at once, the send runs behind; «ждёт отправки» shows only a press that waits; a delivery of today's intake marks the row from the answer without a re-read, a refusal takes the mark away and says why
 import Combine
 import Foundation
 
@@ -20,10 +22,9 @@ final class SupplementsViewModel: ObservableObject {
     struct Row: Identifiable, Equatable {
         let supplement: SupplementDTO
         let isTaken: Bool
-        /// When the press that still waits in the queue was made; nil when nothing waits.
+        /// When the press that waits in the queue was made — it failed once or has been on its way past
+        /// the quiet period; nil when nothing waits.
         let waitingSince: Date?
-        /// Its POST is on the way: the button stays off until the answer.
-        let isSending: Bool
 
         var isWaiting: Bool { waitingSince != nil }
 
@@ -61,8 +62,6 @@ final class SupplementsViewModel: ObservableObject {
     /// send, so its answer may come after the re-read a delivery started.
     private var readsSent = 0
     private var readShown = 0
-    /// Supplements whose «принял» POST has not answered yet.
-    private var sending: Set<Int> = []
 
     init(
         apiProvider: @escaping () -> SupplementsAPI?,
@@ -197,11 +196,30 @@ final class SupplementsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         outbox.delivered
-            .sink { [weak self] writes in
-                guard writes.contains(where: { $0.supplementID != nil }) else { return }
-                Task { await self?.reconcileAfterFlush() }
+            .sink { [weak self] delivery in
+                MainActor.assumeIsolated { self?.settle(delivery) }
             }
             .store(in: &cancellables)
+        outbox.refused
+            .sink { [weak self] write in
+                guard write.supplementID != nil else { return }
+                MainActor.assumeIsolated { self?.errorMessage = write.failure ?? SupplementsFormat.markFailedMessage }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The server took a press: an intake of today marks its row from the answer, in the same turn as the
+    /// queue dropped the press, and a read already on its way predates it and is not shown. An intake of
+    /// another day, or an answer this app could not read, reads the list again.
+    private func settle(_ delivery: OutboxDelivery) {
+        guard let id = delivery.write.supplementID else { return }
+        guard case .supplementIntake(let intake)? = delivery.reply, intake.intakeDate == today() else {
+            Task { await reconcileAfterFlush() }
+            return
+        }
+        readShown = readsSent
+        replace(id) { $0.taken(true) }
+        saveShown(sentUnder: cache.scope)
     }
 
     private func nextRead() -> Int {
@@ -245,62 +263,43 @@ final class SupplementsViewModel: ObservableObject {
         redraw(outbox.writes)
     }
 
-    /// A press still waiting counts as taken today when it is for today (or for no day: the server decides).
+    /// A press still queued counts as taken today when it is for today (or for no day: the server decides).
     /// A press of another day does not, and neither does one in the "not sent" list: it has not landed.
+    /// Only a press that waits says «ждёт отправки»; one merely on its way is shown as taken.
     private func redraw(_ writes: [OutboxWrite]) {
         let today = today()
+        let moment = now()
+        var queued: Set<Int> = []
         var waiting: [Int: Date] = [:]
         for write in writes where write.status == .pending {
             guard case .markSupplementTaken(let intake) = write.action,
                   intake.intakeDate == nil || intake.intakeDate == today
             else { continue }
+            queued.insert(intake.supplementId)
+            guard write.isOverdue(at: moment) else { continue }
             waiting[intake.supplementId] = min(waiting[intake.supplementId] ?? intake.pressedAt, intake.pressedAt)
         }
         rows = serverItems.map { item in
-            let since = item.takenToday ? nil : waiting[item.id]
-            return Row(
-                supplement: item, isTaken: item.takenToday || since != nil,
-                waitingSince: since, isSending: sending.contains(item.id)
+            Row(
+                supplement: item, isTaken: item.takenToday || queued.contains(item.id),
+                waitingSince: item.takenToday ? nil : waiting[item.id]
             )
         }
     }
 
     // MARK: Taking
 
-    /// «Принял сегодня». One POST; the server decides the day. Without a network the press is queued
-    /// under the key of this attempt with the day of the press, and shown at once.
+    /// «Принял сегодня». Queued under a key of its own with the day of the press (a clock check: a server
+    /// on another day refuses instead of writing the wrong day), shown as taken at once, and sent behind
+    /// the caller.
     func markTaken(_ supplement: SupplementDTO) async {
         errorMessage = nil
-        guard let current = rows.first(where: { $0.id == supplement.id }),
-              !current.isTaken, !current.isSending
-        else { return }
-        guard let api = apiProvider() else {
+        guard let current = rows.first(where: { $0.id == supplement.id }), !current.isTaken else { return }
+        guard apiProvider() != nil else {
             errorMessage = SupplementsFormat.notConfiguredMessage
             return
         }
-        sending.insert(supplement.id)
-        redraw(outbox.writes)
-        defer {
-            sending.remove(supplement.id)
-            redraw(outbox.writes)
-        }
-        let key = UUID().uuidString
         let pressed = now()
-        let sentUnder = cache.scope
-        do {
-            _ = try await api.markIntake(supplementID: supplement.id, intakeDate: nil, idempotencyKey: key)
-            replace(supplement.id) { $0.taken(true) }
-            saveShown(sentUnder: sentUnder)
-        } catch let error as APIClientError where error.isConnectivity {
-            queue(supplement, key: key, pressed: pressed, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
-        } catch let error as APIClientError {
-            errorMessage = SupplementsFormat.message(forMark: error)
-        } catch {
-            errorMessage = SupplementsFormat.markFailedMessage
-        }
-    }
-
-    private func queue(_ supplement: SupplementDTO, key: String, pressed: Date, mayHaveLanded: Bool) {
         outbox.enqueue(
             .markSupplementTaken(
                 QueuedSupplementIntake(
@@ -309,8 +308,9 @@ final class SupplementsViewModel: ObservableObject {
                     pressedAt: pressed
                 )
             ),
-            key: key, label: SupplementsFormat.queueLabel(supplement), mayHaveLanded: mayHaveLanded
+            label: SupplementsFormat.queueLabel(supplement)
         )
+        outbox.send()
     }
 
     private func replace(_ id: Int, _ transform: (SupplementDTO) -> SupplementDTO) {

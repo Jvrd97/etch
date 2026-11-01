@@ -5,6 +5,8 @@
 // summary: Today screen — quick-mark buttons first (they take over the legacy cards of their categories), avoid streak cards with a one-tap Happened that leads to the relapse history, habit cards with the quick-entry sheet, a card opens the day's sets and records; offline banner atop when data came from the read cache, and the shared offline-queue strip (waiting and not-sent writes of every screen)
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 — the cached day and buttons are drawn before the first frame, and coming back to the tab reads again only what is not recent
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — the plus is never dimmed (every press counts), the card's «ждёт» tag follows writes that wait
 import SwiftUI
 
 /// What a card of Today opened: the day of one category — its sets (when a button answers for it)
@@ -388,7 +390,6 @@ struct TodayView: View {
     /// What the plus does is `TodayQuickAdd`'s call: add the step, ask for the amount, or open the form.
     private func quickAddButton(_ category: CategoryDTO) -> some View {
         let plan = TodayQuickAdd.plan(for: category)
-        let isAdding = viewModel.quickAddingCategoryIDs.contains(category.id)
         let isTicked = viewModel.isTicked(categoryID: category.id)
         return Button {
             switch plan {
@@ -420,8 +421,7 @@ struct TodayView: View {
         }
         .buttonStyle(.plain)
         // Never `.disabled`: a switched-off button hands its touch to the card behind it, and the second
-        // tap of a quick double press would open the form. The model drops that tap instead.
-        .opacity(isAdding ? 0.5 : 1)
+        // tap of a quick double press would open the form. Each press is queued and counted.
         .accessibilityLabel(isTicked ? "Сделано: \(category.name)" : "Добавить: \(category.name)")
         .accessibilityIdentifier("today.quickadd.\(category.id)")
     }
@@ -430,11 +430,10 @@ struct TodayView: View {
         !viewModel.entries(forCategory: category.id).isEmpty
     }
 
-    /// True when at least one of the category's rows is an offline-queued create that
-    /// has not reached the server yet — drives the per-card "pending" tag so a queued
-    /// entry reads as pending in the list, not as an already-saved value.
+    /// True when a queued save of the category waits (failed once, or on its way past the quiet period) —
+    /// drives the per-card "pending" tag. A save sent and answered at once never shows it.
     private func hasPendingEntry(_ category: CategoryDTO) -> Bool {
-        viewModel.entries(forCategory: category.id).contains(where: \.isPending)
+        viewModel.waitingCategoryIDs.contains(category.id)
     }
 
     /// Compact right-side summary: today's single value, entry count, or a dash.

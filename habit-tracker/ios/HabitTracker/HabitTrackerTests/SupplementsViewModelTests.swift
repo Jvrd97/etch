@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: tests of the Supplements screen state — the list and its states (loading, loaded, empty, error, no server), the cached list offline and a cached list of another day not claiming «принял сегодня», a press online (one POST under a key, no day) and offline (queued under the same key with the day of the press, shown at once, «ждёт отправки», survives a restart), the day boundary at 04:00, a refused press shown and not queued, a double tap sent once, delivery re-reading the list, a replay refused on a turned day and its retry to today, and adding with its checks and its need for the network
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a press goes through the queue with the day of the press and is sent behind the caller (the tests wait for that send); a refusal lands in "not sent" and is said; a delivered intake of today marks the row without a re-read; «ждёт отправки» only for a press that waits
 import XCTest
 @testable import HabitTracker
 
@@ -221,12 +223,14 @@ final class SupplementsViewModelTests: XCTestCase {
             .markSupplementTaken(QueuedSupplementIntake(supplementId: 2, intakeDate: "2026-10-27", pressedAt: clock)),
             label: "Принял: Магний"
         )
+        // The second press waits behind the first, which fails: past the quiet period it says it waits.
+        clock = clock.addingTimeInterval(OutboxQueue.quietPeriod)
 
         await model.load()
 
         XCTAssertEqual(model.rows.map(\.isTaken), [false, true], "yesterday's press does not lock today's button")
         XCTAssertEqual(model.rows.map(\.isWaiting), [false, true])
-        XCTAssertEqual(model.rows[1].waitingSince, clock)
+        XCTAssertEqual(model.rows[1].waitingSince, clock.addingTimeInterval(-OutboxQueue.quietPeriod))
     }
 
     func testTheDayTurningUnderAWaitingPressFreesTheButton() async {
@@ -275,17 +279,18 @@ final class SupplementsViewModelTests: XCTestCase {
 
     // MARK: A press online
 
-    func testAPressOnlineIsOnePostUnderAKeyAndLeavesTheDayToTheServer() async {
+    func testAPressOnlineIsOnePostUnderAKeyWithTheDayOfThePress() async {
         let api = MockSupplementsAPI()
         api.listResult = .success([.stub(id: 1)])
         let (model, queue) = makeViewModel(api: api)
         await model.load()
 
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
         XCTAssertEqual(api.marks.count, 1)
         XCTAssertEqual(api.marks[0].id, 1)
-        XCTAssertNil(api.marks[0].date)
+        XCTAssertEqual(api.marks[0].date, "2026-10-27", "a retry of the same press must not move to another day")
         XCTAssertFalse(api.marks[0].key.isEmpty)
         XCTAssertEqual(model.rows.map(\.isTaken), [true])
         XCTAssertEqual(model.rows.map(\.isWaiting), [false])
@@ -296,12 +301,13 @@ final class SupplementsViewModelTests: XCTestCase {
     func testAMarkedRowIsNotSentTwice() async {
         let api = MockSupplementsAPI()
         api.listResult = .success([.stub(id: 1)])
-        let (model, _) = makeViewModel(api: api)
+        let (model, queue) = makeViewModel(api: api)
         await model.load()
         let supplement = model.rows[0].supplement
 
         await model.markTaken(supplement)
         await model.markTaken(supplement)
+        await waitForSend(queue)
 
         XCTAssertEqual(api.marks.count, 1)
     }
@@ -314,16 +320,14 @@ final class SupplementsViewModelTests: XCTestCase {
         let supplement = model.rows[0].supplement
         api.holdMarks = true
 
-        let first = Task { await model.markTaken(supplement) }
+        await model.markTaken(supplement)
         await waitUntil { api.heldMarks == 1 }
-        XCTAssertEqual(model.rows.map(\.isSending), [true], "the button is off while the POST is on the way")
+        XCTAssertEqual(model.rows.map(\.isTaken), [true], "the press is shown while the POST is on the way")
         await model.markTaken(supplement)
         api.releaseMarks()
-        await first.value
+        await waitUntil { queue.writes.isEmpty }
 
         XCTAssertEqual(api.marks.count, 1)
-        XCTAssertTrue(queue.writes.isEmpty)
-        XCTAssertEqual(model.rows.map(\.isSending), [false])
         XCTAssertEqual(model.rows.map(\.isTaken), [true])
     }
 
@@ -335,10 +339,11 @@ final class SupplementsViewModelTests: XCTestCase {
         await model.load()
 
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
-        XCTAssertEqual(model.errorMessage, "Сервер не принял отметку (409): добавка в архиве.")
+        XCTAssertEqual(model.errorMessage, OutboxQueue.supplementDayTurnedReason)
         XCTAssertEqual(model.rows.map(\.isTaken), [false])
-        XCTAssertTrue(queue.writes.isEmpty)
+        XCTAssertEqual(queue.failedCount, 1, "it is in the \"not sent\" list, not lost")
     }
 
     // MARK: A press offline
@@ -351,6 +356,7 @@ final class SupplementsViewModelTests: XCTestCase {
         api.markResults = [.failure(offline)]
 
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
         let write = try XCTUnwrap(queue.pending.first)
         XCTAssertEqual(queue.pendingCount, 1)
@@ -371,6 +377,7 @@ final class SupplementsViewModelTests: XCTestCase {
         api.markResults = [.failure(APIClientError.timeout)]
 
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
         XCTAssertEqual(try XCTUnwrap(queue.pending.first).mayHaveLanded, true)
     }
@@ -384,6 +391,7 @@ final class SupplementsViewModelTests: XCTestCase {
         api.markResults = [.failure(offline)]
 
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
         XCTAssertEqual(try XCTUnwrap(queue.pending.first).action.day, "2026-10-26")
     }
@@ -393,10 +401,11 @@ final class SupplementsViewModelTests: XCTestCase {
         let cache = InMemoryCacheStore()
         let api = MockSupplementsAPI()
         api.listResult = .success([.stub(id: 1)])
-        let (first, _) = makeViewModel(api: api, cache: cache, store: store)
+        let (first, firstQueue) = makeViewModel(api: api, cache: cache, store: store)
         await first.load()
         api.markResults = [.failure(offline)]
         await first.markTaken(first.rows[0].supplement)
+        await waitForSend(firstQueue)
 
         api.listResult = .failure(offline)
         api.markResults = [.failure(offline)] // the network is still down when the app starts again
@@ -407,16 +416,16 @@ final class SupplementsViewModelTests: XCTestCase {
         XCTAssertEqual(second.rows.map(\.isWaiting), [true], "the press made before the restart is still waiting")
     }
 
-    func testTheNetworkReturningDeliversThePressOnceAndTheListIsReadAgain() async {
+    func testTheNetworkReturningDeliversThePressOnceAndTheAnswerMarksTheRow() async {
         let api = MockSupplementsAPI()
         api.listResult = .success([.stub(id: 1)])
         let (model, queue) = makeViewModel(api: api)
         await model.load()
         api.markResults = [.failure(offline)]
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
         let key = api.marks[0].key
         let fetchesBefore = api.listFetches
-        api.listResult = .success([.stub(id: 1, taken: true)])
 
         await queue.flush()
 
@@ -424,8 +433,9 @@ final class SupplementsViewModelTests: XCTestCase {
         XCTAssertEqual(api.marks[1].key, key)
         XCTAssertEqual(api.marks[1].date, "2026-10-27")
         XCTAssertTrue(queue.writes.isEmpty)
-        await waitUntil { api.listFetches > fetchesBefore && model.rows.first?.isWaiting == false }
         XCTAssertEqual(model.rows.map(\.isTaken), [true])
+        XCTAssertEqual(model.rows.map(\.isWaiting), [false])
+        XCTAssertEqual(api.listFetches, fetchesBefore, "the intake of today is the answer itself: the list is not read again")
     }
 
     func testAReplayOnATurnedDayIsRefusedAndItsRetryGoesToToday() async throws {
@@ -435,6 +445,7 @@ final class SupplementsViewModelTests: XCTestCase {
         await model.load()
         api.markResults = [.failure(offline), .failure(APIClientError.unexpectedStatus(409))]
         await model.markTaken(model.rows[0].supplement)
+        await waitForSend(queue)
 
         await queue.flush()
 

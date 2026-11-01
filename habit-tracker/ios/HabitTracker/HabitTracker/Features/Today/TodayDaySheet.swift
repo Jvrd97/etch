@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/210
 // summary: the day of one category behind a Today card, with its earlier days under it as a history — the quick-mark sets of the day (when a button answers for the category) above the day's records, a record deleted by swipe, a new record through the quick-entry sheet, and the buttons' totals re-read after anything that changed them
+// [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 — a record's «ждёт» tag shows only when its save waits, not while it is merely on its way
 import SwiftUI
 
 struct TodayDaySheet: View {
@@ -104,7 +106,7 @@ struct TodayDaySheet: View {
                 .foregroundStyle(DS.Palette.textPrimary)
                 .lineLimit(2)
             Spacer()
-            if entry.isPending {
+            if entry.isPending, viewModel.waitingCategoryIDs.contains(entry.categoryId) {
                 PendingRowTag()
             }
         }
