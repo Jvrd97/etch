@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - HabitTracker
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     entitlements:
       path: HabitTracker/HabitTracker.entitlements
       properties:
@@ -25,6 +28,7 @@ targets:
     info:
       path: HabitTracker/Info.plist
       properties:
+        CFBundleDisplayName: Etch
         UILaunchScreen: {}
         NSHealthShareUsageDescription: Habit Tracker читает данные здоровья, чтобы показать ваши метрики.
         NSMicrophoneUsageDescription: Habit Tracker слушает микрофон, пока вы диктуете итог дня.

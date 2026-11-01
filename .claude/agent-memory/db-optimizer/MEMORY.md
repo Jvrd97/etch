@@ -1,0 +1,1 @@
+- [Backend baseline 2026-11-01](project_backend_baseline_2026-11-01.md) — "before" numbers for /table, /days, dashboard, quick-marks + stand gotchas
