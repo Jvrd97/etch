@@ -4,6 +4,7 @@
 // summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the directory; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the buttons open from the cached directory of today (no loader), an appearance reads again only when the directory is not recent, a re-read keeps the buttons and says its failure as a line
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — a delivered press is laid over every directory read sent before its delivery (a read in flight is shown, not dropped; the cache keeps what the buttons show, with the stamp of its read) until a read sent after it is shown; an undo asked while the press was on its way withdraws it once it waits again, or takes it back on the server once it lands; VoiceOver counts only presses that wait
 // summary: PHASE-03/316 — a press is queued under its own key with its moment and drawn at once, the send runs behind; a delivery repaints the button from the server's answer and arms the undo with its event, a refusal takes the press away and says why; undo of a press not sent yet withdraws it from the queue without a request, of one on its way takes it back once it lands
 import Combine
 import Foundation
@@ -60,8 +61,12 @@ final class QuickMarksViewModel: ObservableObject {
     /// than the one on screen is dropped, or a delivered press would vanish from the total.
     private var readsSent = 0
     private var readShown = 0
-    /// A press whose undo was asked while it was on its way: taken back on the server once it lands.
+    /// A press whose undo was asked while it was on its way: withdrawn once it waits again, or taken back
+    /// on the server once it lands.
     private var undoOnDelivery: UUID?
+    /// Presses the server took, with the newest directory read sent before each delivery: a read up to that
+    /// number may not count the press, so its answer gets the press's total laid over it.
+    private var deliveredEvents: [(afterRead: Int, event: QuickMarkEventDTO)] = []
 
     init(
         apiProvider: @escaping () -> QuickMarksAPI?,
@@ -121,7 +126,8 @@ final class QuickMarksViewModel: ObservableObject {
     /// What VoiceOver says about presses of the button still waiting in the queue; nil when none wait.
     /// The "+1" on the button is drawn, not spoken, and a waiting press is not yet on the server.
     func waitingCaption(of markID: Int) -> String? {
-        let waiting = outbox.pending.filter { $0.tapMarkID == markID }.count
+        let moment = now()
+        let waiting = outbox.pending.filter { $0.tapMarkID == markID && $0.isOverdue(at: moment) }.count
         return waiting > 0 ? "ждёт отправки: \(waiting)" : nil
     }
 
@@ -142,7 +148,8 @@ final class QuickMarksViewModel: ObservableObject {
             .sink { [weak self] write in
                 guard write.tapMarkID != nil else { return }
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    // A press the person already undid says nothing about its refusal.
+                    guard let self, write.id != self.undoOnDelivery else { return }
                     self.errorMessage = write.failure ?? Self.tapFailedMessage
                     if case .queued(write.id, _)? = self.lastPress { self.lastPress = nil }
                 }
@@ -152,17 +159,18 @@ final class QuickMarksViewModel: ObservableObject {
 
     /// The server took a press: in the same turn as the queue dropped it, the button takes the server's
     /// total (the presses still waiting stay on top), and the undo chip of that press gets its event. A
-    /// directory read already on its way predates the press and is not shown; the cache takes the new
-    /// total. A button not on screen yet, or an answer this app could not read, reads the directory instead.
+    /// directory read already on its way may not count the press: the total is laid over its answer. The
+    /// cache takes the new total. A button not on screen yet, or an answer this app could not read, reads
+    /// the directory instead.
     private func settle(_ delivery: OutboxDelivery) {
         guard let categoryID = delivery.write.tapCategoryID else { return }
         let writeID = delivery.write.id
         var event: QuickMarkEventDTO?
         if case .quickMarkEvent(let answer)? = delivery.reply { event = answer }
         if let event, serverMarks.contains(where: { $0.id == event.quickMarkId }) {
-            readShown = readsSent
+            deliveredEvents.append((afterRead: readsSent, event: event))
             replace(markID: event.quickMarkId) { $0.applying(event) }
-            cache.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: cache.scope)
+            cacheShown(sentUnder: cache.scope)
             onDayChanged?(categoryID)
         } else {
             Task { await reconcileAfterFlush(categoryIDs: [categoryID]) }
@@ -194,7 +202,7 @@ final class QuickMarksViewModel: ObservableObject {
         guard state != .loaded,
               let cached = cache.peek([QuickMarkDTO].self, key: Self.cacheKey),
               cached.value.allSatisfy({ $0.entryDate == localToday }) else { return }
-        show(cached.value)
+        show(cached.value, read: nil)
         state = .loaded
     }
 
@@ -229,10 +237,12 @@ final class QuickMarksViewModel: ObservableObject {
                 switch outcome {
                 case .fresh(let directory):
                     offlineAsOf = nil
-                    show(directory)
+                    show(directory, read: read)
+                    // The cache took the bare answer; the buttons show it with the presses delivered meanwhile.
+                    if !deliveredEvents.isEmpty { cacheShown(sentUnder: sentUnder) }
                 case .stale(let directory, let updatedAt):
                     offlineAsOf = updatedAt
-                    show(directory)
+                    show(directory, read: read)
                 }
             } else if case .fresh = outcome {
                 // The cache took this older answer: put back the directory a later read put on screen.
@@ -269,8 +279,8 @@ final class QuickMarksViewModel: ObservableObject {
         let sentUnder = cache.scope
         if let directory = try? await api.fetchQuickMarks(), isNewest(read) {
             offlineAsOf = nil
-            show(directory)
-            cache.save(directory, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: sentUnder)
+            show(directory, read: read)
+            cache.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: sentUnder)
         }
         categoryIDs.forEach { onDayChanged?($0) }
     }
@@ -287,14 +297,31 @@ final class QuickMarksViewModel: ObservableObject {
         return true
     }
 
-    private func show(_ directory: [QuickMarkDTO]) {
-        serverMarks = directory
+    /// Puts a directory on screen with the presses delivered after its read was sent laid over it, in the
+    /// order they landed. A read sent after a delivery counts that press: its overlay is dropped. `read` is
+    /// nil for the cached directory, which keeps every overlay.
+    private func show(_ directory: [QuickMarkDTO], read: Int?) {
+        if let read { deliveredEvents.removeAll { $0.afterRead < read } }
+        serverMarks = deliveredEvents.map(\.event).reduce(directory) { marks, event in
+            marks.map { $0.id == event.quickMarkId ? $0.applying(event) : $0 }
+        }
         redraw(outbox.writes)
+    }
+
+    /// The cache gets the buttons as shown, keeping the stamp of the read it holds: laying a delivered press
+    /// over it does not make the rest of the directory any younger.
+    private func cacheShown(sentUnder: String) {
+        let stamp = cache.store.load([QuickMarkDTO].self, forKey: Self.cacheKey)?.updatedAt ?? cache.now()
+        cache.save(serverMarks, forKey: Self.cacheKey, updatedAt: stamp, sentUnder: sentUnder)
     }
 
     /// Presses still waiting in the queue are laid over the directory, so a cached or just-read
     /// total does not swallow them. A press in the "not sent" list is not counted: it has not landed.
     private func redraw(_ writes: [OutboxWrite]) {
+        if undoOnDelivery != nil {
+            // Not from inside the queue's publication: the withdrawal changes the queue itself.
+            Task { self.withdrawUndonePress() }
+        }
         let waiting = writes.filter { $0.status == .pending }.compactMap(\.tapMarkID)
         marks = serverMarks.map { mark in
             waiting.filter { $0 == mark.id }.reduce(mark) { folded, _ in
@@ -332,6 +359,18 @@ final class QuickMarksViewModel: ObservableObject {
 
     // MARK: Undo
 
+    /// A press whose undo was asked while it was on its way and that waits again (its send failed): it is
+    /// withdrawn now. One refused by the server is dropped from the "not sent" list: it was undone.
+    private func withdrawUndonePress() {
+        guard let writeID = undoOnDelivery else { return }
+        if outbox.withdraw(id: writeID) {
+            undoOnDelivery = nil
+        } else if outbox.failed.contains(where: { $0.id == writeID }) {
+            outbox.discard(id: writeID)
+            undoOnDelivery = nil
+        }
+    }
+
     /// Takes the last tap back: one action, no trip to the entry editor. A press that has not left the
     /// phone is withdrawn from the queue without a request; one on its way is taken back once it lands.
     func undoLast() async {
@@ -360,6 +399,8 @@ final class QuickMarksViewModel: ObservableObject {
         }
         do {
             let undone = try await api.undoQuickMarkEvent(id: eventID)
+            // A read older than the undo must not bring the press back.
+            deliveredEvents.removeAll { $0.event.eventId == eventID }
             replace(markID: undone.quickMarkId) { $0.applying(undone) }
             if let mark = marks.first(where: { $0.id == undone.quickMarkId }) {
                 onDayChanged?(mark.categoryId)

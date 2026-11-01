@@ -6,6 +6,7 @@
 // [review:need-review] PHASE-03/240
 // summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — the queue republishes `writes` the moment a write on its way becomes overdue, so the strip and the row tags follow the clock without timers of their own; a write that replaces a waiting one inherits its failed attempt, and a restored one counts as failed; the first attempt of a mark queued by a tap online (`uncheckedFirstAttempt`, kept in memory only: after a relaunch the check runs) goes without the replay check (`firstAttempt`), the check runs only on a retry after a failed attempt; `isFlushing` and `lastSend` are readable, so a caller can wait for the send it started
 // summary: PHASE-03/316 — the online path of a press: `send()` flushes without holding the caller; each delivery is announced at once with the server's answer (`OutboxDelivery`), a write moved to "not sent" is announced on `refused`; `attemptFailed` (stored, default false) and `isOverdue` tell a write that waits from one that is merely on its way; `withdraw` takes back a press not yet sent; the production queue tries again after a dead network or a 5xx on a growing delay
 import Combine
 import Foundation
@@ -94,6 +95,15 @@ enum OutboxAction: Codable, Equatable {
     private static func accepted(_ earlier: [String]?, plus state: String, if landed: Bool) -> [String]? {
         guard landed else { return earlier }
         return (earlier ?? []) + [state]
+    }
+
+    /// The write as its first attempt sends it, sent at once after the tap: a plan mark goes without the
+    /// check of the state it was made over, as a direct PUT would. The check is for a mark that waited
+    /// after a failed attempt — the server may have moved on meanwhile.
+    func firstAttempt() -> OutboxAction {
+        guard case .setDayMark(var mark) = self else { return self }
+        mark.expected = nil
+        return .setDayMark(mark)
     }
 
     /// The write as the person asked to send it again from the "not sent" list: without the check
@@ -497,7 +507,7 @@ final class OutboxQueue: ObservableObject {
         "Сервер не принял отметку (409): день уже сменился, или добавка в архиве."
     nonisolated static let supplementArchivedReason = "Сервер не принял отметку (409): добавка в архиве."
     nonisolated static let notebookChangedReason = "Блокнот этого дня изменился на сервере, пока телефон был без сети."
-    nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока телефон был без сети."
+    nonisolated static let markChangedReason = "Отметку этого пункта изменили на сервере, пока она ждала отправки."
     nonisolated static let checkFailedReason =
         "Не удалось сверить с сервером, что там сейчас: ответ на проверку не прочитан. Запись не отправлена."
 
@@ -514,7 +524,11 @@ final class OutboxQueue: ObservableObject {
     private let store: OutboxStore
     private let now: () -> Date
     private let senderProvider: () -> OutboxSending?
-    private var isFlushing = false
+    private(set) var isFlushing = false
+    /// The send `send()` started last.
+    private(set) var lastSend: Task<Void, Never>?
+    /// Writes queued by a tap online whose first attempt goes without the replay check; in memory only.
+    private var uncheckedFirstAttempts: Set<UUID> = []
     private var inFlightID: UUID?
     private var monitor: NetworkPathMonitoring?
     /// Pauses of the retry after a failed flush; empty (no retry) until `startAutoFlush`.
@@ -546,28 +560,36 @@ final class OutboxQueue: ObservableObject {
     /// `mayHaveLanded` says the failed direct attempt went out and lost its answer
     /// (`mayHaveLanded(after:)` of its error): a later write replacing this one accepts its state.
     /// `attemptFailed` says a direct attempt already failed: the write is shown as waiting at once.
+    /// `uncheckedFirstAttempt`: a tap made online over what the screen shows; its first attempt is sent as
+    /// a direct write would be, without the replay check (`firstAttempt`).
     /// Returns the id of the queued write, so a caller can tell later whether that very write was delivered.
     @discardableResult
     func enqueue(
         _ action: OutboxAction, key: String = UUID().uuidString, label: String, mayHaveLanded: Bool = false,
-        attemptFailed: Bool = false
+        attemptFailed: Bool = false, uncheckedFirstAttempt: Bool = false
     ) -> UUID {
         var action = action
+        // A write taking the place of one that already failed carries its failure: it waits as that one did,
+        // and its replay checks what it was made over.
+        var failedBefore = false
         if action.replacesOlderOfSameTarget {
             for older in pending where older.action.target == action.target && older.id != inFlightID {
                 action = action.replacing(older.action, mayHaveLanded: older.mayHaveLanded)
+                failedBefore = failedBefore || older.attemptFailed
                 store.delete(id: older.id)
             }
         }
-        return append(
+        let id = append(
             action, key: key, label: label, createdAt: now(), mayHaveLanded: mayHaveLanded,
-            attemptFailed: attemptFailed || mayHaveLanded
+            attemptFailed: attemptFailed || mayHaveLanded || failedBefore
         )
+        if uncheckedFirstAttempt { uncheckedFirstAttempts.insert(id) }
+        return id
     }
 
     /// Puts back a write carried over from an older queue, with its own key and time.
     func restore(_ action: OutboxAction, key: String, label: String, createdAt: Date) {
-        append(action, key: key, label: label, createdAt: createdAt)
+        append(action, key: key, label: label, createdAt: createdAt, attemptFailed: true)
     }
 
     @discardableResult
@@ -619,7 +641,7 @@ final class OutboxQueue: ObservableObject {
 
     /// Sends the waiting writes without holding the caller: a press is on screen once it is queued.
     func send() {
-        Task { await flush() }
+        lastSend = Task { await flush() }
     }
 
     /// What a retry of a "not sent" write would write over: a later write of the same whole-state
@@ -654,7 +676,9 @@ final class OutboxQueue: ObservableObject {
             tried.insert(write.id)
             inFlightID = write.id
             do {
-                let reply = try await sender.send(write.action, idempotencyKey: write.key)
+                let unchecked = !write.attemptFailed && uncheckedFirstAttempts.remove(write.id) != nil
+                let action = unchecked ? write.action.firstAttempt() : write.action
+                let reply = try await sender.send(action, idempotencyKey: write.key)
                 waitsForKey = false
                 deliver(write, reply: reply)
             } catch {
@@ -822,7 +846,32 @@ final class OutboxQueue: ObservableObject {
 
     private func reload() {
         writes = store.fetchAll()
+        scheduleOverdueTick()
     }
+
+    private var overdueTick: Task<Void, Never>?
+
+    /// The next moment a write on its way becomes overdue, the queue publishes `writes` again: whatever is
+    /// drawn from `isOverdue` (the strip, the «ждёт» tags of the rows) turns over then, with one clock.
+    private func scheduleOverdueTick() {
+        overdueTick?.cancel()
+        overdueTick = nil
+        let moment = now()
+        guard let next = writes
+            .filter({ $0.status == .pending && !$0.isOverdue(at: moment) })
+            .map({ $0.createdAt.addingTimeInterval(Self.quietPeriod) })
+            .min()
+        else { return }
+        let wait = next.timeIntervalSince(moment) + Self.overdueTickMargin
+        overdueTick = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled else { return }
+            self?.reload()
+        }
+    }
+
+    /// A little past the overdue moment, so the write reads as overdue when the tick lands.
+    private static let overdueTickMargin: TimeInterval = 0.05
 }
 
 /// Production connectivity monitor over `NWPathMonitor`. Fires the flush handler on

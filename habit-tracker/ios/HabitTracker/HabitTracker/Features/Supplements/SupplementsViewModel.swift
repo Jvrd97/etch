@@ -4,6 +4,7 @@
 // summary: PHASE-03/310 round 2 — the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the list opens from its cached copy (a copy of another day without «принял»), an appearance reads again only when the copy is not recent, a re-read of a shown list says its failure as a line
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — a delivered intake of today is laid over every list read sent before its delivery (a read in flight is shown, not dropped; the cache keeps what the list shows, with the stamp of its read) until a read sent after it is shown
 // summary: PHASE-03/316 — «принял» is queued under its own key with the day of the press and shows as taken at once, the send runs behind; «ждёт отправки» shows only a press that waits; a delivery of today's intake marks the row from the answer without a re-read, a refusal takes the mark away and says why
 import Combine
 import Foundation
@@ -62,6 +63,9 @@ final class SupplementsViewModel: ObservableObject {
     /// send, so its answer may come after the re-read a delivery started.
     private var readsSent = 0
     private var readShown = 0
+    /// Intakes of today the server took, by supplement, with the newest list read sent before each delivery:
+    /// a read up to that number may not mark the row, so the mark is laid over its answer.
+    private var deliveredIntakes: [(afterRead: Int, supplementID: Int, day: String)] = []
 
     init(
         apiProvider: @escaping () -> SupplementsAPI?,
@@ -110,7 +114,7 @@ final class SupplementsViewModel: ObservableObject {
     func showCached() {
         guard state != .loaded, let cached = cache.peek(Snapshot.self, key: Self.cacheKey) else { return }
         adopt(cached.value.rule)
-        show(cached.value.day == today() ? cached.value.items : cached.value.items.map { $0.taken(false) })
+        show(cached.value.day == today() ? cached.value.items : cached.value.items.map { $0.taken(false) }, read: nil)
         state = .loaded
     }
 
@@ -144,11 +148,13 @@ final class SupplementsViewModel: ObservableObject {
                 case .fresh(let snapshot):
                     offlineAsOf = nil
                     adopt(snapshot.rule)
-                    show(snapshot.items)
+                    show(snapshot.items, read: read)
+                    // The cache took the bare answer; the list shows it with the intakes delivered meanwhile.
+                    if !deliveredIntakes.isEmpty { saveShown(sentUnder: sentUnder, keepingStamp: true) }
                 case .stale(let snapshot, let updatedAt):
                     offlineAsOf = updatedAt
                     adopt(snapshot.rule)
-                    show(snapshot.day == today() ? snapshot.items : snapshot.items.map { $0.taken(false) })
+                    show(snapshot.day == today() ? snapshot.items : snapshot.items.map { $0.taken(false) }, read: read)
                 }
             } else if case .fresh = outcome {
                 // The cache took an answer older than the one on screen: put the shown list back.
@@ -184,7 +190,7 @@ final class SupplementsViewModel: ObservableObject {
         let sentUnder = cache.scope
         if let items = try? await api.fetchSupplements(), isNewest(read) {
             offlineAsOf = nil
-            show(items)
+            show(items, read: read)
             saveShown(sentUnder: sentUnder)
         }
     }
@@ -209,17 +215,17 @@ final class SupplementsViewModel: ObservableObject {
     }
 
     /// The server took a press: an intake of today marks its row from the answer, in the same turn as the
-    /// queue dropped the press, and a read already on its way predates it and is not shown. An intake of
-    /// another day, or an answer this app could not read, reads the list again.
+    /// queue dropped the press; a read already on its way may predate it, so the mark is laid over that
+    /// read's answer. An intake of another day, or an answer this app could not read, reads the list again.
     private func settle(_ delivery: OutboxDelivery) {
         guard let id = delivery.write.supplementID else { return }
         guard case .supplementIntake(let intake)? = delivery.reply, intake.intakeDate == today() else {
             Task { await reconcileAfterFlush() }
             return
         }
-        readShown = readsSent
+        deliveredIntakes.append((afterRead: readsSent, supplementID: id, day: intake.intakeDate))
         replace(id) { $0.taken(true) }
-        saveShown(sentUnder: cache.scope)
+        saveShown(sentUnder: cache.scope, keepingStamp: true)
     }
 
     private func nextRead() -> Int {
@@ -241,9 +247,12 @@ final class SupplementsViewModel: ObservableObject {
         if let learned, learned != rule { rule = learned }
     }
 
-    private func saveShown(sentUnder: String) {
+    /// `keepingStamp`: the cache keeps the stamp of the read it holds — a delivered intake laid over the list
+    /// does not make the rest of it any younger.
+    private func saveShown(sentUnder: String, keepingStamp: Bool = false) {
+        let stamp = keepingStamp ? cache.store.load(Snapshot.self, forKey: Self.cacheKey)?.updatedAt ?? now() : now()
         cache.save(
-            Snapshot(day: today(), items: serverItems, rule: rule), forKey: Self.cacheKey, updatedAt: now(), sentUnder: sentUnder
+            Snapshot(day: today(), items: serverItems, rule: rule), forKey: Self.cacheKey, updatedAt: stamp, sentUnder: sentUnder
         )
     }
 
@@ -258,8 +267,13 @@ final class SupplementsViewModel: ObservableObject {
         errorMessage = nil
     }
 
-    private func show(_ items: [SupplementDTO]) {
-        serverItems = items
+    /// Puts a list on screen with today's intakes delivered after its read was sent marked over it. A read
+    /// sent after a delivery holds that intake: its overlay is dropped. `read` is nil for the cached list,
+    /// which keeps every overlay.
+    private func show(_ items: [SupplementDTO], read: Int?) {
+        if let read { deliveredIntakes.removeAll { $0.afterRead < read } }
+        let taken = Set(deliveredIntakes.filter { $0.day == today() }.map(\.supplementID))
+        serverItems = items.map { taken.contains($0.id) ? $0.taken(true) : $0 }
         redraw(outbox.writes)
     }
 

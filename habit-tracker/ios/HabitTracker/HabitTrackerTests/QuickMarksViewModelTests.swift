@@ -117,7 +117,7 @@ final class QuickMarksViewModelTests: XCTestCase {
     private func makeQueue(api: MockQuickMarksAPI) -> OutboxQueue {
         let server = FakeOutboxServer()
         return OutboxQueue(
-            store: InMemoryOutboxStore(),
+            store: InMemoryOutboxStore(), now: { [unowned self] in clock },
             sender: { OutboxReplay(entries: server, quickMarks: api, day: server) }
         )
     }
@@ -431,6 +431,8 @@ final class QuickMarksViewModelTests: XCTestCase {
         await viewModel.load()
         queue.enqueue(queuedTap(1), label: "Mark 1")
         queue.enqueue(queuedTap(1), label: "Mark 1")
+        XCTAssertNil(viewModel.waitingCaption(of: 1), "presses merely on their way are not said to be waiting")
+        clock = clock.addingTimeInterval(OutboxQueue.quietPeriod)
 
         XCTAssertEqual(viewModel.waitingCaption(of: 1), "ждёт отправки: 2")
         XCTAssertNil(viewModel.waitingCaption(of: 2))

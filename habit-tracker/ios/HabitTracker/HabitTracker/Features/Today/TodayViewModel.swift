@@ -10,6 +10,7 @@
 // summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the snapshot; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the screen opens on the cached snapshot of today (no loader, no network wait) and reads again only when it is not recent; the snapshot carries its day, and a snapshot of another day neither opens the screen nor shows its records as today's offline; the streak read leaves with the first wave when the known categories have an avoid one, and never waits for the table
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — the server's rows are kept apart from the screen (`serverEntries`), so a refused checklist save gives the server's row back; a delivered entry is laid over every read sent before its delivery (a read in flight is shown, not dropped, and the cache gets what the screen shows), until a read sent after it is shown
 // summary: PHASE-03/316 — a plus, a typed number, a tick and the form go into the outbox under the key of that press and are on screen at once, the send runs behind; every press counts (no tap is dropped while another is on its way); a delivery puts the server's entry in place of the waiting row in the same turn and reads only the streak of an avoid category; a refusal takes the row away and says why; the «ждёт» tag shows only writes that wait; re-reads after quick-mark deliveries are merged into one
 import Combine
 import Foundation
@@ -105,6 +106,12 @@ final class TodayViewModel: ObservableObject {
     private var loadShown = 0
     /// The day of the records on screen; past midnight it is not today any more.
     private var shownDay: String?
+    /// Today's rows as the server holds them, as far as this screen knows: `todayEntries` is them with the
+    /// queued saves on top.
+    private var serverEntries: [EntryDTO] = []
+    /// Entries the server took from the queue, with the newest read sent before each delivery: a read up to
+    /// that number may not hold the entry, so it is laid over that read's answer.
+    private var deliveredEntries: [(afterRead: Int, entry: EntryDTO)] = []
     /// Categories whose records a quick-mark delivery moved while a re-read was already running: that
     /// re-read is followed by one more, so a burst of presses reads the day twice, not once per press.
     private var markRereadQueue: Set<Int> = []
@@ -159,8 +166,9 @@ final class TodayViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func redrawPending(_ writes: [OutboxWrite]) {
-        todayEntries = withQueuedRows(todayEntries.filter { !$0.isPending }, from: writes)
+    private func redrawPending(_ writes: [OutboxWrite]? = nil) {
+        let writes = writes ?? outbox?.writes ?? []
+        todayEntries = withQueuedRows(serverEntries, from: writes)
         let moment = now()
         waitingCategoryIDs = Set(
             writes.filter { $0.status == .pending && $0.isOverdue(at: moment) }
@@ -170,7 +178,8 @@ final class TodayViewModel: ObservableObject {
 
     /// The server took a save of this screen: its entry takes the place of the pending row, and only what
     /// the entry changes is read again — the streak of an avoid category. A read of the records already
-    /// on its way predates the entry and is not shown. An answer this app could not read reads the day.
+    /// on its way may predate the entry: it is shown with the entry laid over it. An answer this app could
+    /// not read reads the day.
     private func settle(_ delivery: OutboxDelivery) {
         guard let queued = delivery.write.queuedEntry else { return }
         guard case .entry(let entry)? = delivery.reply else {
@@ -178,7 +187,7 @@ final class TodayViewModel: ObservableObject {
             Task { await rereadEntries(reportsFailure: false) }
             return
         }
-        entriesReadShown = entriesReadsSent
+        deliveredEntries.append((afterRead: entriesReadsSent, entry: entry))
         place(entry)
         cacheShownEntries(sentUnder: cache.scope)
         let categoryID = queued.entry.categoryId
@@ -187,14 +196,36 @@ final class TodayViewModel: ObservableObject {
         }
     }
 
+    /// Puts the answer of a read on screen as the server's rows, with the entries delivered after it was
+    /// sent laid over it. A read sent after a delivery holds that entry: its overlay is dropped. `read` is
+    /// nil for the cached snapshot, which keeps every overlay.
+    private func showServerRows(_ rows: [EntryDTO], read: Int?) {
+        if let read { deliveredEntries.removeAll { $0.afterRead < read } }
+        var shown = rows
+        for delivered in deliveredEntries.map(\.entry) where delivered.entryDate == todayString {
+            if let index = shown.firstIndex(where: { $0.id == delivered.id }) {
+                shown[index] = delivered
+            } else {
+                shown.append(delivered)
+            }
+        }
+        serverEntries = shown
+        redrawPending()
+    }
+
     /// Saves still waiting in the queue, laid over the server's rows of today as pending rows
-    /// (negative ids). A waiting checklist save stands in for the server's row of that category.
+    /// (negative ids). A waiting checklist save stands in for the server's row of that category; of two,
+    /// the newer one.
     private func withQueuedRows(_ server: [EntryDTO], from writes: [OutboxWrite]? = nil) -> [EntryDTO] {
         let today = todayString
-        let queued = (writes ?? outbox?.writes ?? [])
+        let all = (writes ?? outbox?.writes ?? [])
             .filter { $0.status == .pending }
             .compactMap(\.queuedEntry)
             .filter { $0.entry.entryDate == today }
+        // A checklist save being sent and a newer one waiting behind it: the day is the newer one.
+        let queued = all.enumerated().filter { index, queued in
+            !queued.replacesDay || !all[(index + 1)...].contains { $0.replacesDay && $0.entry.categoryId == queued.entry.categoryId }
+        }.map(\.element)
         let replaced = Set(queued.filter(\.replacesDay).map(\.entry.categoryId))
         let rows = queued.enumerated().map { index, queued in
             EntryDTO(
@@ -253,7 +284,7 @@ final class TodayViewModel: ObservableObject {
               let cached = cache.peek(TodaySnapshot.self, key: Self.cacheKey),
               cached.value.day == todayString else { return }
         categories = TodayOrdering.sorted(cached.value.categories, usage: cached.value.usage)
-        todayEntries = withQueuedRows(cached.value.entries)
+        showServerRows(cached.value.entries, read: nil)
         streaks = cached.value.streaks
         shownDay = cached.value.day
         state = .loaded
@@ -314,9 +345,10 @@ final class TodayViewModel: ObservableObject {
                 )
             }
             let entriesAreNewest = showsEntries(of: read)
-            apply(outcome, entriesAreNewest: entriesAreNewest)
-            // The cache took this answer; its records are older than the ones a re-read put on screen.
-            if !entriesAreNewest, case .fresh = outcome { cacheShownEntries(sentUnder: sentUnder) }
+            apply(outcome, entriesAreNewest: entriesAreNewest, read: read)
+            // The cache took this answer; the screen shows newer records (a later re-read, or entries
+            // delivered while it was on its way), and the cache keeps what the screen shows.
+            if case .fresh = outcome, !entriesAreNewest || !deliveredEntries.isEmpty { cacheShownEntries(sentUnder: sentUnder) }
             streaksError = streaksFailed ? Self.streaksFailedMessage : nil
             // The badge tracks the outbox reactively (see `bindOutbox`); no manual
             // snapshot is needed here — a background flush already updated it.
@@ -363,7 +395,7 @@ final class TodayViewModel: ObservableObject {
     /// Publishes a snapshot, recording whether it came from the network or the cache. Saves
     /// still in the queue are not on the server (nor in the cache) yet: they are laid on top.
     /// `entriesAreNewest` is false when a newer read of the records is already on screen.
-    private func apply(_ outcome: CacheOutcome<TodaySnapshot>, entriesAreNewest: Bool) {
+    private func apply(_ outcome: CacheOutcome<TodaySnapshot>, entriesAreNewest: Bool, read: Int) {
         let value: TodaySnapshot
         switch outcome {
         case .fresh(let fresh):
@@ -377,7 +409,7 @@ final class TodayViewModel: ObservableObject {
         categories = TodayOrdering.sorted(value.categories, usage: value.usage)
         // Records of another day are not today's: an offline start on a new day shows none of them.
         if entriesAreNewest {
-            todayEntries = withQueuedRows(value.day == todayString ? value.entries : [])
+            showServerRows(value.day == todayString ? value.entries : [], read: read)
             shownDay = todayString
         }
         streaks = value.streaks
@@ -389,7 +421,7 @@ final class TodayViewModel: ObservableObject {
     private func cacheShownEntries(sentUnder: String) {
         guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
         let snapshot = TodaySnapshot(
-            categories: cached.value.categories, entries: todayEntries.filter { !$0.isPending },
+            categories: cached.value.categories, entries: serverEntries,
             streaks: cached.value.streaks, usage: cached.value.usage, day: todayString
         )
         cache.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt, sentUnder: sentUnder)
@@ -585,7 +617,7 @@ final class TodayViewModel: ObservableObject {
             return
         }
         relapseStates[categoryID] = .idle
-        todayEntries.removeAll { $0.id == recorded.entry.id }
+        remove(entryID: recorded.entry.id)
         await refreshStreak(categoryID: categoryID, api: api)
     }
 
@@ -658,17 +690,25 @@ final class TodayViewModel: ObservableObject {
         if entry.entryDate == todayString {
             upsert(entry)
         } else {
-            todayEntries.removeAll { $0.id == entry.id }
+            remove(entryID: entry.id)
         }
     }
 
     /// Replaces the entry in place when the list already holds it, appends it otherwise.
     private func upsert(_ entry: EntryDTO) {
-        if let index = todayEntries.firstIndex(where: { $0.id == entry.id }) {
-            todayEntries[index] = entry
+        if let index = serverEntries.firstIndex(where: { $0.id == entry.id }) {
+            serverEntries[index] = entry
         } else {
-            todayEntries.append(entry)
+            serverEntries.append(entry)
         }
+        redrawPending()
+    }
+
+    /// The entry is gone from the server: from the rows and from what is laid over older reads.
+    private func remove(entryID: Int) {
+        serverEntries.removeAll { $0.id == entryID }
+        deliveredEntries.removeAll { $0.entry.id == entryID }
+        redrawPending()
     }
 
     // MARK: Day changes made elsewhere
@@ -702,7 +742,7 @@ final class TodayViewModel: ObservableObject {
         do {
             let fetched = try await api.fetchEntries(startDate: today, endDate: today)
             if showsEntries(of: read) {
-                todayEntries = withQueuedRows(fetched)
+                showServerRows(fetched, read: read)
                 shownDay = today
                 cacheShownEntries(sentUnder: sentUnder)
             }
@@ -729,7 +769,7 @@ final class TodayViewModel: ObservableObject {
             saveErrorMessage = Self.deleteEntryFailedMessage
             return false
         }
-        todayEntries.removeAll { $0.id == id }
+        remove(entryID: id)
         if let categoryID, categories.first(where: { $0.id == categoryID })?.isAvoid == true {
             await refreshStreak(categoryID: categoryID, api: api)
         }
@@ -814,11 +854,7 @@ final class TodayViewModel: ObservableObject {
             }
             // The checklist upsert can return an entry we already loaded — replace
             // it in place so the list never shows duplicates.
-            if let index = todayEntries.firstIndex(where: { $0.id == saved.id }) {
-                todayEntries[index] = saved
-            } else {
-                todayEntries.append(saved)
-            }
+            upsert(saved)
             return true
         } catch let error as APIClientError {
             saveErrorMessage = error.userMessage

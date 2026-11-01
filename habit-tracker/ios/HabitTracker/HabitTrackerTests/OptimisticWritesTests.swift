@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — a read on its way when a press is delivered is shown with the press laid over it, and the cache matches the screen (Today, buttons, supplements, Day marks); an online mark is one bare PUT; undo during the send is one undo of its own event, or a withdrawal when the send fails; a refused checklist save gives the server's row back; a newer save of a day replaces the waiting one, never the one being sent
 // summary: the class of "a press waits for the server" — a press is on screen and in the sum while the send hangs, a refusal takes it away into "not sent" with a reason while a dead network keeps it, five pluses are five writes under five keys and four presses of a button four steps, two taps of one tick one write, one key across every retry, undo of an unsent press sends nothing, a second Day mark during the first PUT is not lost; the strip stays quiet while a write is merely on its way
 import XCTest
 @testable import HabitTracker
@@ -48,7 +49,11 @@ final class HeldSender: OutboxSending {
             )
         case .setDayMark(let mark):
             return .dayMark(DayMarkDTO(itemId: mark.itemID, state: mark.state, note: mark.note))
-        case .recordPlanFact, .saveNotebook, .markSupplementTaken:
+        case .markSupplementTaken(let intake):
+            return .supplementIntake(
+                SupplementIntakeDTO(id: sent.count, supplementId: intake.supplementId, intakeDate: intake.intakeDate ?? "")
+            )
+        case .recordPlanFact, .saveNotebook:
             return nil
         }
     }
@@ -84,9 +89,9 @@ final class OptimisticWritesTests: XCTestCase {
         )
     }
 
-    private func button(total: Double) -> QuickMarkDTO {
+    private func button(id: Int = 1, total: Double) -> QuickMarkDTO {
         QuickMarkDTO(
-            id: 1, label: "Water", categoryId: 1, fieldId: 11, kind: "increment",
+            id: id, label: "Water \(id)", categoryId: id, fieldId: 10 + id, kind: "increment",
             step: 1, unitLabel: nil, icon: nil, color: nil, hotkey: nil, order: 1,
             showInAgent: true, isActive: true, entryDate: today, todayTotal: total,
             done: total != 0, planned: false, planItemId: nil
@@ -97,21 +102,26 @@ final class OptimisticWritesTests: XCTestCase {
         OutboxQueue(store: InMemoryOutboxStore(), now: { [clock] in clock }, sender: { sender })
     }
 
-    private func makeToday(categories: [CategoryDTO], sender: HeldSender) async -> (TodayViewModel, OutboxQueue, MockTodayAPI) {
+    private func makeToday(
+        categories: [CategoryDTO], sender: HeldSender, cache: CacheStore = InMemoryCacheStore(), entries: [EntryDTO] = []
+    ) async -> (TodayViewModel, OutboxQueue, MockTodayAPI) {
         let api = MockTodayAPI()
         api.categoriesResult = .success(categories)
+        api.entriesResult = .success(entries)
         let queue = makeQueue(sender)
-        let viewModel = TodayViewModel(api: api, outbox: queue, timeZone: utc, now: { [clock] in clock })
+        let viewModel = TodayViewModel(api: api, cacheStore: cache, outbox: queue, timeZone: utc, now: { [clock] in clock })
         await viewModel.load()
         return (viewModel, queue, api)
     }
 
-    private func makeButtons(total: Double, sender: HeldSender) async -> (QuickMarksViewModel, OutboxQueue, MockQuickMarksAPI) {
+    private func makeButtons(
+        total: Double, sender: HeldSender, others: [QuickMarkDTO] = [], cache: CacheStore = InMemoryCacheStore()
+    ) async -> (QuickMarksViewModel, OutboxQueue, MockQuickMarksAPI) {
         let api = MockQuickMarksAPI()
-        api.marksResult = .success([button(total: total)])
+        api.marksResult = .success([button(total: total)] + others)
         sender.tapTotals[1] = total
         let queue = makeQueue(sender)
-        let viewModel = QuickMarksViewModel(api: api, outbox: queue, timeZone: utc, now: { [clock] in clock })
+        let viewModel = QuickMarksViewModel(api: api, cacheStore: cache, outbox: queue, timeZone: utc, now: { [clock] in clock })
         await viewModel.load()
         return (viewModel, queue, api)
     }
@@ -325,5 +335,192 @@ final class OptimisticWritesTests: XCTestCase {
         }
         XCTAssertEqual(states, ["done", second], "both reach the server, in the order they were made")
         XCTAssertEqual(viewModel.state(of: item), second)
+    }
+
+    // MARK: Round 2 — a read on its way when a press is delivered
+
+    func testTodayShowsAReadOnItsWayWithTheDeliveredEntryLaidOverIt() async {
+        let sender = HeldSender()
+        let cache = InMemoryCacheStore()
+        let (today, queue, api) = await makeToday(categories: [pushups], sender: sender, cache: cache)
+        let web = EntryDTO(id: 77, categoryId: 1, entryDate: self.today, values: [EntryValueDTO(fieldId: 10, value: "5")])
+        // The re-read leaves before the press is delivered and answers with the day as it was then: the web's row only.
+        api.entriesResult = .success([web])
+        api.duringFetchEntries = { await waitUntil { sender.sent.count == 1 && queue.writes.isEmpty } }
+        let readsBefore = api.fetchedEntryRanges.count
+
+        let loading = Task { await today.load() }
+        await waitUntil { api.fetchedEntryRanges.count > readsBefore }
+        _ = await today.quickAdd(categoryID: 1)
+        await loading.value
+
+        let shown = today.entries(forCategory: 1).map(\.id).sorted()
+        XCTAssertEqual(shown, [77, 1001], "the web's row and the delivered one")
+        XCTAssertEqual(
+            cache.load(TodaySnapshot.self, forKey: TodayViewModel.cacheKey)?.value.entries.map(\.id).sorted(), shown,
+            "the cache holds what the screen shows"
+        )
+    }
+
+    func testButtonsShowAReadOnItsWayWithTheDeliveredPressLaidOverIt() async {
+        let sender = HeldSender()
+        let cache = InMemoryCacheStore()
+        let (buttons, queue, api) = await makeButtons(total: 0, sender: sender, others: [button(id: 2, total: 0)], cache: cache)
+        // Read before the press landed: button 1 still 0, button 2 moved to 3 on the web.
+        api.marksResult = .success([button(total: 0), button(id: 2, total: 3)])
+        api.duringFetch = { await waitUntil { sender.sent.count == 1 && queue.writes.isEmpty } }
+        let readsBefore = api.directoryFetches
+
+        let loading = Task { await buttons.load() }
+        await waitUntil { api.directoryFetches > readsBefore }
+        await buttons.tap(buttons.marks[0])
+        await loading.value
+
+        XCTAssertEqual(buttons.marks.map(\.todayTotal), [1, 3])
+        XCTAssertEqual(
+            cache.load([QuickMarkDTO].self, forKey: QuickMarksViewModel.cacheKey)?.value.map(\.todayTotal), [1, 3],
+            "the cache holds what the buttons show"
+        )
+    }
+
+    func testSupplementsShowAReadOnItsWayWithTheDeliveredIntakeLaidOverIt() async {
+        let sender = HeldSender()
+        let cache = InMemoryCacheStore()
+        let api = MockSupplementsAPI()
+        api.listResult = .success([.stub(id: 1), .stub(id: 2)])
+        let queue = makeQueue(sender)
+        let model = SupplementsViewModel(
+            api: api, cacheStore: cache, outbox: queue, rule: ServerDayRule(timeZoneID: "UTC", dayStartHour: 4),
+            now: { [clock] in clock }
+        )
+        await model.load()
+        // Read before the press landed: the web marked the second one.
+        api.listResult = .success([.stub(id: 1), .stub(id: 2, taken: true)])
+        api.holdNextList = true
+
+        let loading = Task { await model.load() }
+        await waitUntil { api.isHoldingList }
+        await model.markTaken(model.rows[0].supplement)
+        await waitUntil { queue.writes.isEmpty }
+        api.releaseList()
+        await loading.value
+
+        XCTAssertEqual(model.rows.map(\.isTaken), [true, true])
+        XCTAssertEqual(
+            cache.load(SupplementsViewModel.Snapshot.self, forKey: SupplementsViewModel.cacheKey)?.value.items.map(\.takenToday),
+            [true, true], "the cache holds what the list shows"
+        )
+    }
+
+    func testDayAReReadStartedBeforeTheSecondMarkLandedDoesNotRollTheTickBack() async throws {
+        let sender = HeldSender()
+        let api = MockDayAPI()
+        api.fetchResults = [.success(try DayFixtures.day())]
+        let queue = makeQueue(sender)
+        let viewModel = DayViewModel(
+            apiProvider: { api }, timeZoneProvider: { [utc] in utc }, outbox: queue, now: { [clock] in clock }
+        )
+        await viewModel.load()
+        let item = DayFixtures.minimumID
+        let first = try DayFixtures.day(marks: [DayFixtures.mark(item, "done")])
+        let second = try DayFixtures.day(marks: [DayFixtures.mark(item, "failed")])
+        // The re-read after the first mark waits until the second has landed, then answers with the first.
+        api.duringFetch = {
+            await waitUntil { sender.sent.count == 2 && queue.writes.isEmpty }
+            api.fetchResults = [.success(first), .success(second)]
+            // The next re-read takes a round trip too: a frame fits between the two answers.
+            api.duringFetch = { for _ in 0..<5 { await Task.yield() } }
+        }
+        let readsBefore = api.fetchedDates.count
+
+        await viewModel.cycleMark(item)
+        await waitUntil { api.fetchedDates.count > readsBefore }
+        await viewModel.cycleMark(item)
+        // What a frame could see: the state between turns of the main actor, until both re-reads answered.
+        var seen: [String?] = []
+        var turnsAfter = 0
+        for _ in 0..<2000 where turnsAfter < 20 {
+            seen.append(viewModel.state(of: item))
+            if api.fetchedDates.count >= readsBefore + 2 { turnsAfter += 1 }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(viewModel.state(of: item), "failed")
+        XCTAssertFalse(seen.contains("done"), "the older answer would blink the first tick back")
+    }
+
+    // MARK: Round 2 — undo during the send
+
+    func testUndoDuringTheSendIsOneUndoOfItsOwnEventOnceItLands() async {
+        let sender = HeldSender()
+        sender.holds = true
+        let (buttons, queue, api) = await makeButtons(total: 2, sender: sender)
+        api.undoResult = .success(
+            QuickMarkUndoDTO(eventId: 1, quickMarkId: 1, entryDate: today, undoneAt: "2026-10-25T09:01:00+00:00", todayTotal: 2, done: true)
+        )
+
+        await buttons.tap(buttons.marks[0])
+        await waitUntil { sender.heldCount == 1 }
+        await buttons.undoLast()
+        sender.release()
+        await waitUntil { queue.writes.isEmpty && api.undoneIDs.count == 1 }
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(api.undoneIDs, [1], "exactly one undo, of the event the press got")
+        XCTAssertEqual(buttons.marks[0].todayTotal, 2)
+    }
+
+    func testUndoDuringASendThatFailsWithdrawsThePress() async {
+        let sender = HeldSender()
+        sender.holds = true
+        sender.failures = [APIClientError.transport(code: URLError.networkConnectionLost.rawValue)]
+        let (buttons, queue, api) = await makeButtons(total: 2, sender: sender)
+
+        await buttons.tap(buttons.marks[0])
+        await waitUntil { sender.heldCount == 1 }
+        await buttons.undoLast()
+        sender.release()
+        await waitUntil { queue.writes.isEmpty }
+        await queue.flush()
+
+        XCTAssertEqual(sender.sent.count, 1, "the press is not sent again after the failed attempt")
+        XCTAssertTrue(api.undoneIDs.isEmpty)
+        XCTAssertEqual(buttons.marks[0].todayTotal, 2)
+    }
+
+    // MARK: Round 2 — checklist
+
+    func testARefusedChecklistSaveGivesTheServersRowBack() async {
+        let sender = HeldSender()
+        sender.failures = [APIClientError.unexpectedStatus(422)]
+        let server = EntryDTO(id: 200, categoryId: 2, entryDate: today, values: [EntryValueDTO(fieldId: 20, value: "false")])
+        let (today, queue, _) = await makeToday(categories: [morning], sender: sender, entries: [server])
+
+        _ = await today.saveEntry(categoryID: 2, values: [20: "true"])
+        await waitForSend(queue)
+
+        XCTAssertEqual(today.entries(forCategory: 2), [server], "the server's row is back, not an empty day")
+        XCTAssertEqual(queue.failedCount, 1)
+    }
+
+    func testANewerChecklistSaveReplacesTheWaitingOneButNotTheOneBeingSent() async {
+        let sender = HeldSender()
+        sender.holds = true
+        let (today, queue, _) = await makeToday(categories: [morning], sender: sender)
+
+        _ = await today.saveEntry(categoryID: 2, values: [20: "true"])
+        await waitUntil { sender.heldCount == 1 }
+        _ = await today.saveEntry(categoryID: 2, values: [20: "true"])
+        _ = await today.saveEntry(categoryID: 2, values: [20: "false"])
+        XCTAssertEqual(queue.pendingCount, 2, "the one being sent and one waiting: the newer replaced the older waiting one")
+        XCTAssertEqual(today.entries(forCategory: 2).count, 1, "one row of the day")
+        sender.release()
+        await waitUntil { queue.writes.isEmpty }
+
+        let sent = sender.sent.compactMap { sent -> [String: Bool]? in
+            if case .upsertChecklist(let list) = sent.action { return list.values } else { return nil }
+        }
+        XCTAssertEqual(sent, [["20": true], ["20": false]])
+        XCTAssertEqual(today.entries(forCategory: 2).first?.values, [EntryValueDTO(fieldId: 20, value: "false")])
     }
 }

@@ -5,6 +5,7 @@
 // summary: PHASE-03/242 — the cached-day notice says the day is from the cache, not that today is missing (wrong between midnight and the server's 04:00); a load's read answered after a delivery's re-read replaces neither the day nor the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is no conflict for the next one
 // summary: the Day screen without a network — a mark, a new fact and the notebook go to the shared outbox (the fact under the key of its attempt, the mark and notebook with the server state they were made over) and stay on screen through a re-read; a mark or notebook whose older write still waits goes through the queue, so the old one cannot land last; a delivery reads the day again; the day opens from the read cache and says when the cached day is not today; closing and fact corrections say they need the server and keep what was typed
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — an online mark is one PUT with no check read of the day; the check runs on the retry after a failed attempt
 // summary: PHASE-03/316 — a mark always goes through the queue and is sent behind the caller (the tests wait for that send); a 500 keeps it waiting and only the queue giving up rolls it back with the reason; the check read of a replay is scripted where the order of reads matters
 import XCTest
 @testable import HabitTracker
@@ -73,6 +74,21 @@ final class DayOfflineTests: XCTestCase {
         XCTAssertEqual(outbox.pending.first?.label, "Отметка «Минимум: собрать сборку»")
     }
 
+    func testAnOnlineMarkIsOnePutWithoutACheckReadOfTheDay() async {
+        api.markResult = .success(DayFixtures.mark(DayFixtures.minimumID, "done"))
+        let readsBefore = api.fetchedDates.count
+
+        await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
+        await waitUntil { api.fetchedDates.count > readsBefore }
+
+        XCTAssertEqual(api.markCalls.count, 1)
+        XCTAssertEqual(
+            Array(api.fetchedDates.dropFirst(readsBefore)), [nil],
+            "only the screen's re-read of today after the PUT, no check of the dated day before it"
+        )
+    }
+
     func testAQueuedMarkIsNotRolledBackByAReread() async {
         api.markResult = .failure(offline)
         await viewModel.cycleMark(DayFixtures.minimumID)
@@ -85,6 +101,7 @@ final class DayOfflineTests: XCTestCase {
     func testADeliveredMarkReadsTheDayAgainAndLosesItsQueuedSign() async throws {
         api.markResult = .failure(offline)
         await viewModel.cycleMark(DayFixtures.minimumID)
+        await waitForSend(outbox)
         api.markResult = .success(DayFixtures.mark(DayFixtures.minimumID, "done"))
         api.fetchResults = [.success(try DayFixtures.day(marks: [DayFixtures.mark(DayFixtures.minimumID, "done")]))]
         let readsBefore = api.fetchedDates.count
@@ -315,10 +332,8 @@ final class DayOfflineTests: XCTestCase {
         let vm = makeViewModel(clock: { clock })
         await vm.load()
         let marked = [DayFixtures.mark(DayFixtures.minimumID, "done")]
-        // Answers in the order they are given: the replay's check, the re-read after the mark, the step's day,
-        // then the load's old read.
+        // Answers in the order they are given: the re-read after the mark, the step's day, then the load's old read.
         api.fetchResults = [
-            .success(try DayFixtures.day()),
             .success(try DayFixtures.day(notebook: .some("Свежий"), marks: marked)),
             .success(try DayFixtures.day(date: "2026-10-24")),
             .success(try DayFixtures.day(notebook: .some("Старый"))),

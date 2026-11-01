@@ -17,9 +17,9 @@ func waitUntil(
     if !condition() { XCTFail("the condition did not hold within the wait", file: file, line: line) }
 }
 
-/// Waits until the queue's background send has settled every waiting write — delivered, refused, or
-/// failed once. A write that waits behind one that failed is never tried, so do not use it then.
+/// Waits until the send the queue started last (`send()`) and any flush it joined have ended.
 @MainActor
 func waitForSend(_ queue: OutboxQueue, file: StaticString = #filePath, line: UInt = #line) async {
-    await waitUntil({ queue.pending.allSatisfy { $0.attemptFailed } }, file: file, line: line)
+    await queue.lastSend?.value
+    await waitUntil({ !queue.isFlushing }, file: file, line: line)
 }

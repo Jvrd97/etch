@@ -2,6 +2,7 @@
 // summary: PHASE-03/242 — a "not sent" write whose retry would land over a newer write of the same object says so above its buttons; a queued press shows when it was pressed
 // summary: the one counter of the offline queue shown atop Today, Quick marks and Day — "written on the phone, waiting to send: N", "not sent: M" and a word when the server refuses the API key; a tap opens the list of waiting writes with their day and the "not sent" ones with the reason, a retry that says what it will do and sends at once, and discard
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — no clock of its own: the queue republishes its writes when one becomes overdue; the list sheet hangs on a view that is always there, so a retry that hides the strip for a moment does not close it
 // summary: PHASE-03/316 — the strip counts only writes that failed once or have been on their way past the quiet period, so a press sent and answered at once does not blink it
 import SwiftUI
 
@@ -27,15 +28,19 @@ struct OutboxQueueBar: View {
         writes.filter { $0.isOverdue(at: moment) }
     }
 
+    /// Redrawn on every publication of the queue, the one at the overdue moment of a write included.
     var body: some View {
-        if !queue.writes.isEmpty {
-            // Ticks only while something is queued: a write on its way turns into a waiting one by the clock.
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let shown = Self.shown(queue.writes, at: context.date)
-                if !shown.isEmpty {
-                    strip(pending: shown.filter { $0.status == .pending }.count, failed: shown.filter { $0.status == .failed }.count)
-                }
+        let shown = Self.shown(queue.writes, at: Date())
+        VStack(spacing: 0) {
+            if !shown.isEmpty {
+                strip(pending: shown.filter { $0.status == .pending }.count, failed: shown.filter { $0.status == .failed }.count)
             }
+            // Always there: a retry from the list hides the strip for the quiet period, the list stays open.
+            Color.clear
+                .frame(height: 0)
+                .sheet(isPresented: $showsList) {
+                    OutboxQueueList(queue: queue)
+                }
         }
     }
 
@@ -58,9 +63,6 @@ struct OutboxQueueBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("outbox.bar")
-        .sheet(isPresented: $showsList) {
-            OutboxQueueList(queue: queue)
-        }
     }
 }
 

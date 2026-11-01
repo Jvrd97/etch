@@ -11,6 +11,7 @@
 // summary: PHASE-03/310 round 2 — a step with nothing cached shows the day it goes to (`steppingTo`) while the shown day stays; the next step counts from the day asked for; a step that fails names that day and points the screen back at the day shown; an appearance after midnight reads again whatever the age of the copy; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the day opens from its cached copy (the cached «today» only when it is today), an appearance reads again only when the copy is not recent, a loaded day stays on screen through a step or a re-read (no loader), and a failed re-read is a line, not a replaced screen
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 2 — a delivered mark is laid over every read of the day sent before its delivery, so a re-read started before the second of two marks landed does not roll the tick back; the first attempt of a mark is a bare PUT (the queue checks the state it was made over only on a retry)
 // summary: PHASE-03/316 — a mark goes into the outbox and the line stays free (no wait for the PUT nor the re-read): a second tap while the first is on its way is queued behind it, not dropped; the marks shown are the server's with the queued ones on top, a delivered mark takes the server's answer in the same turn and a refused one falls back and says why; re-reads after deliveries are merged into one at a time; «ждёт отправки» shows only writes that wait
 import Combine
 import Foundation
@@ -117,6 +118,9 @@ final class DayViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     /// The marks of the shown day as the server holds them; `marks` is them with the queued ones on top.
     private var serverMarks: [UUID: DayMarkDTO] = [:]
+    /// Marks the server took from the queue, with their day and the newest read sent before each delivery:
+    /// a read up to that number may hold an older state, so the mark is laid over its answer.
+    private var deliveredMarks: [(afterRead: Int, date: String, mark: DayMarkDTO)] = []
     /// A re-read after a delivery is running, and another delivery came during it: one more follows.
     private var isRereadingAfterDelivery = false
     private var rereadsAfterDelivery = false
@@ -230,6 +234,9 @@ final class DayViewModel: ObservableObject {
             serverMarks[mark.itemID] = stored
             showMarks(outbox?.writes ?? [])
         }
+        if case .setDayMark(let mark) = action, case .dayMark(let stored)? = delivery.reply {
+            deliveredMarks.append((afterRead: readsSent, date: mark.date, mark: stored))
+        }
         let ofShownDay = shownDate.map { action.isDayWrite(of: $0) } ?? false
         let duringLoad = runningLoad != nil && action.writesADay
         guard ofShownDay || duringLoad else { return }
@@ -313,7 +320,7 @@ final class DayViewModel: ObservableObject {
         guard state != .loaded || date != shownDate else { return }
         offlineAsOf = nil
         // A save made in this run may be newer than the copy: its text outranks the copy's.
-        apply(cached.value, keepingNotebook: false, savedSince: savedNotebooks[date])
+        apply(cached.value, read: nil, keepingNotebook: false, savedSince: savedNotebooks[date])
         shownRequest = requestedDate
         state = .loaded
     }
@@ -398,7 +405,9 @@ final class DayViewModel: ObservableObject {
             let notebookIsStale = isSavingNotebook || notebookSaveEpoch != epochAtSend
             // Another day on screen cannot keep its notebook, but the text its save wrote outranks an older answer.
             let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0 : nil }
-            apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, savedSince: savedSince)
+            apply(
+                fetched, read: read, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, savedSince: savedSince
+            )
             shownRequest = requested
             refreshError = nil
             state = .loaded
@@ -441,10 +450,16 @@ final class DayViewModel: ObservableObject {
     /// `savedSince` is the save of this day that an older answer predates: the answer's notebook text is
     /// swapped for the saved one when it is what the save was typed over or the saved text itself.
     private func apply(
-        _ fetched: DayDetailDTO, keepingNotebook: Bool, savedSince: (text: String, base: String, epoch: Int)?
+        _ fetched: DayDetailDTO, read: Int?, keepingNotebook: Bool, savedSince: (text: String, base: String, epoch: Int)?
     ) {
         detail = fetched
         serverMarks = Dictionary(fetched.marks.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
+        // A read sent after a delivery holds that mark; an older one (or the cached copy, `read` nil) gets it
+        // laid over, in the order they landed.
+        if let read { deliveredMarks.removeAll { $0.afterRead < read } }
+        for delivered in deliveredMarks where delivered.date == fetched.day.date {
+            serverMarks[delivered.mark.itemId] = delivered.mark
+        }
         showMarks(outbox?.writes ?? [])
         facts = Dictionary(fetched.planFacts.map { ($0.itemId, $0) }, uniquingKeysWith: { _, last in last })
         summary = fetched.summary
@@ -606,7 +621,7 @@ final class DayViewModel: ObservableObject {
             let queued = QueuedDayMark(
                 date: date, itemID: itemID, state: newState, note: previous?.note, expected: previous?.state ?? ""
             )
-            outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»")
+            outbox.enqueue(.setDayMark(queued), label: "Отметка «\(itemTitle(itemID))»", uncheckedFirstAttempt: true)
             outbox.send()
             return
         }
