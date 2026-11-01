@@ -1,5 +1,5 @@
-# [review:need-review] 175
-# summary: explicit primary field selection with legacy fallback
+# [review:need-review] 175, 309
+# summary: explicit primary field selection with legacy fallback; `category_ids` narrows the cells and the metadata in SQL, not after the read (#309)
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import cast
@@ -74,9 +74,13 @@ def _category_meta(category: Category) -> TableCategoryMeta:
     )
 
 
-async def _get_category_metas(db: AsyncSession) -> list[TableCategoryMeta]:
+async def _get_category_metas(
+    db: AsyncSession, category_ids: list[int] | None
+) -> list[TableCategoryMeta]:
     """Active categories with grouping metadata, ordered by name."""
-    categories = await category_crud.get_categories(db, limit=None, active_only=True)
+    categories = await category_crud.get_categories(
+        db, limit=None, active_only=True, ids=category_ids
+    )
     return [_category_meta(category) for category in categories]
 
 
@@ -84,9 +88,14 @@ async def get_table(
     db: AsyncSession,
     date_from: date,
     date_to: date,
+    category_ids: list[int] | None = None,
 ) -> TableResponse:
     """
     Build the table view for [date_from, date_to] (inclusive).
+
+    `category_ids` narrows the cells and the metadata to those categories; the
+    screen of one category draws its chart from a year of its own days, not of
+    all forty. None is the whole table.
 
     The response carries category metadata (group, display_mode, primary
     field = first field by order) for tab/column layout on the client.
@@ -94,6 +103,9 @@ async def get_table(
     entries have an empty cells list. Aggregation per (category, field):
     number -> sum, boolean -> any, text/select/date/etc -> last by created_at.
     """
+    conditions = [Entry.entry_date >= date_from, Entry.entry_date <= date_to]
+    if category_ids is not None:
+        conditions.append(Entry.category_id.in_(category_ids))
     result = await db.execute(
         select(
             Entry.entry_date,
@@ -105,12 +117,7 @@ async def get_table(
         )
         .join(EntryValue, EntryValue.entry_id == Entry.id)
         .join(Field, Field.id == EntryValue.field_id)
-        .where(
-            and_(
-                Entry.entry_date >= date_from,
-                Entry.entry_date <= date_to,
-            )
-        )
+        .where(and_(*conditions))
         .order_by(Entry.created_at.asc(), Entry.id.asc())
     )
 
@@ -146,4 +153,6 @@ async def get_table(
         )
         current += timedelta(days=1)
 
-    return TableResponse(categories=await _get_category_metas(db), days=days)
+    return TableResponse(
+        categories=await _get_category_metas(db, category_ids), days=days
+    )

@@ -8,6 +8,8 @@
 # summary: app assembled by create_app(config) — CORS allowlist from settings, docs off in prod, dev-mode auth warning, the day boundary read from day_rule_set on startup, and the goals, training and chat routers in the API-key perimeter
 # [review:need-review] 205
 # summary: the passkey router is mounted beside the auth router, outside the perimeter — sign-in by passkey is open, its registration endpoints guard themselves
+# [review:need-review] 309
+# summary: answers over a kilobyte leave gzip-compressed for a client that accepts it; the event stream of the chat does not
 """
 Сборка FastAPI-приложения.
 
@@ -52,6 +54,7 @@ from app.api import (
 )
 from app.api import passkey
 from app.core.auth import require_api_key, warn_if_auth_disabled
+from app.core.compression import StreamSafeGZipMiddleware
 from app.core.config import Settings, settings
 from app.core.database import AsyncSessionLocal
 from app.crud import day as day_crud
@@ -168,6 +171,9 @@ def create_app(config: Settings) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Added after CORS, so it wraps it: every answer, the CORS ones included,
+    # leaves compressed when it is large and the client accepts gzip (#309).
+    app.add_middleware(StreamSafeGZipMiddleware)
 
     # Sessions live outside the perimeter on purpose: a browser with neither a
     # key nor a cookie must still be able to log in and to ask whether it is

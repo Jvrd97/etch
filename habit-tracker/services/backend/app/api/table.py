@@ -1,5 +1,5 @@
-# [review:need-review] PHASE-01/04-backend-table-endpoint
-# summary: GET /api/v1/table — aggregated per-day table view over a date range
+# [review:need-review] PHASE-01/04-backend-table-endpoint, 309
+# summary: GET /api/v1/table — aggregated per-day table view over a date range; optional repeated `category_id` narrows it to those categories (#309)
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,6 +22,13 @@ async def get_table(
         ..., description="Start of the range, inclusive (YYYY-MM-DD)"
     ),
     date_to: date = Query(..., description="End of the range, inclusive (YYYY-MM-DD)"),
+    category_id: list[int] | None = Query(
+        None,
+        description=(
+            "Only these categories (repeatable): their cells and their metadata. "
+            "Absent — every active category."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> TableResponse:
     """
@@ -31,6 +38,9 @@ async def get_table(
     `{category_id, field_id, aggregated_value, entry_count}`.
     Агрегация: number — сумма за день, boolean — any,
     остальные типы — последнее значение по created_at.
+
+    `category_id` (можно несколько) сужает ячейки и метаданные до этих
+    категорий: экран категории строит график по своему году, а не по всем.
     """
     if date_from > date_to:
         raise HTTPException(
@@ -46,4 +56,6 @@ async def get_table(
                 f"maximum is {MAX_RANGE_DAYS} days"
             ),
         )
-    return await table_crud.get_table(db, date_from=date_from, date_to=date_to)
+    return await table_crud.get_table(
+        db, date_from=date_from, date_to=date_to, category_ids=category_id
+    )

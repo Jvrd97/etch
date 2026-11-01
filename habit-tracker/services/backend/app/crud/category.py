@@ -1,5 +1,5 @@
-# [review:need-review] 175, #176
-# summary: category CRUD preserves primary fields plus units and quick-step lists
+# [review:need-review] 175, #176, 309
+# summary: category CRUD preserves primary fields plus units and quick-step lists; `get_categories(ids=)` narrows the list to those ids (#309)
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,13 +138,19 @@ async def get_category_by_name(db: AsyncSession, name: str) -> Category | None:
 
 
 async def get_categories(
-    db: AsyncSession, skip: int = 0, limit: int | None = 100, active_only: bool = True
+    db: AsyncSession,
+    skip: int = 0,
+    limit: int | None = 100,
+    active_only: bool = True,
+    ids: list[int] | None = None,
 ) -> list[Category]:
-    """Получить список категорий; limit=None отключает пагинацию"""
+    """Получить список категорий; limit=None отключает пагинацию, ids сужает до этих id"""
     query = select(Category).options(selectinload(Category.fields))
 
     if active_only:
         query = query.where(Category.is_active.is_(True))
+    if ids is not None:
+        query = query.where(Category.id.in_(ids))
 
     query = query.offset(skip).order_by(Category.name)
     if limit is not None:

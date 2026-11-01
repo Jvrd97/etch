@@ -1,15 +1,17 @@
 # [review:need-review] PHASE-01/27-streak-mode-endpoint, PHASE-03/107, PHASE-03/90, PHASE-03/127, PHASE-01/207, PHASE-03/294
 # summary: PHASE-03/294 — record_relapse takes the day the relapse happened on, the repeat window is per day
 # summary: avoid-streak calculation over full entry history (current/best/last relapse, relapse days, tracked-since) on the one day boundary `today_local()`; the one rule of what makes an entry a relapse whatever fields the category has (an entry with no values always is), the relapse days of a window for an `abstain` challenge, and the one-tap relapse writer that a repeated tap within a minute cannot double and that says whether this tap wrote the entry
-from collections.abc import Iterable
+# [review:need-review] 309
+# summary: #309 — the history is two statements, the categories with their field types and the values as five plain columns read past the ORM loader; several streak modes come out of one read (`get_streaks_by_category`); «can this category say no» is one Python rule for the ORM category and the read
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Literal
 
-from sqlalchemy import ColumnElement, exists, func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import selectinload
 
 from app.core.daytime import today_local
 from app.crud import entry as entry_crud
@@ -28,6 +30,7 @@ __all__ = [
     "compute_streak",
     "get_category_streak",
     "get_category_streaks",
+    "get_streaks_by_category",
     "relapse_days",
     "RelapseOutcome",
     "record_relapse",
@@ -148,8 +151,13 @@ def _relapse_value(target: Field) -> str:
     return format_number(IMPLICIT_AMOUNT)
 
 
+def _says_no(field_types: Iterable[FieldType]) -> bool:
+    """A category with one of these field types can record a clean day."""
+    return any(field_type in RELAPSE_FIELD_TYPES for field_type in field_types)
+
+
 def _can_say_no(category: Category) -> bool:
-    return any(f.field_type in RELAPSE_FIELD_TYPES for f in category.fields)
+    return _says_no(f.field_type for f in category.fields)
 
 
 def compute_streak(
@@ -200,53 +208,64 @@ class _History:
 
 
 async def _load_histories(
-    db: AsyncSession, condition: ColumnElement[bool]
+    db: AsyncSession,
+    categories: ColumnElement[bool],
+    entries: ColumnElement[bool] | None = None,
 ) -> dict[int, _History]:
     """
-    Read the full history of every category matching `condition`, in one query.
+    Read the history of every category matching `categories`, in two queries.
 
-    «Can this category say no» rides along as a correlated EXISTS, not as a
-    second query per category: the bulk read on Today and the dashboard must not
-    grow with the number of avoid categories.
+    The first reads the categories with the types of their fields: «can this
+    category say no» is decided from them by `_says_no`, and a category without
+    a single entry still gets its (empty) history. The second reads every entry
+    of those categories (`entries` narrows them, e.g. to a window) with its
+    values, as five plain columns. Neither grows with the number of categories,
+    so the bulk read on Today and the dashboard does not either.
+
+    The values are read through the session's connection, past the ORM loader:
+    tens of thousands of rows went through it on the dashboard, and it took
+    half the time of the read (#309).
     """
-    verdict_field = aliased(Field)
-    can_say_no = (
-        exists()
-        .where(
-            verdict_field.category_id == Category.id,
-            verdict_field.field_type.in_(RELAPSE_FIELD_TYPES),
-        )
-        .label("can_say_no")
-    )
-    result = await db.execute(
-        select(
-            Category.id,
-            can_say_no,
-            Entry.id,
-            Entry.entry_date,
-            EntryValue.value,
-            Field.id,
-            Field.field_type,
-        )
-        .join(Entry, Entry.category_id == Category.id, isouter=True)
-        .join(EntryValue, EntryValue.entry_id == Entry.id, isouter=True)
-        .join(Field, Field.id == EntryValue.field_id, isouter=True)
-        .where(condition)
+    field_types: dict[int, FieldType] = {}
+    types_of: dict[int, list[FieldType]] = {}
+    described = await db.execute(
+        select(Category.id, Field.id, Field.field_type)
+        .outerjoin(Field, Field.category_id == Category.id)
+        .where(categories)
         .order_by(Category.name, Category.id)
     )
+    for category_id, field_id, field_type in described.all():
+        types = types_of.setdefault(category_id, [])
+        if field_id is not None:
+            field_types[field_id] = field_type
+            types.append(field_type)
+    histories = {
+        category_id: _History(can_say_no=_says_no(types))
+        for category_id, types in types_of.items()
+    }
+    query = (
+        select(
+            Entry.category_id,
+            Entry.id,
+            Entry.entry_date,
+            EntryValue.field_id,
+            EntryValue.value,
+        )
+        .outerjoin(EntryValue, EntryValue.entry_id == Entry.id)
+        .where(Entry.category_id.in_(list(histories)))
+    )
+    if entries is not None:
+        query = query.where(entries)
+    connection = await db.connection()
+    rows = (await connection.execute(query)).all()
 
-    histories: dict[int, _History] = {}
-    entries: dict[int, tuple[int, date, list[tuple[int, FieldType, str | None]]]] = {}
-    for row in result.all():
-        category_id, says_no, entry_id, entry_date, value, field_id, field_type = row
-        histories.setdefault(category_id, _History(can_say_no=bool(says_no)))
-        if entry_id is None or entry_date is None:
-            continue
-        _, _, values = entries.setdefault(entry_id, (category_id, entry_date, []))
-        if field_id is not None and field_type is not None:
-            values.append((field_id, field_type, value))
+    by_entry: dict[int, tuple[int, date, list[tuple[int, FieldType, str | None]]]] = {}
+    for category_id, entry_id, entry_date, field_id, value in rows:
+        _, _, values = by_entry.setdefault(entry_id, (category_id, entry_date, []))
+        if field_id in field_types:
+            values.append((field_id, field_types[field_id], value))
 
-    for entry_id, (category_id, entry_date, values) in entries.items():
+    for entry_id, (category_id, entry_date, values) in by_entry.items():
         history = histories[category_id]
         history.entry_dates.add(entry_date)
         if is_relapse_entry(
@@ -286,7 +305,7 @@ async def relapse_days(
 ) -> set[date]:
     """The days in `start..end` the streak of `category_id` counts as relapses."""
     histories = await _load_histories(
-        db, (Category.id == category_id) & Entry.entry_date.between(start, end)
+        db, Category.id == category_id, Entry.entry_date.between(start, end)
     )
     history = histories.get(category_id)
     return history.relapse_dates if history is not None else set()
@@ -295,13 +314,26 @@ async def relapse_days(
 async def get_category_streaks(
     db: AsyncSession, streak_mode: str, today: date | None = None
 ) -> list[tuple[int, StreakStats]]:
-    """Compute every category of one mode from one joined history query."""
-    histories = await _load_histories(db, Category.streak_mode == streak_mode)
+    """Compute every category of one mode, ordered by name."""
+    streaks = await get_streaks_by_category(db, (streak_mode,), today)
+    return list(streaks.items())
+
+
+async def get_streaks_by_category(
+    db: AsyncSession, streak_modes: Collection[str], today: date | None = None
+) -> dict[int, StreakStats]:
+    """
+    Every category of these modes, by id in name order, from one history read.
+
+    For «build» the `relapse_dates` are the days with a positive mark — the rule
+    is the same `is_relapse_entry`, only what the day means differs.
+    """
+    histories = await _load_histories(db, Category.streak_mode.in_(streak_modes))
     reference_day = today or today_local()
-    return [
-        (category_id, compute_streak(h.entry_dates, h.relapse_dates, reference_day))
+    return {
+        category_id: compute_streak(h.entry_dates, h.relapse_dates, reference_day)
         for category_id, h in histories.items()
-    ]
+    }
 
 
 async def _recent_relapse(

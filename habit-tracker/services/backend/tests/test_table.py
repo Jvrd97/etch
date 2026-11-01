@@ -2,8 +2,8 @@
 Tests for the table view endpoint (per-day aggregation).
 """
 
-# [review:need-review] 175
-# summary: table metadata tests cover explicit primary field selection and legacy fallback
+# [review:need-review] 175, 309
+# summary: table metadata tests cover explicit primary field selection and legacy fallback; `category_id` narrows the table to its categories without reading the rows of the others (#309)
 import logging
 from typing import Any, cast
 
@@ -13,6 +13,7 @@ from httpx import AsyncClient
 from app.crud.table import _category_meta
 from app.models import Category, Field
 from app.models.field import FieldType
+from tests.conftest import SqlCounter
 
 
 @pytest.fixture
@@ -470,3 +471,97 @@ def test_category_meta_falls_back_when_selected_field_is_missing() -> None:
     assert meta.primary_field_id == 10
     assert meta.primary_field_name == "Done"
     assert meta.primary_field_type == "boolean"
+
+
+# --- the table of one category (#309) ----------------------------------------
+
+TABLE_DAYS = ("2024-03-01", "2024-03-02", "2024-03-03")
+
+
+async def _category_with_days(client: AsyncClient, name: str) -> dict[str, Any]:
+    """A one-number category with an entry on every day of `TABLE_DAYS`."""
+    category = await _create_category(
+        client, name, None, [{"name": "Count", "field_type": "number", "order": 1}]
+    )
+    for day in TABLE_DAYS:
+        await _create_entry(
+            client,
+            category["id"],
+            day,
+            [{"field_id": category["fields"][0]["id"], "value": "2"}],
+        )
+    return category
+
+
+async def _table(client: AsyncClient, *category_ids: int) -> dict[str, Any]:
+    response = await client.get(
+        "/api/v1/table",
+        params={
+            "date_from": TABLE_DAYS[0],
+            "date_to": TABLE_DAYS[-1],
+            "category_id": list(category_ids),
+        },
+    )
+    assert response.status_code == 200
+    return cast("dict[str, Any]", response.json())
+
+
+async def test_table_of_one_category_holds_only_its_cells_and_its_meta(
+    client: AsyncClient,
+) -> None:
+    target = await _category_with_days(client, "Target")
+    await _category_with_days(client, "Other")
+
+    data = await _table(client, target["id"])
+
+    assert [meta["id"] for meta in data["categories"]] == [target["id"]]
+    assert [day["date"] for day in data["days"]] == list(TABLE_DAYS)
+    for day in data["days"]:
+        assert [cell["category_id"] for cell in day["cells"]] == [target["id"]]
+        assert day["cells"][0]["aggregated_value"] == "2"
+
+
+async def test_table_of_several_categories_is_the_full_table_cut_to_them(
+    client: AsyncClient,
+) -> None:
+    first = await _category_with_days(client, "First")
+    second = await _category_with_days(client, "Second")
+    await _category_with_days(client, "Third")
+    wanted = {first["id"], second["id"]}
+
+    narrow = await _table(client, first["id"], second["id"])
+    full = await _table(client)
+
+    assert narrow["categories"] == [
+        meta for meta in full["categories"] if meta["id"] in wanted
+    ]
+    assert narrow["days"] == [
+        {
+            "date": day["date"],
+            "cells": [c for c in day["cells"] if c["category_id"] in wanted],
+        }
+        for day in full["days"]
+    ]
+
+
+async def test_table_of_one_category_reads_no_rows_of_the_others(
+    client: AsyncClient, sql_counter: SqlCounter
+) -> None:
+    """
+    The class of error: the narrow table filtering in python what SQL returned.
+
+    The rows read for one category are the same with one other category and
+    with twenty-nine of them, each holding as much history as the target.
+    """
+    target = await _category_with_days(client, "Target")
+    await _category_with_days(client, "Other 0")
+    with sql_counter() as few:
+        await _table(client, target["id"])
+
+    for index in range(1, 29):
+        await _category_with_days(client, f"Other {index}")
+    with sql_counter() as many:
+        await _table(client, target["id"])
+
+    assert many.rows == few.rows
+    assert many.queries == few.queries

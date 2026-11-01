@@ -4,15 +4,20 @@ Test configuration and fixtures.
 
 # [review:need-review] PHASE-01/13-backend-uv-mypy-ruff, PHASE-03/86, PHASE-03/93, PHASE-03/120, PHASE-03/218, PHASE-03/285
 # summary: env-overridable TEST_DATABASE_URL + typed fixtures (builtin generics); the published day boundary is reset between tests; the isolated-CLI paths point at a tmp dir so no test writes to /data; `seeded_goal` puts goal 1 of today's quarter (computed, not frozen as `2026-Q3` — `#218`) in the table so the plans that name it satisfy the foreign key; the three categories a quick-mark button can stand on live here because two test modules press the same buttons; under pytest-xdist each worker gets its own database (`<name>_gw0`, ...) created at session start and dropped at its end (PHASE-03/285)
+# [review:need-review] 309
+# summary: the `sql_counter` fixture — statements and rows read by the database inside a `with` block, for the tests that hold the number of queries and of rows flat as data grows
 import asyncio
 import os
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
 import asyncpg
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -184,6 +189,67 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     async with TestSessionLocal() as session:
         yield session
         await session.rollback()
+
+
+@dataclass
+class SqlCount:
+    """What the database was asked inside one `with sql_counter():` block."""
+
+    statements: list[str] = field(default_factory=list)
+    # `cursor.rowcount` of each statement, in the same order: rows returned by a
+    # SELECT, touched by a write.
+    row_counts: list[int] = field(default_factory=list)
+
+    @property
+    def queries(self) -> int:
+        return len(self.statements)
+
+    @property
+    def rows(self) -> int:
+        return sum(self.row_counts)
+
+    def rows_of(self, table: str) -> list[int]:
+        """Rows of each statement whose text names `table`."""
+        return [
+            rows
+            for statement, rows in zip(self.statements, self.row_counts)
+            if table in statement
+        ]
+
+
+SqlCounter = Callable[[], AbstractContextManager[SqlCount]]
+
+
+@contextmanager
+def _count_sql() -> Iterator[SqlCount]:
+    seen = SqlCount()
+
+    def before(*args: Any) -> None:
+        seen.statements.append(str(args[2]))
+
+    def after(*args: Any) -> None:
+        seen.row_counts.append(max(args[1].rowcount, 0))
+
+    engine = test_engine.sync_engine
+    event.listen(engine, "before_cursor_execute", before)
+    event.listen(engine, "after_cursor_execute", after)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", before)
+        event.remove(engine, "after_cursor_execute", after)
+
+
+@pytest.fixture
+def sql_counter() -> SqlCounter:
+    """
+    Count statements and rows: `with sql_counter() as seen: ...; seen.queries, seen.rows`.
+
+    For the tests of the class «grows with data»: the same read on N and on
+    10·N rows must ask as many statements, and a narrowed read must not pull
+    the rows it then throws away. BEGIN and COMMIT are not statements here.
+    """
+    return _count_sql
 
 
 @pytest.fixture(scope="function")

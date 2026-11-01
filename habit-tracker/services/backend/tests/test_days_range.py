@@ -2,10 +2,11 @@
 Tests for GET /api/v1/days?from&to — the range the timeline and the sidebar read.
 """
 
-# [review:need-review] PHASE-03/94
+# [review:need-review] PHASE-03/94, 309
+# summary: #309 — the range asks as many statements on six hundred days of plans as on thirty, and done/total follow every state of a mark
 # summary: API tests — the range answers in the shape the old /api/days had, a day nobody closed carries verdict null so three states are distinguishable, done/total count work tasks, and a backwards or oversized range is refused rather than scanned
 from collections.abc import AsyncGenerator
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -14,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.week import MAX_RANGE_DAYS
 from app.crud import day as day_crud
 from app.day.evaluate import VERDICT_LOST, VERDICT_WON
-from tests.conftest import record_role_act
+from app.day.rules import day_kind, is_nocode_date
+from app.models.day import Day
+from app.models.mark import PlanMark
+from app.models.plan import DayPlan, PlanItem, PlanSection
+from tests.conftest import SqlCounter, record_role_act
 
 DAYS_URL = "/api/v1/days"
 DAY_URL = "/api/v1/day"
@@ -205,3 +210,97 @@ async def test_the_range_needs_the_api_key(client: AsyncClient) -> None:
     )
 
     assert response.status_code == 401
+
+
+# --- the number of statements (#309) -------------------------------------------
+
+
+async def _fill_plans(db: AsyncSession, first: date, count: int) -> None:
+    """
+    `count` days from `first`, each with a plan of two tasks and an anchor.
+
+    Written through the models, not the endpoint: six hundred plans through
+    `POST /day/{date}/plan` would test the writer for a minute; this test is
+    about the reader. Every day marks its first task done.
+    """
+    rule = await day_crud.rule_for_date(db, first)
+    for offset in range(count):
+        on = first + timedelta(days=offset)
+        db.add(
+            Day(
+                day_date=on,
+                rule_set_id=rule.id,
+                kind=day_kind(rule, on),
+                is_nocode=is_nocode_date(rule, on),
+            )
+        )
+        plan = DayPlan(day_date=on, title=f"План {offset}")
+        section = PlanSection(plan=plan, ord=0, kind="work")
+        moment = datetime.combine(on, time(9), tzinfo=timezone.utc)
+        tasks = [
+            PlanItem(
+                section=section,
+                ord=index,
+                kind="task",
+                text_md=f"Задача {index}",
+                text_plain=f"Задача {index}",
+                starts_at=moment,
+                ends_at=moment + timedelta(hours=1),
+                done_criterion="сделано",
+                unlinked_reason="тест",
+            )
+            for index in range(2)
+        ]
+        PlanItem(
+            section=section, ord=2, kind="anchor", text_md="Якорь", text_plain="Якорь"
+        )
+        db.add(plan)
+        await db.flush()
+        db.add(PlanMark(item_id=tasks[0].id, state="done"))
+    await db.flush()
+
+
+async def test_reading_days_costs_the_same_on_thirty_days_or_six_hundred(
+    client: AsyncClient, db_session: AsyncSession, sql_counter: SqlCounter
+) -> None:
+    """
+    The class of error: a read that grows with the plans of the range.
+
+    Six hundred days hold six hundred sections — more than one `IN (...)` batch
+    of a `selectinload`, which splits by 500 — so a loader that reads the plan
+    tree in batches asks more statements here than on thirty days.
+    """
+    first = date(2024, 1, 1)
+    await _fill_plans(db_session, first, 30)
+    with sql_counter() as small:
+        response = await client.get(f"{DAYS_URL}?from=2024-01-01&to=2024-01-30")
+    assert response.status_code == 200
+    assert {(row["done"], row["total"]) for row in response.json()} == {(1, 2)}
+
+    await _fill_plans(db_session, first + timedelta(days=30), 570)
+    last = first + timedelta(days=599)
+    with sql_counter() as large:
+        response = await client.get(f"{DAYS_URL}?from=2024-01-01&to={last}")
+    assert len(response.json()) == 600
+
+    assert large.queries == small.queries
+
+
+async def test_done_and_total_follow_every_state_of_a_mark(
+    client: AsyncClient,
+) -> None:
+    """`done` counts the done tasks only; `total` is every task of the plan, whatever its mark."""
+    items = await _post_plan(client, SUNDAY, "Воскресенье", tasks=4)
+    for item, state in zip(items, ("done", "skipped", "failed")):
+        marked = await client.put(
+            f"{DAY_URL}/{SUNDAY.isoformat()}/marks/{item}", json={"state": state}
+        )
+        assert marked.status_code == 200, marked.text
+
+    response = await client.get(
+        f"{DAYS_URL}?from={SUNDAY.isoformat()}&to={SUNDAY.isoformat()}"
+    )
+
+    row = response.json()[0]
+    assert (row["done"], row["total"]) == (1, 4)
+    assert row["title"] == "Воскресенье"

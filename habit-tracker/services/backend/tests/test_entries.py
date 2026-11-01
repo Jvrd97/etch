@@ -4,9 +4,13 @@ Tests for Entry CRUD operations.
 
 # [review:need-review] PHASE-01/73-dashboard-hero-today-ring
 # summary: added TestEntrySort — the default order is unchanged, created_at_desc returns the last written entry first, limit narrows it to one, and an unknown sort is a 422
+# [review:need-review] 309
+# summary: #309 — one write asks as many statements with one field as with eight, at most five, and answers with its values and timestamps
 import pytest
 from httpx import AsyncClient
 from datetime import date
+
+from tests.conftest import SqlCounter
 
 
 @pytest.fixture
@@ -441,3 +445,60 @@ class TestEntryDelete:
         """Test deleting nonexistent entry returns 404."""
         response = await client.delete("/api/v1/entries/9999")
         assert response.status_code == 404
+
+
+# --- the cost of one write (#309) ---------------------------------------------
+
+# Key lookup, the entry, its values, and the written entry read back with its
+# values: five statements, whatever the number of fields.
+ENTRY_WRITE_MAX_QUERIES = 5
+
+
+async def _form_category(client: AsyncClient, name: str, fields: int) -> dict:
+    response = await client.post(
+        "/api/v1/categories",
+        json={
+            "name": name,
+            "fields": [
+                {"name": f"Поле {index}", "field_type": "number", "order": index}
+                for index in range(fields)
+            ],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+async def _write(client: AsyncClient, category: dict, key: str) -> dict:
+    response = await client.post(
+        "/api/v1/entries",
+        json={
+            "category_id": category["id"],
+            "entry_date": "2024-01-15",
+            "values": [
+                {"field_id": item["id"], "value": "1"} for item in category["fields"]
+            ],
+        },
+        headers={"Idempotency-Key": key},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def test_a_write_costs_the_same_with_one_field_or_eight(
+    client: AsyncClient, sql_counter: SqlCounter
+) -> None:
+    """The class of error: a statement per value, or the written row read twice."""
+    one = await _form_category(client, "Одно поле", 1)
+    eight = await _form_category(client, "Восемь полей", 8)
+
+    with sql_counter() as single:
+        written_one = await _write(client, one, "key-one")
+    with sql_counter() as many:
+        written_eight = await _write(client, eight, "key-eight")
+
+    assert many.queries == single.queries <= ENTRY_WRITE_MAX_QUERIES
+    assert len(written_one["values"]) == 1
+    assert len(written_eight["values"]) == 8
+    assert written_eight["created_at"] is not None
+    assert written_eight["updated_at"] is not None

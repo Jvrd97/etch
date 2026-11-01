@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-03/121, PHASE-03/185
 # summary: every acceptance case of the quick mark, including the endpoint's use of today_local() rather than a duplicate clock
+# [review:need-review] 309
+# summary: #309 — the directory asks as many statements with three buttons as with fifteen, every kind among them, and each button still says what its day holds
 """
 Tests for the quick mark, from the button to the row it writes.
 
@@ -34,6 +36,7 @@ from app.crud import quick_mark as quick_mark_crud
 from app.day.plan_validate import resolve_window
 from app.models import Entry, EntryValue
 from app.models.quick_mark import QuickMark, QuickMarkEvent
+from tests.conftest import SqlCounter
 
 QUICK_MARKS_URL = "/api/v1/quick-marks"
 
@@ -408,6 +411,86 @@ async def test_the_directory_carries_the_days_state(
     assert listed[0]["today_total"] == 250
     assert listed[0]["done"] is True
     assert listed[0]["unit_label"] == "мл"
+
+
+async def _button_trio(client: AsyncClient, index: int) -> list[dict[str, Any]]:
+    """A check, an increment and a relapse button, each on its own category, each tapped."""
+
+    async def category(body: dict[str, Any]) -> dict[str, Any]:
+        response = await client.post("/api/v1/categories", json=body)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    box = await category(
+        {
+            "name": f"Галки {index}",
+            "display_mode": "checklist",
+            "fields": [{"name": "D3", "field_type": "boolean", "order": 1}],
+        }
+    )
+    count_up = await category(
+        {"name": f"Вода {index}", "fields": [{"name": "мл", "field_type": "number"}]}
+    )
+    avoid = await category(
+        {
+            "name": f"Срыв {index}",
+            "streak_mode": "avoid",
+            "fields": [{"name": "Штук", "field_type": "number"}],
+        }
+    )
+    marks = [
+        await make_mark(
+            client, box, label="D3", kind="check", step=None, unit_label=None
+        ),
+        await make_mark(client, count_up, label="+250", kind="increment", step=250),
+        await make_mark(client, avoid, label="Срыв", kind="relapse", step=1),
+    ]
+    for mark in marks:
+        status_code, _body = await tap(client, mark["id"])
+        assert status_code == 201
+    return marks
+
+
+async def test_the_directory_costs_the_same_with_three_buttons_or_fifteen(
+    client: AsyncClient, sql_counter: SqlCounter
+) -> None:
+    """
+    The class of error: the state of the day asked once per button.
+
+    Every kind is in both directories — a tick reads the canonical entry, a sum
+    reads every entry of the day — so a loop over buttons in any of the three
+    branches shows up as a larger count on fifteen.
+    """
+    await _button_trio(client, 0)
+    with sql_counter() as three:
+        small = await client.get(QUICK_MARKS_URL)
+    assert len(small.json()) == 3
+
+    for index in range(1, 5):
+        await _button_trio(client, index)
+    with sql_counter() as fifteen:
+        large = await client.get(QUICK_MARKS_URL)
+    assert len(large.json()) == 15
+
+    assert fifteen.queries == three.queries
+
+
+async def test_every_button_of_the_directory_says_what_its_day_holds(
+    client: AsyncClient,
+) -> None:
+    """A tick is done with no total, an increment sums its step, a relapse counts one."""
+    trios = [await _button_trio(client, index) for index in range(2)]
+
+    listed = {mark["id"]: mark for mark in (await client.get(QUICK_MARKS_URL)).json()}
+
+    for check, increment, relapse in trios:
+        assert (listed[check["id"]]["done"], listed[check["id"]]["today_total"]) == (
+            True,
+            None,
+        )
+        assert listed[increment["id"]]["today_total"] == 250
+        assert listed[relapse["id"]]["today_total"] == 1
+        assert listed[relapse["id"]]["done"] is True
 
 
 @pytest.mark.asyncio

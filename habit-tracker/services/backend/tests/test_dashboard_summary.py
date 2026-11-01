@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/296
+# [review:need-review] PHASE-03/296, 309
+# summary: #309 — the history of every habit is read once and every value once; `parts=health` says what the full answer says about health, leaves the other blocks empty and costs the same whatever the habits
 # summary: tests for GET /dashboard/summary — empty database answers 200 with null/empty blocks, the window cut on the server's day (boundary included), week and month, streak day strips for avoid and build, the three rings, health state against the personal norm, bests and records, workout weeks, one insight without a model, and a flat SQL statement count
 """
 Dashboard summary: one answer for the whole dashboard.
@@ -31,7 +32,7 @@ from app.models.challenge import Challenge
 from app.models.field import FieldType
 from app.models.summary import DaySummary
 from app.schemas.health import HealthWorkoutIn
-from tests.conftest import test_engine
+from tests.conftest import SqlCounter, test_engine
 from tests.test_week_review import (
     add_category,
     add_entry,
@@ -734,3 +735,110 @@ async def test_the_record_window_is_exactly_ninety_days(
     [inside] = (await summary(client))["bests"]
 
     assert (outside["is_record"], inside["is_record"]) == (True, False)
+
+
+# --- the history read once; the health part alone (#309) -------------------------
+
+
+async def add_habits(
+    db: AsyncSession, count: int, days: int, prefix: str = "Х"
+) -> None:
+    """`count` avoid and `count` build habits, each with an entry on each of `days` days."""
+    for index in range(count):
+        for avoiding in (True, False):
+            category, flag = await add_category(
+                db, f"{prefix}{index}-{avoiding}", FieldType.BOOLEAN, avoid=avoiding
+            )
+            for offset in range(days):
+                await add_entry(
+                    db, category, flag, TODAY - timedelta(days=offset), "true"
+                )
+
+
+async def test_the_dashboard_reads_the_history_once_and_every_value_once(
+    client: AsyncClient, db_session: AsyncSession, sql_counter: SqlCounter
+) -> None:
+    """
+    The class of error: the history of every habit read once per streak mode.
+
+    Avoid and build habits come out of one read of `entry_values`, and that read
+    returns each stored value exactly once — not once per mode, not once per
+    field of its category.
+    """
+    await add_habits(db_session, count=3, days=12)
+    stored = (
+        await db_session.execute(text("SELECT count(*) FROM entry_values"))
+    ).scalar_one()
+
+    with sql_counter() as seen:
+        await summary(client, "month")
+
+    assert seen.rows_of("entry_values") == [stored]
+
+
+async def health_part(client: AsyncClient) -> dict[str, Any]:
+    response = await client.get(URL, params={"period": "week", "parts": "health"})
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+async def fill_health_week(db: AsyncSession) -> None:
+    await fill_sleep(db, date(2026, 10, 1), TODAY, 420)
+    await fill_metric(db, STEPS, date(2026, 10, 1), TODAY, 9000)
+    await fill_metric(db, RESTING_HR, date(2026, 10, 1), TODAY, 60)
+
+
+async def test_the_health_part_says_what_the_full_answer_says_about_health(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await fill_health_week(db_session)
+    await add_habits(db_session, count=2, days=5)
+
+    full = await summary(client, "week")
+    part = await health_part(client)
+
+    assert part["scores"]["health"] == full["scores"]["health"]
+    assert part["scores"]["health"]["value"] is not None
+    assert (part["health"], part["bests"]) == (full["health"], full["bests"])
+    assert (part["period"], part["from"], part["to"]) == (
+        full["period"],
+        full["from"],
+        full["to"],
+    )
+
+
+async def test_the_health_part_leaves_the_other_blocks_empty(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await add_habits(db_session, count=1, days=5)
+
+    part = await health_part(client)
+
+    assert part["streaks"] == []
+    assert part["scores"]["habits"] == {"value": None, "done": None, "total": None}
+    assert part["scores"]["challenges"] == {"done": None, "total": None}
+    assert part["workouts"] == {"weeks": [], "total": None, "delta_vs_previous": None}
+    assert part["insight"] is None
+
+
+async def test_the_health_part_costs_the_same_whatever_the_habits(
+    client: AsyncClient, db_session: AsyncSession, sql_counter: SqlCounter
+) -> None:
+    """
+    The class of error: the health screen paying for the streaks of every habit.
+
+    Statements and rows of the health part are the same with one pair of habits
+    and with twenty pairs of a month each.
+    """
+    await fill_health_week(db_session)
+    await add_habits(db_session, count=1, days=3)
+    with sql_counter() as few:
+        await health_part(client)
+
+    await add_habits(db_session, count=20, days=30, prefix="Ещё")
+    with sql_counter() as many:
+        await health_part(client)
+
+    assert (many.queries, many.rows) == (few.queries, few.rows)
+    assert many.rows_of("entry_values") == []

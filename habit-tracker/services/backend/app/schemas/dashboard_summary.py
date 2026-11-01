@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-03/296
 # summary: wire types of GET /dashboard/summary — the three rings, streaks with their day strips, health state, bests, workout weeks and one ready-made insight, with the formulas of the health and habits rings in the docstring
+# [review:need-review] 309
+# summary: `Part` — the part of the summary a screen can ask for alone (`health`, #309)
 """
 Wire types of the dashboard summary (`#296`).
 
@@ -56,6 +58,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.category import CategoryStreakMode
 
 Period = Literal["week", "month"]
+# A part of the summary a screen can ask for alone; absent is the whole summary.
+Part = Literal["health"]
 HealthLabel = Literal["good", "fair", "poor"]
 
 

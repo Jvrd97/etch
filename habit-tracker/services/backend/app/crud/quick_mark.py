@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/125, PHASE-03/130, PHASE-01/206
 # summary: the quick mark from button to database — the validation the directory owes (`field_id` belongs to the category, `kind` fits the field type), the tap that accumulates into the day's entry through `entry_crud.checklist_entry_id` instead of adding a row, the relapse that deliberately does add one, and the journal row beside every write, read back as the sets of one category's day with the flag that says which of them undo would accept
+# [review:need-review] 309
+# summary: #309 — the directory reads the state of the day of all its buttons in a fixed number of statements (`day_states`); the one-button `day_state` asks the same batch, so there is still one reading of «what does today say»
 """
 What a quick mark means and where its value lands.
 
@@ -32,11 +34,12 @@ stored value and the note are never formatted into either.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import uuid
@@ -198,10 +201,10 @@ async def list_quick_marks(
     """
     The directory with the state of the day `on` attached to every button.
 
-    One query per button for the state is deliberate: the directory is nine to
-    twenty rows by design (`hotkey` is one character), and a hand-written join
-    over the EAV would be a second implementation of "what does today say" next
-    to `day_state`.
+    The state of the day comes from `day_states` for all buttons at once — a
+    fixed number of statements, not one or two per button (#309). It is the
+    same reading `day_state` asks for a single button, so "what does today
+    say" still has one implementation.
 
     Плановые кнопки идут первыми (#130). Порядок считает сервер, а не экран:
     выдача одна на веб, окно агента и iOS, и порядок, посчитанный в браузере,
@@ -227,10 +230,11 @@ async def list_quick_marks(
     result = await db.execute(query)
     marks = list(result.scalars().all())
     planned = await planned_marks(db, on)
+    states = await day_states(db, marks, on)
     listed = [
         ListedMark(
             mark=mark,
-            state=await day_state(db, mark, on),
+            state=states[mark.id],
             planned_item_id=planned.get(mark.id),
         )
         for mark in marks
@@ -240,48 +244,78 @@ async def list_quick_marks(
     return sorted(listed, key=lambda one: not one.planned)
 
 
-async def _day_total(db: AsyncSession, mark: QuickMark, on: date) -> float | None:
+async def _day_totals(
+    db: AsyncSession, marks: Sequence[QuickMark], on: date
+) -> dict[int, float | None]:
     """
-    Everything the day holds for this button's field, summed.
+    Everything the day holds for each button's field, summed, by button id.
 
     Sums across every entry of `(category_id, on)` rather than reading the
     canonical one: an increment keeps its number in that single entry, but a
     relapse writes a row per event, and both have to report the same way or the
-    two kinds of button would count differently on the same screen.
+    two kinds of button would count differently on the same screen. A field
+    the day holds nothing for is None, not zero.
     """
+    pairs = {(mark.category_id, mark.field_id) for mark in marks}
     result = await db.execute(
-        select(EntryValue.value, EntryValue.entry_id)
+        select(
+            Entry.category_id,
+            EntryValue.field_id,
+            EntryValue.value,
+            EntryValue.entry_id,
+        )
         .join(Entry, Entry.id == EntryValue.entry_id)
         .where(
-            Entry.category_id == mark.category_id,
             Entry.entry_date == on,
-            EntryValue.field_id == mark.field_id,
+            tuple_(Entry.category_id, EntryValue.field_id).in_(pairs),
         )
     )
-    rows = result.all()
-    if not rows:
-        return None
-    numbers = [
-        parse_number(value, field_id=mark.field_id, entry_id=entry_id)
-        for value, entry_id in rows
-    ]
-    return float(sum(number for number in numbers if number is not None))
+    numbers: dict[tuple[int, int], list[float | None]] = {}
+    for category_id, field_id, value, entry_id in result.all():
+        numbers.setdefault((category_id, field_id), []).append(
+            parse_number(value, field_id=field_id, entry_id=entry_id)
+        )
+    totals = {
+        pair: float(sum(number for number in parsed if number is not None))
+        for pair, parsed in numbers.items()
+    }
+    return {mark.id: totals.get((mark.category_id, mark.field_id)) for mark in marks}
 
 
-async def day_state(db: AsyncSession, mark: QuickMark, on: date) -> DayState:
+async def day_states(
+    db: AsyncSession, marks: Sequence[QuickMark], on: date
+) -> dict[int, DayState]:
     """
-    What the day says about this button right now.
+    What the day says about each of these buttons right now, by button id.
 
     A tick answers with `today_total=None`: a box is not a quantity, and a 1
     there would be read as "one litre" by whatever draws the number. Everything
     else answers with the sum, and `done` is that sum having moved off zero.
+    Ticks and sums are each read once for all the buttons of their kind.
     """
-    if mark.kind == KIND_CHECK:
-        ticks = await entry_crud.get_checklist_state(db, mark.category_id, on)
-        return DayState(today_total=None, done=ticks.get(mark.field_id, False))
+    checks = [mark for mark in marks if mark.kind == KIND_CHECK]
+    counted = [mark for mark in marks if mark.kind != KIND_CHECK]
+    states: dict[int, DayState] = {}
+    if checks:
+        ticks = await entry_crud.get_checklist_states(
+            db, {mark.category_id for mark in checks}, on
+        )
+        for mark in checks:
+            done = ticks.get(mark.category_id, {}).get(mark.field_id, False)
+            states[mark.id] = DayState(today_total=None, done=done)
+    if counted:
+        totals = await _day_totals(db, counted, on)
+        for mark in counted:
+            total = totals[mark.id]
+            states[mark.id] = DayState(
+                today_total=total, done=total is not None and total > 0
+            )
+    return states
 
-    total = await _day_total(db, mark, on)
-    return DayState(today_total=total, done=total is not None and total > 0)
+
+async def day_state(db: AsyncSession, mark: QuickMark, on: date) -> DayState:
+    """What the day says about this one button right now (see `day_states`)."""
+    return (await day_states(db, [mark], on))[mark.id]
 
 
 @dataclass(frozen=True)
@@ -850,7 +884,7 @@ async def _journal_still_explains_the_day(
         state = await day_state(db, mark, on)
         return state.done == bool(event.bool_value)
 
-    stored = await _day_total(db, mark, on)
+    stored = (await _day_totals(db, [mark], on))[mark.id]
     predicted = await _journal_total(db, mark, on)
     return abs((0.0 if stored is None else stored) - predicted) < VALUE_EPSILON
 

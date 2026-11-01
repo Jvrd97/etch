@@ -1,5 +1,7 @@
 # [review:need-review] PHASE-03/296
 # summary: the dashboard summary in a fixed number of statements — categories, avoid histories, build entry days, day summaries, health catalogue/nights/buckets, workouts and challenges are each read once for the whole window and folded in python; streaks, windows and baselines come from the existing crud modules
+# [review:need-review] 309
+# summary: #309 — both streak modes come out of one history read; `part="health"` answers the health blocks alone without counting a single streak
 """
 Database access for the dashboard summary (`#296`).
 
@@ -53,6 +55,7 @@ from app.schemas.dashboard_summary import (
     HealthScore,
     HealthState,
     Insight,
+    Part,
     Period,
     Scores,
     StreakItem,
@@ -184,25 +187,22 @@ async def _streaks(
             )
         )
     ).all()
-    avoid = dict(await streak_crud.get_category_streaks(db, "avoid", today=today))
-    # Для «строить» положительный день, который `app.crud.streak` называет
-    # «срывом» у «избегать», и есть выполненный день.
-    build = {
-        category_id: {day for day in stats.relapse_dates if day <= today}
-        for category_id, stats in await streak_crud.get_category_streaks(
-            db, "build", today=today
-        )
-    }
+    # Обе серии — из одного чтения истории (#309). Для «строить» положительный
+    # день, который `app.crud.streak` называет «срывом» у «избегать», и есть
+    # выполненный день.
+    streaks = await streak_crud.get_streaks_by_category(
+        db, ("avoid", "build"), today=today
+    )
     items: list[StreakItem | None] = []
     for category_id, name, mode in categories:
-        if mode == "avoid" and category_id in avoid:
-            items.append(_avoid_item(category_id, name, avoid[category_id], window))
+        stats = streaks.get(category_id)
+        if mode == "avoid" and stats is not None:
+            items.append(_avoid_item(category_id, name, stats, window))
         elif mode == "build":
-            items.append(
-                _build_item(
-                    category_id, name, build.get(category_id, set()), window, today
-                )
+            done = (
+                {day for day in stats.relapse_dates if day <= today} if stats else set()
             )
+            items.append(_build_item(category_id, name, done, window, today))
     return sorted(
         (item for item in items if item is not None),
         key=lambda item: (-item.current, item.name),
@@ -478,16 +478,22 @@ def _insight(
 
 
 async def build_dashboard_summary(
-    db: AsyncSession, period: Period, today: date
+    db: AsyncSession, period: Period, today: date, part: Part | None = None
 ) -> DashboardSummaryResponse:
     """
     The dashboard for the last 7 (`week`) or 30 (`month`) days ending `today`.
 
     `today` is passed in rather than read here, so the one clock stays
     `app.core.daytime` and a test can pin it.
+
+    `part="health"` answers the health ring, the health states and the bests
+    only — what the health screen draws — and leaves every other block empty:
+    the streaks of every habit were most of the price of the whole summary.
     """
     window = _days(today - timedelta(days=PERIOD_DAYS[period] - 1), today)
     start = window[0]
+    if part == "health":
+        return _health_only(period, window, today, await _health(db, window, today))
 
     plan = await _plan_days(db, start, today)
     streaks = await _streaks(db, window, today)
@@ -507,4 +513,26 @@ async def build_dashboard_summary(
         bests=health.bests,
         workouts=await _workouts(db, period, start, today),
         insight=_insight(plan, health.sleep, streaks),
+    )
+
+
+def _health_only(
+    period: Period, window: list[date], today: date, health: _Health
+) -> DashboardSummaryResponse:
+    """The summary with the health blocks filled and the rest empty, as for no data."""
+    return DashboardSummaryResponse(
+        period=period,
+        from_=window[0],
+        to=today,
+        today=today,
+        scores=Scores(
+            health=health.score,
+            habits=HabitsScore(value=None, done=None, total=None),
+            challenges=ChallengesScore(done=None, total=None),
+        ),
+        streaks=[],
+        health=health.states,
+        bests=health.bests,
+        workouts=WorkoutsBlock(weeks=[], total=None, delta_vs_previous=None),
+        insight=None,
     )

@@ -3114,3 +3114,30 @@ ADR: `docs/PHASE-03/ADRs/in-review/ADR-0023-plan-line-writes-category-history.md
 Круг 2 (PHASE-03/294): «+» ставит галочку у одного булева поля одним нажатием (и у чек-листа из одного поля), у одного текстового поля открывает лист (`QuickAmountSheet` стал `QuickFieldSheet`, rename); полная форма — только для категорий с несколькими полями, которые заполняются вручную. Чтение таблицы порядка ждёт не дольше `usageReadLimit` (1.5 с), сбой или опоздание берут `usage` из предыдущего снимка, поздний ответ пишется в кэш для следующей загрузки. Тело ряда — вся карточка (`onTapGesture`), «+» — своя кнопка. Файлы: `Features/Today/{TodayQuickAdd,TodayViewModel,TodayView,TodayOrdering,QuickFieldSheet}.swift`, тесты `TodayQuickAddTests`, `TodayViewModelTests` — mod; `app/schemas/streak.py` — лишняя строка summary.
 
 Круг 3 (PHASE-03/294): у «+» убран `.disabled` (выключенная кнопка отдаёт касание карточке, и второй тап быстрого двойного нажатия открывал форму), занятость — `opacity`, второй тап отбрасывает `quickAdd`; булева привычка с сегодняшней галочкой (в том числе в очереди) не пишется второй раз, «+» показывает «сделано»; тело ряда — один элемент VoiceOver (`.combine`, `.isButton`); правило «остальные поля необязательные или с умолчанием» одно для числа, булева и текста; таймер в `readUsage` отменяется; тест медленной таблицы без стенных часов. Файлы: `Features/Today/{TodayView,TodayViewModel,TodayQuickAdd}.swift`, тесты `TodayQuickAddTests`, `TodayViewModelTests` — mod.
+
+## 2026-11-01 — PHASE-03/309: скорость чтений экранов (gzip, узкий `/table`, `/days`, дашборд, кнопки)
+
+Тронуто 17 файлов бэкенда (2 `new`, 15 `mod`). Миграции нет, голова Alembic прежняя (`a2c4e6f8b0d3`). Ответы без новых параметров не изменились: 50 тел ответов на стенде (40 категорий × 365 дней) совпали до и после байт в байт.
+
+- `app/core/compression.py` — new: gzip от 1 КБ, уровень 6; `text/event-stream` не сжимается (Starlette 0.27 держал бы события SSE в буфере zlib).
+- `app/main.py` — mod: middleware сжатия в `create_app`.
+- `app/api/table.py`, `app/crud/table.py`, `app/crud/category.py` — mod: `GET /table?category_id=` (повторяемый) сужает ячейки и метаданные в SQL.
+- `app/crud/week.py` — mod: `/days` читает заголовки и `(kind, state)` пунктов колонками, без дерева ORM и пачек selectinload.
+- `app/crud/streak.py` — mod: история — два запроса (категории с типами полей; значения пятью колонками через соединение, мимо загрузчика ORM); `get_streaks_by_category` отдаёт несколько режимов одним чтением; правило срыва не тронуто, «может сказать нет» — одна функция `_says_no`.
+- `app/crud/dashboard_summary.py`, `app/api/dashboard_summary.py`, `app/schemas/dashboard_summary.py` — mod: серии из одного чтения; `?parts=health` — только блоки здоровья, без серий.
+- `app/crud/quick_mark.py`, `app/crud/entry.py` — mod: `day_states` и `get_checklist_states` пачкой для всех кнопок; одиночные функции зовут пачку; `create_entry` без лишнего `refresh`.
+- `tests/conftest.py` — mod: фикстура `sql_counter` (запросы и `rowcount` по каждому запросу).
+- `tests/test_gzip.py` — new; `tests/test_table.py`, `test_days_range.py`, `test_dashboard_summary.py`, `test_quick_marks.py`, `test_entries.py` — mod: тесты на класс ошибки (SQL и строки не растут с данными).
+
+Замер (свой стенд, порт 8811, база `opt_309`, 40 категорий × 365 дней, база и правка вперемешку по два круга, load 7–17 на 18 ядрах; p50, мс):
+
+| Эндпоинт | SQL до → после | p50 до | p50 после | вес на проводе до → после |
+| --- | --- | --- | --- | --- |
+| `GET /table` 365 дней, без фильтра | 3 → 3 | 154–183 | 171–186 | 1 492 → 40 КБ |
+| `GET /table` 365 дней, `?category_id` | 3 → 3 | 180–185 (параметра не было) | 4 | 1 492 → 1,7 КБ |
+| `GET /dashboard/summary?period=week` | 9 → 9 | 122–132 | 75–77 | 6,8 → 1,3 КБ |
+| `GET /dashboard/summary?parts=health` | 9 → 3 | 120–158 (параметра не было) | 4 | 6,8 → 0,6 КБ |
+| `GET /days` за 4 года | 7 → 4 | 200–227 | 16–18 | 41 → 2,3 КБ |
+| `GET /quick-marks?surface=ios` (24 кнопки) | 32 → 5 | 9–11 | 3–6 | 6,6 → 0,6 КБ |
+| `POST /entries` | 6 → 5 | 2,3–2,4 | 2,3–5,6 | — |
+| `GET /streaks`, серия и срывы одной категории | 1 → 2, 3 → 4 | 3–10 | 3–4 | — |

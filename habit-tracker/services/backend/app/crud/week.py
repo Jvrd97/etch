@@ -1,4 +1,5 @@
-# [review:need-review] PHASE-03/94
+# [review:need-review] PHASE-03/94, 309
+# summary: #309 — a range of days reads the titles and the (kind, mark) of every item as plain columns, three statements whatever the length of the range, instead of the plan tree as ORM objects in selectinload batches
 # summary: the week as a stored snapshot — recompute reads day_summary and writes only the counters and computed_at, the prose is replaced by a separate call, and a range of days is answered in the shape the old /api/days had, counted by the one function that counts tasks
 """
 Database access for the week and for a range of days.
@@ -11,15 +12,18 @@ whole reason the week is a stored row and not a `SELECT`: ретро утвер�
 numbers without silently rewriting the sentence beside them.
 
 **Считает задачи одна функция.** The counters of `/days` come from
-`app.day.marks.count_tasks` through `app.crud.mark.task_counts`, the same
-function the header of the day screen and the verdict of `#90` use. A `count(*)
+`app.day.marks.count_tasks`, the function `app.crud.mark.task_counts` wraps for
+the header of the day screen and the verdict of `#90`. A `count(*)
 FILTER (WHERE state = 'done')` in SQL would be the second definition of «skipped
 выходит из знаменателя», and the first one to disagree with the verdict.
 
 **Диапазон читается пачками, а не по дню.** Four queries answer any range: the
-days, the plans with their items, the marks under those plans, and the итоги.
-A loop over `get_plan`/`list_marks` per date would be two round trips per square
-of a timeline that draws a year at a time.
+days, the plan titles, every item's kind with its mark, and the итоги. A loop
+over `get_plan`/`list_marks` per date would be two round trips per square of a
+timeline that draws a year at a time. The items come as columns, not as
+`DayPlan → sections → items` objects: counting needs the id, the kind and the
+state of a line, and the tree cost forty thousand ORM objects and a
+`selectinload` batch per 500 sections on four years (#309).
 """
 
 from __future__ import annotations
@@ -32,8 +36,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.crud import mark as mark_crud
 from app.day.evaluate import VERDICT_WON
+from app.day.marks import count_tasks
 from app.day.week import week_bounds
 from app.models.day import Day
 from app.models.mark import PlanMark
@@ -75,20 +79,19 @@ async def list_days(db: AsyncSession, start: date, end: date) -> list[DayListIte
     if not dates:
         return []
 
-    plans = await _plans_in_range(db, start, end)
-    marks = await _marks_in_range(db, start, end)
+    titles = await _titles_in_range(db, start, end)
+    lines = await _lines_in_range(db, start, end)
     verdicts = await _verdicts_in_range(db, start, end)
-    by_date = {plan.day_date: plan for plan in plans}
 
     listed: list[DayListItem] = []
     for on in dates:
-        plan = by_date.get(on)
-        counts = mark_crud.task_counts(plan, marks.get(on, []))
+        kinds, states = lines.get(on, ({}, {}))
+        counts = count_tasks(kinds, states)
         verdict, origin = verdicts.get(on, (None, ORIGIN_NONE))
         listed.append(
             DayListItem(
                 date=on,
-                title=(plan.title if plan is not None and plan.title else ""),
+                title=titles.get(on) or "",
                 verdict=verdict,
                 verdict_origin=origin,
                 done=counts.done,
@@ -98,31 +101,45 @@ async def list_days(db: AsyncSession, start: date, end: date) -> list[DayListIte
     return listed
 
 
-async def _plans_in_range(db: AsyncSession, start: date, end: date) -> list[DayPlan]:
-    """Every plan of the range with its sections and items loaded."""
-    result = await db.execute(
-        select(DayPlan)
-        .where(DayPlan.day_date.between(start, end))
-        .options(selectinload(DayPlan.sections).selectinload(PlanSection.items))
-    )
-    return list(result.scalars().all())
-
-
-async def _marks_in_range(
+async def _titles_in_range(
     db: AsyncSession, start: date, end: date
-) -> dict[date, list[PlanMark]]:
-    """Every mark of the range, grouped by the day whose plan it belongs to."""
+) -> dict[date, str | None]:
+    """The title of every plan of the range, by its day."""
     result = await db.execute(
-        select(DayPlan.day_date, PlanMark)
+        select(DayPlan.day_date, DayPlan.title).where(
+            DayPlan.day_date.between(start, end)
+        )
+    )
+    return {day_date: title for day_date, title in result.all()}
+
+
+_Lines = tuple[dict[uuid.UUID, str], dict[uuid.UUID, str]]
+
+
+async def _lines_in_range(
+    db: AsyncSession, start: date, end: date
+) -> dict[date, _Lines]:
+    """
+    Every item of every plan of the range as `count_tasks` reads it, by day.
+
+    Per day: the kind of each item by its id, and the state of each marked item.
+    The mark rides along by an outer join — one row per item, a line without a
+    mark is pending.
+    """
+    result = await db.execute(
+        select(DayPlan.day_date, PlanItem.id, PlanItem.kind, PlanMark.state)
         .join(PlanSection, PlanSection.plan_id == DayPlan.id)
         .join(PlanItem, PlanItem.section_id == PlanSection.id)
-        .join(PlanMark, PlanMark.item_id == PlanItem.id)
+        .outerjoin(PlanMark, PlanMark.item_id == PlanItem.id)
         .where(DayPlan.day_date.between(start, end))
     )
-    grouped: dict[date, list[PlanMark]] = {}
-    for day_date, mark in result:
-        grouped.setdefault(day_date, []).append(mark)
-    return grouped
+    lines: dict[date, _Lines] = {}
+    for day_date, item_id, kind, state in result.all():
+        kinds, states = lines.setdefault(day_date, ({}, {}))
+        kinds[item_id] = kind
+        if state is not None:
+            states[item_id] = state
+    return lines
 
 
 async def _verdicts_in_range(
