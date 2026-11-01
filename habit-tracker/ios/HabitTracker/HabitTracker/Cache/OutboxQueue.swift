@@ -6,6 +6,7 @@
 // [review:need-review] PHASE-03/240
 // summary: PHASE-03/240 — a new write, markSupplementTaken (the «принял» of a supplement, by id and the press day): its target, day, forced retry without the day, and the 409 reasons
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 3 — a first attempt goes without the replay check only when it leaves within the quiet period of the tap; a flush that stops drops that leave for every write still waiting, so a mark queued behind a failed write is checked against the day
 // summary: PHASE-03/316 round 2 — the queue republishes `writes` the moment a write on its way becomes overdue, so the strip and the row tags follow the clock without timers of their own; a write that replaces a waiting one inherits its failed attempt, and a restored one counts as failed; the first attempt of a mark queued by a tap online (`uncheckedFirstAttempt`, kept in memory only: after a relaunch the check runs) goes without the replay check (`firstAttempt`), the check runs only on a retry after a failed attempt; `isFlushing` and `lastSend` are readable, so a caller can wait for the send it started
 // summary: PHASE-03/316 — the online path of a press: `send()` flushes without holding the caller; each delivery is announced at once with the server's answer (`OutboxDelivery`), a write moved to "not sent" is announced on `refused`; `attemptFailed` (stored, default false) and `isOverdue` tell a write that waits from one that is merely on its way; `withdraw` takes back a press not yet sent; the production queue tries again after a dead network or a 5xx on a growing delay
 import Combine
@@ -497,7 +498,7 @@ final class OutboxQueue: ObservableObject {
     nonisolated static let quietPeriod: TimeInterval = 3
     /// The pauses before the production queue tries again after a flush stopped on a dead network or a
     /// 5xx; the last one repeats. A reconnect or the next press sends sooner.
-    static let retryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30)]
+    nonisolated static let retryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30)]
     nonisolated static let dayTurnedReason =
         "Сервер не принял отметку (409): день уже сменился, или кнопка выключена."
     nonisolated static let tapRefusedReason = "Сервер не принял отметку (409): кнопка выключена."
@@ -561,7 +562,8 @@ final class OutboxQueue: ObservableObject {
     /// (`mayHaveLanded(after:)` of its error): a later write replacing this one accepts its state.
     /// `attemptFailed` says a direct attempt already failed: the write is shown as waiting at once.
     /// `uncheckedFirstAttempt`: a tap made online over what the screen shows; its first attempt is sent as
-    /// a direct write would be, without the replay check (`firstAttempt`).
+    /// a direct write would be, without the replay check (`firstAttempt`) — only when it leaves within
+    /// `quietPeriod` of the tap and no flush stopped in between.
     /// Returns the id of the queued write, so a caller can tell later whether that very write was delivered.
     @discardableResult
     func enqueue(
@@ -676,7 +678,9 @@ final class OutboxQueue: ObservableObject {
             tried.insert(write.id)
             inFlightID = write.id
             do {
-                let unchecked = !write.attemptFailed && uncheckedFirstAttempts.remove(write.id) != nil
+                // Unchecked only right after the tap: a mark that waited (behind a failed write, without a
+                // sender, past the quiet period) is checked against the day as the server holds it now.
+                let unchecked = uncheckedFirstAttempts.remove(write.id) != nil && !write.isOverdue(at: now())
                 let action = unchecked ? write.action.firstAttempt() : write.action
                 let reply = try await sender.send(action, idempotencyKey: write.key)
                 waitsForKey = false
@@ -688,6 +692,8 @@ final class OutboxQueue: ObservableObject {
                 }
             }
         }
+        // Whatever the stopped flush left waits now: no write of it goes out unchecked any more.
+        if stopped { uncheckedFirstAttempts.removeAll() }
         reload()
         scheduleRetry(after: stopped)
     }

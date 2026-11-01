@@ -10,6 +10,7 @@
 // summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the snapshot; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the screen opens on the cached snapshot of today (no loader, no network wait) and reads again only when it is not recent; the snapshot carries its day, and a snapshot of another day neither opens the screen nor shows its records as today's offline; the streak read leaves with the first wave when the known categories have an avoid one, and never waits for the table
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 3 — an entry delivered for another day is not kept as an overlay of today's reads
 // summary: PHASE-03/316 round 2 — the server's rows are kept apart from the screen (`serverEntries`), so a refused checklist save gives the server's row back; a delivered entry is laid over every read sent before its delivery (a read in flight is shown, not dropped, and the cache gets what the screen shows), until a read sent after it is shown
 // summary: PHASE-03/316 — a plus, a typed number, a tick and the form go into the outbox under the key of that press and are on screen at once, the send runs behind; every press counts (no tap is dropped while another is on its way); a delivery puts the server's entry in place of the waiting row in the same turn and reads only the streak of an avoid category; a refusal takes the row away and says why; the «ждёт» tag shows only writes that wait; re-reads after quick-mark deliveries are merged into one
 import Combine
@@ -187,7 +188,8 @@ final class TodayViewModel: ObservableObject {
             Task { await rereadEntries(reportsFailure: false) }
             return
         }
-        deliveredEntries.append((afterRead: entriesReadsSent, entry: entry))
+        // An entry of another day is not today's: nothing to lay over today's reads.
+        if entry.entryDate == todayString { deliveredEntries.append((afterRead: entriesReadsSent, entry: entry)) }
         place(entry)
         cacheShownEntries(sentUnder: cache.scope)
         let categoryID = queued.entry.categoryId

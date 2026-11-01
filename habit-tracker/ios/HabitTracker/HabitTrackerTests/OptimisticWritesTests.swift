@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-03/316
+// summary: PHASE-03/316 round 3 — a mark that waited (behind a write that failed, or past the quiet period after replacing an unsent one) is checked against the day before its PUT, and a mark the web moved meanwhile is refused instead of overwritten
 // summary: PHASE-03/316 round 2 — a read on its way when a press is delivered is shown with the press laid over it, and the cache matches the screen (Today, buttons, supplements, Day marks); an online mark is one bare PUT; undo during the send is one undo of its own event, or a withdrawal when the send fails; a refused checklist save gives the server's row back; a newer save of a day replaces the waiting one, never the one being sent
 // summary: the class of "a press waits for the server" — a press is on screen and in the sum while the send hangs, a refusal takes it away into "not sent" with a reason while a dead network keeps it, five pluses are five writes under five keys and four presses of a button four steps, two taps of one tick one write, one key across every retry, undo of an unsent press sends nothing, a second Day mark during the first PUT is not lost; the strip stays quiet while a write is merely on its way
 import XCTest
@@ -522,5 +523,68 @@ final class OptimisticWritesTests: XCTestCase {
         }
         XCTAssertEqual(sent, [["20": true], ["20": false]])
         XCTAssertEqual(today.entries(forCategory: 2).first?.values, [EntryValueDTO(fieldId: 20, value: "false")])
+    }
+
+    // MARK: Round 3 — a mark that waited is checked against the day
+
+    private func markQueue(server: FakeOutboxServer, now: @escaping () -> Date) -> OutboxQueue {
+        OutboxQueue(
+            store: InMemoryOutboxStore(), now: now, sender: { OutboxReplay(entries: server, quickMarks: server, day: server) }
+        )
+    }
+
+    private func mark(_ item: UUID, _ state: String) -> OutboxAction {
+        .setDayMark(QueuedDayMark(date: today, itemID: item, state: state, note: nil, expected: ""))
+    }
+
+    func testAMarkQueuedBehindAWriteThatFailedIsCheckedAgainstTheDayBeforeItsPut() async {
+        let server = FakeOutboxServer()
+        var moment = clock
+        let queue = markQueue(server: server, now: { moment })
+        let item = UUID()
+        queue.enqueue(.createEntry(EntryCreateDTO(categoryId: 1, entryDate: today, notes: nil, values: [])), label: "Pushups")
+        queue.enqueue(mark(item, "done"), label: "Отметка", uncheckedFirstAttempt: true)
+        server.failures = [APIClientError.transport(code: URLError.notConnectedToInternet.rawValue)]
+        await queue.flush()
+        XCTAssertEqual(queue.pendingCount, 2, "the dead network stopped the flush before the mark")
+        // Meanwhile the web moved the mark; the network comes back within the quiet period of the tap.
+        server.marks[today] = [item: "failed"]
+        moment = clock.addingTimeInterval(1)
+
+        await queue.flush()
+
+        XCTAssertEqual(server.unopenedFetches, [today], "the day is read before the PUT")
+        XCTAssertEqual(server.marks[today]?[item], "failed", "the web's mark is not overwritten")
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.markChangedReason)
+    }
+
+    func testAMarkReplacingAnUnsentOneThatLeavesAfterTheQuietPeriodIsChecked() async {
+        let server = FakeOutboxServer()
+        var moment = clock
+        let queue = markQueue(server: server, now: { moment })
+        let item = UUID()
+        queue.enqueue(mark(item, "done"), label: "Отметка", uncheckedFirstAttempt: true)
+        queue.enqueue(mark(item, "failed"), label: "Отметка", uncheckedFirstAttempt: true)
+        XCTAssertEqual(queue.pendingCount, 1, "the second tap replaced the first, which never left")
+        server.marks[today] = [item: "skipped"]
+        moment = clock.addingTimeInterval(OutboxQueue.quietPeriod)
+
+        await queue.flush()
+
+        XCTAssertEqual(server.unopenedFetches, [today], "a mark that waited past the quiet period reads the day first")
+        XCTAssertEqual(server.marks[today]?[item], "skipped")
+        XCTAssertEqual(queue.failed.first?.failure, OutboxQueue.markChangedReason)
+    }
+
+    func testAMarkSentRightAfterTheTapIsOneBarePut() async {
+        let server = FakeOutboxServer()
+        let queue = markQueue(server: server, now: { [clock] in clock })
+        let item = UUID()
+        queue.enqueue(mark(item, "done"), label: "Отметка", uncheckedFirstAttempt: true)
+
+        await queue.flush()
+
+        XCTAssertTrue(server.unopenedFetches.isEmpty)
+        XCTAssertEqual(server.marks[today]?[item], "done")
     }
 }
