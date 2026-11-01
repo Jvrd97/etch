@@ -1,16 +1,17 @@
 'use client';
-// [review:need-review] PHASE-03/125
+// [review:need-review] PHASE-03/125, #311
 // summary: state of the directory editor — the whole list including switched-off buttons, the categories a button can point at, the conflict of a hotkey kept as data so the form survives it, and the order moved a step at a time rather than by writing numbers
+// summary: #311 — the category list comes through the shared read cache (`readCategories`): the readers of one moment share one request
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  categoriesAPI,
   quickMarksAPI,
   type Category,
   type HotkeyTaken,
   type QuickMark,
   type QuickMarkDraft,
 } from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
 
 /** What the reader sees when a write failed for a reason nobody phrased. */
 export const SAVE_FAILED = 'Сохранить не удалось.';
@@ -64,7 +65,7 @@ export function useQuickMarkAdmin(): UseQuickMarkAdminResult {
       try {
         const [directory, catalogue] = await Promise.all([
           quickMarksAPI.list({ activeOnly: false }),
-          categoriesAPI.getAll(),
+          readCategories(),
         ]);
         if (cancelled) return;
         setMarks(directory);

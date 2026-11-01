@@ -1,9 +1,12 @@
 'use client';
-// [review:need-review] PHASE-03/93
+// [review:need-review] PHASE-03/93, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: goal-screen state for both shells — one fetch of levels, milestones and the current quarter, plus marking a milestone, which re-reads the whole board because closing M9 changes how M10's dependency reads
+// summary: #311 — the board is a key of the shared read cache: a re-visit draws it at once, and the re-read after a move keeps the board on screen instead of a spinner
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { goalsAPI, type GoalsPayload, type MilestoneStatus } from '@/lib/api';
+import { errorMessage, useQuery } from '@/lib/query-cache';
 
 /** Shown when the board cannot be read at all. */
 export const LOAD_GOALS_ERROR = 'Не удалось загрузить цели';
@@ -28,48 +31,21 @@ export interface UseGoalsResult {
  * paint. Patching one row would leave the graph telling the old story.
  */
 export function useGoals(): UseGoalsResult {
-  const [payload, setPayload] = useState<GoalsPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { state, refresh } = useQuery('goals', () => goalsAPI.get());
+  // A refused move; the board's own load failure comes from the cache.
+  const [reported, setReported] = useState<string | null>(null);
   const [saving, setSaving] = useState<Set<string>>(new Set());
-  const [refreshCounter, setRefreshCounter] = useState(0);
-
-  useEffect(() => {
-    // The screen may unmount while the request is in flight; without this its
-    // result would overwrite a newer one.
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await goalsAPI.get();
-        if (cancelled) return;
-        setPayload(result);
-      } catch (err) {
-        if (cancelled) return;
-        setPayload(null);
-        setError(err instanceof Error ? err.message : LOAD_GOALS_ERROR);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshCounter]);
 
   const markMilestone = useCallback(
     (code: string, status: MilestoneStatus) => {
       setSaving((current) => new Set(current).add(code));
+      setReported(null);
       void (async () => {
         try {
           await goalsAPI.patchMilestone(code, status);
-          setRefreshCounter((n) => n + 1);
+          await refresh();
         } catch (err) {
-          setError(err instanceof Error ? err.message : LOAD_GOALS_ERROR);
+          setReported(err instanceof Error ? err.message : LOAD_GOALS_ERROR);
         } finally {
           setSaving((current) => {
             const next = new Set(current);
@@ -79,8 +55,14 @@ export function useGoals(): UseGoalsResult {
         }
       })();
     },
-    []
+    [refresh]
   );
 
-  return { payload, loading, error, saving, markMilestone };
+  return {
+    payload: state.status === 'ready' ? state.data : null,
+    loading: state.status === 'loading',
+    error: reported ?? errorMessage(state, LOAD_GOALS_ERROR),
+    saving,
+    markMilestone,
+  };
 }

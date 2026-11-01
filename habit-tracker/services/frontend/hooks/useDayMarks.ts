@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/88
+// [review:need-review] PHASE-03/88, #311
+// summary: #311 — an empty date means the day is not confirmed yet: the write is not sent
 // summary: mark state for both day shells — a click walks the ring and is sent as an explicit state, the screen updates before the round trip and rolls back if the server refuses, and the task counter is recomputed locally so the header moves with the click
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -97,6 +98,8 @@ export function useDayMarks(
 
   const write = useCallback(
     async (itemId: string, state: MarkState | null, note: string | null) => {
+      // No date to write to yet: the day on screen is not confirmed (see `useDay.writeDate`).
+      if (date === '') return;
       const previous = marks.get(itemId) ?? null;
 
       setMarks((current) => {

@@ -1,8 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221, PHASE-03/252
+// [review:need-review] PHASE-03/94, PHASE-03/138, PHASE-03/221, PHASE-03/252, #311
+// summary: #311 round 3 — a failed re-read of a week already on screen is said above it instead of replacing it
 // summary: a link from the retro page to the week's review screen (#221)
 // summary: the week page (`/week/{iso}`, and the current week on the bare `/week`) — won days, the streak at its end and when the counters were taken, the seven day squares, the sunday checklist with its ticks, and the retro prose; a week nobody wrote about opens and says so instead of looking broken
 // summary: #252 — without a pinned `today` the ringed square and the unlived days after it follow the server's day
+// summary: #311 — the squares' days are read once the week is known, not first for today alone
 
 import Link from 'next/link';
 import OvertimeDebtBlock from '@/components/week/OvertimeDebt';
@@ -44,14 +46,15 @@ export default function WeekScreen({ iso, compact = false, today: pinnedToday }:
   // The days are asked for by date rather than taken from the week: the week
   // row is a snapshot of counters, and the squares have to show the days as they
   // are now — that difference is the whole point of `computed_at`.
-  const { days } = useDays(week?.starts_on ?? todayISO, week?.ends_on ?? todayISO);
+  const { days } = useDays(week?.starts_on ?? null, week?.ends_on ?? null);
   const byDate = daysByDate(days);
   // Сводка ролей за ту же неделю: числа пятничного отчёта живут там же, где
   // разбор недели, а не собираются отдельно перед его написанием.
   const { summary } = useRoleSummary(week?.starts_on ?? null, week?.ends_on ?? null);
 
   if (loading) return <LoadingSpinner size="lg" />;
-  if (error !== null || week === null) {
+  // Only a week that never loaded is replaced by the error; a failed re-read keeps it on screen.
+  if (week === null) {
     return <ErrorAlert message={error ?? LOAD_WEEK_ERROR} onDismiss={() => reload()} />;
   }
 
@@ -59,6 +62,11 @@ export default function WeekScreen({ iso, compact = false, today: pinnedToday }:
 
   return (
     <div className="space-y-8 animate-fade-rise">
+      {error !== null && (
+        <div role="alert">
+          <ErrorAlert message={error} onDismiss={() => reload()} />
+        </div>
+      )}
       <header>
         <h1
           className={`${compact ? 'text-2xl' : 'text-4xl'} font-bold text-text-primary tracking-tight`}

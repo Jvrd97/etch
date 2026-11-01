@@ -9,7 +9,10 @@
 // [review:need-review] PHASE-03/105
 // summary: SignalSource carries the adapter flag, the cursor moment, the count of the last good run and the class and time of the last failure
 // summary: quickMarksAPI.dayEvents reads the taps of one category's day from the journal, one row per tap, flagged when taken back and when the undo endpoint would accept it
+// [review:need-review] #311
+// summary: the session ending — a logout, or any 401 — empties the shared read cache, so nothing of this session is drawn for the next
 import { loginRedirectTarget } from './auth';
+import { clearQueryCache } from '@/lib/query-cache';
 import { ChatStreamParser, type ChatStreamEvent } from '@/lib/chat-stream';
 
 // [review:need-review] PHASE-01/83-daily-summary-plan-fields-required
@@ -70,6 +73,9 @@ function detailMessage(detail: unknown): string | null {
   return null;
 }
 
+/** The status that says the session is over. */
+const UNAUTHORIZED = 401;
+
 async function fetcher<T>(
   endpoint: string,
   options?: RequestInit
@@ -89,6 +95,8 @@ async function fetcher<T>(
   });
 
   if (!response.ok) {
+    // The session is gone: what was read under it must not be drawn again.
+    if (response.status === UNAUTHORIZED) clearQueryCache();
     redirectToLoginIfNeeded(response.status);
     const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
     throw new APIError(
@@ -132,7 +140,9 @@ export const authAPI = {
   },
 
   logout: async () => {
-    return fetcher<SessionState>('/auth/session', { method: 'DELETE' });
+    const state = await fetcher<SessionState>('/auth/session', { method: 'DELETE' });
+    clearQueryCache();
+    return state;
   },
 };
 /**

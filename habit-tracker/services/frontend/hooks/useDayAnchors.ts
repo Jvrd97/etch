@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/92
+// [review:need-review] PHASE-03/92, #311
+// summary: #311 — an empty date means the day is not confirmed yet: the write is not sent
 // summary: anchor state for both day shells — a click ticks the anchor and moves the counter locally, the write names the kind and is settled by the server's answer, a refusal is rolled back and re-thrown, and a re-read day replaces whatever the hook was holding
 
 import { useCallback, useMemo, useState } from 'react';
@@ -82,6 +83,8 @@ export function useDayAnchors(date: string, initial: DayAnchors): UseDayAnchorsR
 
   const mark = useCallback(
     async (kind: string, state: AnchorState | null) => {
+      // No date to write to yet: the day on screen is not confirmed (see `useDay.writeDate`).
+      if (date === '') return;
       const before = payload;
       const guess = recount(
         before.anchors.map((a) => (a.kind === kind ? { ...a, state } : a)),

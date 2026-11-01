@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-03/94, PHASE-03/221, PHASE-03/252
+// [review:need-review] PHASE-03/94, PHASE-03/221, PHASE-03/252, #311
+// summary: #311 round 3 — a failed re-read of a week on screen keeps the week and says so above it
 // summary: #252 — without a pinned day the squares are marked by the server's day
 // summary: + the retro page links to the review of the same week
 // summary: component tests for the week page — won days, the streak at its end and when the counters were taken are on the screen, the sunday checklist shows its ticks, and a week whose retro nobody wrote opens and says so instead of looking broken
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import type { DayListItem, Week } from '@/lib/api';
 
 const DAYS: DayListItem[] = [
@@ -33,6 +34,7 @@ const WEEK: Week = {
 };
 
 let answer: Week | null = WEEK;
+let weekError: string | null = null;
 
 mock.module('@/hooks/useDays', () => ({
   useDays: () => ({ days: DAYS, loading: false, error: null, reload: () => {} }),
@@ -47,7 +49,7 @@ mock.module('@/hooks/useRoleSummary', () => ({
 }));
 
 mock.module('@/hooks/useWeek', () => ({
-  useWeek: () => ({ week: answer, loading: false, error: null, reload: () => {} }),
+  useWeek: () => ({ week: answer, loading: false, error: weekError, reload: () => {} }),
   LOAD_WEEK_ERROR: 'Не удалось загрузить неделю',
 }));
 
@@ -67,6 +69,7 @@ function serverDayIs(date: string) {
 
 beforeEach(() => {
   answer = WEEK;
+  weekError = null;
 });
 
 afterEach(() => {
@@ -144,5 +147,15 @@ describe('WeekScreen day (#252)', () => {
     );
     expect(document.querySelector('[data-date="2026-08-25"]')?.getAttribute('data-status')).toBe('empty');
     expect(document.querySelector('[data-date="2026-08-27"]')?.getAttribute('data-status')).toBe('future');
+  });
+});
+
+describe('WeekScreen: a failed re-read', () => {
+  it('keeps the week on screen and says the re-read failed', () => {
+    weekError = 'offline';
+    render(<WeekScreen iso={WEEK.iso_code} today={TODAY} />);
+
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain(WEEK.iso_code);
+    expect(within(screen.getByRole('alert')).getByText('offline')).toBeDefined();
   });
 });

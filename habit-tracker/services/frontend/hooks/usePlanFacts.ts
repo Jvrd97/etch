@@ -1,12 +1,14 @@
 'use client';
-// [review:need-review] PHASE-03/200
+// [review:need-review] PHASE-03/200, #311
 // summary: the state of plan lines linked to categories — the facts each line wrote, kept from the day and replaced by every write's own answer, one write per line at a time, the key of an attempt whose answer was lost kept for the retry so a 300 never lands twice, a refusal shown on its line, and the active categories the editor links a line to
+// summary: #311 — the category list comes through the shared read cache (`readCategories`): the readers of one moment share one request
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // A namespace import read at call time, not named imports: other suites mock
 // `@/lib/api` with a fixed list of names, and a named import of one they do not
 // list would fail to link for every screen that renders the day.
 import * as api from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
 import type { PlanFacting } from '@/components/day/PlanSections';
 import type {
   Category,
@@ -48,7 +50,7 @@ const API_CLIENT: PlanFactsClient = {
     api.planFactsAPI.correct(date, itemId, entryId, draft),
   remove: (date, itemId, entryId, mark) =>
     api.planFactsAPI.remove(date, itemId, entryId, mark),
-  categories: () => api.categoriesAPI.getAll(),
+  categories: () => readCategories(),
 };
 
 export interface UsePlanFactsResult {

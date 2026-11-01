@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/93
+// [review:need-review] PHASE-03/93, #311
+// summary: #311 round 3 — a failed re-read or a refused move is said above the board instead of replacing it
 // summary: the goal board both shells draw — levels 0-5 with the `⚠ подтверди` lines kept apart from the prose, ten milestones whose «Открывается чем» is a row of chips that read differently once the milestone they wait on is closed, and the five goals of the current quarter
 
 import ErrorAlert from '@/components/ErrorAlert';
@@ -111,14 +112,21 @@ export default function GoalsBoard({ compact = false }: GoalsBoardProps) {
   const { payload, loading, error, saving, markMilestone } = useGoals();
 
   if (loading) return <LoadingSpinner />;
-  if (error) return <ErrorAlert message={error} />;
-  if (!payload) return <p className="text-text-secondary">{EMPTY_GOALS_TEXT}</p>;
+  // Only a board that never loaded is replaced by the error; a failed re-read keeps it on screen.
+  if (!payload) {
+    return error ? <ErrorAlert message={error} /> : <p className="text-text-secondary">{EMPTY_GOALS_TEXT}</p>;
+  }
 
   const statuses = new Map(payload.milestones.map((one) => [one.code, one.status]));
   const card = `bg-card border border-white/5 rounded-3xl ${compact ? 'p-4' : 'p-6'}`;
 
   return (
     <div className={compact ? 'space-y-4' : 'space-y-6'}>
+      {error && (
+        <div role="alert">
+          <ErrorAlert message={error} />
+        </div>
+      )}
       <section className={card}>
         <h2 className="text-text-primary text-lg mb-4">Уровни</h2>
         <div className="space-y-4">

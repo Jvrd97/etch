@@ -1,8 +1,10 @@
 'use client';
-// [review:need-review] PHASE-03/134, PHASE-03/135
+// [review:need-review] PHASE-03/134, PHASE-03/135, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: role-screen state for both shells — one read of the day (distribution of minutes plus its acts), and two writes that re-read it, because a new record changes every share on the screen and not only its own row; #135 adds the confirm of an automatic record, which is a write like any other and re-reads the day the same way
 
-import { useCallback, useEffect, useState } from 'react';
+// summary: #311 — the day and the directory are one key of the shared read cache: a re-visit draws them at once, and the re-read after a write keeps the screen instead of a spinner
+import { useCallback, useState } from 'react';
 import {
   rolesAPI,
   type Role,
@@ -10,7 +12,16 @@ import {
   type RoleDay,
   type RoleTimeBlockDraft,
 } from '@/lib/api';
+import { errorMessage, useQuery } from '@/lib/query-cache';
 import { LOAD_ROLES_ERROR } from '@/lib/role-format';
+
+const NO_ROLES: Role[] = [];
+
+/** The day and the directory, read side by side. */
+async function readRoles(): Promise<{ day: RoleDay; roles: Role[] }> {
+  const [day, roles] = await Promise.all([rolesAPI.day(), rolesAPI.listRoles()]);
+  return { day, roles };
+}
 
 /** Everything a role screen needs; the two shells differ only in markup. */
 export interface UseRolesResult {
@@ -42,57 +53,27 @@ export interface UseRolesResult {
  * is not entitled to an opinion about it.
  */
 export function useRoles(): UseRolesResult {
-  const [day, setDay] = useState<RoleDay | null>(null);
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { state, refresh } = useQuery('roles', readRoles);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshCounter, setRefreshCounter] = useState(0);
-
-  useEffect(() => {
-    // The screen may unmount while the request is in flight; without this its
-    // result would overwrite a newer one.
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [today, directory] = await Promise.all([
-          rolesAPI.day(),
-          rolesAPI.listRoles(),
-        ]);
-        if (cancelled) return;
-        setDay(today);
-        setRoles(directory);
-      } catch (err) {
-        if (cancelled) return;
-        setDay(null);
-        setError(err instanceof Error ? err.message : LOAD_ROLES_ERROR);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshCounter]);
+  // A refused write; the load's own failure comes from the cache.
+  const [reported, setReported] = useState<string | null>(null);
 
   /** Run one write, then re-read the day. Errors surface, nothing is swallowed. */
-  const write = useCallback(async (act: () => Promise<unknown>) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await act();
-      setRefreshCounter((n) => n + 1);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : LOAD_ROLES_ERROR);
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+  const write = useCallback(
+    async (act: () => Promise<unknown>) => {
+      setSaving(true);
+      setReported(null);
+      try {
+        await act();
+        await refresh();
+      } catch (err) {
+        setReported(err instanceof Error ? err.message : LOAD_ROLES_ERROR);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [refresh]
+  );
 
   const addTimeBlock = useCallback(
     (draft: RoleTimeBlockDraft) => write(() => rolesAPI.addTimeBlock(draft)),
@@ -115,11 +96,11 @@ export function useRoles(): UseRolesResult {
   );
 
   return {
-    day,
-    roles,
-    loading,
+    day: state.status === 'ready' ? state.data.day : null,
+    roles: state.status === 'ready' ? state.data.roles : NO_ROLES,
+    loading: state.status === 'loading',
     saving,
-    error,
+    error: reported ?? errorMessage(state, LOAD_ROLES_ERROR),
     addTimeBlock,
     addAct,
     deleteTimeBlock,

@@ -1,12 +1,14 @@
-// [review:need-review] PHASE-03/147, PHASE-03/148, PHASE-03/164, PHASE-03/220
+// [review:need-review] PHASE-03/147, PHASE-03/148, PHASE-03/164, PHASE-03/220, #311
+// summary: #311 round 3 — a failed re-read keeps the day on screen with the message above it, and an unconfirmed «today» locks the day's controls with a status line
 // summary: PHASE-03/220 — the Claude Code block stands on this shell, is asked for the day of the screen (the server's, not the browser's) and says nothing when it has no answer
 // summary: PHASE-03/164 — the agent banner stands on today's screen when the agent is silent and is absent on any other day
 // summary: tests for the mobile day screen — the day with no plan carries the same button out of it as the desktop shell does, the button is gone the moment there is a plan, and a plan the skeleton assembled says so and says why
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import type { AgentStatus, ClaudeUsageDay, DayDetail, PlanViolation } from '@/lib/api';
 import { DAY, PLAN } from '@/test-fixtures/day';
+import { DAY_CHECKING, DAY_LOCKED } from '@/components/day/DayWriteNotice';
 import { BUILD_PLAN_LABEL } from '@/components/day/PlanBuilder';
 import { FALLBACK_REASON_LABELS, planAuthorLabel } from '@/lib/plan-violations';
 
@@ -16,6 +18,7 @@ let state: {
   error: string | null;
   violations: PlanViolation[];
   reload: () => void;
+  writeDate: string;
 };
 
 // The hook rather than the API client: the shell's contract is the hook, and
@@ -48,7 +51,7 @@ beforeEach(() => {
   agent = null;
   claude = null;
   claudeAsked.length = 0;
-  state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {} };
+  state = { detail: DAY, loading: false, error: null, violations: [], reload: () => {}, writeDate: DAY.day.date };
 });
 
 afterEach(() => {
@@ -183,5 +186,40 @@ describe('MobileDayScreen and the Claude Code block', () => {
     render(<MobileDayScreen date={SERVER_TODAY} />);
 
     expect(screen.queryByRole('region', { name: 'Claude Code' })).toBeNull();
+  });
+});
+
+describe('MobileDayScreen: a day on screen that cannot be re-read or written into', () => {
+  it('keeps the day and says the re-read failed', () => {
+    state = { ...state, error: 'offline' };
+    render(<MobileDayScreen date={DAY.day.date} />);
+
+    expect(screen.getAllByText(DAY.day.date).length).toBeGreaterThan(0);
+    expect(within(screen.getByRole('alert')).getByText('offline')).toBeDefined();
+  });
+
+  it('locks the controls while the cached today waits for the server', () => {
+    state = { ...state, writeDate: '' };
+    const { container } = render(<MobileDayScreen date={null} />);
+
+    const reason = screen.getByText(DAY_CHECKING);
+    const locked = container.querySelector('fieldset');
+    expect(locked?.hasAttribute('disabled')).toBe(true);
+    expect(locked?.getAttribute('aria-describedby')).toBe(reason.id);
+  });
+
+  it('says why the controls stay locked when the re-read failed', () => {
+    state = { ...state, writeDate: '', error: 'offline' };
+    render(<MobileDayScreen date={null} />);
+
+    expect(screen.getByText(DAY_LOCKED)).toBeDefined();
+    expect(screen.getAllByText(DAY.day.date).length).toBeGreaterThan(0);
+  });
+
+  it('leaves the controls open on a confirmed day', () => {
+    const { container } = render(<MobileDayScreen date={null} />);
+
+    expect(container.querySelector('fieldset')?.hasAttribute('disabled')).toBe(false);
+    expect(screen.queryByText(DAY_CHECKING)).toBeNull();
   });
 });

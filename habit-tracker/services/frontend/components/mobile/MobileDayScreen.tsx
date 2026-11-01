@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164, PHASE-03/220
+// [review:need-review] PHASE-03/86, PHASE-03/87, PHASE-03/90, PHASE-03/91, PHASE-03/92, PHASE-03/110, PHASE-03/142, PHASE-03/143, PHASE-03/147, PHASE-03/148, PHASE-03/200, PHASE-03/164, PHASE-03/220, #311
+// summary: #311 — «today» from the cache is drawn at once with marks, anchors, intervals, plan edits and facts locked (`writeDate`, a disabled fieldset and a status line) until the server confirms the day; a failed re-read keeps the day and says so above it
 // summary: PHASE-03/166 — the time recorded on each task stands beside it in the plan, and the summary of «done, no trace», work outside the plan and the untasked share stands under the Claude Code block
 // summary: PHASE-03/220 — the Claude Code block (sessions, assistant turns, tokens of the day on screen) stands under the agent banner, drawn from useClaudeUsage
 // summary: PHASE-03/164 — the banners of the agent (silent, no Accessibility, titles switched off) stand under the date on the day the server is in (status.today), drawn from useAgentStatus
@@ -25,6 +26,7 @@ import DayTraining from '@/components/day/DayTraining';
 import DayVerdict from '@/components/day/DayVerdict';
 import WorkIntervals from '@/components/day/WorkIntervals';
 import ErrorAlert from '@/components/ErrorAlert';
+import DayWriteNotice, { DAY_WRITE_LOCK_ID } from '@/components/day/DayWriteNotice';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlanBuilder from '@/components/day/PlanBuilder';
 import PlanSections from '@/components/day/PlanSections';
@@ -105,7 +107,7 @@ export interface MobileDayScreenProps {
 
 export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   // `true`: a person is looking at this day, which is what fills `opened_at`.
-  const { detail, loading, error, violations, reload } = useDay(date, true);
+  const { detail, loading, error, violations, reload, writeDate } = useDay(date, true);
   // Read once per screen and never an error out: a banner about the agent must not break the day.
   const agentStatus = useAgentStatus();
   // The day on screen, which the server named; never the browser's calendar date.
@@ -117,7 +119,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   // is missing, so they are shown above the plan rather than lost.
   const brokenPlanWide = useMemo(() => planWideViolations(violations), [violations]);
   const kinds = useMemo(() => itemKindsById(detail?.plan ?? null), [detail]);
-  const marking = useDayMarks(detail?.day.date ?? '', marks, kinds);
+  // Writers get `writeDate`: '' while «today» from the cache is not confirmed, so nothing lands in yesterday.
+  const marking = useDayMarks(writeDate, marks, kinds);
   // Время по задачам и то, чего в плане не хватает (#166); читается заново после каждой галочки.
   const taskTime = useTaskTime(
     detail?.day.date ?? null,
@@ -127,24 +130,25 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   // Якоря живут в собственном состоянии по той же причине, что и отметки:
   // галочка обязана встать под пальцем, а не через круг до сервера и обратно.
   const anchorsPayload = useMemo(() => detail?.anchors ?? NO_ANCHORS, [detail]);
-  const anchors = useDayAnchors(detail?.day.date ?? '', anchorsPayload);
+  const anchors = useDayAnchors(writeDate, anchorsPayload);
   const work = useMemo(() => detail?.work ?? NO_WORK, [detail]);
-  const intervals = useWorkIntervals(detail?.day.date ?? '', work);
+  const intervals = useWorkIntervals(writeDate, work);
   const training = useTrainingState();
   // Правка живёт рядом с отметками, а не вместо них: одна и та же строка
   // и правится, и отмечается, и обе операции обязаны пережить друг друга.
-  const editor = usePlanItemEdit(detail?.day.date ?? '');
+  const editor = usePlanItemEdit(writeDate);
   // Строки плана, связанные с категориями (#200): факт, введённый в плане,
   // ложится в историю категории, а день перечитывается ради отметки и счётчиков.
   const planFacts = useMemo(() => detail?.plan_facts ?? NO_FACTS, [detail]);
-  const facts = usePlanFacts(detail?.day.date ?? '', planFacts, reload);
+  const facts = usePlanFacts(writeDate, planFacts, reload);
   // Диф перечитывается вместе с планом: правка меняет обоих одним действием.
   const { diff } = usePlanDiff(detail?.day.date ?? '', editor.plan);
   const proposals = useMemo(() => proposalsOf(diff), [diff]);
   const planDiffLine = useMemo(() => diffSummary(diff), [diff]);
 
   if (loading) return <LoadingSpinner size="lg" />;
-  if (error || detail === null) {
+  // Only a day that never loaded is replaced by the error; a failed re-read keeps it on screen.
+  if (detail === null) {
     return (
       <ErrorAlert
         message={error ?? 'День не загрузился'}
@@ -160,6 +164,12 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
   const KindIcon = day.kind === 'work' ? Sun : Moon;
 
   return (
+    <div className="space-y-5">
+    <DayWriteNotice error={error} locked={writeDate === ''} onRetry={reload} />
+    <fieldset
+      disabled={writeDate === ''}
+      aria-describedby={writeDate === '' ? DAY_WRITE_LOCK_ID : undefined}
+      className="min-w-0 border-0 p-0 m-0">
     <div className="space-y-5 animate-fade-rise">
       <div className="bg-card border border-white/5 rounded-3xl p-4">
         <p className="text-2xl font-bold text-text-primary tracking-tight">
@@ -354,6 +364,8 @@ export default function MobileDayScreen({ date }: MobileDayScreenProps) {
           </p>
         )}
       </section>
+    </div>
+    </fieldset>
     </div>
   );
 }

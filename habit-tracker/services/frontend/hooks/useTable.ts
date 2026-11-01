@@ -1,10 +1,10 @@
 'use client';
-// [review:need-review] PHASE-01/45-mobile-table-sticky-date, PHASE-01/73-category-field-reorder, PHASE-03/264
+// [review:need-review] PHASE-01/45-mobile-table-sticky-date, PHASE-01/73-category-field-reorder, PHASE-03/264, #311
 // summary: Table-screen state extracted from app/table/page.tsx so the desktop page and /m/table share the same data load, dynamic column building (checklist categories expand to one column per boolean field), tab grouping and optimistic checklist toggle; #264 — the table's fourteen days end on the server's day, not the browser's
+// summary: #311 — the category list comes through the shared read cache (`readCategories`): the readers of one moment share one request
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  categoriesAPI,
   entriesAPI,
   tableAPI,
   type Category,
@@ -13,6 +13,7 @@ import {
   type TableDay,
   type TableResponse,
 } from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
 import { todayISO } from '@/lib/date';
 import { readServerDay } from '@/hooks/useServerDay';
 import { shiftDay } from '@/lib/server-day';
@@ -128,7 +129,7 @@ export function useTable(): UseTableResult {
     try {
       const [response, categoriesData] = await Promise.all([
         readDateRange().then(({ from, to }) => tableAPI.get(from, to)),
-        categoriesAPI.getAll(),
+        readCategories(),
       ]);
       setData(response);
       setCategories(categoriesData);
