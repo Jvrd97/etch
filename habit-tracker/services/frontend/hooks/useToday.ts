@@ -5,6 +5,7 @@
 // summary: #247/#253 — one read of the day per moment shared by the snapshot, the minute timer and the day-mode badge (dayModeClient); the records no longer wait for the day; a day not confirmed (last snapshot read failed, or three minute reads in a row did) refuses ticks and increments and is said in the banner once; a failed tick rolls back only on the day it was written for; the timer's answer after unmount is dropped and its retry of a failed first load does not raise the banner again
 // summary: #264 — the exact one-day read keeps the window's page size (ENTRIES_WINDOW_LIMIT, exported); a minute or badge read that finds a new day starts a snapshot unless it joined the snapshot's own day read (a snapshot hung on its records no longer holds the screen on the old day); a badge read of the day the screen is on confirms it and withdraws «day not confirmed»; the screen is kept in step with the badge by `useTodayDayModeSync`, and a day read that hangs counts as a failed minute read
 // summary: #257 — the badge's day read takes `{ fresh: true }` after a lost read, so its retry starts a new request instead of joining a hung one
+// summary: #311 round 2 — trust in a cached day is a pair {date, at} written by every GET /day-mode answer: a snapshot of D is trusted only while the newest answer still names D (so neither a snapshot read nor the minute recheck that heard D+1 leaves D writable); rows without a server id stay out of the snapshot
 // summary: #311 — a re-visit draws the last snapshot from the shared read cache at once and re-reads it behind the screen (the day it names is trusted for writes only while it is younger than the minute recheck); the categories and the quick-mark directory are read through the cache, so the buttons of the page and this hook share one copy and one request
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,6 +30,7 @@ import {
 import { readCategories } from '@/lib/categories-cache';
 import { getQueryData, setQueryData, useQueryData } from '@/lib/query-cache';
 import { QUICK_MARKS_KEY, readQuickMarks } from '@/hooks/useQuickMarks';
+import { DAY_TRUST_MS } from '@/hooks/useServerDay';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
 import { applyQuickMarkEvent, applyQuickMarkUndo, newTapKey } from '@/lib/quick-marks';
 import {
@@ -94,8 +96,21 @@ interface TodaySnapshot {
   categories: Category[];
   entries: Entry[];
   streaks: StreakMap;
-  /** `Date.now()` the server last confirmed `date`. */
-  confirmedAt: number;
+}
+
+/**
+ * The cache key of the last day GET /day-mode named on Today, and when.
+ *
+ * Kept apart from the snapshot and written by every answer (the snapshot, the
+ * minute recheck, the badge), so a snapshot of day D is trusted only while the
+ * newest answer still names D: a recheck that heard D+1 withdraws it at once,
+ * even before the screen has moved.
+ */
+const DAY_CONFIRMED_KEY = 'today:confirmedDay';
+
+interface ConfirmedDay {
+  date: string;
+  at: number;
 }
 
 const NO_QUICK_MARKS: QuickMark[] = [];
@@ -218,12 +233,18 @@ export interface UseTodayResult {
 export function useToday(): UseTodayResult {
   // A re-visit starts from what this tab last drew; the read behind it replaces it.
   const [cached] = useState(() => getQueryData<TodaySnapshot>(TODAY_SNAPSHOT_KEY));
-  // The day of the snapshot is trusted for writes only while an open tab would
-  // still trust it (see DAY_RECHECK_MS); older, writes wait for the server's answer.
-  const [cachedDay] = useState(() =>
-    cached !== undefined && Date.now() - cached.confirmedAt < DAY_RECHECK_MS ? cached.date : ''
-  );
-  const confirmedAt = useRef(cachedDay !== '' && cached !== undefined ? cached.confirmedAt : 0);
+  // The day of the snapshot is trusted for writes only while the newest answer
+  // names that same day and is younger than DAY_TRUST_MS (what an open tab would
+  // still trust); otherwise writes wait for the server's answer.
+  const [cachedDay] = useState(() => {
+    const confirmed = getQueryData<ConfirmedDay>(DAY_CONFIRMED_KEY);
+    const trusted =
+      cached !== undefined &&
+      confirmed !== undefined &&
+      confirmed.date === cached.date &&
+      Date.now() - confirmed.at < DAY_TRUST_MS;
+    return trusted ? cached.date : '';
+  });
   const [categories, setCategories] = useState<Category[]>(cached?.categories ?? []);
   const [entries, setEntries] = useState<Entry[]>(cached?.entries ?? []);
   // The directory is the cache's: the buttons of the page (`useQuickMarks`) draw the same copy.
@@ -279,9 +300,15 @@ export function useToday(): UseTodayResult {
    */
   const readDay = useCallback((fresh: boolean): Promise<DayMode> => {
     if (!fresh && inflightDay.current !== null) return inflightDay.current;
-    const tracked: Promise<DayMode> = api.agentAPI.dayMode().finally(() => {
-      if (inflightDay.current === tracked) inflightDay.current = null;
-    });
+    const tracked: Promise<DayMode> = api.agentAPI
+      .dayMode()
+      .then((mode) => {
+        setQueryData<ConfirmedDay>(DAY_CONFIRMED_KEY, { date: mode.date, at: Date.now() });
+        return mode;
+      })
+      .finally(() => {
+        if (inflightDay.current === tracked) inflightDay.current = null;
+      });
     inflightDay.current = tracked;
     return tracked;
   }, []);
@@ -371,7 +398,6 @@ export function useToday(): UseTodayResult {
       const dayRead = snapshotRead.then(
         ({ date }) => {
           pollFailures.current = 0;
-          confirmedAt.current = Date.now();
           if (mine === loadSeq.current) setStale(false);
           return date;
         },
@@ -437,9 +463,9 @@ export function useToday(): UseTodayResult {
     setQueryData<TodaySnapshot>(TODAY_SNAPSHOT_KEY, {
       date: day,
       categories,
-      entries: mergedEntries,
+      // Rows still waiting for their id are this session's, not the day's.
+      entries: mergedEntries.filter((entry) => entry.id > 0),
       streaks,
-      confirmedAt: confirmedAt.current,
     });
   }, [day, categories, mergedEntries, streaks]);
 

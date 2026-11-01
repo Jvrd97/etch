@@ -1,4 +1,5 @@
 // [review:need-review] #311
+// summary: #311 round 2 — an invalidation during the first load asks again instead of leaving the key loading; data older than `trustFor` is not drawn
 // summary: tests for the shared read cache — a re-visit draws the cached data in its first frame, readers of one key mounted together cost one request, a late answer never overwrites a newer one or a local write, and a cleared cache shows nothing of the previous session
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
@@ -85,6 +86,8 @@ describe('fetchQuery: the newest answer wins', () => {
   it('drops a late answer of an older request', async () => {
     const older = deferred<string>();
     const newer = deferred<string>();
+    // Data on screen already: an invalidation drops the request out instead of asking again.
+    setQueryData('day:2026-11-01', 'cached');
     void fetchQuery('day:2026-11-01', () => older.promise);
     // A write elsewhere made the first read stale: the next one is a request of its own.
     invalidateQueries('day:');
@@ -123,6 +126,47 @@ describe('fetchQuery: the newest answer wins', () => {
     });
     expect(result.current.state).toMatchObject({ status: 'ready', data: 'numbers', refreshing: false });
     expect((result.current.state as { error: Error }).error.message).toBe('offline');
+  });
+});
+
+describe('invalidateQueries during the first load', () => {
+  it('asks again instead of leaving the key loading for good', async () => {
+    const first = deferred<string[]>();
+    const answers = [first.promise, Promise.resolve(['after the write'])];
+    const source = mock(() => answers.shift()!);
+    const { result } = renderHook(() => useQuery('categories:all', source));
+    await waitFor(() => expect(source).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      invalidateQueries('categories:');
+    });
+    await act(async () => {
+      first.resolve(['before the write']);
+      await first.promise;
+    });
+
+    await waitFor(() => expect(result.current.state).toMatchObject({ status: 'ready', data: ['after the write'] }));
+    expect(source).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useQuery: trustFor', () => {
+  it('does not draw data older than the window and waits for the answer instead', async () => {
+    setQueryData('serverDay', '2026-11-01');
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61_000;
+    try {
+      const { result } = renderHook(() => useQuery('serverDay', () => never<string>(), { trustFor: 60_000 }));
+      expect(result.current.state.status).toBe('loading');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('draws data inside the window', () => {
+    setQueryData('serverDay', '2026-11-01');
+    const { result } = renderHook(() => useQuery('serverDay', () => never<string>(), { trustFor: 60_000 }));
+    expect(result.current.state).toMatchObject({ status: 'ready', data: '2026-11-01' });
   });
 });
 

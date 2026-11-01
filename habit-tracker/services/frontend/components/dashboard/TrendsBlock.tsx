@@ -13,6 +13,8 @@ import {
   type DashboardTrend,
   type TrendPeriod,
 } from '@/lib/trends';
+import { TAP_TARGET_PX } from '@/lib/ui-constants';
+import { TrendSparkline } from './TrendSparkline';
 
 /**
  * Trends load apart from the rest of the dashboard: a slow or failed table
@@ -22,8 +24,6 @@ export type TrendState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'ready'; trends: DashboardTrend[] };
-import { TAP_TARGET_PX } from '@/lib/ui-constants';
-import { TrendSparkline } from './TrendSparkline';
 
 interface TrendsBlockProps {
   state: TrendState;

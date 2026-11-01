@@ -1,7 +1,8 @@
 // [review:need-review] #311
+// summary: #311 round 2 — a cached «today» (the day, the server's day) older than DAY_TRUST_MS is not drawn, a failed re-read is reported by every screen hook while its data stays, and a Today snapshot of a day the server no longer names is not writable on a re-visit
 // summary: tests across the screen hooks on the shared read cache — every hook of the registry draws its second visit from the cache with no spinner while the server does not answer, Today and its buttons read the directory once and both follow the re-read when the tab comes back, and the end of a session (logout, 401) leaves nothing to draw
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type {
   Category,
@@ -15,6 +16,7 @@ import type {
   JournalEntry,
   QuickMark,
   Role,
+  RoleActDraft,
   RoleDay,
   Week,
 } from '@/lib/api';
@@ -22,15 +24,21 @@ import { getQueryData, setQueryData } from '@/lib/query-cache';
 
 const realApi = await import('@/lib/api');
 
-/** While false, every read of the suite hangs: the server does not answer. */
-let answering = true;
+/** What every read of the suite does: answer, hang (the server is silent), or fail. */
+let server: 'answers' | 'hangs' | 'fails' = 'answers';
+/** Reads that hang whatever `server` says, by name. */
+let hanging = new Set<string>();
 let listMarks: ReturnType<typeof mock>;
+let createEntry: ReturnType<typeof mock>;
 
-function answer<T>(value: T): Promise<T> {
-  return answering ? Promise.resolve(value) : new Promise<T>(() => {});
+function answer<T>(value: T, name = ''): Promise<T> {
+  if (server === 'hangs' || hanging.has(name)) return new Promise<T>(() => {});
+  if (server === 'fails') return Promise.reject(new Error('offline'));
+  return Promise.resolve(value);
 }
 
 const DAY = '2026-11-01';
+const NEXT_DAY = '2026-11-02';
 
 const MARK = {
   id: 3,
@@ -67,6 +75,7 @@ const CHALLENGES: Challenge[] = [];
 const SUMMARY = { period: 'week' } as unknown as DashboardSummary;
 const readSummary = () => answer(SUMMARY);
 const DAY_MODE = { date: DAY, kind: 'work', nocode: false, source: 'schedule' } as unknown as DayMode;
+let dayModeNow = DAY_MODE;
 
 // The real module stays under the entries this suite replaces: the export names
 // of a module are fixed by whichever suite links it first. `dashboardAPI` is left
@@ -74,21 +83,36 @@ const DAY_MODE = { date: DAY, kind: 'work', nocode: false, source: 'schedule' } 
 // a module mock outlives the file that set it; the hook takes its source instead.
 mock.module('@/lib/api', () => ({
   ...realApi,
-  agentAPI: { ...realApi.agentAPI, dayMode: () => answer(DAY_MODE) },
+  agentAPI: { ...realApi.agentAPI, dayMode: () => answer(dayModeNow, 'dayMode') },
   categoriesAPI: {
     ...realApi.categoriesAPI,
     getAll: () => answer(CATEGORIES),
     getStreaks: () => answer([]),
   },
-  entriesAPI: { ...realApi.entriesAPI, getAll: () => answer(ENTRIES) },
+  entriesAPI: {
+    ...realApi.entriesAPI,
+    getAll: () => answer(ENTRIES, 'entries'),
+    create: () => createEntry(),
+  },
   quickMarksAPI: { ...realApi.quickMarksAPI, list: () => listMarks() },
   challengesAPI: { ...realApi.challengesAPI, list: () => answer(CHALLENGES) },
-  dayAPI: { ...realApi.dayAPI, open: () => answer(DAY_DETAIL), violations: () => answer([]) },
+  dayAPI: {
+    ...realApi.dayAPI,
+    open: () => answer(DAY_DETAIL),
+    openToday: () => answer(DAY_DETAIL),
+    violations: () => answer([]),
+  },
   weeksAPI: { ...realApi.weeksAPI, getCurrent: () => answer(WEEK) },
   daysAPI: { ...realApi.daysAPI, range: () => answer(DAYS) },
-  goalsAPI: { ...realApi.goalsAPI, get: () => answer(GOALS) },
+  // The writes always go through: the suite is about the re-read behind them.
+  goalsAPI: { ...realApi.goalsAPI, get: () => answer(GOALS), patchMilestone: () => Promise.resolve({}) },
   journalAPI: { ...realApi.journalAPI, getAll: () => answer({ items: JOURNAL, total: 0 }) },
-  rolesAPI: { ...realApi.rolesAPI, day: () => answer(ROLE_DAY), listRoles: () => answer(ROLES) },
+  rolesAPI: {
+    ...realApi.rolesAPI,
+    day: () => answer(ROLE_DAY),
+    listRoles: () => answer(ROLES),
+    addAct: () => Promise.resolve({}),
+  },
 }));
 
 const { useServerDay } = await import('./useServerDay');
@@ -102,11 +126,15 @@ const { useGoals } = await import('./useGoals');
 const { useJournal } = await import('./useJournal');
 const { useRoles } = await import('./useRoles');
 const { useChallenges } = await import('./useChallenges');
-const { useToday } = await import('./useToday');
+const { useToday, DAY_RECHECK_MS, DAY_UNCONFIRMED } = await import('./useToday');
+const { DAY_TRUST_MS } = await import('./useServerDay');
 
 beforeEach(() => {
-  answering = true;
+  server = 'answers';
+  hanging = new Set();
+  dayModeNow = DAY_MODE;
   listMarks = mock(() => answer([MARK]));
+  createEntry = mock(() => new Promise(() => {}));
 });
 
 afterEach(() => {
@@ -139,7 +167,7 @@ describe('screen hooks: a second visit with the cache filled', () => {
       await waitFor(() => expect(first.result.current).toBe(false));
       first.unmount();
 
-      answering = false;
+      server = 'hangs';
       const frames: boolean[] = [];
       renderHook(() => {
         const loading = useScreen();
@@ -205,7 +233,7 @@ describe('the end of a session', () => {
     await realApi.authAPI.logout();
 
     expect(getQueryData('goals')).toBeUndefined();
-    answering = false;
+    server = 'hangs';
     const { result } = renderHook(() => useGoals());
     expect(result.current.loading).toBe(true);
     expect(result.current.payload).toBeNull();
@@ -221,5 +249,206 @@ describe('the end of a session', () => {
 
     expect(getQueryData('journal')).toBeUndefined();
     window.history.replaceState(null, '', '/');
+  });
+});
+
+/** Run `body` with the clock moved `ms` ahead. */
+async function later<T>(ms: number, body: () => T | Promise<T>): Promise<T> {
+  const realNow = Date.now;
+  Date.now = () => realNow() + ms;
+  try {
+    return await body();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+describe('a cached «today» goes stale with the clock', () => {
+  it('useDay(null) does not draw a cached today older than the trust window', async () => {
+    const first = renderHook(() => useDay(null, true));
+    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
+    first.unmount();
+    server = 'hangs';
+
+    await later(DAY_TRUST_MS + 1_000, () => {
+      const { result } = renderHook(() => useDay(null, true));
+      expect(result.current.loading).toBe(true);
+      expect(result.current.detail).toBeNull();
+    });
+  });
+
+  it('useDay(null) still draws a cached today inside the window', async () => {
+    const first = renderHook(() => useDay(null, true));
+    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
+    first.unmount();
+    server = 'hangs';
+
+    const { result } = renderHook(() => useDay(null, true));
+    expect(result.current.detail).toEqual(DAY_DETAIL);
+  });
+
+  it('useDay(null) says so, instead of drawing yesterday, when the re-read of a stale today fails', async () => {
+    const first = renderHook(() => useDay(null, true));
+    await waitFor(() => expect(first.result.current.detail).not.toBeNull());
+    first.unmount();
+    server = 'fails';
+
+    await later(DAY_TRUST_MS + 1_000, async () => {
+      const { result } = renderHook(() => useDay(null, true));
+      await waitFor(() => expect(result.current.error).toBe('offline'));
+      expect(result.current.detail).toBeNull();
+    });
+  });
+
+  it('useServerDay neither shows nor settles a cached day older than the window', async () => {
+    const first = renderHook(() => useServerDay());
+    await waitFor(() => expect(first.result.current.settled).toBe(true));
+    first.unmount();
+    server = 'fails';
+
+    await later(DAY_TRUST_MS + 1_000, async () => {
+      const { result } = renderHook(() => useServerDay());
+      expect(result.current).toEqual({ date: '', settled: false });
+      await waitFor(() => expect(result.current.settled).toBe(true));
+      expect(result.current.date).toBe('');
+    });
+  });
+});
+
+describe('a failed re-read is said while the earlier data stays', () => {
+  const REREADS: { name: string; useScreen: () => { error: string | null; shown: boolean; reread: () => unknown } }[] = [
+    {
+      name: 'useGoals',
+      useScreen: () => {
+        const goals = useGoals();
+        return { error: goals.error, shown: goals.payload !== null, reread: () => goals.markMilestone('M1', 'done') };
+      },
+    },
+    {
+      name: 'useRoles',
+      useScreen: () => {
+        const roles = useRoles();
+        return { error: roles.error, shown: roles.day !== null, reread: () => roles.addAct({} as RoleActDraft) };
+      },
+    },
+    {
+      name: 'useChallenges',
+      useScreen: () => {
+        const challenges = useChallenges();
+        return { error: challenges.error, shown: !challenges.loading, reread: challenges.reload };
+      },
+    },
+    {
+      name: 'useDay',
+      useScreen: () => {
+        const day = useDay(DAY, true);
+        return { error: day.error, shown: day.detail !== null, reread: day.reload };
+      },
+    },
+    {
+      name: 'useWeek',
+      useScreen: () => {
+        const week = useWeek(null);
+        return { error: week.error, shown: week.week !== null, reread: week.reload };
+      },
+    },
+    {
+      name: 'useDays',
+      useScreen: () => {
+        const days = useDays('2026-10-26', DAY);
+        return { error: days.error, shown: !days.loading, reread: days.reload };
+      },
+    },
+  ];
+
+  for (const { name, useScreen } of REREADS) {
+    it(`${name} reports the failed re-read and keeps its data`, async () => {
+      const { result } = renderHook(useScreen);
+      await waitFor(() => expect(result.current.shown).toBe(true));
+
+      server = 'fails';
+      await act(async () => {
+        await result.current.reread();
+      });
+
+      await waitFor(() => expect(result.current.error).toBe('offline'));
+      expect(result.current.shown).toBe(true);
+    });
+  }
+});
+
+describe('Today: a cached day the server no longer names is not written into', () => {
+  async function revisitAndWrite() {
+    server = 'hangs';
+    const { result } = renderHook(() => useToday());
+    expect(result.current.date).toBe(DAY);
+    await act(async () => {
+      void result.current.addNumber(5, 9, 1);
+    });
+    return result;
+  }
+
+  it('control: a day confirmed a moment ago is written into on a re-visit', async () => {
+    const first = renderHook(() => useToday());
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    first.unmount();
+
+    await revisitAndWrite();
+    expect(createEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('a snapshot read that heard the next day withdraws the old one, even before the screen moved', async () => {
+    const first = renderHook(() => useToday());
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+
+    // The day read answers D+1 while the records of the snapshot hang.
+    dayModeNow = { ...DAY_MODE, date: NEXT_DAY };
+    hanging.add('entries');
+    act(() => {
+      void first.result.current.reload();
+    });
+    await waitFor(() => expect(getQueryData<{ date: string }>('today:confirmedDay')?.date).toBe(NEXT_DAY));
+    // A write on the screen still on D keeps the snapshot of D being written.
+    await act(async () => {
+      void first.result.current.addNumber(5, 9, 1);
+    });
+    expect(first.result.current.date).toBe(DAY);
+    first.unmount();
+    createEntry.mockClear();
+
+    const result = await revisitAndWrite();
+    expect(createEntry).not.toHaveBeenCalled();
+    expect(result.current.error).toBe(DAY_UNCONFIRMED);
+  });
+
+  it('a minute recheck that heard the next day withdraws the old one', async () => {
+    // The recheck is an interval set at mount: the fake clock has to be there first,
+    // and the waits below flush promises instead of polling on timers.
+    jest.useFakeTimers();
+    try {
+      const first = renderHook(() => useToday());
+      for (let n = 0; n < 10 && first.result.current.loading; n += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+      expect(first.result.current.loading).toBe(false);
+
+      dayModeNow = { ...DAY_MODE, date: NEXT_DAY };
+      hanging.add('entries');
+      await act(async () => {
+        jest.advanceTimersByTime(DAY_RECHECK_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getQueryData<{ date: string }>('today:confirmedDay')?.date).toBe(NEXT_DAY);
+      expect(first.result.current.date).toBe(DAY);
+      first.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+
+    await revisitAndWrite();
+    expect(createEntry).not.toHaveBeenCalled();
   });
 });

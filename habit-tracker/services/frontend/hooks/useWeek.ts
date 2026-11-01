@@ -1,10 +1,11 @@
 'use client';
 // [review:need-review] PHASE-03/94, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: one fetch of a week — by its ISO code, or the current one when the code is null so the server's day boundary decides which week is running
 // summary: #311 — the week is a key of the shared read cache: a re-visit draws it at once and re-reads it behind the screen
 
 import { weeksAPI, type Week } from '@/lib/api';
-import { useQuery } from '@/lib/query-cache';
+import { errorMessage, useQuery } from '@/lib/query-cache';
 
 /** Said when the week could not be read at all. */
 export const LOAD_WEEK_ERROR = 'Не удалось загрузить неделю';
@@ -27,11 +28,10 @@ export function useWeek(iso: string | null): UseWeekResult {
   const { state, refresh } = useQuery(`week:${iso ?? 'current'}`, () =>
     iso === null ? weeksAPI.getCurrent() : weeksAPI.get(iso)
   );
-  const failure = state.status === 'error' ? state.error : null;
   return {
     week: state.status === 'ready' ? state.data : null,
     loading: state.status === 'loading',
-    error: failure === null ? null : failure instanceof Error ? failure.message : LOAD_WEEK_ERROR,
+    error: errorMessage(state, LOAD_WEEK_ERROR),
     reload: () => void refresh(),
   };
 }

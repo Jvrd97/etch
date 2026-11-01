@@ -12,7 +12,7 @@
  * Nothing here reads the API, so `lib/api` can clear the cache on a 401
  * without an import cycle.
  */
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 
 /**
@@ -25,7 +25,8 @@ import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
  */
 export type QueryState<T> =
   | { status: 'loading' }
-  | { status: 'ready'; data: T; refreshing: boolean; error: unknown }
+  /** `answeredAt`: `Date.now()` the data landed (a server answer or a local write). */
+  | { status: 'ready'; data: T; refreshing: boolean; error: unknown; answeredAt: number }
   | { status: 'error'; error: unknown };
 
 type Source<T> = () => Promise<T>;
@@ -35,6 +36,10 @@ interface CacheEntry {
   hasData: boolean;
   /** `Date.now()` of the answer (or local write) the data came from; 0 marks it stale. */
   updatedAt: number;
+  /** Like `updatedAt`, but an invalidation leaves it: how old the data really is. */
+  answeredAt: number;
+  /** The read of the newest request, so an invalidation can ask again with it. */
+  lastSource: Source<unknown> | null;
   error: unknown;
   inflight: Promise<unknown> | null;
   /** `Date.now()` the request in flight was started at. */
@@ -78,6 +83,8 @@ function entryOf(key: string): CacheEntry {
       data: undefined,
       hasData: false,
       updatedAt: 0,
+      answeredAt: 0,
+      lastSource: null,
       error: null,
       inflight: null,
       inflightSince: 0,
@@ -92,7 +99,9 @@ function entryOf(key: string): CacheEntry {
 
 function snapshotFor(entry: CacheEntry): QueryState<unknown> {
   const refreshing = entry.inflight !== null;
-  if (entry.hasData) return { status: 'ready', data: entry.data, refreshing, error: entry.error };
+  if (entry.hasData) {
+    return { status: 'ready', data: entry.data, refreshing, error: entry.error, answeredAt: entry.answeredAt };
+  }
   if (refreshing || entry.error === null) return LOADING;
   return { status: 'error', error: entry.error };
 }
@@ -108,6 +117,7 @@ function start<T>(key: string, entry: CacheEntry, source: Source<T>): Promise<T>
   const mine = sequence;
   const born = generation;
   entry.started = mine;
+  entry.lastSource = source;
   const request: Promise<T> = Promise.resolve()
     .then(source)
     .then(
@@ -118,6 +128,7 @@ function start<T>(key: string, entry: CacheEntry, source: Source<T>): Promise<T>
           entry.data = data;
           entry.hasData = true;
           entry.updatedAt = Date.now();
+          entry.answeredAt = entry.updatedAt;
           entry.error = null;
         });
         return data;
@@ -195,6 +206,7 @@ export function setQueryData<T>(key: string, next: T | ((previous: T | undefined
   entry.data = typeof next === 'function' ? (next as (previous: T | undefined) => T)(previous) : next;
   entry.hasData = true;
   entry.updatedAt = Date.now();
+  entry.answeredAt = entry.updatedAt;
   entry.error = null;
   sequence += 1;
   entry.applied = sequence;
@@ -214,8 +226,12 @@ export function invalidateQueries(prefix: string): void {
     entry.updatedAt = 0;
     sequence += 1;
     entry.applied = sequence;
+    // A first load that was out has nothing on screen to fall back to: its
+    // answer is dropped, so it is asked again rather than left loading for good.
+    const retry = !entry.hasData && entry.inflight !== null ? entry.lastSource : null;
     entry.inflight = null;
-    publish(key);
+    if (retry !== null) void start(key, entry, retry).catch(recordedInEntry);
+    else publish(key);
   }
 }
 
@@ -272,6 +288,13 @@ export interface QueryHandle<T> {
 export interface UseQueryOptions {
   /** Read again when the tab or the installed app comes back into view. */
   refreshOnVisible?: boolean;
+  /**
+   * Cached data older than this (counted from the reader's mount) is not drawn:
+   * the reader waits as if there were none. For data that goes stale with the
+   * clock — today's day, which turns at 04:00 — where drawing yesterday would let
+   * the screen write into it.
+   */
+  trustFor?: number;
 }
 
 /**
@@ -285,8 +308,9 @@ export interface UseQueryOptions {
 export function useQuery<T>(
   key: string | null,
   source: Source<T>,
-  { refreshOnVisible = false }: UseQueryOptions = {}
+  { refreshOnVisible = false, trustFor }: UseQueryOptions = {}
 ): QueryHandle<T> {
+  const [mountedAt] = useState(() => Date.now());
   const sourceRef = useRef(source);
   useEffect(() => {
     sourceRef.current = source;
@@ -300,7 +324,8 @@ export function useQuery<T>(
     () => (key === null ? LOADING : (entries.get(key)?.snapshot ?? LOADING)),
     [key]
   );
-  const state = useSyncExternalStore(subscribe, getSnapshot, loadingSnapshot) as QueryState<T>;
+  const cached = useSyncExternalStore(subscribe, getSnapshot, loadingSnapshot) as QueryState<T>;
+  const state = trustFor === undefined ? cached : distrustOlder(cached, mountedAt - trustFor);
 
   useEffect(() => {
     if (key === null) return;
@@ -330,6 +355,13 @@ export function useQueryData<T>(key: string): T | undefined {
   const getSnapshot = useCallback(() => entries.get(key)?.snapshot ?? LOADING, [key]);
   const state = useSyncExternalStore(subscribe, getSnapshot, loadingSnapshot) as QueryState<T>;
   return state.status === 'ready' ? state.data : undefined;
+}
+
+/** A state whose data landed before `before` is shown as if there were no data. */
+function distrustOlder<T>(state: QueryState<T>, before: number): QueryState<T> {
+  if (state.status !== 'ready' || state.answeredAt >= before) return state;
+  if (state.refreshing || state.error === null || state.error === undefined) return LOADING;
+  return { status: 'error', error: state.error };
 }
 
 /** The data of a state, or `fallback` while there is none. */

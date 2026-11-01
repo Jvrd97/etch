@@ -1,8 +1,9 @@
 // [review:need-review] PHASE-01/206, #311
 // summary: tests for useQuickMarks — a tap or an undo that went through tells the screen which category's day moved, a refused one tells it nothing, and a tap taken back from the day's list repaints the card and retires the offer to undo that same tap
+// summary: #311 round 2 — a tap behind one that hangs goes out after TAP_TURN_WAIT_MS
 // summary: #311 — a tap is on screen before the server answers, five taps with the third refused leave four and retry the third under its own key, the newest answer wins once the burst is over, and a re-visit draws the buttons from the cache
 
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { QuickMark, QuickMarkEvent, QuickMarkUndo } from '@/lib/api';
 
@@ -25,7 +26,7 @@ mock.module('@/lib/api', () => ({
   },
 }));
 
-const { useQuickMarks, TAP_FAILED, UNDO_FAILED } = await import('./useQuickMarks');
+const { useQuickMarks, TAP_FAILED, TAP_TURN_WAIT_MS, UNDO_FAILED } = await import('./useQuickMarks');
 
 const PUSH_UPS: QuickMark = {
   id: 3,
@@ -328,6 +329,36 @@ describe('useQuickMarks: a tap does not wait for the server', () => {
       await Promise.all(taps);
     });
     expect(tapMark).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends the next tap anyway once the one before it has hung for TAP_TURN_WAIT_MS', async () => {
+    tapMark = mock(() =>
+      tapMark.mock.calls.length === 1 ? new Promise<QuickMarkEvent>(() => {}) : Promise.resolve(tapAnswer(PUSH_UPS.id, 31, 150))
+    );
+    const { result } = await renderMarks();
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        void result.current.tap(PUSH_UPS.id);
+        void result.current.tap(PUSH_UPS.id);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(TAP_TURN_WAIT_MS - 1);
+        await Promise.resolve();
+      });
+      expect(tapMark).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(tapMark).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('takes the newest answer once the button has no tap in flight', async () => {

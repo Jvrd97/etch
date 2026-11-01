@@ -1,10 +1,11 @@
 'use client';
 // [review:need-review] PHASE-03/94, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: one fetch of a range of days for the timeline, the week page and the sidebar — the range is a string pair so a caller that rebuilds it every render does not put the screen in a loop
 // summary: #311 — the range is a key of the shared read cache (the Life grid and its sidebar ask for the same one and share a request; a re-visit draws at once), and a range not known yet (`null`) reads nothing
 
 import { daysAPI, type DayListItem } from '@/lib/api';
-import { useQuery } from '@/lib/query-cache';
+import { errorMessage, useQuery } from '@/lib/query-cache';
 
 /** Said when the range could not be read; the screen shows it instead of an empty grid. */
 export const LOAD_DAYS_ERROR = 'Не удалось загрузить дни';
@@ -31,11 +32,10 @@ export function useDays(from: string | null, to: string | null): UseDaysResult {
   const { state, refresh } = useQuery(known ? `days:${from}:${to}` : null, () =>
     known ? daysAPI.range(from, to) : Promise.resolve(NO_DAYS)
   );
-  const failure = state.status === 'error' ? state.error : null;
   return {
     days: state.status === 'ready' ? state.data : NO_DAYS,
     loading: known && state.status === 'loading',
-    error: failure === null ? null : failure instanceof Error ? failure.message : LOAD_DAYS_ERROR,
+    error: errorMessage(state, LOAD_DAYS_ERROR),
     reload: () => void refresh(),
   };
 }

@@ -1,5 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/252, #311
+// summary: #311 round 2 — a cached day older than DAY_TRUST_MS is neither shown nor `settled` until the server confirms it again
 // summary: the day the server is running (GET /day-mode, boundary at 04:00) for every screen outside Today that used to ask the browser's clock: `readServerDay` joins a read already in flight through the shared cache, `useServerDay` draws the last known day at once (a re-visited screen does not wait for it), reads it again on mount and when the tab comes back, and returns '' while the day is unknown (a silent writer refuses to guess; `settled` says the wait is over), `useDisplayDay` falls back to the browser's day for screens that only show it; these screens do not follow the 04:00 boundary while they stay open (no timer, only the tab coming back)
 
 import { useMemo } from 'react';
@@ -8,6 +9,15 @@ import { useMemo } from 'react';
 import * as api from '@/lib/api';
 import { todayISO } from '@/lib/date';
 import { fetchQuery, useQuery } from '@/lib/query-cache';
+
+/**
+ * How long a day the server named stays good enough to write into.
+ *
+ * The minute an open Today tab waits before asking again (`DAY_RECHECK_MS`):
+ * a re-visited screen trusts a cached day no longer than an open one would, so
+ * after 04:00 it does not offer yesterday as today.
+ */
+export const DAY_TRUST_MS = 60_000;
 
 /** The cache key of the server's day. */
 export const SERVER_DAY_KEY = 'serverDay';
@@ -43,7 +53,12 @@ export interface ServerDay {
 
 export function useServerDay(enabled = true): ServerDay {
   // A screen whose caller pinned the day (tests) asks nobody.
-  const { state } = useQuery(enabled ? SERVER_DAY_KEY : null, askServerDay, { refreshOnVisible: true });
+  // A cached day older than DAY_TRUST_MS is not offered: `settled` stays false
+  // until the server confirms the day again, so a writer does not default to yesterday.
+  const { state } = useQuery(enabled ? SERVER_DAY_KEY : null, askServerDay, {
+    refreshOnVisible: true,
+    trustFor: DAY_TRUST_MS,
+  });
   // A lost re-read keeps the day already known (see above); nothing is shown for it.
   if (state.status === 'ready') return { date: state.data, settled: true };
   return { date: '', settled: enabled && state.status === 'error' };

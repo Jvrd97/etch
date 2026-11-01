@@ -1,5 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/134, PHASE-03/135, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: role-screen state for both shells — one read of the day (distribution of minutes plus its acts), and two writes that re-read it, because a new record changes every share on the screen and not only its own row; #135 adds the confirm of an automatic record, which is a write like any other and re-reads the day the same way
 
 // summary: #311 — the day and the directory are one key of the shared read cache: a re-visit draws them at once, and the re-read after a write keeps the screen instead of a spinner
@@ -99,7 +100,7 @@ export function useRoles(): UseRolesResult {
     roles: state.status === 'ready' ? state.data.roles : NO_ROLES,
     loading: state.status === 'loading',
     saving,
-    error: reported ?? (state.status === 'error' ? errorMessage(state, LOAD_ROLES_ERROR) : null),
+    error: reported ?? errorMessage(state, LOAD_ROLES_ERROR),
     addTimeBlock,
     addAct,
     deleteTimeBlock,

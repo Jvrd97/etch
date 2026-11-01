@@ -1,6 +1,7 @@
 'use client';
 // [review:need-review] #302, #311
 // summary: reads the dashboard summary for the chosen period - the latest request launched wins, so a slow answer for the old period never overwrites the new one; a period switch keeps the old numbers on screen (`refreshing`) until the new ones arrive; the day comes from the answer itself (`today`), and returning to the tab re-reads it
+// summary: #311 round 2 — a quick A→B→C switch keeps the numbers last on screen
 // summary: #311 — each period is kept in the shared read cache: a re-visit, or a return to a period already seen, draws its numbers at once and re-reads them behind the screen
 
 import { useCallback, useState } from 'react';
@@ -46,12 +47,15 @@ export function useDashboardSummary(
   });
   const leftSummary = useQueryData<DashboardSummary>(dashboardKey(left));
 
+  // The period whose numbers are on screen: the current one once it has them,
+  // otherwise the one left before — so A→B→C keeps A's numbers, not a spinner.
+  const shown = state.status === 'ready' ? period : left;
   const setPeriod = useCallback(
     (next: DashboardPeriod) => {
-      setLeft(period);
+      setLeft(shown);
       setPeriodState(next);
     },
-    [period]
+    [shown]
   );
 
   /** Ask again for the period on screen; a retry from an error shows the wait again. */

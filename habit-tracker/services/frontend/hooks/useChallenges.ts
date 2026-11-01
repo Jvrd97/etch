@@ -1,5 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: challenge state for both shells — one list request (which is also what materializes the missed days), creation, counting a day by hand, accepting or declining a proposal the model made, and a refetch after any write, because a challenge's counts and its status are the server's arithmetic and never the browser's
 
 // summary: #311 — the list is a key of the shared read cache: Today and the challenge screen draw it at once on a re-visit, and the re-read after a write keeps the list on screen
@@ -124,7 +125,7 @@ export function useChallenges(): UseChallengesResult {
   return {
     challenges: state.status === 'ready' ? state.data : NO_CHALLENGES,
     loading: state.status === 'loading',
-    error: reported ?? (state.status === 'error' ? errorMessage(state, LOAD_CHALLENGES_ERROR) : null),
+    error: reported ?? errorMessage(state, LOAD_CHALLENGES_ERROR),
     create,
     countToday,
     counting,

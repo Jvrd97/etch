@@ -2,11 +2,13 @@
 // [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/147, #311
 // summary: day-screen state for both shells — one fetch of the day, the rule it is judged by and its marks, with "today" left to the server so the browser calendar never decides which day is open, an explicit flag saying a person is looking at it, the rules this day's plan broke fetched beside the day so a `warn` is visible on the line it belongs to, and a reload of a day already on screen kept silent instead of replacing it with a spinner
 
+// summary: #311 round 2 — a cached «today» older than DAY_TRUST_MS is not drawn, a failed re-read is reported, and the key tells a read from an opening
 // summary: #311 — the day and its violations are two keys of the shared read cache: a re-visit draws the day at once and re-reads it behind the screen, and the first frame no longer waits for the violations
 import { useCallback } from 'react';
 import { dayAPI, type DayDetail, type PlanViolation } from '@/lib/api';
 import { LOAD_DAY_ERROR } from '@/lib/day-format';
-import { useQuery } from '@/lib/query-cache';
+import { errorMessage, useQuery } from '@/lib/query-cache';
+import { DAY_TRUST_MS } from '@/hooks/useServerDay';
 
 const NO_VIOLATIONS: PlanViolation[] = [];
 
@@ -53,11 +55,16 @@ export interface UseDayResult {
  * anything could establish.
  */
 export function useDay(date: string | null, opened = false): UseDayResult {
-  // `today` is a key of its own: which day it is stays the server's answer.
-  const day = useQuery(`day:${date ?? 'today'}`, () =>
-    date === null
-      ? opened ? dayAPI.openToday() : dayAPI.getToday()
-      : opened ? dayAPI.open(date) : dayAPI.get(date)
+  // `today` is a key of its own: which day it is stays the server's answer, so a
+  // cached «today» older than DAY_TRUST_MS is not drawn — after 04:00 it is
+  // yesterday, and the marks of the screen would be written into it.
+  const day = useQuery(
+    `day:${date ?? 'today'}${opened ? ':opened' : ''}`,
+    () =>
+      date === null
+        ? opened ? dayAPI.openToday() : dayAPI.getToday()
+        : opened ? dayAPI.open(date) : dayAPI.get(date),
+    { trustFor: date === null ? DAY_TRUST_MS : undefined }
   );
   const detail = day.state.status === 'ready' ? day.state.data : null;
   const shownDate = detail?.day.date ?? null;
@@ -74,13 +81,12 @@ export function useDay(date: string | null, opened = false): UseDayResult {
     void refreshViolations();
   }, [refreshDay, refreshViolations]);
 
-  const failure = day.state.status === 'error' ? day.state.error : null;
   return {
     detail,
     loading: day.state.status === 'loading',
     refreshing: day.state.status === 'ready' && day.state.refreshing,
-    // A failed re-read keeps the day on screen; only a day that never loaded is an error.
-    error: failure === null ? null : failure instanceof Error ? failure.message : LOAD_DAY_ERROR,
+    // A failed re-read is said too: the screen must not keep writing into a day it cannot confirm.
+    error: errorMessage(day.state, LOAD_DAY_ERROR),
     violations: found.state.status === 'ready' ? found.state.data : NO_VIOLATIONS,
     reload,
   };

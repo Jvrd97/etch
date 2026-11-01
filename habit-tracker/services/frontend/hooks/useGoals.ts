@@ -1,5 +1,6 @@
 'use client';
 // [review:need-review] PHASE-03/93, #311
+// summary: #311 round 2 — a failed re-read is reported even while the earlier data stays on screen
 // summary: goal-screen state for both shells — one fetch of levels, milestones and the current quarter, plus marking a milestone, which re-reads the whole board because closing M9 changes how M10's dependency reads
 // summary: #311 — the board is a key of the shared read cache: a re-visit draws it at once, and the re-read after a move keeps the board on screen instead of a spinner
 
@@ -60,7 +61,7 @@ export function useGoals(): UseGoalsResult {
   return {
     payload: state.status === 'ready' ? state.data : null,
     loading: state.status === 'loading',
-    error: reported ?? (state.status === 'error' ? errorMessage(state, LOAD_GOALS_ERROR) : null),
+    error: reported ?? errorMessage(state, LOAD_GOALS_ERROR),
     saving,
     markMilestone,
   };
