@@ -2,12 +2,15 @@
 # summary: get_entries takes the EntrySort ordering (created_at desc tie-broken by id); the rest is the existing entry CRUD — idempotency-key lookup, plus the checklist trio: checklist_entry_id (the one rule for "the day's entry"), get_checklist_state reading that entry's ticks and the transaction-free upsert_checklist_values the day-summary apply reuses
 # [review:need-review] 309
 # summary: #309 — the canonical entry and the ticks of the day are read for many categories at once (`checklist_entry_ids`, `get_checklist_states`), the one-category readers ask the batch; create_entry reads the written row back once, without a refresh before the select
-from collections.abc import Collection
+# [review:need-review] 312
+# summary: #312 — `lock_day` serialises the writers of one category's day (`pg_advisory_xact_lock`), `lock_days` takes several in one fixed order, and `upsert_checklist_values` takes the day before it looks for the day's row, so two ticks at once cannot both create one
+from collections.abc import Collection, Iterable
 from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select, and_
+from sqlalchemy import func, select, and_, text
 from sqlalchemy.orm import selectinload
 
+from app.core.locks import lock_key
 from app.crud.values import is_true_value
 from app.models import Entry, EntryValue, Field, FieldType
 from app.schemas import EntryCreate, EntrySort, EntryUpdate
@@ -189,6 +192,46 @@ async def delete_entry(db: AsyncSession, entry_id: int) -> bool:
     return True
 
 
+async def lock_day(db: AsyncSession, category_id: int, entry_date: date) -> None:
+    """
+    Hold one category's day until the transaction ends; the next writer of it waits.
+
+    A writer of the day reads the day's row and its value, then writes over it.
+    Two of them at once — two presses of `+250`, a double tap on a box — read the
+    same "before": a step is lost, and on an empty day each creates its own row.
+    `entries` has no unique `(category_id, entry_date)` and cannot have one (a
+    relapse appends a row per press on purpose), and `FOR UPDATE` has nothing to
+    lock while the day has no row yet. So the day is held by an advisory lock
+    keyed on category and date.
+
+    The lock is transactional: commit or rollback releases it, so it cannot be
+    left behind. Taking it again in the same transaction does not wait, so every
+    writer can take it without knowing whether its caller already has. Read the
+    day after this call: under READ COMMITTED the next statement sees what the
+    previous holder committed.
+
+    A transaction that needs the days of several categories takes them through
+    `lock_days`, never one by one in its own order.
+    """
+    key = lock_key(f"entries.day:{category_id}:{entry_date.isoformat()}")
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+async def lock_days(
+    db: AsyncSession, category_ids: Iterable[int], entry_date: date
+) -> None:
+    """
+    Hold the day of several categories, always in ascending `category_id`.
+
+    One order for every transaction is what keeps two of them from waiting for
+    each other: taken in the order of the request, an apply naming `[A, B]` and
+    one naming `[B, A]` would each hold one day and queue for the other. A
+    single-category writer takes one lock and cannot close such a cycle.
+    """
+    for category_id in sorted(set(category_ids)):
+        await lock_day(db, category_id, entry_date)
+
+
 async def checklist_entry_ids(
     db: AsyncSession, category_ids: Collection[int], entry_date: date
 ) -> dict[int, int]:
@@ -288,7 +331,11 @@ async def upsert_checklist_values(
     применённый день достижимым состоянием. Транзакцией владеет вызывающий —
     `upsert_checklist_entry` для ручки `PUT /entries/checklist`, apply разбора
     дня для всего остального.
+
+    The day is taken (`lock_day`) before the row is looked for: two calls at
+    once on an empty day would otherwise create a row each.
     """
+    await lock_day(db, category_id, entry_date)
     entry_id = await checklist_entry_id(db, category_id, entry_date)
 
     if entry_id is None:
