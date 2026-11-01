@@ -2,6 +2,8 @@
 // [review:need-review] PHASE-01/270 — links to Day and Week, VoiceOver week picking, canvas on cached statuses
 // [review:need-review] PHASE-01/265
 // summary: Life screen (More → Жизнь) — the weeks-lived counter with the birth date and frame, five views of one timeline (жизнь as a canvas of weeks, год, месяц, неделя, день), the legend; states: loading, error with retry, offline note with the cached moment, pull to refresh in place; no navigation stack of its own
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached timeline is drawn before the first frame
 import SwiftUI
 
 struct LifeView: View {
@@ -25,6 +27,7 @@ struct LifeView: View {
         content
             .navigationTitle(MoreDestination.life.title)
             .dsScreenBackground()
+            .onAppear { viewModel.showCached() }
             .task { await viewModel.appear() }
     }
 

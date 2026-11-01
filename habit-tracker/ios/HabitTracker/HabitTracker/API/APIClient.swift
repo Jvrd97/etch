@@ -393,6 +393,8 @@ extension APIClient: TodayAPI, TableAPI, CategoriesAPI, EntriesAPI, JournalAPI, 
     /// Executes the request, maps transport/status errors, returns the body on 2xx.
     @discardableResult
     func send(_ request: URLRequest) async throws -> Data {
+        // A write that ended (answered or not) may have changed what any cached snapshot shows.
+        defer { if request.httpMethod != "GET" { ServerWrites.note() } }
         let data: Data
         let response: URLResponse
         do {

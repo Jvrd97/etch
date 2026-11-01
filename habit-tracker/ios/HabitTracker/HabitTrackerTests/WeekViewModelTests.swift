@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/270
 // [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262, PHASE-03/244
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — coming back reads in place once the week is not recent; the discarding store keeps a read log
 // summary: PHASE-03/244 — the advice on sleep, sport and supplements is written on request (any week, even an empty one), 422 is «данных мало» and not a failure, each refusal has its words, one request at a time
 // summary: Week screen state tests (return to the screen reads in place, pull to refresh offline and overtaken by a step, the running week opened by its code kept as «current», a cached week that ended loses its note, no «Текущая» on the running week, one narrative request per week, 422 and a slow model in words) — load of the running week through the read cache (fresh, offline with "обновлено", nothing to show), not-configured and server errors in words, stepping between weeks with a late answer dropped, in-place refresh that keeps the screen, and the narrative on request (statuses, no network, empty week, a week change drops it)
 import XCTest
@@ -325,6 +327,8 @@ final class WeekViewModelTests: XCTestCase {
             return week
         }
 
+        // A write went out since the first read, so the week on screen is not recent any more (#310).
+        ServerWrites.note()
         let again = Task { await viewModel.appear() }
         while release == nil { await Task.yield() }
 
@@ -798,6 +802,7 @@ final class WeekViewModelTests: XCTestCase {
 
 /// A store that remembers nothing: a screen with an answer on it and no cache under it.
 private final class DiscardingCacheStore: CacheStore {
+    let reads = CacheReadLog()
     func save<T: Encodable>(_ value: T, forKey key: String, updatedAt: Date) {}
     func load<T: Decodable>(_ type: T.Type, forKey key: String) -> CachedValue<T>? { nil }
 }

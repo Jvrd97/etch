@@ -1,10 +1,12 @@
 // [review:need-review] PHASE-01/35-ios-category-detail
 // summary: unit tests for CategoryDetailViewModel — load by category, date grouping, quick-add payload, edit/delete mutation
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the chart asks the table of its own category, and its read leaves before the entry list answers
 import XCTest
 @testable import HabitTracker
 
 /// Scriptable stand-in for the API used by `CategoryDetailViewModel`.
-final class MockCategoryDetailAPI: CategoryDetailAPI {
+final class MockCategoryDetailAPI: CategoryChartAPI {
     var entriesResult: Result<[EntryDTO], Error> = .success([])
     var createResult: Result<EntryDTO, Error>?
     var updateResult: Result<EntryDTO, Error>?
@@ -20,12 +22,26 @@ final class MockCategoryDetailAPI: CategoryDetailAPI {
 
     func fetchEntries(categoryId: Int?) async throws -> [EntryDTO] {
         fetchedCategoryFilters.append(categoryId)
-        return try entriesResult.get()
+        let answer = entriesResult
+        if let hook = duringFetchEntries {
+            duringFetchEntries = nil
+            await hook()
+        }
+        return try answer.get()
     }
+
+    private(set) var fetchedTableCategoryIDs: [Int] = []
+    /// Runs once inside the next entry-list read, before its answer.
+    var duringFetchEntries: (@MainActor () async -> Void)?
 
     func fetchTable(dateFrom: String, dateTo: String) async throws -> TableResponseDTO {
         fetchedTableRanges.append((from: dateFrom, to: dateTo))
         return try tableResult.get()
+    }
+
+    func fetchTable(dateFrom: String, dateTo: String, categoryId: Int) async throws -> TableResponseDTO {
+        fetchedTableCategoryIDs.append(categoryId)
+        return try await fetchTable(dateFrom: dateFrom, dateTo: dateTo)
     }
 
     func createEntry(_ entry: EntryCreateDTO) async throws -> EntryDTO {
@@ -81,7 +97,7 @@ final class CategoryDetailViewModelTests: XCTestCase {
     }
 
     private func makeViewModel(
-        category: CategoryDTO, api: CategoryDetailAPI
+        category: CategoryDTO, api: CategoryChartAPI
     ) -> CategoryDetailViewModel {
         CategoryDetailViewModel(
             category: category,
@@ -117,6 +133,23 @@ final class CategoryDetailViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.state, .loaded)
         XCTAssertEqual(api.fetchedCategoryFilters, [1])
         XCTAssertEqual(viewModel.entries.map(\.id), [100])
+    }
+
+    func testTheChartAsksForItsOwnCategoryBeforeTheListAnswers() async {
+        let category = makeCategory(id: 7, name: "Push-ups", fields: [makeField(id: 10, name: "Reps", order: 0)])
+        let api = MockCategoryDetailAPI()
+        var chartAskedBeforeList = false
+        api.duringFetchEntries = {
+            await waitUntil { !api.fetchedTableCategoryIDs.isEmpty }
+            chartAskedBeforeList = !api.fetchedTableCategoryIDs.isEmpty
+        }
+
+        let viewModel = makeViewModel(category: category, api: api)
+        await viewModel.load()
+
+        XCTAssertTrue(chartAskedBeforeList, "the chart read waits for the entry list")
+        XCTAssertEqual(api.fetchedTableCategoryIDs, [7])
+        XCTAssertEqual(viewModel.state, .loaded)
     }
 
     func testLoadFailureSetsFailureMessage() async {

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/268
 // summary: state of the Health tab list — the catalogue with 30 days and baseline, the sync/lag block, the week of nights and workouts, each through the read cache; the catalogue decides the screen (loading, error with retry, loaded, whole catalogue empty), the three side reads only add blocks and a failure of one hides just that block; offline answers carry their moment and a stale lag is not shown as current; a late answer of a superseded read is dropped
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the list opens from the cached catalogue and blocks (no loader; the lag is never taken from the cache, an index of another day is marked as not updated), an appearance reads again only when the catalogue is not recent
 import Foundation
 
 @MainActor
@@ -72,9 +74,28 @@ final class HealthMetricsViewModel: ObservableObject {
         await read(silent: false)
     }
 
-    /// The screen came on again: with an answer already shown it is read in place.
+    /// The screen came on: the cached answers go on screen at once; with an answer shown it is read in
+    /// place, and not at all while the catalogue is recent.
     func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.metricsKey) { return }
         if state == .loaded { await refresh() } else { await load() }
+    }
+
+    /// Puts the cached catalogue and its blocks on screen while nothing is shown, without the network.
+    /// The lag is the lag of the moment it was cached, so it waits for the server.
+    func showCached() {
+        guard state != .loaded, let catalogue = cache.peek(HealthMetricsResponseDTO.self, key: Self.metricsKey) else { return }
+        let moment = now()
+        today = HealthMetricsFormat.localDate(moment, calendar: calendar)
+        metrics = catalogue.value.metrics
+        nights = cache.peek(HealthSleepResponseDTO.self, key: Self.nightsKey)?.value.nights
+        workouts = cache.peek(HealthWorkoutsResponseDTO.self, key: Self.workoutsKey)?.value.workouts
+        if let cached = cache.peek(HealthStateResponseDTO.self, key: Self.stateKey) {
+            healthState = cached.value.scores.health
+            healthStateAsOf = calendar.isDate(cached.updatedAt, inSameDayAs: moment) ? nil : cached.updatedAt
+        }
+        state = .loaded
     }
 
     func refresh() async {

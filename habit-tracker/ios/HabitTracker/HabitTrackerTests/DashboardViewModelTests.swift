@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/304
 // summary: dashboard state tests — the first read for the week through the read cache (fresh, offline with its moment, nothing cached), the period switch (own cache key per period, a late answer of a period left behind dropped, answers in launch order), refresh in place that keeps the screen, not-configured and server errors in Russian, and the server's day coming from the answer
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — coming back reads in place once the answer is not recent
 import Combine
 import XCTest
 @testable import HabitTracker
@@ -384,6 +386,8 @@ final class DashboardViewModelTests: XCTestCase {
         await viewModel.appear()
         XCTAssertEqual(viewModel.state, .loaded)
 
+        // A write went out since the first read, so the answer on screen is not recent any more (#310).
+        ServerWrites.note()
         var states: [DashboardViewModel.LoadState] = []
         let watch = viewModel.$state.sink { states.append($0) }
         await viewModel.appear()

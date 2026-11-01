@@ -2,6 +2,8 @@
 // [review:need-review] PHASE-03/229, PHASE-03/243, PHASE-03/261, PHASE-03/262, PHASE-03/244
 // summary: PHASE-03/244 adds the advice on sleep, sport and supplements — written on request for the last seven days (not for the week on screen), 422 kept apart from a failure, one request at a time
 // summary: Week screen state — the running or a named week through the read cache (each week under its own key, the week running by the calendar also under `current` whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the week opens and steps from its cached answer (the cached running week only while it still runs), an appearance reads again only when the answer is not recent
 import Foundation
 
 @MainActor
@@ -103,9 +105,11 @@ final class WeekViewModel: ObservableObject {
         await read(iso: requestedIso, silent: false)
     }
 
-    /// The screen came on again. With an answer already shown it is read in place: a loader over
-    /// weeks the person was reading would be a step back.
+    /// The screen came on. The cached answer goes on screen at once; with an answer shown it is read in
+    /// place (a loader over weeks the person was reading would be a step back), and not at all while recent.
     func appear() async {
+        showCached()
+        if review != nil, cache.isRecent(key: Self.cacheKey(for: requestedIso)) { return }
         if review == nil {
             await load()
         } else {
@@ -157,7 +161,24 @@ final class WeekViewModel: ObservableObject {
 
     private func go(to iso: String?) async {
         requestedIso = iso
-        await read(iso: iso, silent: false)
+        // A week read before opens from its copy and is read in place.
+        await read(iso: iso, silent: showCached(iso: iso))
+    }
+
+    /// Puts the cached answer of the week asked for on screen while nothing is shown, without the network.
+    func showCached() {
+        guard review == nil else { return }
+        showCached(iso: requestedIso)
+    }
+
+    /// The cached «current» is the running week only while that week runs: a week that has ended is not shown as current.
+    @discardableResult
+    private func showCached(iso: String?) -> Bool {
+        guard let cached = cache.peek(WeekReviewDTO.self, key: Self.cacheKey(for: iso)),
+              iso != nil || WeekFormat.isRunning(cached.value.window, at: now()) else { return false }
+        offlineAsOf = nil
+        display(cached.value)
+        return true
     }
 
     private func read(iso: String?, silent: Bool) async {
@@ -201,6 +222,10 @@ final class WeekViewModel: ObservableObject {
             response = value
             offlineAsOf = updatedAt
         }
+        display(response)
+    }
+
+    private func display(_ response: WeekReviewDTO) {
         if review?.window.isoCode != response.window.isoCode {
             narrative = narrativeWeek == response.window.isoCode ? .writing : .idle
         }

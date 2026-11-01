@@ -1,4 +1,6 @@
 // [review:need-review] PHASE-01/32-ios-lime-tech-design-pass, PHASE-01/38-ios-avoid-streaks, PHASE-01/11-ios-read-cache, PHASE-01/12-ios-offline-queue, PHASE-01/208, PHASE-01/210, PHASE-01/213, PHASE-03/227, PHASE-03/225, PHASE-03/263, PHASE-03/294
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached day and buttons are drawn before the first frame, and coming back to the tab reads again only what is not recent
 // summary: PHASE-03/294 round 3 — the plus is never disabled (a switched-off button hands its touch to the card and the second tap of a quick double press opened the form), a ticked box shows «сделано» and a second tap writes nothing, the row body is one VoiceOver button
 // summary: PHASE-03/294 — the plus of a habit row is its own button (adds the step, ticks the box, or opens the one-field sheet) and the row body still opens the form; «Когда?» on an avoid card records a relapse on a chosen day
 // summary: PHASE-03/263 — the empty screen shows the refresh failure line
@@ -41,12 +43,19 @@ struct TodayView: View {
         }
         .navigationTitle("Today")
         .dsScreenBackground()
+        .onAppear {
+            // Before the first frame: the cached day is drawn instead of the loader.
+            viewModel.showCached()
+            quickMarks.showCached()
+        }
         .task {
             // A tap or an undo moved the day of a category: read its records and streak again.
             quickMarks.onDayChanged = { [weak viewModel] categoryID in
                 Task { await viewModel?.reloadAfterMark(categoryID: categoryID) }
             }
-            await reload()
+            async let today: Void = viewModel.appear()
+            async let marks: Void = quickMarks.appear()
+            _ = await (today, marks)
         }
         .sheet(item: $selectedCategory) { category in
             QuickEntrySheet(category: category, viewModel: viewModel)

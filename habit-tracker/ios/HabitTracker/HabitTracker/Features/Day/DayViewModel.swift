@@ -7,6 +7,8 @@
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the day opens from its cached copy (the cached «today» only when it is today), an appearance reads again only when the copy is not recent, a loaded day stays on screen through a step or a re-read (no loader), and a failed re-read is a line, not a replaced screen
 import Combine
 import Foundation
 
@@ -58,6 +60,8 @@ final class DayViewModel: ObservableObject {
     @Published var actionError: String?
     /// Non-nil while the day shown is the cached copy; the moment it was cached.
     @Published private(set) var offlineAsOf: Date?
+    /// Why the last read of a loaded screen failed; the day on screen stays.
+    @Published private(set) var refreshError: String?
     /// Lines of the shown day with a mark or a fact written on the phone and not yet on the server.
     @Published private(set) var queuedItems: Set<UUID> = []
     /// The notebook of the shown day waits in the queue.
@@ -193,7 +197,7 @@ final class DayViewModel: ObservableObject {
             .sink { [weak self] writes in
                 guard let self else { return }
                 let ofShownDay = self.shownDate.map { date in writes.contains { $0.action.isDayWrite(of: date) } } ?? false
-                let duringLoad = self.state == .loading && writes.contains { $0.action.writesADay }
+                let duringLoad = self.runningLoad != nil && writes.contains { $0.action.writesADay }
                 guard ofShownDay || duringLoad else { return }
                 Task { await self.reloadSilently() }
             }
@@ -233,15 +237,41 @@ final class DayViewModel: ObservableObject {
 
     // MARK: Loading
 
+    /// The read-cache key of the day asked for.
+    private var cacheKey: String { "day.\(requestedDate ?? "today")" }
+
+    /// The tab came on: the cached copy of the day goes on screen at once, and the server is asked only
+    /// when that copy is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached copy of the day asked for on screen, without the network, unless that day is shown
+    /// already. The cached «today» of another day is not today: the screen waits for the server then.
+    func showCached() {
+        guard let cached = cache.peek(DayDetailDTO.self, key: cacheKey) else { return }
+        let date = cached.value.day.date
+        if requestedDate == nil, date != localToday { return }
+        guard state != .loaded || date != shownDate else { return }
+        offlineAsOf = nil
+        // A save made in this run may be newer than the copy: its text outranks the copy's.
+        apply(cached.value, keepingNotebook: false, savedSince: savedNotebooks[date])
+        state = .loaded
+    }
+
     /// Waiting writes go out alongside the read, so a reload is also a retry of the queue; a slow send
     /// does not hold the day back (waiting writes are laid over it, a delivery reads it again).
+    /// A loaded day stays on screen while another is read: no loader on a step.
     func load() async {
         // The same day already being read: join that read, one GET and one spinner.
         if let running = runningLoad, running.date == requestedDate {
             await running.task.value
             return
         }
-        state = .loading
+        showCached()
+        if state != .loaded { state = .loading }
         let task = Task { [self] in
             let flushing = Task { await outbox?.flush() }
             await fetch(showFailure: true)
@@ -273,7 +303,7 @@ final class DayViewModel: ObservableObject {
         let epochAtSend = notebookSaveEpoch
         do {
             let requested = requestedDate
-            let key = "day.\(requested ?? "today")"
+            let key = cacheKey
             let outcome: CacheOutcome<DayDetailDTO>
             if showFailure {
                 outcome = try await cache.load(key: key) { try await api.fetchDay(date: requested) }
@@ -303,11 +333,14 @@ final class DayViewModel: ObservableObject {
             // Another day on screen cannot keep its notebook, but the text its save wrote outranks an older answer.
             let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0 : nil }
             apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, savedSince: savedSince)
+            refreshError = nil
             state = .loaded
         } catch {
             // A newer answer is on screen, or the screen asked for another day since: nothing to say.
             guard generation == loadGeneration, read > readShown else { return }
-            if showFailure {
+            if showFailure, state == .loaded, detail != nil {
+                refreshError = Self.failure(Self.refreshFailedMessage, error)
+            } else if showFailure {
                 state = .failure(Self.message(for: error))
             } else if reportingFailure, !Task.isCancelled {
                 actionError = Self.failure(Self.refreshFailedMessage, error)

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/216, PHASE-03/295
 // summary: state of the Goals screen, the native twin of GoalsBoard.tsx — the board read through the read cache, a milestone toggled between closed and open by one PATCH that re-reads the whole board (closing M9 changes how M10 reads), reads numbered so an older answer never overwrites a newer one, and the words the board shows; adding a goal of the quarter (a fresh read first, so the set that goes in the one PUT is the server's own and not the screen's; at most five; the read cache follows the write) and every failure said in Russian
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the board opens from its cached copy (no loader), an appearance reads again only when the copy is not recent
 import Foundation
 
 /// Words and small rules of the goal board, the same as the web's `GoalsBoard.tsx`.
@@ -138,11 +140,25 @@ final class GoalsViewModel: ObservableObject {
         return board.levels.isEmpty && board.milestones.isEmpty && board.goals.isEmpty
     }
 
+    /// The screen came on: the cached board goes on screen at once, the server is asked only when it is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached board on screen while nothing is shown, without the network.
+    func showCached() {
+        guard state != .loaded, let cached = cache.peek(GoalsBoardDTO.self, key: Self.cacheKey) else { return }
+        board = cached.value
+        state = .loaded
+    }
+
     func load() async {
         // A board already on screen stays while it is read again: pull to refresh must not blank it.
         if state != .loaded { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(GoalsFormat.notConfiguredMessage)
+            if board == nil { state = .failure(GoalsFormat.notConfiguredMessage) } else { errorMessage = GoalsFormat.notConfiguredMessage }
             return
         }
         readsSent += 1

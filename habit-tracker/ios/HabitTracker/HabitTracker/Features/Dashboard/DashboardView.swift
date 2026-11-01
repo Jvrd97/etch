@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/304
 // summary: Dashboard screen by the accepted mock-up — the Неделя/Месяц switch, the window's dates, the cached-answer note, then the three rings, streaks, health state, bests, workout dynamics, insight and the nutrition placeholder; loading, a Russian error with «Повторить», pull to refresh in place
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached period is drawn before the first frame and on the switch
 import SwiftUI
 
 struct DashboardView: View {
@@ -24,13 +26,14 @@ struct DashboardView: View {
         .refreshable { await viewModel.refresh() }
         .navigationTitle("Dashboard")
         .dsScreenBackground()
+        .onAppear { viewModel.showCached() }
         .task { await viewModel.appear() }
     }
 
     private var periodSwitch: some View {
         Picker("Период", selection: Binding(
             get: { viewModel.period },
-            set: { new in if viewModel.switchTo(new) { Task { await viewModel.load() } } }
+            set: { new in if viewModel.switchTo(new) { Task { await viewModel.appear() } } }
         )) {
             ForEach(DashboardPeriod.allCases, id: \.self) { period in
                 Text(DashboardFormat.periodTitle(period)).tag(period)

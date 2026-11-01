@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/268
 // summary: the Health tab — the sync/lag block first (a day-old lag is visible without scrolling), the way to the pump screen and its journal, the cards (state ring, steps and energy tiles, nights, deviation from the norm, 30 days of workouts), then every group of the catalogue with the latest value, a 30-day sparkline and the deviation from the metric's own baseline; states: loading, error with retry, the whole catalogue empty, offline from the read cache; pull to refresh in place
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached list is drawn before the first frame, before HealthKit is asked
 import SwiftUI
 
 struct HealthMetricsView: View {
@@ -22,6 +24,7 @@ struct HealthMetricsView: View {
             .navigationDestination(isPresented: $showsAllNights) {
                 HealthMetricDetailView(viewModel: .live(identifier: HealthMetricsFormat.sleepIdentifier, title: "Сон"))
             }
+            .onAppear { viewModel.showCached() }
             .task {
                 await pump.enterSection()
                 await viewModel.appear()

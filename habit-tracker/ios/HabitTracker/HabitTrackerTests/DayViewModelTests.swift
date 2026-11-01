@@ -5,6 +5,8 @@
 // summary: PHASE-03/248 — false conflict after A→B→A, a third text in a stale answer, cancelled pull-to-refresh, a re-read answered while another day loads is not shown, the replaced-text card is not restored over the same server text; every hook a test sets must run
 // summary: PHASE-03/248 round 2 — a third text survives a quiet re-read as a conflict; tearDown calls super
 // summary: Day view model tests — load/failure/not-configured, optimistic mark cycle with rollback, stepping days drops stale answers, category-linked fact record/correct/remove with the done/unmark rule and a stable retry key, notebook dirty tracking and per-day drafts and conflicts with a changed server text, closing fields across days, re-read on foreground and time zone change (a failed pull-to-refresh says so, the others stay quiet), saved notebook text remembered per day against late answers,  two-touch closing with keys and validation
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — a step keeps the loaded day on screen instead of the loader
 import Combine
 import XCTest
 @testable import HabitTracker
@@ -1001,7 +1003,9 @@ final class DayViewModelTests: XCTestCase {
         rereadGate?.resume()
         await reread.value
 
-        XCTAssertEqual(viewModel.state, .loading, "the step to the other day is still the screen's question")
+        // The loaded day stays on screen through the step (#310): no loader, and the old day's answer changed nothing.
+        XCTAssertEqual(viewModel.state, .loaded)
+        XCTAssertEqual(viewModel.shownDate, DayFixtures.date, "the step to the other day is still the screen's question")
         XCTAssertEqual(viewModel.state(of: DayFixtures.taskID), "done", "the old day's answer changed nothing")
 
         stepGate?.resume()

@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/216, PHASE-03/295
 // summary: the Goals screen under More, drawn as /m/goals draws it — levels 0-5 with the «⚠ подтверди» lines apart from the prose, milestones with status, close date, a Закрыть/Открыть button and «Открывается чем» chips, and the goals of the current quarter; offline banner over a cached board; the quarter card is always there and carries «Добавить цель» (a sheet with one text field) up to five goals
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — opens on the cached board, reads again only what is not recent
 import SwiftUI
 
 struct GoalsView: View {
@@ -18,7 +20,8 @@ struct GoalsView: View {
         content
             .navigationTitle(MoreDestination.goals.title)
             .dsScreenBackground()
-            .task { await viewModel.load() }
+            .onAppear { viewModel.showCached() }
+            .task { await viewModel.appear() }
             .sheet(isPresented: $isAddingGoal) { AddGoalSheet(viewModel: viewModel) }
     }
 

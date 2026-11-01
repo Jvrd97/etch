@@ -6,6 +6,8 @@
 // [review:need-review] PHASE-03/240 — only the new OutboxAction case named in one switch (markSupplementTaken)
 // summary: PHASE-03/242 — the load reads alongside the queue's send instead of after it, and its records are dropped when a re-read started by a delivery is already newer on screen (the cache keeps the newer records, no offline label over them); a failed re-read after a background delivery leaves no error
 // summary: Today screen state — loads categories + entries + all avoid streaks in one request through the read cache (serves last snapshot + offline flag when the network is down); POST for form under an Idempotency-Key, idempotent checklist PUT; a form or checklist save that fails offline goes to the shared outbox under the key of its attempt and shows as a pending row derived from the queue until delivered, then the day's records are re-read quietly; a checklist save whose day still waits in the queue goes through the queue too; Happened is one server-decided tap (own key kept across a retry) with undo of the relapse this screen wrote and optional details; re-reads the day after a quick-mark tap; deletes an entry of the day
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the screen opens on the cached snapshot of today (no loader, no network wait) and reads again only when it is not recent; the snapshot carries its day, and a snapshot of another day neither opens the screen nor shows its records as today's offline; the streak read leaves with the first wave when the known categories have an avoid one, and never waits for the table
 import Combine
 import Foundation
 
@@ -17,6 +19,8 @@ struct TodaySnapshot: Codable, Equatable {
     let streaks: [Int: CategoryStreakDTO]
     /// Entries per category over the last 30 days; nil when the read failed or the snapshot is older than it.
     var usage: [Int: CategoryUsage]? = nil
+    /// The day the records are of, `yyyy-MM-dd`; nil in a snapshot written before the day was kept.
+    var day: String? = nil
 }
 
 @MainActor
@@ -192,6 +196,26 @@ final class TodayViewModel: ObservableObject {
         dateFormatter.string(from: now())
     }
 
+    /// The screen came on (first time or back on its tab): the cached snapshot of today goes on screen at
+    /// once, and the server is asked only when that snapshot is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached snapshot on screen while nothing is shown, without the network. A snapshot of
+    /// another day is not today's: the screen waits for the server then.
+    func showCached() {
+        guard state != .loaded,
+              let cached = cache.peek(TodaySnapshot.self, key: Self.cacheKey),
+              cached.value.day == todayString else { return }
+        categories = TodayOrdering.sorted(cached.value.categories, usage: cached.value.usage)
+        todayEntries = withQueuedRows(cached.value.entries)
+        streaks = cached.value.streaks
+        state = .loaded
+    }
+
     /// Loads active categories, today's entries, and avoid streaks in one pass, through
     /// the read cache: a successful fetch refreshes the screen and the cache; when the
     /// network is down the last cached snapshot is shown with an offline timestamp.
@@ -214,30 +238,35 @@ final class TodayViewModel: ObservableObject {
         let today = todayString
         let usageRange = usageWindow()
         var streaksFailed = false
+        // Categories already known to have an avoid one (on screen or cached) send the streak read with the
+        // first wave; otherwise it waits for the categories, so a screen without avoid cards asks nothing.
+        let knownAvoid = (categories.isEmpty ? previousSnapshot()?.categories ?? [] : categories).contains(where: \.isAvoid)
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 async let categoriesTask = api.fetchCategories()
                 async let entriesTask = api.fetchEntries(startDate: today, endDate: today)
+                async let earlyStreaks = Self.readStreaks(api: api, if: knownAvoid)
                 // The order of the cards is a nicety: its failure is not the screen's.
                 async let usageTask = self.readUsage(api: api, range: usageRange)
                 let (fetchedCategories, fetchedEntries) = try await (categoriesTask, entriesTask)
-                let usage = await usageTask
                 let active = fetchedCategories.filter(\.isActive)
+                let needsStreaks = active.contains(where: \.isAvoid)
+                async let lateStreaks = Self.readStreaks(api: api, if: needsStreaks && !knownAvoid)
+                let usage = await usageTask
+                let (early, late) = await (earlyStreaks, lateStreaks)
                 var loadedStreaks: [Int: CategoryStreakDTO] = [:]
-                if active.contains(where: \.isAvoid) {
-                    // One request for every avoid category. A failure degrades to "no numbers"
-                    // (the web page does the same) rather than failing a Today load that succeeded.
-                    do {
-                        loadedStreaks = Dictionary(
-                            try await api.fetchAvoidStreaks().map { ($0.categoryId, $0) },
-                            uniquingKeysWith: { _, latest in latest }
-                        )
-                    } catch {
-                        streaksFailed = true
-                    }
+                // One request for every avoid category. A failure degrades to "no numbers"
+                // (the web page does the same) rather than failing a Today load that succeeded.
+                switch needsStreaks ? early ?? late : nil {
+                case .success(let read)?:
+                    loadedStreaks = Dictionary(read.map { ($0.categoryId, $0) }, uniquingKeysWith: { _, latest in latest })
+                case .failure?:
+                    streaksFailed = true
+                case nil:
+                    break
                 }
                 return TodaySnapshot(
-                    categories: active, entries: fetchedEntries, streaks: loadedStreaks, usage: usage
+                    categories: active, entries: fetchedEntries, streaks: loadedStreaks, usage: usage, day: today
                 )
             }
             let entriesAreNewest = showsEntries(of: read)
@@ -256,6 +285,14 @@ final class TodayViewModel: ObservableObject {
             failLoad("Unexpected error", showsData: showsData, load: load)
         }
         await flushing.value
+    }
+
+    /// The bulk streak read, or nil without asking when `ask` is false.
+    private nonisolated static func readStreaks(
+        api: TodayScreenAPI, if ask: Bool
+    ) async -> Result<[CategoryStreakDTO], Error>? {
+        guard ask else { return nil }
+        do { return .success(try await api.fetchAvoidStreaks()) } catch { return .failure(error) }
     }
 
     /// The line a failed refresh wrote, so a refresh that works can take back that line and no other.
@@ -294,7 +331,8 @@ final class TodayViewModel: ObservableObject {
             value = stale
         }
         categories = TodayOrdering.sorted(value.categories, usage: value.usage)
-        if entriesAreNewest { todayEntries = withQueuedRows(value.entries) }
+        // Records of another day are not today's: an offline start on a new day shows none of them.
+        if entriesAreNewest { todayEntries = withQueuedRows(value.day == todayString ? value.entries : []) }
         streaks = value.streaks
     }
 
@@ -305,7 +343,7 @@ final class TodayViewModel: ObservableObject {
         guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
         let snapshot = TodaySnapshot(
             categories: cached.value.categories, entries: todayEntries.filter { !$0.isPending },
-            streaks: cached.value.streaks, usage: cached.value.usage
+            streaks: cached.value.streaks, usage: cached.value.usage, day: todayString
         )
         cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
     }
@@ -363,7 +401,11 @@ final class TodayViewModel: ObservableObject {
     }
 
     private func previousUsage() -> [Int: CategoryUsage]? {
-        cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey)?.value.usage
+        previousSnapshot()?.usage
+    }
+
+    private func previousSnapshot() -> TodaySnapshot? {
+        cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey)?.value
     }
 
     /// Writes a late answer into the cached snapshot, keeping its age.
@@ -371,7 +413,7 @@ final class TodayViewModel: ObservableObject {
         guard let cached = cache.store.load(TodaySnapshot.self, forKey: Self.cacheKey) else { return }
         let snapshot = TodaySnapshot(
             categories: cached.value.categories, entries: cached.value.entries,
-            streaks: cached.value.streaks, usage: usage
+            streaks: cached.value.streaks, usage: usage, day: cached.value.day
         )
         cache.store.save(snapshot, forKey: Self.cacheKey, updatedAt: cached.updatedAt)
     }

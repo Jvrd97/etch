@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/305
 // summary: tests of the «Состояние сегодня» read — the dashboard summary parsed by its contract (extra blocks ignored, null index under three days), the request path and window, and the tab's model: the card appears when the server answers, is absent while the endpoint is missing or the read fails, the workouts block asks 30 days
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the read asks for the health blocks alone
 import XCTest
 @testable import HabitTracker
 
@@ -29,9 +31,10 @@ final class HealthStateWireTests: XCTestCase {
         """)
         let state = try await api.fetchHealthState()
         XCTAssertEqual(captured?.url?.path, "/api/v1/dashboard/summary")
-        XCTAssertEqual(
-            URLComponents(url: captured!.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "period" }?.value, "week"
-        )
+        let query = URLComponents(url: captured!.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(query.first { $0.name == "period" }?.value, "week")
+        // Only the health blocks: the server skips the streaks and the rest (#309); an older server ignores it.
+        XCTAssertEqual(query.first { $0.name == "parts" }?.value, "health")
         XCTAssertEqual(state.scores.health, HealthScoreDTO(value: 78, label: "good", basisDays: 7))
     }
 

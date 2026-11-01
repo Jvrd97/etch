@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it; an answer older than the one on screen is dropped and the cache keeps the newer directory), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the buttons open from the cached directory of today (no loader), an appearance reads again only when the directory is not recent, a re-read keeps the buttons and says its failure as a line
 import Combine
 import Foundation
 
@@ -122,10 +124,38 @@ final class QuickMarksViewModel: ObservableObject {
 
     // MARK: Loading
 
+    /// The screen came on: the cached directory goes on screen at once, the server is asked only when it is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached directory on screen while nothing is shown, without the network. Totals of another
+    /// day are not today's: the buttons wait for the server then.
+    func showCached() {
+        guard state != .loaded,
+              let cached = cache.peek([QuickMarkDTO].self, key: Self.cacheKey),
+              cached.value.allSatisfy({ $0.entryDate == localToday }) else { return }
+        show(cached.value)
+        state = .loaded
+    }
+
+    private var localToday: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: now())
+    }
+
     func load() async {
-        state = .loading
+        // Buttons already on screen stay while they are read again.
+        let showsData = state == .loaded
+        if !showsData { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(Self.notConfiguredMessage)
+            fail(Self.notConfiguredMessage, showsData: showsData)
             return
         }
         // The waiting presses go out alongside the read, not before it: a slow or dead network must
@@ -151,12 +181,26 @@ final class QuickMarksViewModel: ObservableObject {
                 cache.store.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now())
             }
             state = .loaded
+            if let line = refreshFailureLine, errorMessage == line { errorMessage = nil }
+            refreshFailureLine = nil
         } catch let error as APIClientError {
-            state = .failure(error.userMessage)
+            fail(error.userMessage, showsData: showsData)
         } catch {
-            state = .failure("Unexpected error")
+            fail("Unexpected error", showsData: showsData)
         }
         await flushing.value
+    }
+
+    /// The line a failed re-read wrote, so the next re-read that works takes back that line and no other.
+    private var refreshFailureLine: String?
+
+    private func fail(_ message: String, showsData: Bool) {
+        guard showsData else {
+            state = .failure(message)
+            return
+        }
+        errorMessage = message
+        refreshFailureLine = message
     }
 
     /// A delivered queue changed the server's totals: read the directory again and tell the screen

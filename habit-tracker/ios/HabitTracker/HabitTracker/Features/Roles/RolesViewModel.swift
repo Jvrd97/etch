@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-01/266
 // summary: state of the Roles screen — the server's day (share per role, time blocks, acts) with the role directory through the read cache (offline answers carry their moment), the period summary read after it and kept apart so a failed summary never hides the day, the four writes of the web screen (minutes, act, confirm, remove) that need the network and re-read the day because one record moves every share, late answers dropped by a read counter; no note or title is ever logged
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the day, directory and summary open from their cached copies (no loader), an appearance reads again only when the day is not recent
 import Foundation
 
 @MainActor
@@ -60,9 +62,20 @@ final class RolesViewModel: ObservableObject {
         await read(silent: false)
     }
 
-    /// The screen came on again: with an answer already shown it is read in place.
+    /// The screen came on: the cached day goes on screen at once; with an answer shown it is read in place,
+    /// and not at all while recent.
     func appear() async {
+        showCached()
+        if day != nil, cache.isRecent(key: Self.snapshotKey) { return }
         await read(silent: day != nil)
+    }
+
+    /// Puts the cached day, directory and summary on screen while nothing is shown, without the network.
+    func showCached() {
+        guard day == nil, let cached = cache.peek(Snapshot.self, key: Self.snapshotKey) else { return }
+        show(cached.value)
+        summary = cache.peek(RoleSummaryDTO.self, key: Self.summaryKey(period))?.value
+        state = .loaded
     }
 
     func refresh() async {

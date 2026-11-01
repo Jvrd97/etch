@@ -1,5 +1,7 @@
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: the server's day rule (zone + day-start hour, read with the list and kept in the cache; the day is cut by wall clock), a waiting press of another day does not count as taken today, a press in flight disables its button, a dropped old answer does not stay in the cache, the moment the day turns; state of the Supplements screen — the list through the read cache (a cached list from another day does not claim «принял сегодня»; reads are numbered and an answer older than the one on screen is dropped), «принял» as one POST under an Idempotency-Key that an offline press queues in the shared outbox under the same key with the day of the press and shows at once, rows redrawn whenever the queue changes, a delivered press re-reads the list, and adding a supplement (needs the network); no name or dose is ever logged
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the list opens from its cached copy (a copy of another day without «принял»), an appearance reads again only when the copy is not recent, a re-read of a shown list says its failure as a line
 import Combine
 import Foundation
 
@@ -96,11 +98,28 @@ final class SupplementsViewModel: ObservableObject {
 
     // MARK: Loading
 
+    /// The screen came on: the cached list goes on screen at once, the server is asked only when it is not recent.
+    func appear() async {
+        showCached()
+        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        await load()
+    }
+
+    /// Puts the cached list on screen while nothing is shown, without the network. A list of another day
+    /// does not claim «принял сегодня».
+    func showCached() {
+        guard state != .loaded, let cached = cache.peek(Snapshot.self, key: Self.cacheKey) else { return }
+        adopt(cached.value.rule)
+        show(cached.value.day == today() ? cached.value.items : cached.value.items.map { $0.taken(false) })
+        state = .loaded
+    }
+
     func load() async {
         // A list already on screen stays while it is read again: pull to refresh must not cancel itself.
-        if state != .loaded { state = .loading }
+        let showsData = state == .loaded
+        if !showsData { state = .loading }
         guard let api = apiProvider() else {
-            state = .failure(SupplementsFormat.notConfiguredMessage)
+            fail(SupplementsFormat.notConfiguredMessage, showsData: showsData)
             return
         }
         // The waiting presses go out alongside the read, not before it: a dead network must not hold
@@ -135,12 +154,26 @@ final class SupplementsViewModel: ObservableObject {
                 saveShown()
             }
             state = .loaded
+            if let line = refreshFailureLine, errorMessage == line { errorMessage = nil }
+            refreshFailureLine = nil
         } catch let error as APIClientError {
-            state = .failure(error.userMessage)
+            fail(error.userMessage, showsData: showsData)
         } catch {
-            state = .failure("Unexpected error")
+            fail("Unexpected error", showsData: showsData)
         }
         await flushing.value
+    }
+
+    /// The line a failed re-read wrote, so the next re-read that works takes back that line and no other.
+    private var refreshFailureLine: String?
+
+    private func fail(_ message: String, showsData: Bool) {
+        guard showsData else {
+            state = .failure(message)
+            return
+        }
+        errorMessage = message
+        refreshFailureLine = message
     }
 
     /// A delivered press changed what the server holds: read the list again, quietly.

@@ -2,6 +2,8 @@
 // [review:need-review] PHASE-01/270 — days dictionary, weekStatuses once per pair, weekSpeech, future birth refused
 // [review:need-review] PHASE-01/265
 // summary: Life screen state — the server's day plus the days of the last three years and this one through the read cache (one key; offline shows the last snapshot with its moment), five views (жизнь, год, месяц, неделя, день) over one cursor that stays on the server's day until the reader moves it, stepping per view, the birth date and frame kept on the device, a late answer of a superseded read dropped
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the timeline opens from its cached snapshot (no loader), an appearance reads again only when the snapshot is not recent
 import Foundation
 
 enum LifeViewKind: String, CaseIterable, Identifiable {
@@ -172,8 +174,19 @@ final class LifeViewModel: ObservableObject {
 
     func load() async { await read(silent: false) }
 
+    /// The screen came on: the cached snapshot goes on screen at once; with one shown it is read in place,
+    /// and not at all while recent.
     func appear() async {
+        showCached()
+        if snapshot != nil, cache.isRecent(key: Self.cacheKey) { return }
         if snapshot == nil { await load() } else { await refresh() }
+    }
+
+    /// Puts the cached snapshot on screen while nothing is shown, without the network.
+    func showCached() {
+        guard snapshot == nil, let cached = cache.peek(LifeSnapshotDTO.self, key: Self.cacheKey) else { return }
+        snapshot = cached.value
+        state = .loaded
     }
 
     func refresh() async { await read(silent: true) }

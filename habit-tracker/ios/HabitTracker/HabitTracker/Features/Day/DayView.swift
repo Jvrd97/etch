@@ -1,6 +1,8 @@
 // [review:need-review] PHASE-01/274
 // [review:need-review] PHASE-01/211, PHASE-03/226, PHASE-03/225, PHASE-03/231
 // summary: Day screen (replaces the #208 placeholder) — the shared offline-queue strip and the offline banner atop (with a word when the cached day is not today), a "written on the phone, waiting to send" sign on a line or notebook still in the queue, day stepper, plan sections with tap-to-cycle marks (VoiceOver names the line) and plan windows on the device's clock, category-linked fact cards (target, fact, unit; record/correct/remove), the two closing touches with the verdict, the notebook with a per-day draft and a conflict card when the server text moved, a hint that anchors are marked on the web (only when the day has anchors), re-read on return from the background, at midnight and on a time zone change; the app's own calendar is not used, days are stepped with arrows
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the cached day is drawn before the first frame, coming back to the tab reads again only what is not recent, a failed re-read is a line under the header
 import SwiftUI
 import UIKit
 
@@ -38,11 +40,22 @@ struct DayView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(DS.Palette.card)
             }
+            if let problem = viewModel.refreshError {
+                Text(problem)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Palette.danger)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.bottom, DS.Spacing.sm)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(DS.Palette.card)
+                    .accessibilityIdentifier("day.refreshError")
+            }
             content
         }
         .navigationTitle(AppTab.day.title)
         .dsScreenBackground()
-        .task { await viewModel.load() }
+        .onAppear { viewModel.showCached() }
+        .task { await viewModel.appear() }
         .onChange(of: scenePhase) { old, new in
             if Self.shouldReread(from: old, to: new) { Task { await viewModel.rereadInPlace() } }
         }
