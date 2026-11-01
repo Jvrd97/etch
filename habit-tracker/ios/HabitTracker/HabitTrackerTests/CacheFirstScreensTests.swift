@@ -1,4 +1,5 @@
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — a return to a loaded table keeps the older pages; a Day step names the day it opens, counts from the day asked for and, when it fails, names that day and points the screen back; past midnight (and past the end of the running week) an appearance reads again however recent the snapshot
 // summary: every screen with a cached snapshot opens from it while the server never answers and never passes through the loader; three appearances inside `minAge` cost at most one request per endpoint; the day-bound snapshots of another day are not shown as today's; an older answer does not replace a newer grid; the streak read does not wait for the table; snapshots of another server are not shown; a loaded day steps without the loader
 import Combine
 import XCTest
@@ -341,14 +342,15 @@ final class CacheFirstScreensTests: XCTestCase {
         }
     }
 
-    func testDayReadsOncePerWindow() async {
+    func testDayReadsOncePerWindow() async throws {
         let screen = dayScreen()
-        await assertOneReadPerWindow(answers: ["/day": Data(DayFixtures.dayJSON.utf8)]) { await screen.appear() }
+        await assertOneReadPerWindow(answers: ["/day": try json(DayFixtures.day(date: Self.today))]) { await screen.appear() }
     }
 
-    func testWeekReadsOncePerWindow() async {
+    func testWeekReadsOncePerWindow() async throws {
         let screen = weekScreen()
-        await assertOneReadPerWindow(answers: ["/week-review": Data(WeekFixtures.reviewJSON.utf8)]) { await screen.appear() }
+        let running = try json(WeekFixtures.runningWeek(iso: "2026-W43"))
+        await assertOneReadPerWindow(answers: ["/week-review": running]) { await screen.appear() }
     }
 
     func testTableReadsOncePerWindow() async {
@@ -550,6 +552,82 @@ final class CacheFirstScreensTests: XCTestCase {
         XCTAssertNil(screen.board)
     }
 
+    // MARK: Table keeps the older pages when the screen comes back
+
+    func testComingBackToTheTableKeepsThePagesReadWithLoadOlder() async {
+        let api = RangeTableAPI()
+        let screen = TableViewModel(api: api, cacheStore: store, timeZone: Self.utc, now: now)
+        await screen.appear()
+        await screen.loadOlder()
+        XCTAssertEqual(screen.grid.rows.map(\.date), [Self.today, "2026-09-21"])
+
+        clock.now += ReadThroughCache.minAge
+        await screen.appear()
+
+        XCTAssertEqual(screen.grid.rows.map(\.date), [Self.today, "2026-09-21"], "the older page was wiped")
+        await screen.loadOlder()
+        XCTAssertEqual(api.ranges.last?.to, "2026-08-22", "«load older» starts again from the first page")
+    }
+
+    func testPullToRefreshStillReplacesTheTable() async {
+        let api = RangeTableAPI()
+        let screen = TableViewModel(api: api, cacheStore: store, timeZone: Self.utc, now: now)
+        await screen.appear()
+        await screen.loadOlder()
+
+        await screen.load()
+
+        XCTAssertEqual(screen.grid.rows.map(\.date), [Self.today])
+    }
+
+    // MARK: 4 — past midnight a recent snapshot of yesterday is read again
+
+    /// 23:59:50 UTC on the 21st.
+    private static let beforeMidnight = wednesday.addingTimeInterval(12 * 3600 - 10)
+
+    func testTodayReadsAgainPastMidnightHoweverRecentTheSnapshot() async {
+        clock.now = Self.beforeMidnight
+        ScriptedURLProtocol.reset(answers: ["/categories": Data("[]".utf8), "/entries": Data("[]".utf8)])
+        let screen = todayScreen()
+        await screen.appear()
+        let before = ScriptedURLProtocol.paths.filter { $0 == "/entries" }.count
+
+        clock.now += 15
+        await screen.appear()
+
+        XCTAssertEqual(ScriptedURLProtocol.paths.filter { $0 == "/entries" }.count, before + 1)
+    }
+
+    func testDayReadsAgainPastMidnightHoweverRecentTheCopy() async throws {
+        clock.now = Self.beforeMidnight
+        ScriptedURLProtocol.reset(answers: ["/day": try json(DayFixtures.day(date: Self.today))])
+        let screen = dayScreen()
+        await screen.appear()
+        await screen.appear()
+        XCTAssertEqual(ScriptedURLProtocol.paths, ["/day"], "inside the window and the same day: no second read")
+
+        clock.now += 15
+        await screen.appear()
+
+        XCTAssertEqual(ScriptedURLProtocol.paths, ["/day", "/day"])
+    }
+
+    func testWeekReadsAgainOnceTheRunningWeekHasEnded() async throws {
+        // Monday 2026-10-26 03:59:50 in Berlin (UTC+1): the server's day is still Sunday until 04:00.
+        clock.now = Date(timeIntervalSince1970: 1_792_918_800 + 18 * 3600 - 10)
+        ScriptedURLProtocol.reset(answers: ["/week-review": try json(WeekFixtures.runningWeek(iso: "2026-W43"))])
+        let screen = weekScreen()
+        await screen.appear()
+        XCTAssertTrue(screen.isShowingRunningWeek)
+        await screen.appear()
+        XCTAssertEqual(ScriptedURLProtocol.paths, ["/week-review"], "inside the window and the week runs: no second read")
+
+        clock.now += 15
+        await screen.appear()
+
+        XCTAssertEqual(ScriptedURLProtocol.paths, ["/week-review", "/week-review"])
+    }
+
     // MARK: Day steps without the loader
 
     func testALoadedDayStepsWithoutTheLoader() async {
@@ -569,6 +647,54 @@ final class CacheFirstScreensTests: XCTestCase {
         stepping.cancel()
         watch.cancel()
     }
+
+    func testAStepNamesTheDayItOpensAndTheNextStepCountsFromIt() async {
+        ScriptedURLProtocol.reset(answers: ["/day": Data(DayFixtures.dayJSON.utf8)])
+        let screen = dayScreen()
+        await screen.appear()
+        ScriptedURLProtocol.reset(answers: nil)
+
+        let first = Task { await screen.showPreviousDay() }
+        await waitUntil { ScriptedURLProtocol.paths.contains("/day/2026-10-24") }
+        XCTAssertEqual(screen.steppingTo, "2026-10-24")
+        XCTAssertEqual(screen.shownDate, DayFixtures.date, "the shown day stays until the next one comes")
+
+        let second = Task { await screen.showPreviousDay() }
+        await waitUntil { ScriptedURLProtocol.paths.contains("/day/2026-10-23") }
+        XCTAssertEqual(screen.steppingTo, "2026-10-23", "two taps are two days")
+        first.cancel()
+        second.cancel()
+    }
+
+    func testAStepThatFailsNamesTheDayAndPointsTheScreenBack() async {
+        ScriptedURLProtocol.reset(answers: ["/day": Data(DayFixtures.dayJSON.utf8)])
+        let screen = dayScreen()
+        await screen.appear()
+
+        await screen.showPreviousDay()
+
+        XCTAssertEqual(screen.shownDate, DayFixtures.date)
+        XCTAssertNil(screen.steppingTo)
+        XCTAssertEqual(
+            screen.refreshError?.hasPrefix("\(DayViewModel.openFailedPrefix) \(DayFormat.title(of: "2026-10-24"))"), true,
+            "the line does not name the day that did not open: \(screen.refreshError ?? "nil")"
+        )
+        XCTAssertNil(screen.requestedDate, "the screen still asks for the day it does not show")
+        await screen.rereadInPlace(reportingFailure: true)
+        XCTAssertEqual(ScriptedURLProtocol.paths.last, "/day", "pull to refresh jumped to the day that failed")
+    }
+}
+
+/// Answers each table read with the last day of the range asked for.
+private final class RangeTableAPI: TableAPI {
+    private(set) var ranges: [(from: String, to: String)] = []
+
+    func fetchTable(dateFrom: String, dateTo: String) async throws -> TableResponseDTO {
+        ranges.append((dateFrom, dateTo))
+        return TableResponseDTO(categories: [], days: [TableDayDTO(date: dateTo, cells: [])])
+    }
+
+    func fetchEntries(categoryId: Int, date: String) async throws -> [EntryDTO] { [] }
 }
 
 /// A table read whose first answer waits for the test; later reads answer `next` at once.

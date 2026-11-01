@@ -8,6 +8,7 @@
 // summary: PHASE-03/242 — the cached-day notice names the day from the cache instead of saying today is missing (wrong between midnight and 04:00); the load reads alongside the queue's send, and a day write delivered during a load reads the day again: reads are numbered, an answer older than the one shown is dropped and does not stay in the cache, a failed re-read leaves the load's day; a direct mark or notebook that lost its answer is queued as one that may have landed
 // summary: Day screen state — loads GET /day for the server's today or a stepped date through the read cache (opens offline from the last copy and says when that copy is not today), optimistic mark cycle with rollback; without a network a mark, a new fact and the notebook go to the shared outbox and stay on screen through re-reads until delivered, and a mark or notebook whose older write still waits goes through the queue too (closing and fact corrections say they need the server), category-linked facts (record/correct/remove with the done/unmark rule and a retry-safe Idempotency-Key), notebook and closing fields kept per day across stepping (a notebook draft remembers the server text it was typed on; a changed server text raises a conflict instead of being overwritten; so do the closing fields), a late re-read never rolls back a notebook save (the saved text is remembered per day, so it holds after stepping away and back; the note that a save replaced the server text stays until dismissed), two-touch closing (review 15:40, final evening); silent re-read after each write, on return from the background, at midnight and on a time zone change (pull-to-refresh alone reports a failure)
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — a step with nothing cached shows the day it goes to (`steppingTo`) while the shown day stays; the next step counts from the day asked for; a step that fails names that day and points the screen back at the day shown; an appearance after midnight reads again whatever the age of the copy; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the day opens from its cached copy (the cached «today» only when it is today), an appearance reads again only when the copy is not recent, a loaded day stays on screen through a step or a re-read (no loader), and a failed re-read is a line, not a replaced screen
 import Combine
 import Foundation
@@ -62,6 +63,8 @@ final class DayViewModel: ObservableObject {
     @Published private(set) var offlineAsOf: Date?
     /// Why the last read of a loaded screen failed; the day on screen stays.
     @Published private(set) var refreshError: String?
+    /// The day being opened while another stays on screen (a step with nothing cached); nil otherwise.
+    @Published private(set) var steppingTo: String?
     /// Lines of the shown day with a mark or a fact written on the phone and not yet on the server.
     @Published private(set) var queuedItems: Set<UUID> = []
     /// The notebook of the shown day waits in the queue.
@@ -91,6 +94,7 @@ final class DayViewModel: ObservableObject {
     static let factFailedMessage = "Факт не сохранился"
     static let closingFailedMessage = "День не закрылся"
     static let refreshFailedMessage = "День не обновился"
+    static let openFailedPrefix = "Не удалось открыть"
     static let closingNeedsServerMessage =
         "Нет сети. Закрыть день можно только со связью: вердикт считает сервер. Поля остались на экране."
     static let factNeedsServerMessage = "Нет сети. Исправить или удалить факт можно только со связью."
@@ -99,6 +103,8 @@ final class DayViewModel: ObservableObject {
     private(set) var requestedDate: String?
     /// The date the screen currently shows (what the server answered with).
     var shownDate: String? { detail?.day.date }
+    /// The `requestedDate` whose answer is on screen: a step that fails points the screen back at it.
+    private var shownRequest: String?
 
     private let apiProvider: () -> DayAPI?
     private let timeZoneProvider: () -> TimeZone
@@ -244,7 +250,9 @@ final class DayViewModel: ObservableObject {
     /// when that copy is not recent.
     func appear() async {
         showCached()
-        if state == .loaded, cache.isRecent(key: cacheKey) { return }
+        // Past midnight the server's today has moved: a recent copy of yesterday is not today.
+        let showsAskedDay = requestedDate != nil || shownDate == localToday
+        if state == .loaded, showsAskedDay, cache.isRecent(key: cacheKey) { return }
         await load()
     }
 
@@ -258,6 +266,7 @@ final class DayViewModel: ObservableObject {
         offlineAsOf = nil
         // A save made in this run may be newer than the copy: its text outranks the copy's.
         apply(cached.value, keepingNotebook: false, savedSince: savedNotebooks[date])
+        shownRequest = requestedDate
         state = .loaded
     }
 
@@ -272,6 +281,9 @@ final class DayViewModel: ObservableObject {
         }
         showCached()
         if state != .loaded { state = .loading }
+        // Another day stays on screen until this one comes: the header names where the step goes.
+        let target = requestedDate ?? localToday
+        steppingTo = state == .loaded && target != shownDate ? target : nil
         let task = Task { [self] in
             let flushing = Task { await outbox?.flush() }
             await fetch(showFailure: true)
@@ -280,7 +292,10 @@ final class DayViewModel: ObservableObject {
         let mine = (date: requestedDate, task: task)
         runningLoad = mine
         await task.value
-        if runningLoad?.task == mine.task { runningLoad = nil }
+        if runningLoad?.task == mine.task {
+            runningLoad = nil
+            steppingTo = nil
+        }
     }
 
     /// Re-read after a write: counts and the verdict are the server's to recount.
@@ -301,8 +316,9 @@ final class DayViewModel: ObservableObject {
         readsSent += 1
         let read = readsSent
         let epochAtSend = notebookSaveEpoch
+        let requested = requestedDate
+        let sentUnder = cache.scope
         do {
-            let requested = requestedDate
             let key = cacheKey
             let outcome: CacheOutcome<DayDetailDTO>
             if showFailure {
@@ -314,7 +330,9 @@ final class DayViewModel: ObservableObject {
             }
             // Before the checks below: the cache must end up with the newest answer of the key even when
             // this answer is dropped for the screen (the person stepped to another day meanwhile).
-            if case .fresh(let day) = outcome { settleCache(key: key, read: read, day: day, loadWroteIt: showFailure) }
+            if case .fresh(let day) = outcome {
+                settleCache(key: key, read: read, day: day, loadWroteIt: showFailure, sentUnder: sentUnder)
+            }
             // A newer load (stepped to another day) has taken over: drop this answer.
             guard generation == loadGeneration, read > readShown else { return }
             readShown = read
@@ -333,12 +351,17 @@ final class DayViewModel: ObservableObject {
             // Another day on screen cannot keep its notebook, but the text its save wrote outranks an older answer.
             let savedSince = savedNotebooks[fetched.day.date].flatMap { epochAtSend <= $0.epoch ? $0 : nil }
             apply(fetched, keepingNotebook: notebookIsStale && fetched.day.date == loadedDate, savedSince: savedSince)
+            shownRequest = requested
             refreshError = nil
             state = .loaded
         } catch {
             // A newer answer is on screen, or the screen asked for another day since: nothing to say.
             guard generation == loadGeneration, read > readShown else { return }
-            if showFailure, state == .loaded, detail != nil {
+            if showFailure, state == .loaded, detail != nil, requested != shownRequest {
+                // A step that did not open: say which day, and point the screen back at the day it shows.
+                refreshError = Self.failure("\(Self.openFailedPrefix) \(DayFormat.title(of: requested ?? localToday))", error)
+                requestedDate = shownRequest
+            } else if showFailure, state == .loaded, detail != nil {
                 refreshError = Self.failure(Self.refreshFailedMessage, error)
             } else if showFailure {
                 state = .failure(Self.message(for: error))
@@ -350,10 +373,10 @@ final class DayViewModel: ObservableObject {
 
     /// Keeps the read cache at the answer of the newest read of `key`. A read that is not the newest
     /// writes nothing; a load that is not the newest put its answer there itself, so the newest comes back.
-    private func settleCache(key: String, read: Int, day: DayDetailDTO, loadWroteIt: Bool) {
+    private func settleCache(key: String, read: Int, day: DayDetailDTO, loadWroteIt: Bool, sentUnder: String) {
         if let newest = newestCached[key], newest.read > read {
             // The copy keeps the stamp of the read it came from, not the moment it is put back.
-            if loadWroteIt { cache.store.save(newest.day, forKey: key, updatedAt: newest.at) }
+            if loadWroteIt { cache.save(newest.day, forKey: key, updatedAt: newest.at, sentUnder: sentUnder) }
             return
         }
         let at = cache.now()
@@ -363,7 +386,7 @@ final class DayViewModel: ObservableObject {
            let oldest = newestCached.filter({ $0.key != key }).min(by: { $0.value.read < $1.value.read })?.key {
             newestCached[oldest] = nil
         }
-        if !loadWroteIt { cache.store.save(day, forKey: key, updatedAt: at) }
+        if !loadWroteIt { cache.save(day, forKey: key, updatedAt: at, sentUnder: sentUnder) }
     }
 
     /// Writes still in the queue are not on the server yet: their marks and notebook are laid on top.
@@ -510,8 +533,9 @@ final class DayViewModel: ObservableObject {
         await rereadInPlace()
     }
 
+    /// Counts from the day asked for, not the one still on screen: two quick taps are two days.
     private func step(by days: Int) async {
-        guard let current = shownDate, let moved = DayFormat.shift(current, by: days) else { return }
+        guard let current = requestedDate ?? steppingTo ?? shownDate, let moved = DayFormat.shift(current, by: days) else { return }
         requestedDate = moved
         await load()
     }

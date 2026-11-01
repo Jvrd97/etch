@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-03/240, PHASE-03/258
 // summary: the server's day rule (zone + day-start hour, read with the list and kept in the cache; the day is cut by wall clock), a waiting press of another day does not count as taken today, a press in flight disables its button, a dropped old answer does not stay in the cache, the moment the day turns; state of the Supplements screen — the list through the read cache (a cached list from another day does not claim «принял сегодня»; reads are numbered and an answer older than the one on screen is dropped), «принял» as one POST under an Idempotency-Key that an offline press queues in the shared outbox under the same key with the day of the press and shows at once, rows redrawn whenever the queue changes, a delivered press re-reads the list, and adding a supplement (needs the network); no name or dose is ever logged
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the list opens from its cached copy (a copy of another day without «принял»), an appearance reads again only when the copy is not recent, a re-read of a shown list says its failure as a line
 import Combine
 import Foundation
@@ -126,6 +127,7 @@ final class SupplementsViewModel: ObservableObject {
         // the list back. A delivery reads the list again.
         let flushing = Task { await outbox.flush() }
         let read = nextRead()
+        let sentUnder = cache.scope
         let known = rule
         let clock = now
         do {
@@ -151,7 +153,7 @@ final class SupplementsViewModel: ObservableObject {
                 }
             } else if case .fresh = outcome {
                 // The cache took an answer older than the one on screen: put the shown list back.
-                saveShown()
+                saveShown(sentUnder: sentUnder)
             }
             state = .loaded
             if let line = refreshFailureLine, errorMessage == line { errorMessage = nil }
@@ -180,10 +182,11 @@ final class SupplementsViewModel: ObservableObject {
     private func reconcileAfterFlush() async {
         guard let api = apiProvider() else { return }
         let read = nextRead()
+        let sentUnder = cache.scope
         if let items = try? await api.fetchSupplements(), isNewest(read) {
             offlineAsOf = nil
             show(items)
-            saveShown()
+            saveShown(sentUnder: sentUnder)
         }
     }
 
@@ -220,9 +223,9 @@ final class SupplementsViewModel: ObservableObject {
         if let learned, learned != rule { rule = learned }
     }
 
-    private func saveShown() {
-        cache.store.save(
-            Snapshot(day: today(), items: serverItems, rule: rule), forKey: Self.cacheKey, updatedAt: now()
+    private func saveShown(sentUnder: String) {
+        cache.save(
+            Snapshot(day: today(), items: serverItems, rule: rule), forKey: Self.cacheKey, updatedAt: now(), sentUnder: sentUnder
         )
     }
 
@@ -283,10 +286,11 @@ final class SupplementsViewModel: ObservableObject {
         }
         let key = UUID().uuidString
         let pressed = now()
+        let sentUnder = cache.scope
         do {
             _ = try await api.markIntake(supplementID: supplement.id, intakeDate: nil, idempotencyKey: key)
             replace(supplement.id) { $0.taken(true) }
-            saveShown()
+            saveShown(sentUnder: sentUnder)
         } catch let error as APIClientError where error.isConnectivity {
             queue(supplement, key: key, pressed: pressed, mayHaveLanded: OutboxQueue.mayHaveLanded(after: error))
         } catch let error as APIClientError {
@@ -334,11 +338,12 @@ final class SupplementsViewModel: ObservableObject {
         }
         isSaving = true
         defer { isSaving = false }
+        let sentUnder = cache.scope
         do {
             let created = try await api.createSupplement(payload)
             serverItems.append(created)
             redraw(outbox.writes)
-            saveShown()
+            saveShown(sentUnder: sentUnder)
             return true
         } catch let error as APIClientError where error.isConnectivity {
             errorMessage = SupplementsFormat.addNeedsNetworkMessage

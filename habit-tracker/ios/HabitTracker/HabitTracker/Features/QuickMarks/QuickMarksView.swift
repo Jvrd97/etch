@@ -1,7 +1,7 @@
 // [review:need-review] PHASE-01/208, PHASE-01/210, PHASE-03/225
+// summary: the Quick marks screen behind More — the same buttons and day-sets list as Today, on their own, under the shared offline-queue strip; replaces the #208 placeholder and builds its view model with .live() so RootView needs no edit
 // [review:need-review] PHASE-03/310
 // summary: PHASE-03/310 — opens on the cached buttons, reads again only what is not recent
-// summary: the Quick marks screen behind More — the same buttons and day-sets list as Today, on their own, under the shared offline-queue strip; replaces the #208 placeholder and builds its view model with .live() so RootView needs no edit
 import SwiftUI
 
 struct QuickMarksView: View {

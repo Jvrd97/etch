@@ -3,6 +3,7 @@
 // summary: PHASE-03/244 adds the advice on sleep, sport and supplements — written on request for the last seven days (not for the week on screen), 422 kept apart from a failure, one request at a time
 // summary: Week screen state — the running or a named week through the read cache (each week under its own key, the week running by the calendar also under `current` whichever way it was opened, so stepping back works offline; offline answers carry their moment; a cached week that has since ended loses its «не закончилась» note), stepping between weeks with a late answer dropped, return to the screen refreshes in place, and the AI narrative on request (one request per week, a late text of a superseded request dropped, statuses in words)
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — an appearance once the running week has ended reads again whatever the age of the answer; the cache takes no week of a server the address moved away from
 // summary: PHASE-03/310 — the week opens and steps from its cached answer (the cached running week only while it still runs), an appearance reads again only when the answer is not recent
 import Foundation
 
@@ -53,7 +54,6 @@ final class WeekViewModel: ObservableObject {
 
     private let apiProvider: () -> WeekAPI?
     private let narrativeAPIProvider: () -> WeekAPI?
-    private let store: CacheStore
     private let cache: ReadThroughCache
     private let now: () -> Date
     /// Bumped by every read; an answer that finds a newer number was asked about a week the person left.
@@ -71,7 +71,6 @@ final class WeekViewModel: ObservableObject {
     ) {
         self.apiProvider = apiProvider
         self.narrativeAPIProvider = narrativeAPIProvider
-        self.store = cacheStore
         self.cache = ReadThroughCache(store: cacheStore, now: now)
         self.now = now
     }
@@ -109,7 +108,9 @@ final class WeekViewModel: ObservableObject {
     /// place (a loader over weeks the person was reading would be a step back), and not at all while recent.
     func appear() async {
         showCached()
-        if review != nil, cache.isRecent(key: Self.cacheKey(for: requestedIso)) { return }
+        // The running week asked for, but the one on screen has ended since: read it, however recent.
+        let showsAskedWeek = requestedIso != nil || isShowingRunningWeek
+        if review != nil, showsAskedWeek, cache.isRecent(key: Self.cacheKey(for: requestedIso)) { return }
         if review == nil {
             await load()
         } else {
@@ -190,12 +191,13 @@ final class WeekViewModel: ObservableObject {
             fail(WeekFormat.notConfiguredMessage, silent: silent)
             return
         }
+        let sentUnder = cache.scope
         do {
             let outcome = try await cache.load(key: Self.cacheKey(for: iso)) {
                 try await api.fetchWeekReview(iso: iso)
             }
             guard mine == generation else { return }
-            show(outcome, askedFor: iso)
+            show(outcome, askedFor: iso, sentUnder: sentUnder)
         } catch let error as APIClientError {
             guard mine == generation else { return }
             fail(WeekFormat.message(for: error), silent: silent)
@@ -205,7 +207,7 @@ final class WeekViewModel: ObservableObject {
         }
     }
 
-    private func show(_ outcome: CacheOutcome<WeekReviewDTO>, askedFor iso: String?) {
+    private func show(_ outcome: CacheOutcome<WeekReviewDTO>, askedFor iso: String?, sentUnder: String) {
         let response: WeekReviewDTO
         switch outcome {
         case .fresh(let value):
@@ -213,10 +215,10 @@ final class WeekViewModel: ObservableObject {
             offlineAsOf = nil
             if iso == nil {
                 // The running week is also kept under its own code: stepping away and back must not need the network.
-                store.save(value, forKey: Self.cacheKey(for: value.window.isoCode), updatedAt: now())
+                cache.save(value, forKey: Self.cacheKey(for: value.window.isoCode), updatedAt: now(), sentUnder: sentUnder)
             } else if WeekFormat.isRunning(value.window, at: now()) {
                 // …and the other way round: the running week opened by its code is the one «current» means.
-                store.save(value, forKey: Self.cacheKey(for: nil), updatedAt: now())
+                cache.save(value, forKey: Self.cacheKey(for: nil), updatedAt: now(), sentUnder: sentUnder)
             }
         case .stale(let value, let updatedAt):
             response = value

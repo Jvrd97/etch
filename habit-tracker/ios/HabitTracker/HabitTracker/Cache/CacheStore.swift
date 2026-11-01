@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/11-ios-read-cache
 // summary: read-cache primitives — CacheStore protocol, in-memory impl, connectivity classifier, and ReadThroughCache that serves cached data (with a stale timestamp) when the network is down
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — the server a read was sent to is captured with it (`scope`): an answer that comes back after the address changed is not cached under the new server, and `save(_:forKey:updatedAt:sentUnder:)` does the same for a screen's own writes into the cache
 // summary: PHASE-03/310 — `peek` gives a screen its last snapshot without the network, `isRecent` lets an appearance skip the read while the snapshot is younger than `minAge` and no write went out since (`ServerWrites`), and an answer older than the one already cached no longer overwrites it
 import Foundation
 import os
@@ -22,6 +23,18 @@ protocol CacheStore {
     func load<T: Decodable>(_ type: T.Type, forKey key: String) -> CachedValue<T>?
     /// What this run read from the server into the store, so screens sharing it agree on what is recent.
     var reads: CacheReadLog { get }
+    /// The server the store keeps snapshots for right now; empty for a store that keeps one server only.
+    var scope: String { get }
+}
+
+extension CacheStore {
+    var scope: String { "" }
+}
+
+/// A store that can give a record a new key without decoding it.
+protocol CacheRecordMoving {
+    /// Moves the record at `oldKey` to `newKey` unless `newKey` is taken; returns whether it moved.
+    func moveRecord(from oldKey: String, to newKey: String) -> Bool
 }
 
 /// Counts the writes this run sent to the server. A snapshot read before a write may miss it, so it is not
@@ -82,7 +95,7 @@ enum CacheCoding {
 
 /// Process-lifetime cache backed by a dictionary. Used as the default in unit tests
 /// and as the fallback when the on-disk store cannot be created.
-final class InMemoryCacheStore: CacheStore {
+final class InMemoryCacheStore: CacheStore, CacheRecordMoving {
     private struct Record {
         let payload: Data
         let updatedAt: Date
@@ -94,6 +107,12 @@ final class InMemoryCacheStore: CacheStore {
     func save<T: Encodable>(_ value: T, forKey key: String, updatedAt: Date) {
         guard let data = try? CacheCoding.encoder().encode(value) else { return }
         records[key] = Record(payload: data, updatedAt: updatedAt)
+    }
+
+    func moveRecord(from oldKey: String, to newKey: String) -> Bool {
+        guard records[newKey] == nil, let record = records.removeValue(forKey: oldKey) else { return false }
+        records[newKey] = record
+        return true
     }
 
     func load<T: Decodable>(_ type: T.Type, forKey key: String) -> CachedValue<T>? {
@@ -152,10 +171,12 @@ struct ReadThroughCache {
     ) async throws -> CacheOutcome<T> {
         let read = store.reads.send(key)
         let writes = ServerWrites.count
+        let sentUnder = scope
         do {
             let value = try await fetch()
             let at = now()
-            if store.reads.land(key, read: read, at: at, writes: writes) {
+            // The address changed while the read was out: the answer is the previous server's.
+            if sentUnder == scope, store.reads.land(key, read: read, at: at, writes: writes) {
                 store.save(value, forKey: key, updatedAt: at)
             }
             return .fresh(value)
@@ -165,6 +186,16 @@ struct ReadThroughCache {
             }
             return .stale(cached.value, updatedAt: cached.updatedAt)
         }
+    }
+
+    /// The server a read goes to; capture it when the request leaves and hand it to `save(_:forKey:updatedAt:sentUnder:)`.
+    var scope: String { store.scope }
+
+    /// A screen's own write into the cache of what a read brought: skipped when the server changed since
+    /// the read was sent, so the previous server's answer never lands in the new server's snapshots.
+    func save<T: Encodable>(_ value: T, forKey key: String, updatedAt: Date, sentUnder: String) {
+        guard sentUnder == scope else { return }
+        store.save(value, forKey: key, updatedAt: updatedAt)
     }
 
     /// The last snapshot at `key`, without the network: what a screen draws on its first frame.

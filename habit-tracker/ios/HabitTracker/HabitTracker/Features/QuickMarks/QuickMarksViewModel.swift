@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/210, PHASE-03/225, PHASE-03/236, PHASE-03/242
 // summary: state of the quick-mark buttons — the directory through the read cache (read alongside the queue's send, not after it; an answer older than the one on screen is dropped and the cache keeps the newer directory), one POST per tap that repaints the button from its own answer, an offline tap queued in the shared outbox under the same key with the moment of the press and shown at once, the buttons redrawn whenever the queue changes and their waiting presses said to VoiceOver, undo of the last tap or of a named set, and a word to the screen when a day moved
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — an appearance after midnight reads again whatever the age of the directory; the cache takes no answer of a server the address moved away from
 // summary: PHASE-03/310 — the buttons open from the cached directory of today (no loader), an appearance reads again only when the directory is not recent, a re-read keeps the buttons and says its failure as a line
 import Combine
 import Foundation
@@ -127,7 +128,9 @@ final class QuickMarksViewModel: ObservableObject {
     /// The screen came on: the cached directory goes on screen at once, the server is asked only when it is not recent.
     func appear() async {
         showCached()
-        if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
+        // Past midnight the totals on screen are yesterday's, however recent the read.
+        let showsToday = serverMarks.allSatisfy { $0.entryDate == localToday }
+        if state == .loaded, showsToday, cache.isRecent(key: Self.cacheKey) { return }
         await load()
     }
 
@@ -163,6 +166,7 @@ final class QuickMarksViewModel: ObservableObject {
         // reads the directory again (`reconcileAfterFlush`).
         let flushing = Task { await outbox.flush() }
         let read = nextRead()
+        let sentUnder = cache.scope
         do {
             let outcome = try await cache.load(key: Self.cacheKey) {
                 try await api.fetchQuickMarks()
@@ -178,7 +182,7 @@ final class QuickMarksViewModel: ObservableObject {
                 }
             } else if case .fresh = outcome {
                 // The cache took this older answer: put back the directory a later read put on screen.
-                cache.store.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now())
+                cache.save(serverMarks, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: sentUnder)
             }
             state = .loaded
             if let line = refreshFailureLine, errorMessage == line { errorMessage = nil }
@@ -208,10 +212,11 @@ final class QuickMarksViewModel: ObservableObject {
     func reconcileAfterFlush(categoryIDs: [Int]) async {
         guard let api = apiProvider() else { return }
         let read = nextRead()
+        let sentUnder = cache.scope
         if let directory = try? await api.fetchQuickMarks(), isNewest(read) {
             offlineAsOf = nil
             show(directory)
-            cache.store.save(directory, forKey: Self.cacheKey, updatedAt: cache.now())
+            cache.save(directory, forKey: Self.cacheKey, updatedAt: cache.now(), sentUnder: sentUnder)
         }
         categoryIDs.forEach { onDayChanged?($0) }
     }

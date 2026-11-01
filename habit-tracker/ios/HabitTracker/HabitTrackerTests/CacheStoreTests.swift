@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/11-ios-read-cache
 // summary: unit tests for the read-cache layer — SwiftData round-trip/overwrite, connectivity classifier, and ReadThroughCache fresh/stale/rethrow outcomes
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — an answer that comes back after the address changed is not cached under the new server (load and a screen's own save); unscoped snapshots move once under the server that owned them
 // summary: PHASE-03/310 — peek without the network, recency by age and by writes sent since, an older answer that lands late does not overwrite the cache, snapshots of another server are not shown
 import XCTest
 @testable import HabitTracker
@@ -218,6 +219,75 @@ final class CacheStoreTests: XCTestCase {
         server = "http://b:8000"
 
         XCTAssertFalse(cache.isRecent(key: "k"))
+    }
+
+    func testAnAnswerThatComesBackAfterTheAddressChangedIsNotCachedUnderTheNewServer() async throws {
+        var server = "http://a:8000"
+        let store = ServerScopedCacheStore(base: InMemoryCacheStore(), server: { server })
+        let cache = ReadThroughCache(store: store, now: { self.makeDate() })
+        server = "http://b:8000"
+        store.save(Sample(id: 2, name: "b's own"), forKey: "k", updatedAt: makeDate())
+        server = "http://a:8000"
+
+        _ = try await cache.load(key: "k") { () -> Sample in
+            server = "http://b:8000"
+            return Sample(id: 1, name: "a's answer")
+        }
+
+        XCTAssertEqual(store.load(Sample.self, forKey: "k")?.value.name, "b's own")
+        XCTAssertFalse(cache.isRecent(key: "k"))
+    }
+
+    func testAScreensOwnSaveIsSkippedWhenTheAddressChangedSinceItsRead() {
+        var server = "http://a:8000"
+        let store = ServerScopedCacheStore(base: InMemoryCacheStore(), server: { server })
+        let cache = ReadThroughCache(store: store, now: { self.makeDate() })
+        let sentUnder = cache.scope
+
+        server = "http://b:8000"
+        cache.save(Sample(id: 1, name: "a's answer"), forKey: "k", updatedAt: makeDate(), sentUnder: sentUnder)
+        XCTAssertNil(store.load(Sample.self, forKey: "k"))
+
+        cache.save(Sample(id: 2, name: "b's answer"), forKey: "k", updatedAt: makeDate(), sentUnder: cache.scope)
+        XCTAssertEqual(store.load(Sample.self, forKey: "k")?.value.name, "b's answer")
+    }
+
+    func testUnscopedSnapshotsMoveOnceUnderTheServerThatOwnedThem() {
+        let base = InMemoryCacheStore()
+        base.save(Sample(id: 1, name: "before #310"), forKey: "k", updatedAt: makeDate())
+        var server = "http://b:8000"
+        let store = ServerScopedCacheStore(base: base, server: { server }, legacyOwner: "http://a:8000")
+
+        XCTAssertNil(store.load(Sample.self, forKey: "k"), "another server never takes them over")
+        server = "http://a:8000"
+        XCTAssertEqual(store.load(Sample.self, forKey: "k")?.value.name, "before #310")
+        XCTAssertEqual(store.load(Sample.self, forKey: "k")?.updatedAt, makeDate(), "the snapshot keeps its age")
+        XCTAssertNil(base.load(Sample.self, forKey: "k"), "moved, not copied")
+    }
+
+    func testSwiftDataStoreMovesARecordUnlessTheNewKeyIsTaken() throws {
+        let store = try SwiftDataCacheStore(inMemory: true)
+        store.save(Sample(id: 1, name: "old"), forKey: "k", updatedAt: makeDate())
+        store.save(Sample(id: 2, name: "taken"), forKey: "taken", updatedAt: makeDate())
+
+        XCTAssertFalse(store.moveRecord(from: "k", to: "taken"))
+        XCTAssertTrue(store.moveRecord(from: "k", to: "moved"))
+
+        XCTAssertNil(store.load(Sample.self, forKey: "k"))
+        XCTAssertEqual(store.load(Sample.self, forKey: "moved")?.value.name, "old")
+        XCTAssertEqual(store.load(Sample.self, forKey: "taken")?.value.name, "taken")
+    }
+
+    func testTheOwnerOfUnscopedSnapshotsIsTheServerOfTheFirstLaunchAfterTheUpdate() throws {
+        let suite = "CacheStoreTests.legacyOwner"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set("http://a:8000", forKey: SettingsViewModel.serverAddressDefaultsKey)
+        XCTAssertEqual(ServerScopedCacheStore.legacyOwner(defaults: defaults), "http://a:8000")
+
+        defaults.set("http://b:8000", forKey: SettingsViewModel.serverAddressDefaultsKey)
+
+        XCTAssertEqual(ServerScopedCacheStore.legacyOwner(defaults: defaults), "http://a:8000")
     }
 
     func testStoredServerIsTheAddressTheClientUses() throws {

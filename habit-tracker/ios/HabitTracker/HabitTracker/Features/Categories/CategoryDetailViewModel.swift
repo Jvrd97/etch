@@ -7,7 +7,7 @@ import os
 
 @MainActor
 final class CategoryDetailViewModel: ObservableObject, EntryMutating {
-    private static let logger = Logger(
+    private nonisolated static let logger = Logger(
         subsystem: "com.habittracker.app", category: "CategoryDetailViewModel"
     )
 

@@ -1,6 +1,7 @@
 // [review:need-review] PHASE-01/06-ios-table-view, PHASE-01/11-ios-read-cache, PHASE-01/208
 // summary: Table screen state — loads GET /table (default 30 days) through the read cache (serves last window + offline flag when the network is down), paginates older, fetches cell details
 // [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 round 2 — coming back to a loaded grid folds the fresh recent window into it: the older pages and the start of the history stay; only pull to refresh replaces the grid
 // summary: PHASE-03/310 — the grid opens from the cached window (no loader), an appearance reads again only when the window is not recent, a re-read keeps the grid and says its failure as a line, an older answer never replaces a newer one
 import Foundation
 
@@ -86,10 +87,11 @@ final class TableViewModel: ObservableObject {
     }
 
     /// The screen came on: the cached window goes on screen at once, the server is asked only when it is not recent.
+    /// A loaded grid takes the fresh window into what it holds: pages read with «load older» stay.
     func appear() async {
         showCached()
         if state == .loaded, cache.isRecent(key: Self.cacheKey) { return }
-        await load()
+        await load(merging: state == .loaded)
     }
 
     /// Puts the cached window on screen while nothing is shown, without the network.
@@ -99,11 +101,12 @@ final class TableViewModel: ObservableObject {
         state = .loaded
     }
 
-    /// Loads the most recent `pageDays` days, replacing any previously loaded data.
+    /// Loads the most recent `pageDays` days, replacing any previously loaded data (pull to refresh, retry);
+    /// `merging` folds them into the loaded days instead and keeps the older pages.
     /// Runs through the read cache: a successful fetch refreshes the grid and the cache;
     /// when the network is down the last cached window is shown with an offline timestamp.
     /// A grid on screen stays while it is read again.
-    func load() async {
+    func load(merging: Bool = false) async {
         let showsData = state == .loaded
         if !showsData { state = .loading }
         loadOlderErrorMessage = nil
@@ -133,7 +136,7 @@ final class TableViewModel: ObservableObject {
                 response = value
                 offlineAsOf = updatedAt
             }
-            show(response, from: from)
+            if merging { merge(response, from: from, to: to) } else { show(response, from: from) }
             refreshError = nil
             state = .loaded
         } catch let error as APIClientError {
@@ -151,6 +154,17 @@ final class TableViewModel: ObservableObject {
             response.days.map { ($0.date, $0) }, uniquingKeysWith: { _, new in new }
         )
         earliestLoadedFrom = from
+        rebuildGrid()
+    }
+
+    /// The recent window replaces the days of its own range only; days before it and the start of the history stay.
+    private func merge(_ response: TableResponseDTO, from: Date, to: Date) {
+        let first = dateFormatter.string(from: from)
+        let last = dateFormatter.string(from: to)
+        loadedDays = loadedDays.filter { $0.key < first || $0.key > last }
+        for day in response.days { loadedDays[day.date] = day }
+        if !response.categories.isEmpty { categories = response.categories }
+        earliestLoadedFrom = min(earliestLoadedFrom ?? from, from)
         rebuildGrid()
     }
 

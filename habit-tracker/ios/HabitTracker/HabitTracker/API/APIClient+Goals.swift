@@ -1,6 +1,8 @@
 // [review:need-review] PHASE-01/216
 // [review:need-review] PHASE-03/295
 // summary: GoalsAPI — GET /goals (levels, milestones, the current quarter), PATCH /goals/milestones/{code} that moves one milestone, and PUT /goals/quarter/{quarter} that writes the quarter's goals as one set and hands the server's reason back on 409/422; APIClient implements it on the shared request helpers
+// [review:need-review] PHASE-03/310
+// summary: PHASE-03/310 — the quarter PUT, which does not go through `send`, notes its write in `ServerWrites` too
 import Foundation
 
 /// API surface of the Goals screen; `APIClient` is the production implementation.
@@ -26,6 +28,8 @@ extension APIClient: GoalsAPI {
         var request = makeRequest(url: url, method: "PUT")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try APIJSONCoding.makeEncoder().encode(QuarterGoalsPutDTO(goals: goals))
+        // Answered or not, the write may have changed what a cached snapshot shows.
+        defer { ServerWrites.note() }
         let data: Data
         let response: URLResponse
         do {
