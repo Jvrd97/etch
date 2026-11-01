@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-03/228, PHASE-03/249, PHASE-03/257, PHASE-03/264
+// [review:need-review] PHASE-03/228, PHASE-03/249, PHASE-03/257, PHASE-03/264, #311
+// summary: #311 — a tap the server refused is taken off its button and said under the row
 // summary: desktop Today page — the day-mode badge with its switch sits under the title; the badge reads and writes the server's current day, not the browser's date
 // [review:need-review] PHASE-01/63-today-card-tap-and-visibility, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/122, PHASE-03/130, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247
 // summary: desktop Today page — markup only; the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full entry modal for today's record in that category, and the keyboard marks without the mouse while the legend under "?" says which key does what
@@ -176,6 +177,12 @@ export default function TodayPage() {
                   onUndo={() => void quickMarks.undo()}
                   showHotkeys
                 />
+                {/* A tap the server refused is taken off the button; this says which happened. */}
+                {quickMarks.error !== null && (
+                  <div role="alert" className="mt-3">
+                    <ErrorAlert message={quickMarks.error} onDismiss={quickMarks.clearError} />
+                  </div>
+                )}
               </section>
             )}
 

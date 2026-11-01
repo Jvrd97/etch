@@ -1,8 +1,9 @@
 'use client';
-// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176
+// [review:need-review] PHASE-01/73-category-field-reorder, 175, #176, #311
 // summary: Shared category drafts preserve unit, quick_steps, and raw quick-step text until save
+// summary: #311 — the Categories list draws from the shared read cache (a re-visit is on screen at once and re-read behind it), and a delete or a save marks every cached category list stale
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   categoriesAPI,
   type Category,
@@ -11,6 +12,8 @@ import {
   type CategoryStreakMode,
   type FieldCreate,
 } from '@/lib/api';
+import { categoriesKey, invalidateCategories } from '@/lib/categories-cache';
+import { dataOr, errorMessage, useQuery } from '@/lib/query-cache';
 import { orderedFields } from '@/lib/today-categories';
 import { DEFAULT_CATEGORY_COLOR } from '@/lib/ui-constants';
 
@@ -49,59 +52,82 @@ export interface UseCategoriesResult {
   remove: (id: number) => Promise<void>;
 }
 
+/** The layout key changes only through `setLayout`, which re-renders on its own. */
+function subscribeToNothing(): () => void {
+  return () => {};
+}
+
+function noStoredLayout(): CategoryLayout | null {
+  return null;
+}
+
 function readStoredLayout(): CategoryLayout | null {
   if (typeof window === 'undefined') return null;
   const stored = window.localStorage.getItem(CATEGORY_LAYOUT_STORAGE_KEY);
   return stored === 'cards' || stored === 'list' ? stored : null;
 }
 
-export function useCategories(): UseCategoriesResult {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [layout, setLayoutState] = useState<CategoryLayout>('cards');
+/**
+ * What the screen said, or dismissed, about the list it was looking at.
+ *
+ * Tied to that list: a load that brings a new one retires the sentence (a refused
+ * delete is not news about fresh categories), and a dismissed load failure stays
+ * dismissed only until a different failure arrives.
+ */
+interface ReportedError {
+  message: string | null;
+  data: Category[] | undefined;
+  loadError: unknown;
+}
 
+function shownError(
+  reported: ReportedError | null,
+  data: Category[] | undefined,
+  loadError: unknown,
+  loadMessage: string | null
+): string | null {
+  if (reported === null || reported.data !== data) return loadMessage;
+  if (reported.message !== null) return reported.message;
+  return reported.loadError === loadError ? null : loadMessage;
+}
+
+/** The list before the first answer; one array, so the empty state keeps its identity. */
+const NO_CATEGORIES: Category[] = [];
+
+export function useCategories(): UseCategoriesResult {
   /**
    * The management screen edits inactive categories too, so it asks for the
    * unfiltered list rather than the active-only default every other screen uses.
    */
-  const load = useCallback(async ({ showSpinner = false } = {}) => {
-    try {
-      if (showSpinner) setLoading(true);
-      // Cleared up front rather than on success only: a banner that outlives the
-      // failure it reports keeps claiming the screen is broken while the user is
-      // already looking at freshly loaded categories.
-      setError(null);
-      setCategories(await categoriesAPI.getAll(false));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : LOAD_CATEGORIES_ERROR);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load({ showSpinner: true });
-  }, [load]);
-
-  // Read after mount rather than as the initial state: localStorage does not
-  // exist while the page is prerendered, and a value read during render would
-  // make the server and the client disagree on the first paint.
-  useEffect(() => {
-    const stored = readStoredLayout();
-    if (stored) setLayoutState(stored);
-  }, []);
+  const { state, refresh } = useQuery(categoriesKey(false), () => categoriesAPI.getAll(false));
+  const data = state.status === 'ready' ? state.data : undefined;
+  const loadError = state.status === 'loading' ? null : state.error;
+  const [reported, setReported] = useState<ReportedError | null>(null);
+  const setError = useCallback(
+    (message: string | null) => setReported({ message, data, loadError }),
+    [data, loadError]
+  );
+  // Read through `useSyncExternalStore` with no stored value on the server:
+  // localStorage does not exist while the page is prerendered, and a value read
+  // during the first client render would make the two disagree on the first paint.
+  const stored = useSyncExternalStore(subscribeToNothing, readStoredLayout, noStoredLayout);
+  const [chosen, setChosen] = useState<CategoryLayout | null>(null);
+  const layout = chosen ?? stored ?? 'cards';
 
   const setLayout = useCallback((next: CategoryLayout) => {
-    setLayoutState(next);
+    setChosen(next);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(CATEGORY_LAYOUT_STORAGE_KEY, next);
     }
   }, []);
 
   const reload = useCallback(async () => {
-    await load();
-  }, [load]);
+    // Cleared up front rather than on success only: a banner that outlives the
+    // failure it reports keeps claiming the screen is broken while the user is
+    // already looking at freshly loaded categories.
+    setError(null);
+    await refresh();
+  }, [refresh, setError]);
 
   const remove = useCallback(
     async (id: number) => {
@@ -111,12 +137,22 @@ export function useCategories(): UseCategoriesResult {
         setError(err instanceof Error ? err.message : DELETE_CATEGORY_ERROR);
         return;
       }
-      await load();
+      invalidateCategories();
+      await refresh();
     },
-    [load]
+    [refresh, setError]
   );
 
-  return { categories, loading, error, setError, layout, setLayout, reload, remove };
+  return {
+    categories: dataOr(state, NO_CATEGORIES),
+    loading: state.status === 'loading',
+    error: shownError(reported, data, loadError, errorMessage(state, LOAD_CATEGORIES_ERROR)),
+    setError,
+    layout,
+    setLayout,
+    reload,
+    remove,
+  };
 }
 
 export interface UseCategoryDraftOptions {
@@ -418,6 +454,7 @@ export function useCategoryDraft({
       } else {
         await categoriesAPI.create(payload);
       }
+      invalidateCategories();
     } catch (err) {
       setError(err instanceof Error ? err.message : SAVE_CATEGORY_ERROR);
       savingRef.current = false;

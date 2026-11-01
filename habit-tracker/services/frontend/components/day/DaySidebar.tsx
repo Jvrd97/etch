@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-03/94, PHASE-03/252
+// [review:need-review] PHASE-03/94, PHASE-03/252, #311
 // summary: the day navigation shared by /day/{date} and /life — days grouped year → month with the current month open, each day a square in its three states and a link to that day; one component so the two screens cannot drift apart
+// summary: #311 — the sidebar asks for the same range as the Life grid (to the end of the year) and lists the days up to today, so the two share one read
 // summary: #252 — without a pinned `today` the squares, the open month and the history range stand on the server's day (GET /day-mode), read when the page opens and when the tab comes back
 
 import { useState } from 'react';
@@ -37,7 +38,9 @@ export default function DaySidebar({ activeDate = null, today: pinnedToday }: Da
   const today = useDisplayDate(pinnedToday);
   const todayISO = toISODate(today);
   const from = `${today.getFullYear() - SIDEBAR_YEARS}-01-01`;
-  const { days, loading, error } = useDays(from, todayISO);
+  // The range of the Life grid beside it, so both read one key; days ahead of today are not listed.
+  const { days: range, loading, error } = useDays(from, `${today.getFullYear()}-12-31`);
+  const days = range.filter((day) => day.date <= todayISO);
 
   // The month the reader is in opens; every other one is a heading they click.
   // Which month that is comes from the day they are on, not from the calendar:

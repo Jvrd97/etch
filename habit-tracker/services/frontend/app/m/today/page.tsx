@@ -1,5 +1,6 @@
 'use client';
-// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237
+// [review:need-review] PHASE-01/84-voice-day-input, PHASE-01/201, PHASE-03/118, PHASE-03/121, PHASE-03/123, PHASE-01/177, PHASE-01/206, PHASE-03/237, #311
+// summary: #311 — a tap the server refused is taken off its button and said under the row
 // summary: mobile Today screen — the quick-mark buttons of the directory come first and take over the categories they cover, a tap on a remaining quick-input card opens the full-screen entry editor, and the button above the sections opens the dictation sheet that fills the whole day in at once
 // summary: mobile Today screen — a tap on a quick-input card opens the full-screen entry editor, the button above the sections opens the dictation sheet that fills the whole day in at once, and the one beside it starts a conversation about the date this screen is showing
 // summary: mobile Today screen — a quick-mark card opens a full-screen list of every set of its category beside the day's records while its plus still adds one, and every tap or undo reads the day's records and the streak of its category again
@@ -146,6 +147,12 @@ export default function MobileTodayPage() {
                   lastEvent={quickMarks.lastEvent}
                   onUndo={() => void quickMarks.undo()}
                 />
+                {/* A tap the server refused is taken off the button; this says which happened. */}
+                {quickMarks.error !== null && (
+                  <div role="alert" className="mt-3">
+                    <ErrorAlert message={quickMarks.error} onDismiss={quickMarks.clearError} />
+                  </div>
+                )}
               </section>
             )}
 

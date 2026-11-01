@@ -1,10 +1,11 @@
-// [review:need-review] PHASE-03/121, PHASE-03/124
+// [review:need-review] PHASE-03/121, PHASE-03/124, #311
 // summary: tests for the pure reading of the directory — nothing where the day said nothing, the tap's own answer folded back in without a refetch, the categories the directory has taken over, the same fold for an undo, the caption the undo affordance carries, and the key that makes a retried tap the same tap
 
 import { describe, expect, it } from 'bun:test';
 import type { QuickMark, QuickMarkEvent } from '@/lib/api';
 import {
   applyQuickMarkEvent,
+  applyQuickMarkTap,
   applyQuickMarkUndo,
   categoriesWithQuickMark,
   formatMarkTotal,
@@ -96,6 +97,34 @@ describe('applyQuickMarkEvent', () => {
   it('ignores an event for a button that is no longer listed', () => {
     const marks = [mark({ id: 9 })];
     expect(applyQuickMarkEvent(marks, event)).toEqual(marks);
+  });
+});
+
+describe('applyQuickMarkTap', () => {
+  it('adds the step of an increment to the day it has, starting from nothing', () => {
+    const once = applyQuickMarkTap([mark()], 1);
+    expect(once[0]).toMatchObject({ today_total: 250, done: true });
+    expect(applyQuickMarkTap(once, 1)[0].today_total).toBe(500);
+  });
+
+  it('counts one of whatever a button without a step counts', () => {
+    expect(applyQuickMarkTap([mark({ step: null, today_total: 2 })], 1)[0].today_total).toBe(3);
+  });
+
+  it('ticks a check without inventing a quantity', () => {
+    expect(applyQuickMarkTap([mark({ kind: 'check', step: null })], 1)[0]).toMatchObject({
+      today_total: null,
+      done: true,
+    });
+  });
+
+  it('puts a set-value button at its step instead of adding to the day', () => {
+    expect(applyQuickMarkTap([mark({ kind: 'set_value', step: 7, today_total: 5 })], 1)[0].today_total).toBe(7);
+  });
+
+  it('leaves every other button alone', () => {
+    const other = mark({ id: 2 });
+    expect(applyQuickMarkTap([mark(), other], 1)[1]).toBe(other);
   });
 });
 

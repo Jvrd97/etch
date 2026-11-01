@@ -1,10 +1,11 @@
 'use client';
-// [review:need-review] PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253, PHASE-03/257
+// [review:need-review] #311, PHASE-01/61-today-total-owned-by-hook, PHASE-03/121, PHASE-03/124, PHASE-03/123, PHASE-01/174, PHASE-01/177, PHASE-01/206, PHASE-03/237, PHASE-03/247, PHASE-03/253, PHASE-03/257
 // summary: Today-screen state for both shells — the targeted re-read after a quick mark (the day's records, the ticks and the one streak that can have moved, newest answer wins), the first-round snapshot whose four reads run side by side (categories, the server's day, the records of a window around it, cut to that day, and the quick-mark directory) with the streaks moved to a second round that no longer blocks the buttons, the optimistic checklist flip and number increment each rolled back on its own failure, the quick-mark tap that repaints from its own answer and retries a dropped send under the key of the first attempt, and the undo of the last tap
 // summary: useToday takes its day from GET /day-mode (the server's current day), not the browser clock: the header date, the records read, the targeted re-read, the checklist tick and the number increment all use it; the day is read again with the snapshot when the tab returns and on a one-minute timer for a tab that stays in front across the boundary; only the newest snapshot is applied, a tick saved for a finished day is not shown in the new one, and increments of a finished day are dropped; a day that cannot be read leaves date empty and the screen without data
 // summary: #247/#253 — one read of the day per moment shared by the snapshot, the minute timer and the day-mode badge (dayModeClient); the records no longer wait for the day; a day not confirmed (last snapshot read failed, or three minute reads in a row did) refuses ticks and increments and is said in the banner once; a failed tick rolls back only on the day it was written for; the timer's answer after unmount is dropped and its retry of a failed first load does not raise the banner again
 // summary: #264 — the exact one-day read keeps the window's page size (ENTRIES_WINDOW_LIMIT, exported); a minute or badge read that finds a new day starts a snapshot unless it joined the snapshot's own day read (a snapshot hung on its records no longer holds the screen on the old day); a badge read of the day the screen is on confirms it and withdraws «day not confirmed»; the screen is kept in step with the badge by `useTodayDayModeSync`, and a day read that hangs counts as a failed minute read
 // summary: #257 — the badge's day read takes `{ fresh: true }` after a lost read, so its retry starts a new request instead of joining a hung one
+// summary: #311 — a re-visit draws the last snapshot from the shared read cache at once and re-reads it behind the screen (the day it names is trusted for writes only while it is younger than the minute recheck); the categories and the quick-mark directory are read through the cache, so the buttons of the page and this hook share one copy and one request
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
@@ -25,6 +26,9 @@ import {
   type QuickMark,
   type QuickMarkEvent,
 } from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
+import { getQueryData, setQueryData, useQueryData } from '@/lib/query-cache';
+import { QUICK_MARKS_KEY, readQuickMarks } from '@/hooks/useQuickMarks';
 import { partitionTodayCategories, type TodayGroups } from '@/lib/today-categories';
 import { applyQuickMarkEvent, applyQuickMarkUndo, newTapKey } from '@/lib/quick-marks';
 import {
@@ -80,6 +84,21 @@ export const ENTRIES_WINDOW_LIMIT = 1000;
  * and working, and the only thing missing is the number of days.
  */
 export const STREAKS_FAILED = 'Стрики не загрузились';
+
+/** The cache key of the last Today snapshot this tab drew. */
+const TODAY_SNAPSHOT_KEY = 'today';
+
+/** What a re-visit draws before the server has answered. */
+interface TodaySnapshot {
+  date: string;
+  categories: Category[];
+  entries: Entry[];
+  streaks: StreakMap;
+  /** `Date.now()` the server last confirmed `date`. */
+  confirmedAt: number;
+}
+
+const NO_QUICK_MARKS: QuickMark[] = [];
 
 /** Everything a Today screen needs; the two shells differ only in markup. */
 export interface UseTodayResult {
@@ -197,9 +216,22 @@ export interface UseTodayResult {
 }
 
 export function useToday(): UseTodayResult {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [quickMarks, setQuickMarks] = useState<QuickMark[]>([]);
+  // A re-visit starts from what this tab last drew; the read behind it replaces it.
+  const [cached] = useState(() => getQueryData<TodaySnapshot>(TODAY_SNAPSHOT_KEY));
+  // The day of the snapshot is trusted for writes only while an open tab would
+  // still trust it (see DAY_RECHECK_MS); older, writes wait for the server's answer.
+  const [cachedDay] = useState(() =>
+    cached !== undefined && Date.now() - cached.confirmedAt < DAY_RECHECK_MS ? cached.date : ''
+  );
+  const confirmedAt = useRef(cachedDay !== '' && cached !== undefined ? cached.confirmedAt : 0);
+  const [categories, setCategories] = useState<Category[]>(cached?.categories ?? []);
+  const [entries, setEntries] = useState<Entry[]>(cached?.entries ?? []);
+  // The directory is the cache's: the buttons of the page (`useQuickMarks`) draw the same copy.
+  const quickMarks = useQueryData<QuickMark[]>(QUICK_MARKS_KEY) ?? NO_QUICK_MARKS;
+  const setQuickMarks = useCallback((patch: (marks: QuickMark[]) => QuickMark[]) => {
+    if (getQueryData<QuickMark[]>(QUICK_MARKS_KEY) === undefined) return;
+    setQueryData<QuickMark[]>(QUICK_MARKS_KEY, (marks = NO_QUICK_MARKS) => patch(marks));
+  }, []);
   const [lastQuickMarkEvent, setLastQuickMarkEvent] = useState<QuickMarkEvent | null>(
     null
   );
@@ -210,8 +242,8 @@ export function useToday(): UseTodayResult {
   const nextOptimisticId = useRef(-1);
   // The server's day, also kept in a ref: the writes and the targeted re-read are
   // stable callbacks that must see the day of the latest snapshot.
-  const [day, setDay] = useState('');
-  const dayRef = useRef('');
+  const [day, setDay] = useState(cached?.date ?? '');
+  const dayRef = useRef(cachedDay);
   // The day is not confirmed (see `dayStale`); the ref is what the stable write callbacks read.
   const [dayStale, setDayStale] = useState(false);
   const dayStaleRef = useRef(false);
@@ -230,10 +262,12 @@ export function useToday(): UseTodayResult {
   const loadSeq = useRef(0);
   // The newest re-read after a mark; an older one still in flight is stale.
   const markReadSeq = useRef(0);
-  const [checked, setChecked] = useState<CheckedMap>({});
-  const [streaks, setStreaks] = useState<StreakMap>({});
-  const [loading, setLoading] = useState(true);
-  const [streaksLoading, setStreaksLoading] = useState(true);
+  const [checked, setChecked] = useState<CheckedMap>(() =>
+    cached === undefined ? {} : buildCheckedMap(cached.categories, cached.entries)
+  );
+  const [streaks, setStreaks] = useState<StreakMap>(cached?.streaks ?? {});
+  const [loading, setLoading] = useState(cached === undefined);
+  const [streaksLoading, setStreaksLoading] = useState(cached === undefined);
   const [streaksError, setStreaksError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -337,6 +371,7 @@ export function useToday(): UseTodayResult {
       const dayRead = snapshotRead.then(
         ({ date }) => {
           pollFailures.current = 0;
+          confirmedAt.current = Date.now();
           if (mine === loadSeq.current) setStale(false);
           return date;
         },
@@ -346,11 +381,13 @@ export function useToday(): UseTodayResult {
           throw err;
         }
       );
-      const [categoriesData, date, windowEntries, quickMarksData] = await Promise.all([
-        categoriesAPI.getAll(),
+      // The directory lands in the cache on its own; it is awaited so the first
+      // frame shows the buttons together with the rest of the screen.
+      const [categoriesData, date, windowEntries] = await Promise.all([
+        readCategories(),
         dayRead,
         entriesAPI.getAll({ startDate: windowStart, endDate: windowEnd, limit: ENTRIES_WINDOW_LIMIT }),
-        quickMarksAPI.list(),
+        readQuickMarks(),
       ]);
       const windowFits =
         date >= windowStart && date <= windowEnd && windowEntries.length < ENTRIES_WINDOW_LIMIT;
@@ -363,7 +400,6 @@ export function useToday(): UseTodayResult {
       dayRef.current = date;
       setDay(date);
       setCategories(categoriesData);
-      setQuickMarks(quickMarksData);
       // The snapshot is the server's, not this session's: whatever tap the
       // «Отменить» affordance pointed at is now indistinguishable from the rest
       // of the day, so the offer goes with it.
@@ -390,6 +426,22 @@ export function useToday(): UseTodayResult {
       if (mine === loadSeq.current) setLoading(false);
     }
   }, [adoptEntries, refreshStreaks, readDay, setStale]);
+
+  const mergedEntries = useMemo(
+    () => mergeOptimisticEntries(entries, optimisticEntries),
+    [entries, optimisticEntries]
+  );
+  // What a re-visit will draw first: the screen as it stands, kept as it changes.
+  useEffect(() => {
+    if (day === '') return;
+    setQueryData<TodaySnapshot>(TODAY_SNAPSHOT_KEY, {
+      date: day,
+      categories,
+      entries: mergedEntries,
+      streaks,
+      confirmedAt: confirmedAt.current,
+    });
+  }, [day, categories, mergedEntries, streaks]);
 
   const reload = useCallback(async () => {
     await loadData();
@@ -419,7 +471,7 @@ export function useToday(): UseTodayResult {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to record the mark');
     }
-  }, []);
+  }, [setQuickMarks]);
 
   const undoLastQuickMark = useCallback(async () => {
     const event = lastQuickMarkEvent;
@@ -432,7 +484,7 @@ export function useToday(): UseTodayResult {
     } finally {
       setLastQuickMarkEvent(null);
     }
-  }, [lastQuickMarkEvent]);
+  }, [lastQuickMarkEvent, setQuickMarks]);
 
   const reloadStreak = useCallback(async (categoryId: number) => {
     const streak = await categoriesAPI.getStreak(categoryId).catch(() => null);
@@ -464,8 +516,9 @@ export function useToday(): UseTodayResult {
   );
 
   useEffect(() => {
-    loadData({ showSpinner: true });
-  }, [loadData]);
+    // A re-visit already shows the last snapshot: the read behind it is silent.
+    loadData({ showSpinner: cached === undefined });
+  }, [loadData, cached]);
 
   const refresh = useCallback(() => {
     void loadData();
@@ -741,7 +794,7 @@ export function useToday(): UseTodayResult {
     date: day,
     dayStale,
     dayModeClient,
-    entries: mergeOptimisticEntries(entries, optimisticEntries),
+    entries: mergedEntries,
     categories,
     groups,
     quickMarks,

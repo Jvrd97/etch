@@ -1,9 +1,8 @@
-// [review:need-review] PHASE-01/174
+// [review:need-review] PHASE-01/174, #311
 // summary: CurrentStreaks tests the populated and empty dashboard states
 import { describe, expect, it } from 'bun:test';
 import { render, screen } from '@testing-library/react';
-import { CurrentStreaks } from './CurrentStreaks';
-import type { AvoidStreak } from '@/hooks/useDashboard';
+import { CurrentStreaks, type AvoidStreak } from './CurrentStreaks';
 
 const STREAKS: AvoidStreak[] = [
   {

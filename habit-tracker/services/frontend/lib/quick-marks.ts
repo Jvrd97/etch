@@ -1,6 +1,7 @@
-// [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/130
+// [review:need-review] PHASE-03/121, PHASE-03/124, PHASE-03/130, #311
 // summary: pure reading of the quick-mark directory — the caption a button shows, the state the tap's own answer folds back into the list without a refetch, the categories the directory has taken over from the legacy quick-input card, the same fold for an undo, the caption the undo affordance carries, the key that makes a retried tap the same tap, and the word a planned button says out loud to a reader who cannot see that it is first
 
+// summary: #311 — the state a tap is expected to leave its button in, drawn before the server answers (`applyQuickMarkTap`)
 import type { QuickMark, QuickMarkEvent, QuickMarkUndo } from '@/lib/api';
 
 /**
@@ -41,6 +42,26 @@ export function applyQuickMarkEvent(
       ? { ...mark, today_total: event.today_total, done: event.done }
       : mark
   );
+}
+
+/** What a tap writes when its button carries no step: the server's implicit amount. */
+const IMPLICIT_TAP_AMOUNT = 1;
+
+/**
+ * The directory as one more tap of `markId` will leave it, before the server says so.
+ *
+ * The same rules the server applies (`crud/quick_mark.py`): a tick is done, a
+ * set-value button holds its step, an increment or a relapse adds its step to the
+ * day's sum. Only what is drawn until the answer comes; the answer replaces it.
+ */
+export function applyQuickMarkTap(marks: QuickMark[], markId: number): QuickMark[] {
+  return marks.map((mark) => {
+    if (mark.id !== markId) return mark;
+    if (mark.kind === 'check') return { ...mark, done: true };
+    const amount = mark.step ?? IMPLICIT_TAP_AMOUNT;
+    const total = mark.kind === 'set_value' ? amount : (mark.today_total ?? 0) + amount;
+    return { ...mark, today_total: total, done: total > 0 };
+  });
 }
 
 /**

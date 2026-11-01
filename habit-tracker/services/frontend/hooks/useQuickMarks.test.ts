@@ -1,5 +1,6 @@
-// [review:need-review] PHASE-01/206
+// [review:need-review] PHASE-01/206, #311
 // summary: tests for useQuickMarks — a tap or an undo that went through tells the screen which category's day moved, a refused one tells it nothing, and a tap taken back from the day's list repaints the card and retires the offer to undo that same tap
+// summary: #311 — a tap is on screen before the server answers, five taps with the third refused leave four and retry the third under its own key, the newest answer wins once the burst is over, and a re-visit draws the buttons from the cache
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -19,12 +20,12 @@ mock.module('@/lib/api', () => ({
   quickMarksAPI: {
     ...realApi.quickMarksAPI,
     list: () => listMarks(),
-    tap: (id: number) => tapMark(id),
+    tap: (id: number, _tap: unknown, key?: string) => tapMark(id, key),
     undo: (eventId: number) => undoMark(eventId),
   },
 }));
 
-const { useQuickMarks, UNDO_FAILED } = await import('./useQuickMarks');
+const { useQuickMarks, TAP_FAILED, UNDO_FAILED } = await import('./useQuickMarks');
 
 const PUSH_UPS: QuickMark = {
   id: 3,
@@ -124,7 +125,7 @@ describe('useQuickMarks: telling the screen the day moved', () => {
     });
 
     expect(onDayChanged).not.toHaveBeenCalled();
-    expect(result.current.error).toBe('offline');
+    expect(result.current.error).toBe(TAP_FAILED);
   });
 
   it('tells it after the quick undo of the last tap as well', async () => {
@@ -238,5 +239,137 @@ describe('useQuickMarks.undoEvent: a tap taken back from the day list', () => {
     });
 
     expect(outcome).toBe(UNDO_FAILED);
+  });
+});
+
+/** A promise and the hands that settle it, so a test decides when the server answers. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const totalOf = (marks: QuickMark[], id: number) => marks.find((mark) => mark.id === id)?.today_total;
+
+describe('useQuickMarks: a tap does not wait for the server', () => {
+  it('draws the step on the button while the request is still out', async () => {
+    tapMark = mock(() => new Promise<QuickMarkEvent>(() => {}));
+    const { result } = await renderMarks();
+
+    act(() => {
+      void result.current.tap(PUSH_UPS.id);
+    });
+
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(125);
+    await waitFor(() => expect(tapMark).toHaveBeenCalledTimes(1));
+    expect(tapMark.mock.calls[0][1]).toMatch(/^tap-/);
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(125);
+  });
+
+  it('five taps with the third refused leave four, and only the third is taken off', async () => {
+    const fourth = deferred<QuickMarkEvent>();
+    const keys: (string | undefined)[] = [];
+    const firstAttempts: (string | undefined)[] = [];
+    tapMark = mock((_id: number, key?: string) => {
+      keys.push(key);
+      if (!firstAttempts.includes(key)) firstAttempts.push(key);
+      const tap = firstAttempts.indexOf(key) + 1;
+      // The third tap fails on both attempts; the fourth waits for the test to answer.
+      if (tap === 3) return Promise.reject(new Error('offline'));
+      if (tap === 4) return fourth.promise;
+      return Promise.resolve(tapAnswer(PUSH_UPS.id, 20 + tap, 100 + 25 * (tap < 3 ? tap : tap - 1)));
+    });
+    const { result } = await renderMarks();
+
+    const taps: Promise<void>[] = [];
+    act(() => {
+      for (let n = 0; n < 5; n += 1) taps.push(result.current.tap(PUSH_UPS.id));
+    });
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(100 + 5 * 25);
+
+    // The third tap has failed both attempts; the fourth is out, the fifth waits behind it.
+    await act(async () => {
+      await taps[2];
+    });
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(100 + 4 * 25);
+    expect(result.current.error).toBe(TAP_FAILED);
+
+    await act(async () => {
+      fourth.resolve(tapAnswer(PUSH_UPS.id, 24, 175));
+      await Promise.all(taps);
+    });
+
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(100 + 4 * 25);
+    // The retry of the third tap went out under the key of its first attempt.
+    const thirdKey = firstAttempts[2];
+    expect(keys.filter((key) => key === thirdKey)).toHaveLength(2);
+    expect(new Set(keys).size).toBe(5);
+  });
+
+  it("sends one button's taps one after another", async () => {
+    const first = deferred<QuickMarkEvent>();
+    tapMark = mock(() => (tapMark.mock.calls.length === 1 ? first.promise : Promise.resolve(tapAnswer(PUSH_UPS.id, 31, 150))));
+    const { result } = await renderMarks();
+
+    let taps: Promise<void>[] = [];
+    act(() => {
+      taps = [result.current.tap(PUSH_UPS.id), result.current.tap(PUSH_UPS.id)];
+    });
+    await act(async () => {});
+    expect(tapMark).toHaveBeenCalledTimes(1);
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(150);
+
+    await act(async () => {
+      first.resolve(tapAnswer(PUSH_UPS.id, 30, 125));
+      await Promise.all(taps);
+    });
+    expect(tapMark).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes the newest answer once the button has no tap in flight', async () => {
+    let answerNo = 0;
+    // Another device moved the sum meanwhile: the last answer carries more than two steps.
+    tapMark = mock(() => {
+      answerNo += 1;
+      return Promise.resolve(answerNo === 1 ? tapAnswer(PUSH_UPS.id, 30, 125) : tapAnswer(PUSH_UPS.id, 31, 300));
+    });
+    const { result } = await renderMarks();
+
+    await act(async () => {
+      await Promise.all([result.current.tap(PUSH_UPS.id), result.current.tap(PUSH_UPS.id)]);
+    });
+
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(300);
+    expect(result.current.lastEvent?.event_id).toBe(31);
+  });
+
+  it('does not ask a refusal again', async () => {
+    tapMark = mock(() => Promise.reject(new realApi.APIError(404, 'Quick mark not found')));
+    const { result } = await renderMarks();
+
+    await act(async () => {
+      await result.current.tap(PUSH_UPS.id);
+    });
+
+    expect(tapMark).toHaveBeenCalledTimes(1);
+    expect(totalOf(result.current.marks, PUSH_UPS.id)).toBe(100);
+    expect(result.current.error).toBe('Quick mark not found');
+  });
+});
+
+describe('useQuickMarks: a re-visit', () => {
+  it('draws the buttons in the first frame while the directory is read again', async () => {
+    const first = await renderMarks();
+    first.unmount();
+    listMarks = mock(() => new Promise<QuickMark[]>(() => {}));
+
+    const { result } = renderHook(() => useQuickMarks());
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.marks.map((mark) => mark.id)).toEqual([PUSH_UPS.id, SQUATS.id]);
   });
 });

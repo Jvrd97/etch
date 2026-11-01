@@ -1,8 +1,8 @@
-// [review:need-review] #78
+// [review:need-review] #78, #311
 // summary: shared desktop/mobile Trends block - up to four rows of icon, average with unit, sparkline and delta to the previous period, each linking to its category page; mobile adds the 7/30/90 selector
+// summary: #311 — owns the `TrendState` type, which lived in the removed `useDashboard` hook
 
 import Link from 'next/link';
-import type { TrendState } from '@/hooks/useDashboard';
 import { PERIOD_LABELS } from '@/lib/chart-data';
 import { MOBILE_PATH_PREFIX } from '@/lib/routes';
 import {
@@ -13,6 +13,15 @@ import {
   type DashboardTrend,
   type TrendPeriod,
 } from '@/lib/trends';
+
+/**
+ * Trends load apart from the rest of the dashboard: a slow or failed table
+ * request must not hold the hero back, and a period change must not reload it.
+ */
+export type TrendState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; trends: DashboardTrend[] };
 import { TAP_TARGET_PX } from '@/lib/ui-constants';
 import { TrendSparkline } from './TrendSparkline';
 

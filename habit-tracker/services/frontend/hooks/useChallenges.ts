@@ -1,9 +1,13 @@
 'use client';
-// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129
+// [review:need-review] PHASE-03/127, PHASE-03/128, PHASE-03/129, #311
 // summary: challenge state for both shells — one list request (which is also what materializes the missed days), creation, counting a day by hand, accepting or declining a proposal the model made, and a refetch after any write, because a challenge's counts and its status are the server's arithmetic and never the browser's
 
-import { useCallback, useEffect, useState } from 'react';
+// summary: #311 — the list is a key of the shared read cache: Today and the challenge screen draw it at once on a re-visit, and the re-read after a write keeps the list on screen
+import { useCallback, useState } from 'react';
 import { challengesAPI, type Challenge, type ChallengeDraft } from '@/lib/api';
+import { errorMessage, useQuery } from '@/lib/query-cache';
+
+const NO_CHALLENGES: Challenge[] = [];
 
 /** Shown when the list cannot be read at all. */
 export const LOAD_CHALLENGES_ERROR = 'Не удалось загрузить челленджи';
@@ -42,42 +46,16 @@ export interface UseChallengesResult {
  * показывала бы вчерашние числа с сегодняшней датой.
  */
 export function useChallenges(): UseChallengesResult {
-  const [challenges, setChallenges] = useState<Challenge[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshCounter, setRefreshCounter] = useState(0);
+  const { state, refresh } = useQuery('challenges', () => challengesAPI.list());
+  // A refused write; the list's own load failure comes from the cache.
+  const [reported, setError] = useState<string | null>(null);
   const [counting, setCounting] = useState<Set<number>>(new Set());
   const [answering, setAnswering] = useState<Set<number>>(new Set());
 
   const reload = useCallback(() => {
-    setRefreshCounter((counter) => counter + 1);
-  }, []);
-
-  useEffect(() => {
-    // The screen may unmount while the request is in flight; without this its
-    // result would overwrite a newer one.
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await challengesAPI.list();
-        if (cancelled) return;
-        setChallenges(result);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : LOAD_CHALLENGES_ERROR);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshCounter]);
+    setError(null);
+    void refresh();
+  }, [refresh]);
 
   const create = useCallback(
     async (draft: ChallengeDraft) => {
@@ -144,9 +122,9 @@ export function useChallenges(): UseChallengesResult {
   );
 
   return {
-    challenges,
-    loading,
-    error,
+    challenges: state.status === 'ready' ? state.data : NO_CHALLENGES,
+    loading: state.status === 'loading',
+    error: reported ?? (state.status === 'error' ? errorMessage(state, LOAD_CHALLENGES_ERROR) : null),
     create,
     countToday,
     counting,

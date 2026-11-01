@@ -1,10 +1,14 @@
 'use client';
-// [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/147
+// [review:need-review] PHASE-03/86, PHASE-03/88, PHASE-03/147, #311
 // summary: day-screen state for both shells — one fetch of the day, the rule it is judged by and its marks, with "today" left to the server so the browser calendar never decides which day is open, an explicit flag saying a person is looking at it, the rules this day's plan broke fetched beside the day so a `warn` is visible on the line it belongs to, and a reload of a day already on screen kept silent instead of replacing it with a spinner
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+// summary: #311 — the day and its violations are two keys of the shared read cache: a re-visit draws the day at once and re-reads it behind the screen, and the first frame no longer waits for the violations
+import { useCallback } from 'react';
 import { dayAPI, type DayDetail, type PlanViolation } from '@/lib/api';
 import { LOAD_DAY_ERROR } from '@/lib/day-format';
+import { useQuery } from '@/lib/query-cache';
+
+const NO_VIOLATIONS: PlanViolation[] = [];
 
 /** Everything a day screen needs; the two shells differ only in markup. */
 export interface UseDayResult {
@@ -49,69 +53,35 @@ export interface UseDayResult {
  * anything could establish.
  */
 export function useDay(date: string | null, opened = false): UseDayResult {
-  const [detail, setDetail] = useState<DayDetail | null>(null);
-  const [violations, setViolations] = useState<PlanViolation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshCounter, setRefreshCounter] = useState(0);
-  // Which date is currently drawn, as a key. Empty until one is: a failed read
-  // leaves nothing on screen, so the retry after it is a first read again and
-  // has to show the spinner rather than a silent refresh of nothing.
-  // `String(null)` is 'null' — a stable key for "today", distinct from empty.
-  const shownKey = useRef('');
+  // `today` is a key of its own: which day it is stays the server's answer.
+  const day = useQuery(`day:${date ?? 'today'}`, () =>
+    date === null
+      ? opened ? dayAPI.openToday() : dayAPI.getToday()
+      : opened ? dayAPI.open(date) : dayAPI.get(date)
+  );
+  const detail = day.state.status === 'ready' ? day.state.data : null;
+  const shownDate = detail?.day.date ?? null;
+  // Its own key and its own failure, swallowed on purpose: the day is drawn without
+  // waiting for it, and an empty list of warnings is a worse answer than no day only in theory.
+  const found = useQuery(shownDate === null ? null : `violations:${shownDate}`, () =>
+    shownDate === null ? Promise.resolve(NO_VIOLATIONS) : dayAPI.violations(shownDate)
+  );
 
-  useEffect(() => {
-    // The screen may unmount, or be pointed at another date, while the request
-    // is in flight; without this its result would overwrite the newer one.
-    let cancelled = false;
-
-    const load = async () => {
-      // The same day again — a reload after a write: keep it on screen and say
-      // it is refreshing. A different day, or none yet: nothing can be drawn,
-      // so this is a real load and the screen waits.
-      const silent = shownKey.current === String(date);
-      if (silent) setRefreshing(true);
-      else setLoading(true);
-      // Cleared up front rather than on success: a banner from a date that
-      // failed must not follow the reader onto the one that loaded fine.
-      setError(null);
-      try {
-        const result = date === null
-          ? await (opened ? dayAPI.openToday() : dayAPI.getToday())
-          : await (opened ? dayAPI.open(date) : dayAPI.get(date));
-        if (cancelled) return;
-        setDetail(result);
-        shownKey.current = String(date);
-        // Its own failure, swallowed on purpose: the day loaded, and an empty
-        // list of warnings is a worse answer than no day only in theory.
-        const found = await dayAPI
-          .violations(result.day.date)
-          .catch(() => [] as PlanViolation[]);
-        if (cancelled) return;
-        setViolations(found);
-      } catch (err) {
-        if (cancelled) return;
-        shownKey.current = '';
-        setDetail(null);
-        setViolations([]);
-        setError(err instanceof Error ? err.message : LOAD_DAY_ERROR);
-      } finally {
-        if (cancelled) return;
-        setLoading(false);
-        setRefreshing(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [date, opened, refreshCounter]);
-
+  const refreshDay = day.refresh;
+  const refreshViolations = found.refresh;
   const reload = useCallback(() => {
-    setRefreshCounter((n) => n + 1);
-  }, []);
+    void refreshDay();
+    void refreshViolations();
+  }, [refreshDay, refreshViolations]);
 
-  return { detail, loading, refreshing, error, violations, reload };
+  const failure = day.state.status === 'error' ? day.state.error : null;
+  return {
+    detail,
+    loading: day.state.status === 'loading',
+    refreshing: day.state.status === 'ready' && day.state.refreshing,
+    // A failed re-read keeps the day on screen; only a day that never loaded is an error.
+    error: failure === null ? null : failure instanceof Error ? failure.message : LOAD_DAY_ERROR,
+    violations: found.state.status === 'ready' ? found.state.data : NO_VIOLATIONS,
+    reload,
+  };
 }

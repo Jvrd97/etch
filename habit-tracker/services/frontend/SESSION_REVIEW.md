@@ -2440,3 +2440,15 @@ Feedback loops (frontend): выбранные тесты — **60 pass, 0 fail**
 - Цвет акцента — токен приложения `lime` (#b8ff36), а не #c6ff4a из слов владельца.
 
 Проверено вживую на подделке API (бэкенд #296 не слит): `next dev` :3302, заглушка :8302, Chrome headless по сырому CDP; круг 1 — 1440 и 390 px (неделя, месяц, пустой ответ, ошибка 500); круг 2 — `/dashboard` на 1440 px и десктопный `/insights` на 1440 px (панель запуска). Не проверено: настоящий бэкенд, настоящий запуск разбора в браузере (проверен тестом на подделке fetch), мобильная раскладка после правок круга 2, Safari и Firefox, светлая тема, экранный диктор.
+
+## 2026-11-01 — #311: общий кэш экранов в памяти и мгновенные отметки
+
+Тронуто 39 файлов: 4 new (`lib/query-cache.ts`, `lib/categories-cache.ts`, тесты `lib/query-cache.test.ts`, `hooks/screen-cache.test.ts`), 33 mod, 2 удалены (`hooks/useDashboard.ts` и его тест: вызывающих не было).
+
+- mod, хуки на кэше: `useServerDay`, `useCategories`, `useQuickMarks`, `useDashboardSummary`, `useDay` (нарушения — отдельный ключ, первый кадр их не ждёт), `useWeek`, `useDays` (`null` — ничего не читать), `useGoals`, `useJournal`, `useRoles`, `useChallenges`; `useToday` рисует последний снимок сразу (день снимка годится для записи, только если подтверждён меньше минуты назад), справочник отметок и категории читает через кэш.
+- mod, одно чтение категорий: `useTable`, `useEntries`, `useQuickMarkAdmin`, `usePlanFacts`, `useCategoryDetail` — через `readCategories`.
+- mod, экраны: `app/today/page.tsx`, `app/m/today/page.tsx` (сообщение об отклонённом нажатии под рядом кнопок, `role="alert"`), `components/week/WeekScreen.tsx` (нет чтения `days` за сегодня до недели), `components/day/DaySidebar.tsx` (тот же диапазон, что у сетки «Жизни»).
+- mod, прочее: `lib/api.ts` (401 и выход очищают кэш), `lib/quick-marks.ts` (`applyQuickMarkTap`), `test-setup.ts` (кэш чистится после каждого теста), `components/CurrentStreaks.tsx` и `components/dashboard/TrendsBlock.tsx` (типы из удалённого хука), тесты `useQuickMarks`, `quick-marks`, `app/today/page`, `CurrentStreaks`.
+- Нажатия одной кнопки уходят на сервер по очереди: четыре параллельных POST на живом бэкенде сдвинули сумму на один шаг (гонка чтения-записи в `crud/quick_mark.py`, передано #309). Экран очереди не ждёт.
+
+Проверено вживую: свой бэкенд :8813 на базе `opt_311`, `next dev` :3311, Chrome headless по сырому CDP, 1440 px. Нажатие рисуется, пока POST задержан; из трёх нажатий второе обрывается дважды — повтор идёт под тем же ключом, откатывается только оно, под рядом сообщение; повторный заход на /today ссылкой приложения рисует кнопки через 29 мс при семи задержанных GET; /life — одно чтение `days`, /week — без `days` за сегодня, /today — один `GET /quick-marks`. Десять затронутых экранов открываются без ошибок в консоли. Не проверено: мобильная ширина, Safari и Firefox, экранный диктор, продакшен-сборка в браузере (только `next build`).

@@ -1,12 +1,15 @@
 'use client';
-// [review:need-review] PHASE-03/94
+// [review:need-review] PHASE-03/94, #311
 // summary: one fetch of a range of days for the timeline, the week page and the sidebar — the range is a string pair so a caller that rebuilds it every render does not put the screen in a loop
+// summary: #311 — the range is a key of the shared read cache (the Life grid and its sidebar ask for the same one and share a request; a re-visit draws at once), and a range not known yet (`null`) reads nothing
 
-import { useCallback, useEffect, useState } from 'react';
 import { daysAPI, type DayListItem } from '@/lib/api';
+import { useQuery } from '@/lib/query-cache';
 
 /** Said when the range could not be read; the screen shows it instead of an empty grid. */
 export const LOAD_DAYS_ERROR = 'Не удалось загрузить дни';
+
+const NO_DAYS: DayListItem[] = [];
 
 export interface UseDaysResult {
   days: DayListItem[];
@@ -16,49 +19,23 @@ export interface UseDaysResult {
 }
 
 /**
- * The days of `[from, to]`, oldest first.
+ * The days of `[from, to]`, oldest first; nothing while either end is null.
  *
- * The effect keys off the two date strings rather than off an object, because
+ * The key is built from the two date strings rather than from an object, because
  * the natural way to call this — `useDays(startOfYear(), today())` — rebuilds
  * the argument on every render, and a hook that only works when its caller
  * remembers to memoise is a trap rather than a hook.
  */
-export function useDays(from: string, to: string): UseDaysResult {
-  const [days, setDays] = useState<DayListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshCounter, setRefreshCounter] = useState(0);
-
-  useEffect(() => {
-    // The screen may unmount, or be pointed at another range, while the request
-    // is in flight; without this its result would overwrite the newer one.
-    let cancelled = false;
-
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const result = await daysAPI.range(from, to);
-        if (cancelled) return;
-        setDays(result);
-      } catch (err) {
-        if (cancelled) return;
-        setDays([]);
-        setError(err instanceof Error ? err.message : LOAD_DAYS_ERROR);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [from, to, refreshCounter]);
-
-  const reload = useCallback(() => {
-    setRefreshCounter((n) => n + 1);
-  }, []);
-
-  return { days, loading, error, reload };
+export function useDays(from: string | null, to: string | null): UseDaysResult {
+  const known = from !== null && to !== null;
+  const { state, refresh } = useQuery(known ? `days:${from}:${to}` : null, () =>
+    known ? daysAPI.range(from, to) : Promise.resolve(NO_DAYS)
+  );
+  const failure = state.status === 'error' ? state.error : null;
+  return {
+    days: state.status === 'ready' ? state.data : NO_DAYS,
+    loading: known && state.status === 'loading',
+    error: failure === null ? null : failure instanceof Error ? failure.message : LOAD_DAYS_ERROR,
+    reload: () => void refresh(),
+  };
 }

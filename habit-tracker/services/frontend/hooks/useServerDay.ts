@@ -1,36 +1,30 @@
 'use client';
-// [review:need-review] PHASE-03/252
-// summary: the day the server is running (GET /day-mode, boundary at 04:00) for every screen outside Today that used to ask the browser's clock: `readServerDay` joins a read started in the same render pass, `useServerDay` reads it on mount and when the tab comes back and returns '' while the day is unknown (a silent writer refuses to guess; `settled` says the wait is over), `useDisplayDay` falls back to the browser's day for screens that only show it; these screens do not follow the 04:00 boundary while they stay open (no timer, only the tab coming back)
+// [review:need-review] PHASE-03/252, #311
+// summary: the day the server is running (GET /day-mode, boundary at 04:00) for every screen outside Today that used to ask the browser's clock: `readServerDay` joins a read already in flight through the shared cache, `useServerDay` draws the last known day at once (a re-visited screen does not wait for it), reads it again on mount and when the tab comes back, and returns '' while the day is unknown (a silent writer refuses to guess; `settled` says the wait is over), `useDisplayDay` falls back to the browser's day for screens that only show it; these screens do not follow the 04:00 boundary while they stay open (no timer, only the tab coming back)
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
+import { useMemo } from 'react';
 // A namespace import read at call time, as in `useDayMode`: suites that mock
 // `@/lib/api` with a fixed list of names must still link every screen.
 import * as api from '@/lib/api';
 import { todayISO } from '@/lib/date';
+import { fetchQuery, useQuery } from '@/lib/query-cache';
+
+/** The cache key of the server's day. */
+export const SERVER_DAY_KEY = 'serverDay';
+
+function askServerDay(): Promise<string> {
+  return api.agentAPI.dayMode().then((mode) => mode.date);
+}
 
 /**
- * The read the readers of one render pass share.
+ * The server's day as `YYYY-MM-DD`; rejects when the server cannot be asked.
  *
- * A page mounts several readers at once (the chart, the chat sheet, a form), and
- * their effects run one after another in the same synchronous pass: one request
- * answers all of them. The slot is emptied as soon as that pass ends, so a later
- * question is always asked anew and a read that never returns cannot stand in
- * for it.
+ * Joins a read already out (a page mounts several readers at once, and one
+ * request answers all of them); otherwise it asks anew, because the day can
+ * have turned since the last answer.
  */
-let sharedRead: Promise<string> | null = null;
-
-/** The server's day as `YYYY-MM-DD`; rejects when the server cannot be asked. */
 export function readServerDay(): Promise<string> {
-  if (sharedRead !== null) return sharedRead;
-  const day = Promise.resolve()
-    .then(() => api.agentAPI.dayMode())
-    .then((mode) => mode.date);
-  sharedRead = day;
-  queueMicrotask(() => {
-    sharedRead = null;
-  });
-  return day;
+  return fetchQuery(SERVER_DAY_KEY, askServerDay);
 }
 
 const LOCAL_NOON_HOUR = 12;
@@ -48,22 +42,11 @@ export interface ServerDay {
 }
 
 export function useServerDay(enabled = true): ServerDay {
-  const [state, setState] = useState<ServerDay>({ date: '', settled: false });
-
-  const read = useCallback(() => {
-    // A screen whose caller pinned the day (tests) asks nobody.
-    if (!enabled) return;
-    readServerDay().then(
-      (date) => setState({ date, settled: true }),
-      // A lost read keeps the day already known (see above); nothing is shown for it.
-      () => setState((previous) => ({ ...previous, settled: true }))
-    );
-  }, [enabled]);
-
-  useEffect(read, [read]);
-  useRefreshOnVisible(read);
-
-  return state;
+  // A screen whose caller pinned the day (tests) asks nobody.
+  const { state } = useQuery(enabled ? SERVER_DAY_KEY : null, askServerDay, { refreshOnVisible: true });
+  // A lost re-read keeps the day already known (see above); nothing is shown for it.
+  if (state.status === 'ready') return { date: state.data, settled: true };
+  return { date: '', settled: enabled && state.status === 'error' };
 }
 
 /**

@@ -1,6 +1,7 @@
 'use client';
-// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207, PHASE-03/264
+// [review:need-review] PHASE-01/42-mobile-categories-and-detail, PHASE-01/207, PHASE-03/264, #311
 // summary: category-detail state extracted from app/categories/[id]/page.tsx — one batched load of category, siblings, chart days, entries and the streak with its relapse days, so the desktop page and /m/categories/[id] render the same screen; #264 — the chart range ends on the server's day (the browser's when the server cannot be asked)
+// summary: #311 — the category list comes through the shared read cache (`readCategories`): the readers of one moment share one request
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -12,6 +13,7 @@ import {
   type RelapseHistory,
   type TableDay,
 } from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
 import { categorySiblings } from '@/lib/category-nav';
 import { chartDateRange } from '@/lib/chart-data';
 import { todayISO } from '@/lib/date';
@@ -110,7 +112,7 @@ export function useCategoryDetail(categoryId: number): UseCategoryDetailResult {
             // active-only default an inactive category opened from
             // /m/categories finds itself missing from its own tab strip and
             // gets a dead prev/next pager.
-            categoriesAPI.getAll(false),
+            readCategories(false),
             chartRows,
             entriesAPI.getAll({ categoryId, limit: ENTRIES_FETCH_LIMIT }),
             // Secondary widget: a failure here must not blank the whole page,

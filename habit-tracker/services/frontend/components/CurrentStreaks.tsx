@@ -1,11 +1,17 @@
-// [review:need-review] PHASE-01/174
+// [review:need-review] PHASE-01/174, #311
 // summary: dashboard card lists active avoid categories and their current clean-day streaks
+// summary: #311 — owns the `AvoidStreak` type, which lived in the removed `useDashboard` hook
 'use client';
 
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
-import type { AvoidStreak } from '@/hooks/useDashboard';
+import type { Category, CategoryStreak } from '@/lib/api';
 import { formatDays } from '@/lib/streak-format';
+
+export interface AvoidStreak {
+  category: Category;
+  streak: CategoryStreak;
+}
 
 interface CurrentStreaksProps {
   streaks: AvoidStreak[];

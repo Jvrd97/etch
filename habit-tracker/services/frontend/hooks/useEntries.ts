@@ -1,17 +1,18 @@
 'use client';
-// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #76
+// [review:need-review] PHASE-01/41-mobile-entries-fullscreen-sheet, #76, #311
 // summary: Entries state loads tracker entries and, without a category filter, journal notes into one feed ordered by the day they belong to; shares filtering, visibility refresh and reload across shells
+// summary: #311 — the category list comes through the shared read cache (`readCategories`): the readers of one moment share one request
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRefreshOnVisible } from '@/hooks/useRefreshOnVisible';
 import {
-  categoriesAPI,
   entriesAPI,
   journalAPI,
   type Category,
   type Entry,
   type JournalEntry,
 } from '@/lib/api';
+import { readCategories } from '@/lib/categories-cache';
 import { mergeActivityFeed, type ActivityFeedItem } from '@/lib/activity-feed';
 
 /** How many entries one screenful of the list asks for. */
@@ -85,7 +86,7 @@ export function useEntries(): UseEntriesResult {
           filterCategory === null
             ? journalAPI.getAll({ limit: ENTRY_PAGE_SIZE }).then(({ items }) => items)
             : Promise.resolve<JournalEntry[]>([]),
-          categoriesAPI.getAll(),
+          readCategories(),
         ]);
         setEntries(entriesData);
         setJournals(journalData);
